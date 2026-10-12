@@ -28,3 +28,15 @@ place, from a portable surface.
 | `docs/02-plan-to-sunday.md` | v0 plan for the first gig (2026-10-18) |
 | `DECISIONS.md` | Decision log |
 | `ROADMAP.md` | Phases and progress |
+
+## Licence
+
+K1000 is free software: you can redistribute it and/or modify it under the terms of the **GNU
+General Public License, version 3 or (at your option) any later version** — see [`LICENSE`](LICENSE).
+
+Exception: `box/overlays/k1000-zynscreen.dts` is derived from the Linux kernel's `piscreen2r`
+device-tree overlay and stays under **GPL-2.0**. It compiles to a separate firmware overlay and is
+never linked with the GPLv3 code.
+
+Third-party software K1000 installs but does not ship: CamillaDSP and CamillaGUI (GPL-3.0),
+websockets, numpy, PyYAML, Pillow, qrcode, smbus2 (BSD/MIT-style), libgpiod (LGPL-2.1+).

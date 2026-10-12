@@ -126,3 +126,18 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
     `http://10.42.0.1/k1000-ca.crt`.
   - The leaf is valid until 2029-01-14.
 
+
+## D-008 — Licence: GNU GPLv3 (or later) · decided 2026-10-12
+
+- **Decision**: Thomas, 2026-10-12: "The License is GNU GPLv3 (if compatible with other components
+  used here)". Applied as **GPL-3.0-or-later** (the FSF's recommended form), with `LICENSE` holding
+  the verbatim text and an SPDX header in each source file.
+- **Compatibility check** (licence files on the box, 2026-10-12):
+  - **Compatible**: CamillaDSP and CamillaGUI (GPL-3.0); websockets, numpy (BSD-3); PyYAML,
+    smbus2 (MIT/Expat); Pillow (HPND); qrcode (BSD); python3-libgpiod (LGPL-2.1+).
+  - **Not compatible**: `python3-smbus`. Its `py-smbus/smbusmodule.c` is **GPL-2 only**, so K1000
+    moves to **python3-smbus2** (MIT; same `SMBus` API).
+  - **Kept under its own licence**: `box/overlays/k1000-zynscreen.dts`, derived from the kernel's
+    `piscreen2r` overlay, stays **GPL-2.0**. It is a separate firmware artefact, never linked with
+    the Python code.
+- Nothing third-party is vendored; fonts (DejaVu) are used from the system.
