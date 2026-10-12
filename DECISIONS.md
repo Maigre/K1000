@@ -68,7 +68,7 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   disabled.
 
 
-## D-006 — Reaching Lite: converge the card in place now, fresh-Lite gig card via a bootstrap · proposed 2026-10-12
+## D-006 — Reaching Lite: converge the card in place now, fresh-Lite gig card via a bootstrap · decided 2026-10-12
 
 - **Context**: D-005 said Lite, but the card was flashed with the **desktop** image ("Raspberry Pi
   reference 2026-10-06", pi-gen `b2cd98a9`, `stage4`; 1649 packages). Thomas wants a minimal Lite with
@@ -88,8 +88,9 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
      and gives a **spare card for the gig case**. Then pick which card is primary.
 - **Why not only a fresh flash now**: it needs Thomas's hands on the card and repeats the bring-up,
   and the end state is the same package set.
+- **Decision**: as proposed, in that order — Thomas, 2026-10-12 ("i validate everything").
 
-## D-007 — Phone access: the box's own Wi-Fi AP, QR code on screen, captive portal → a K1000 phone page · proposed 2026-10-12
+## D-007 — Phone access: the box's own Wi-Fi AP, QR code on screen, captive portal → a K1000 phone PWA · decided 2026-10-12
 
 - **Context**: at gigs there is no house network. Thomas's idea: the Pi runs an access point, the
   screen shows a QR code to join it, and a captive portal opens the interface. The plan had put the
@@ -111,3 +112,17 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
     SETUP toggle switches the phone off.
 - **Gate**: built before Friday, alongside the integration. Go/no-go at the 16/10 rig test; if it is
   not proven there, it is off on Sunday and the knobs carry the show.
+- **Decision**: as proposed, defaults included (FR, SSID `K1000`, 5 GHz, AP on at boot with an off
+  switch in SETUP) — Thomas, 2026-10-12. He added: **make the phone interface a PWA**, for a quick
+  way in.
+- **PWA ⇒ HTTPS.** Chrome on Android installs a PWA only from a secure origin, and
+  `http://10.42.0.1` is not one. So the box serves `https://10.42.0.1/` with a leaf certificate
+  signed by a **local CA**:
+  - The CA is *name-constrained* (critical): it can vouch only for IP 10.42.0.0/24 and
+    `k1000.home.arpa`, so even a leaked key cannot impersonate another site to the phone.
+  - Its private key stays off the box, in the hub's gitignored `secrets/` on mgr-ran.
+  - Thomas installs the CA certificate **once** on his phone (Settings → Security → Encryption &
+    credentials → Install a certificate → CA certificate). The portal serves it at
+    `http://10.42.0.1/k1000-ca.crt`.
+  - The leaf is valid until 2029-01-14.
+
