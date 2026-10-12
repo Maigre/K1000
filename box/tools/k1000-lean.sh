@@ -65,12 +65,13 @@ KEEP=(
   rpi-eeprom raspi-config raspi-utils raspi-utils-core firmware-brcm80211 wireless-regdb
   # system and remote access
   systemd systemd-sysv udev sudo openssh-server openssh-client ca-certificates curl rsync cron kmod
-  # network, and the phone's access point (D-007: NetworkManager AP, its dnsmasq, nft masquerade)
-  network-manager wpasupplicant dnsmasq-base iw rfkill nftables iproute2
+  # network, and the phone's access point (D-007: hostapd + dnsmasq on wlan0, the nft fence;
+  # NetworkManager's AP mode is the alternative backend)
+  network-manager wpasupplicant dnsmasq-base iw rfkill nftables iproute2 hostapd
   # audio (camilladsp links libasound; aplay/arecord probe the cards), knobs, overlay compiler
   alsa-utils libasound2t64 i2c-tools usbutils device-tree-compiler
   # the k1000 service, its screen fonts, its tests
-  python3 python3-websockets python3-yaml python3-numpy python3-pil python3-smbus python3-smbus2
+  python3 python3-websockets python3-yaml python3-numpy python3-pil python3-smbus2
   python3-libgpiod python3-qrcode python3-pytest fonts-dejavu-core
 )
 # What any K1000 card must still have before it is power-cycled (--check): boot, login, network.

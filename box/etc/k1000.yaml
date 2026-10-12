@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # /etc/k1000/k1000.yaml - K1000 box settings (read at start of the k1000 service).
 # Missing or broken file = built-in defaults (same values as below). Edit, then restart k1000.
 
@@ -46,3 +47,20 @@ engine:
 paths:
   state: /var/lib/k1000/state.json
   active_config: /var/lib/k1000/active.yml
+
+# Phone page (D-007, docs/06-phone.md): the box's own Wi-Fi "K1000" (net/setup-ap.sh: hostapd,
+# 5 GHz ch 36, portal off) and K1000's page at https://10.42.0.1/ (certificate in /etc/k1000/tls).
+# SETUP > Phone switches phone control on/off at run time; `enabled: false` here removes the phone
+# servers entirely (knobs only). A Friday NO-GO is both: `enabled: false` here (then restart k1000)
+# AND the access point off: sudo /opt/k1000/net/setup-ap.sh --down (it stays off across reboots
+# and later install.sh --ap runs; back on: setup-ap.sh --up).
+phone:
+  enabled: true                  # false = no phone servers at all (the no-go; see above)
+  max_clients: 4                 # phones connected at once
+  notch_gain_db: -6.0            # 'notch here' on the phone: the new band's cut...
+  notch_q: 8.0                   # ...and Q
+  # address: 10.42.0.1           # the AP address (bind + URL host); setup-ap.sh sets it
+  # https_port: 443              # the installable page (needs /etc/k1000/tls)
+  # http_port: 80                # first-time page + CA download, captive portal with --portal on (0 = off)
+  # plain_app: fallback          # plain-HTTP page on plain_port: fallback (no certificate) | always | off
+  # plain_port: 8080

@@ -1,0 +1,149 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* K1000 phone page. Same language as the box screen (ui/pages.py): black, white digits, amber
+   labels, red = mute/clip/failure, one colour per meaning. Big targets, legible in a dark venue. */
+:root {
+  --bg: #000; --fg: #fff; --dim: #969696; --faint: #464646; --panel: #121212; --line: #262626;
+  --btn: #1b1b1b; --btn-hi: #3a3a3a; --amber: #ffb800; --red: #eb1414; --band-red: #c80000;
+  --green: #28dc46; --yellow: #ffdc00; --orange: #ff7800; --cyan: #00c8ff; --barbg: #242424;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); }
+body {
+  font-family: system-ui, Roboto, "DejaVu Sans", sans-serif;
+  display: flex; flex-direction: column; height: 100dvh; overflow: hidden;
+  -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none;
+  overscroll-behavior: none; font-variant-numeric: tabular-nums;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+button {
+  font: inherit; color: var(--fg); background: var(--btn); border: 1px solid #333;
+  border-radius: 10px; min-height: 56px; font-size: 20px; font-weight: 700; padding: 0 4px;
+  touch-action: manipulation; cursor: pointer;
+}
+button:active { background: var(--btn-hi); }
+[hidden] { display: none !important; }
+.dim { color: var(--dim); font-weight: 400; font-size: 14px; letter-spacing: 0; }
+
+/* ---------------------------------------------------------------- status bar */
+#bar {
+  display: flex; align-items: center; gap: 8px; min-height: 46px; padding: 0 10px;
+  background: #1c1c1c; flex: none;
+}
+.brand { font-weight: 800; font-size: 17px; letter-spacing: .04em; }
+.chip { display: flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 700; white-space: nowrap; }
+.chip i { width: 10px; height: 10px; border-radius: 50%; background: var(--amber); display: inline-block; }
+.chip.ok i { background: var(--green); } .chip.ok { color: var(--green); }
+.chip.warn i { background: var(--yellow); } .chip.warn { color: var(--yellow); }
+.chip.bad i { background: var(--red); } .chip.bad { color: var(--red); }
+.chip.unk i { background: var(--amber); } .chip.unk { color: var(--amber); }
+.dev { flex: 1; min-width: 0; font-size: 13px; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dev.missing { color: var(--orange); } .dev.unknown { color: var(--amber); }
+.pill { background: var(--band-red); color: #fff; font-weight: 800; font-size: 14px; padding: 4px 8px; border-radius: 4px; }
+.install { min-height: 34px; font-size: 14px; padding: 0 10px; background: #222; border-color: var(--amber); color: var(--amber); }
+
+/* ---------------------------------------------------------------- tabs */
+#tabs { display: grid; grid-template-columns: 1fr 1fr; flex: none; border-bottom: 1px solid var(--line); }
+#tabs button { border-radius: 0; border: 0; min-height: 52px; background: #0d0d0d; color: var(--dim); font-size: 18px; letter-spacing: .06em; }
+#tabs button[aria-selected="true"] { background: var(--fg); color: #000; }
+
+/* ---------------------------------------------------------------- banners */
+#banners { flex: none; }
+.banner { padding: 10px 14px; font-size: 16px; font-weight: 700; border-left: 6px solid; line-height: 1.3; }
+.banner small { display: block; font-weight: 400; font-size: 14px; opacity: .85; }
+.banner.red { background: #3c0000; border-color: var(--red); color: #fff; }
+.banner.orange { background: #3a1c00; border-color: var(--orange); color: #fff; }
+.banner.amber { background: #3c3200; border-color: var(--amber); color: var(--yellow); }
+.banner.grey { background: #1a1a1a; border-color: var(--faint); color: var(--dim); }
+
+/* ---------------------------------------------------------------- pages */
+main { flex: 1; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; }
+.block { padding: 12px 14px 14px; border-bottom: 1px solid var(--line); }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.lab { color: var(--amber); font-weight: 800; font-size: 17px; letter-spacing: .06em; }
+.sub { color: var(--dim); font-size: 15px; }
+.big { font-size: 72px; font-weight: 800; line-height: 1.05; margin: 2px 0 10px; }
+.mid { font-size: 46px; font-weight: 800; line-height: 1.1; margin: 2px 0 10px; }
+.big small, .mid small { font-size: 22px; color: var(--dim); font-weight: 700; margin-left: 8px; }
+.steps { display: grid; gap: 8px; }
+/* minmax(0, 1fr): equal columns whatever the labels (a bare 1fr lets a long label squeeze the
+   others: the Q +/- were 19 px wide at 360 px) */
+.steps.five { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.steps.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.steps button { white-space: nowrap; overflow: hidden; }
+.hintline { display: flex; justify-content: space-between; color: var(--faint); font-size: 13px; margin-top: 6px; }
+.switch { min-width: 112px; min-height: 48px; font-size: 18px; background: #262626; color: var(--dim); border-color: #444; }
+.switch[aria-checked="true"] { background: var(--green); color: #000; border-color: var(--green); }
+.off-value { color: var(--faint); }
+.edited { color: var(--amber); }
+
+/* ---------------------------------------------------------------- live EQ */
+.graphwrap { border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+#eq { display: block; width: 100%; height: clamp(190px, 29vh, 250px); touch-action: none; background: #070707; }
+.eqhint { padding: 3px 14px 0; font-size: 12px; color: #6a6a6a; }
+.slots { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; padding: 10px 14px 4px; }
+.slots button { min-height: 50px; font-size: 17px; color: var(--dim); background: #141414; border-color: #333; }
+.slots button.cut { background: #ff5a00; color: #000; border-color: #ff5a00; }
+.slots button.boost { background: var(--green); color: #000; border-color: var(--green); }
+.slots button.sel { outline: 3px solid #fff; outline-offset: 1px; color: #fff; }
+.slots button.sel.cut, .slots button.sel.boost { color: #000; }
+.slot { border-bottom: 0; padding-top: 8px; }
+/* value stacked under its name on the left, four equal steps in the rest: >= 54 px per step at
+   360 px, ~62 px at 393 (Pixel 4a) */
+.prow { display: grid; grid-template-columns: 82px minmax(0, 1fr); align-items: center; gap: 8px; margin-top: 10px; }
+.prow .steps button { min-height: 54px; font-size: 20px; line-height: 1.05; }
+.prow .steps button small { display: block; font-size: 10px; font-weight: 600; color: var(--dim); letter-spacing: .02em; }
+.pv { min-width: 0; }
+.pname { color: var(--amber); font-weight: 800; font-size: 14px; white-space: nowrap; }
+.pname span { color: var(--dim); font-weight: 400; font-size: 11px; }
+.pval { font-size: 24px; font-weight: 800; white-space: nowrap; line-height: 1.15; }
+.actions { margin-top: 14px; }
+.actions button { flex: 1; min-height: 52px; font-size: 16px; }
+.ghost { background: transparent; border: 1px solid #444; color: var(--fg); }
+.warn { border-color: var(--amber); color: var(--amber); }
+.danger { background: var(--band-red); border-color: var(--band-red); }
+
+/* ---------------------------------------------------------------- hold-to-act buttons */
+.hold { position: relative; overflow: hidden; }
+.hold > b { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: rgba(255,255,255,.28); pointer-events: none; }
+.hold > span { position: relative; }
+
+/* ---------------------------------------------------------------- footer: meters + mute */
+#foot { flex: none; border-top: 1px solid var(--line); background: #050505; padding: 8px 10px calc(10px + env(safe-area-inset-bottom)); }
+.meters { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; margin-bottom: 8px; }
+.m { display: grid; grid-template-columns: 46px 1fr 16px; align-items: center; gap: 6px; }
+.m span { font-size: 12px; font-weight: 700; color: var(--dim); }
+.bar { position: relative; height: 14px; background: linear-gradient(to right, var(--green) 0 70%, var(--yellow) 70% 90%, var(--red) 90% 100%); }
+.bar > b { position: absolute; right: 0; top: 0; bottom: 0; width: 100%; background: var(--barbg); }
+.m em { display: block; height: 14px; border: 1px solid var(--faint); }
+.m em.clip { background: var(--red); border-color: var(--red); }
+.mute { width: 100%; min-height: 76px; font-size: clamp(18px, 6vw, 25px); font-weight: 800; letter-spacing: .04em; background: #2a0000; border: 2px solid var(--band-red); white-space: nowrap; }
+body.muted .mute { background: var(--band-red); border-color: #ff4040; }
+body.muted #page-main .big { color: var(--dim); }
+
+/* ---------------------------------------------------------------- disconnected / phone off */
+body.nolink main button, body.off main button, body.nolink #mute, body.off #mute { opacity: .3; pointer-events: none; }
+body.nolink main .big, body.nolink main .mid, body.nolink .pval, body.off main .big, body.off main .mid { color: var(--faint); }
+body.nolink #eq, body.off #eq { opacity: .45; pointer-events: none; }
+
+/* ---------------------------------------------------------------- modal, toast */
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.78); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 10; }
+.modal .box { background: #151515; border: 1px solid #444; border-radius: 14px; padding: 20px; width: 100%; max-width: 380px; }
+.modal .q { font-size: 22px; font-weight: 800; margin-bottom: 8px; }
+.modal .sub { margin-bottom: 18px; }
+.modal .row button { flex: 1; min-height: 60px; }
+/* The toast never takes a touch (pointer-events: none) and sits over the tab bar, not over the
+   EQ graph: right after a "notch here" the finger is still on the graph. */
+.toast { position: fixed; left: 50%; top: calc(48px + env(safe-area-inset-top)); transform: translateX(-50%); background: var(--amber); color: #000; font-weight: 800; font-size: 15px; line-height: 1.25; padding: 9px 14px; border-radius: 10px; width: max-content; max-width: calc(100vw - 24px); text-align: center; z-index: 11; pointer-events: none; box-shadow: 0 2px 12px rgba(0,0,0,.6); }
+
+/* ---------------------------------------------------------------- narrow phones (360 px) */
+@media (max-width: 380px) {
+  #bar { gap: 6px; padding: 0 8px; }
+  .brand { font-size: 15px; }
+  .chip { font-size: 12px; gap: 4px; }
+  .pill { font-size: 13px; padding: 3px 6px; }
+  .install { padding: 0 7px; font-size: 13px; }
+  .block { padding-left: 12px; padding-right: 12px; }
+  .slots { padding-left: 12px; padding-right: 12px; gap: 5px; }
+  .big { font-size: 64px; }
+}

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # CamillaGUI v5 (phone compact view + laptop editor) on http://<box>:5005/gui/index.html.
 # Installed by box/install.sh; binary + config in /opt/camillagui (config/ comes from box/camillagui/).
 #
@@ -30,6 +31,9 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+# The phone's secrets are k1000's (root:k1000 0640) and CamillaGUI runs as k1000 too: hide them
+# (phone TLS key, Wi-Fi password, hostapd.conf). The AP fence keeps phones off :5005 anyway.
+InaccessiblePaths=-/etc/k1000/tls -/etc/k1000/ap.psk -/etc/k1000/hostapd.conf
 
 [Install]
 WantedBy=multi-user.target

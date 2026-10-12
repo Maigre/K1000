@@ -1,0 +1,23 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+:root { color-scheme: dark; --amber: #ffb800; --green: #28dc46; --dim: #a0a0a0; }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #000; color: #fff; }
+body { font: 17px/1.45 system-ui, Roboto, "DejaVu Sans", sans-serif; }
+main { max-width: 520px; margin: 0 auto; padding: 20px 16px 32px; }
+.head { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+.head img { border-radius: 16px; }
+h1 { margin: 0; font-size: 34px; letter-spacing: .04em; }
+h2 { margin: 0 0 8px; font-size: 19px; color: var(--amber); }
+.sub { margin: 2px 0 0; color: var(--dim); }
+.card { border: 1px solid #333; border-radius: 12px; padding: 14px; margin: 12px 0; background: #111; }
+.card.ok { border-color: var(--green); color: var(--green); font-weight: 700; }
+.card.warn { border-color: var(--amber); color: var(--amber); font-weight: 700; }
+.card.warn b { color: #fff; }
+ol { margin: 0; padding-left: 22px; }
+li { margin: 10px 0; }
+.btn { display: block; text-align: center; text-decoration: none; color: #fff; background: #1d1d1d; border: 1px solid #444; border-radius: 12px; padding: 16px; font-weight: 800; font-size: 19px; }
+.btn.primary { background: var(--amber); border-color: var(--amber); color: #000; font-size: 22px; padding: 20px; }
+.note { color: var(--dim); font-size: 15px; }
+[hidden] { display: none !important; }
+.card p { margin: 0 0 8px; }
+#signin { border-color: var(--amber); }

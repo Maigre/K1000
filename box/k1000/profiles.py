@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Device profiles: which ALSA device, how many channels, which inputs/outputs carry what.
 
 Everything up to the 4 logical outputs (0 Sub L, 1 Sub R, 2 Top L, 3 Top R) is identical across

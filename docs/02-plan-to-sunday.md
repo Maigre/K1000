@@ -117,7 +117,9 @@ label K1000's outputs. Any doubt during the gig means re-patching in a minute.
 0. **Before the speakers**: the Knob test is done and `controls:` confirmed (SETUP › Knob test,
    `box/README.md`); hold B2 mutes all four Meyers, and B4 is not next to B2 by feel. The M4 front
    panel is taped (MONITOR and INPUT MONITOR MIX fully clockwise, MON buttons unlit). Phone: go/no-go
-   on the own-AP PWA (D-007); if no-go, switch the phone off in SETUP and the knobs carry the show.
+   on the own-AP PWA (D-007); if no-go, the AP fully off (`setup-ap.sh --down` + `phone: enabled:
+   false`, `docs/06-phone.md` §9; SETUP › Phone alone leaves the Wi-Fi on the air) and the knobs
+   carry the show.
 1. **Power order**: K1000 on → screen shows MUTED → speakers on. The box powers up the way it was
    powered down: `READY · MUTED` only if it was muted (hold B2) before power-off; otherwise it ramps
    back to the saved level by itself ("RAMPS IN BY ITSELF"). So the end-of-night routine is: hold B2

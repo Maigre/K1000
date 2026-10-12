@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """UI tests: RGB565 output, sysfs handling (faked), page rendering, knob/button semantics.
 
 No hardware needed: the framebuffer is a temp file, sysfs is a temp tree, GPIO levels are a

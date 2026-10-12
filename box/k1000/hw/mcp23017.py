@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Zynthian V4 knobs and buttons: MCP23017 on I2C + two interrupt lines (gpiod v2).
 
 Hardware (proven on the box, see docs/03-v0-architecture.md section 1):
@@ -450,8 +451,11 @@ class GpiodIntLines:
 
 
 def _default_bus(bus: int) -> SMBusLike:
-    import smbus  # apt: python3-smbus
-    return smbus.SMBus(bus)
+    # smbus2 (apt: python3-smbus2, MIT), not python3-smbus (GPL-2.0-only; D-008). The same SMBus
+    # API for every call made here: read_byte_data, write_byte_data, read_i2c_block_data (<= 32
+    # bytes; 14 at most here) and close().
+    import smbus2
+    return smbus2.SMBus(bus)
 
 
 # ---------------------------------------------------------------------------------------------

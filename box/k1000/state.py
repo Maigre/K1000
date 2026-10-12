@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """K1000 persistent model: the show state, its legal ranges, and crash-safe persistence.
 
 Why this module is strict:

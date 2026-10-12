@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # K1000 panel guard: keeps the Linux text console off the ZynScreen. Installed by box/install.sh.
 #
 # Why it exists:

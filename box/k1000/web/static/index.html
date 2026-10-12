@@ -1,0 +1,143 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="K1000 live DSP: master, mute, balance, Lo-Cut and the live EQ from the phone">
+<title>K1000</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body class="nolink">
+<header id="bar">
+  <div class="brand">K1000</div>
+  <div id="link" class="chip bad"><i></i><span>NO LINK</span></div>
+  <div id="engine" class="chip"><i></i><span>ENGINE ?</span></div>
+  <div id="device" class="dev">&nbsp;</div>
+  <div id="muted-pill" class="pill" hidden>MUTED</div>
+  <button id="install" class="install" hidden>Install</button>
+</header>
+
+<nav id="tabs" role="tablist">
+  <button role="tab" data-tab="main" aria-selected="true">MAIN</button>
+  <button role="tab" data-tab="live" aria-selected="false">LIVE EQ</button>
+</nav>
+
+<div id="banners"></div>
+
+<main>
+  <section id="page-main" class="page">
+    <div class="block">
+      <div class="lab">MASTER</div>
+      <div class="big"><span id="master-val">--</span><small>dB</small></div>
+      <div class="steps five">
+        <button data-nudge="master_db" data-d="-12">−6</button>
+        <button data-nudge="master_db" data-d="-2">−1</button>
+        <button data-nudge="master_db" data-d="-1">−½</button>
+        <button data-nudge="master_db" data-d="1">+½</button>
+        <button data-nudge="master_db" data-d="2">+1</button>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="row">
+        <div class="lab">BALANCE</div>
+        <div id="bal-sub" class="sub">subs = tops</div>
+      </div>
+      <div class="mid"><span id="bal-val">--</span><small>dB</small></div>
+      <div class="steps four">
+        <button data-nudge="balance_db" data-d="-2" title="towards the tops">−1</button>
+        <button data-nudge="balance_db" data-d="-1">−½</button>
+        <button data-nudge="balance_db" data-d="1">+½</button>
+        <button data-nudge="balance_db" data-d="2" title="towards the subs">+1</button>
+      </div>
+      <div class="hintline"><span>◀ more tops</span><span>more subs ▶</span></div>
+    </div>
+
+    <div class="block">
+      <div class="row">
+        <div class="lab">LO-CUT <span class="dim">tops · 12 dB/oct</span></div>
+        <button id="lc-switch" class="switch" role="switch" aria-checked="false"><span>OFF</span></button>
+      </div>
+      <div class="mid"><span id="lc-val">--</span><small>Hz</small></div>
+      <div class="steps four">
+        <button data-nudge="lowcut_hz" data-d="-4">−⅓ oct</button>
+        <button data-nudge="lowcut_hz" data-d="-1">−</button>
+        <button data-nudge="lowcut_hz" data-d="1">+</button>
+        <button data-nudge="lowcut_hz" data-d="4">+⅓ oct</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="page-live" class="page" hidden>
+    <div class="graphwrap">
+      <canvas id="eq" aria-label="Live EQ: drag a band, long-press empty space to notch there"></canvas>
+      <div id="eq-hint" class="eqhint">drag a dot · long-press empty space = notch here</div>
+    </div>
+    <div id="slots" class="slots"></div>
+    <div class="block slot">
+      <div class="row"><div class="lab" id="slot-name">PEQ 1</div><div id="slot-state" class="sub">flat</div></div>
+      <div class="prow">
+        <div class="pv"><div class="pname">FREQ <span>Hz</span></div><div class="pval" id="p-freq">--</div></div>
+        <div class="steps four">
+          <button data-nudge="@.freq" data-d="-4" aria-label="frequency down a third of an octave">−⅓</button>
+          <button data-nudge="@.freq" data-d="-1" aria-label="frequency down">−</button>
+          <button data-nudge="@.freq" data-d="1" aria-label="frequency up">+</button>
+          <button data-nudge="@.freq" data-d="4" aria-label="frequency up a third of an octave">+⅓</button>
+        </div>
+      </div>
+      <div class="prow">
+        <div class="pv"><div class="pname">GAIN <span>dB</span></div><div class="pval" id="p-gain">--</div></div>
+        <div class="steps four">
+          <button data-nudge="@.gain" data-d="-6" aria-label="gain minus 3 dB">−3</button>
+          <button data-nudge="@.gain" data-d="-1" aria-label="gain minus half a dB">−½</button>
+          <button data-nudge="@.gain" data-d="1" aria-label="gain plus half a dB">+½</button>
+          <button data-nudge="@.gain" data-d="6" aria-label="gain plus 3 dB">+3</button>
+        </div>
+      </div>
+      <div class="prow">
+        <div class="pv"><div class="pname">Q</div><div class="pval" id="p-q">--</div></div>
+        <div class="steps four">
+          <button data-nudge="@.q" data-d="-6" aria-label="Q half: twice as wide">½×<small>wide</small></button>
+          <button data-nudge="@.q" data-d="-1" aria-label="Q down: wider">−</button>
+          <button data-nudge="@.q" data-d="1" aria-label="Q up: narrower">+</button>
+          <button data-nudge="@.q" data-d="6" aria-label="Q double: twice as narrow">2×<small>narrow</small></button>
+        </div>
+      </div>
+      <div class="row actions">
+        <button id="band-flat" class="hold ghost" data-hold="600"><b></b><span>hold: band flat</span></button>
+        <button id="reset-live" class="ghost warn">RESET LIVE EQ…</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer id="foot">
+  <div id="meters" class="meters" aria-label="output meters">
+    <div class="m"><span>SUB L</span><div class="bar"><b></b></div><em></em></div>
+    <div class="m"><span>SUB R</span><div class="bar"><b></b></div><em></em></div>
+    <div class="m"><span>TOP L</span><div class="bar"><b></b></div><em></em></div>
+    <div class="m"><span>TOP R</span><div class="bar"><b></b></div><em></em></div>
+  </div>
+  <button id="mute" class="hold mute"><b></b><span id="mute-label">HOLD TO MUTE</span></button>
+</footer>
+
+<div id="confirm" class="modal" hidden>
+  <div class="box">
+    <div class="q">Reset the live EQ?</div>
+    <div class="sub">All 4 notches and both shelves go back to flat (smoothly).</div>
+    <div class="row">
+      <button id="confirm-no" class="ghost">Cancel</button>
+      <button id="confirm-yes" class="danger">Reset</button>
+    </div>
+  </div>
+</div>
+<div id="toast" class="toast" hidden></div>
+</body>
+</html>

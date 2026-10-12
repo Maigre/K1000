@@ -22,7 +22,7 @@ build proved different is fixed in place below and listed in §7. Operator view:
 | Switches (active-low) | sw0..3 = encoder pushes GPA0, GPA3, GPB0, GPB3 · sw4..7 = buttons GPA6, GPA7, GPB6, GPB7. **Physical positions still unknown** → mapping is config (`controls:`), identified with SETUP › Knob test |
 | Engine | CamillaDSP **5.0.0-beta.1** at `/usr/local/bin/camilladsp`; websocket v5 protocol (`{"command": X, ...}` → `{"reply": X, "result": "Ok", "value": ...}`) |
 | Engine facts measured by the build | A negative gain must touch its flag: **`-g-40`** (`-g -40` is an unknown option). A fresh engine reads Main muted at −40 dB and every Aux fader at 0 dB. A Delay with `subsample: false` is a whole number of samples, rounded to nearest (0.0104 ms → 0, 0.0105 ms → 1), and every Delay write rebuilds the delay line (a click). **Any** `devices` change, even `volume_limit` alone via SetConfigValue, restarts capture and playback. A fader change made while the engine is not Running is applied as a step when audio resumes. Started from a file on an absent device, the engine exits 0 within ~20 ms |
-| Python deps (apt) | python3-websockets 15, python3-smbus (GPL-2-only: moving to python3-smbus2, D-008), python3-libgpiod (gpiod **2.2** API), python3-yaml, python3-pil, python3-numpy, python3-pytest |
+| Python deps (apt) | python3-websockets 15, python3-smbus2 (D-008: python3-smbus is GPL-2.0-only), python3-libgpiod (gpiod **2.2** API), python3-yaml, python3-pil, python3-numpy, python3-pytest |
 
 Reference docs (v5, downloaded): CamillaDSP `README.md`, `websocket.md`, `backend_alsa.md`, `CHANGELOG.md`.
 
@@ -139,7 +139,8 @@ unchanged, mute included.
 
 - Screen and knobs are each **retried every 2 s for the whole life of the process** (a half-opened knob
   driver is closed first). Knobs not open, or unhealthy for more than 1 s: alert
-  `KNOBS OFFLINE · USE PHONE MUTE / BYPASS` (B2 does nothing meanwhile).
+  `KNOBS OFFLINE · USE PHONE MUTE / BYPASS` while a phone can mute (phone servers up, SETUP › Phone
+  on, the AP up), else `KNOBS OFFLINE · SOURCE DOWN / BYPASS` (B2 does nothing meanwhile).
 - Render on change only (≤ 15 fps), at least every 1 s, and the panel is rewritten every 5 s even if
   unchanged (heals console overdraw). The meter wakes the screen only when the picture changes
   (0.25 dB steps within −60…0 dBFS).

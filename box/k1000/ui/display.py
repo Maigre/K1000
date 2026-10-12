@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Framebuffer output for the ZynScreen (ILI9486 via fbtft, RGB565, 480x320).
 
 Why a raw framebuffer and not a toolkit: the box has no display server on this panel, the

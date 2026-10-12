@@ -6,6 +6,10 @@
 #
 #   sudo /opt/k1000-src/bootstrap.sh            set everything up, then say to power-cycle
 #   sudo /opt/k1000-src/bootstrap.sh --dry-run  say what it would do, change nothing
+#   sudo /opt/k1000-src/bootstrap.sh --no-ap    everything but the phone's access point, which is
+#                                               marked down (net/setup-ap.sh --down): a spare card
+#                                               after a phone no-go. Later runs, with or without
+#                                               --no-ap, keep it down; setup-ap.sh --up lifts it
 #
 # The card must already have the k1000 user with its SSH key (Raspberry Pi Imager settings), and
 # the box needs internet (apt, GitHub). Steps, each one skipped when already done:
@@ -13,9 +17,10 @@
 #      then the operator tools listed in TOOLS (install.sh installs its own APT_DEPS in step 3)
 #   2. CamillaDSP 5.0.0-beta.1 -> /usr/local/bin/camilladsp: the release tarball and the binary are
 #      both checked against pinned sha256 sums (the version string alone cannot tell builds apart)
-#   3. install.sh --boot --headless (and --ap once install.sh offers it): the K1000 units, the
-#      ZynScreen overlay, I2C for the knobs, CamillaGUI (pinned by hash in install.sh), boot to the
-#      console
+#   3. install.sh --boot --headless --ap: the K1000 units, the ZynScreen overlay, I2C for the knobs,
+#      CamillaGUI (pinned by hash in install.sh), boot to the console, the phone's access point and
+#      its fence (D-007, net/setup-ap.sh; the phone certificate is a separate step: README). A no-go
+#      `setup-ap.sh --down` stays down; with --no-ap, no --ap and the AP is marked down
 #   4. SSH: keys only (/etc/ssh/sshd_config.d/10-k1000-keyonly.conf, like the first box), only once
 #      a public-key login of k1000 has been seen since boot; applies at the next boot
 #   5. tools/k1000-lean.sh: the lean OS (no desktop, no apt timers, zram only, quiet boot). It
@@ -47,16 +52,17 @@ SSHD_KEYONLY=/etc/ssh/sshd_config.d/10-k1000-keyonly.conf
 LOGDIR=${K1000_BOOTSTRAP_LOGDIR:-/var/log/k1000-bootstrap}     # override: tests only
 ARGS=("$@")
 
-DRY=0
+DRY=0 NO_AP=0
 for arg in "$@"; do
   case $arg in
     --dry-run) DRY=1 ;;
+    --no-ap) NO_AP=1 ;;
     -h|--help) awk 'NR > 2 && /^#/ { sub(/^# ?/, ""); print; next } NR > 2 { exit }' "$0"; exit 0 ;;
     *) echo "bootstrap.sh: unknown option '$arg' (try --help)" >&2; exit 2 ;;
   esac
 done
 
-CHANGES=0 GUI_FAILED=0
+CHANGES=0 GUI_FAILED=0 AP_FAILED=0
 note() { printf 'k1000-bootstrap: %s\n' "$*"; }
 die() { printf 'k1000-bootstrap: ERROR: %s\n' "$*" >&2; exit 1; }
 would() { CHANGES=$((CHANGES + 1)); note "would: $*"; }
@@ -157,21 +163,34 @@ fi
 
 # --- 3. K1000 itself ------------------------------------------------------------------------------
 flags=(--boot --headless)
-# The phone feature (D-007) adds an --ap flag to install.sh; use it as soon as it exists.
+# The phone's access point (D-007): install.sh --ap (checked, so an older box/ copy still works),
+# unless --no-ap. setup-ap.sh keeps a no-go (--down) down either way.
 install_help=$("$SRC/install.sh" --help 2>/dev/null || true)
-if grep -Eq '(^|[[:space:]])--ap([[:space:]]|$)' <<<"$install_help"; then flags+=(--ap); fi
+if [ $NO_AP = 0 ] && grep -Eq '(^|[[:space:]])--ap([[:space:]]|$)' <<<"$install_help"; then flags+=(--ap); fi
 if [ $DRY = 1 ]; then
   would "run install.sh ${flags[*]} (units, overlay, CamillaGUI, headless boot; install.sh has no dry run)"
+  [ $NO_AP = 0 ] || would "mark the phone's access point down (net/setup-ap.sh --down)"
 else
   rc=0
   "$SRC/install.sh" "${flags[@]}" 2>&1 | tee "$TMP/install.log" || rc=$?
   case $rc in
     0) ;;
     3) GUI_FAILED=1; note "WARNING: CamillaGUI is not installed (see above); going on: the engine, the knobs and the screen do not need it" ;;
+    4) AP_FAILED=1; note "WARNING: the phone's access point is not set up (see above); going on: the knobs carry the show" ;;
+    5) GUI_FAILED=1 AP_FAILED=1; note "WARNING: neither CamillaGUI nor the phone's access point is set up (see above); going on: the engine, the knobs and the screen do not need them" ;;
     *) die "install.sh ${flags[*]} failed (exit $rc, its output is above)" ;;
   esac
   n=$(sed -n 's/.*: \([0-9][0-9]*\) changes$/\1/p' "$TMP/install.log" | tail -n 1)
   CHANGES=$((CHANGES + ${n:-0}))
+  # --no-ap: the access point marked down, so no later install.sh --ap puts it on the air
+  if [ $NO_AP = 1 ] && [ -x "$SRC/net/setup-ap.sh" ]; then
+    if "$SRC/net/setup-ap.sh" --down 2>&1 | tee "$TMP/ap.log"; then
+      n=$(sed -n 's/^k1000-ap: \([0-9][0-9]*\) changes$/\1/p' "$TMP/ap.log" | tail -n 1)
+      CHANGES=$((CHANGES + ${n:-0}))
+    else
+      note "WARNING: could not mark the phone's access point down (see above): nothing was set up for it anyway"
+    fi
+  fi
 fi
 
 # --- 4. SSH: keys only ----------------------------------------------------------------------------
@@ -219,7 +238,11 @@ fi
 if [ $DRY = 0 ] && grep -q 'cloud-init left on' "$TMP/lean.log"; then
   note "cloud-init is still on (see above): after the next power cycle, run bootstrap.sh once more to turn it off"
 fi
+if [ $AP_FAILED = 1 ]; then
+  note "ERROR: the phone's access point is NOT set up: sudo /opt/k1000/net/setup-ap.sh --status, then run this again"
+fi
 if [ $GUI_FAILED = 1 ]; then
   note "ERROR: CamillaGUI is NOT installed: run this again with internet, or CAMILLAGUI_TARBALL=<tarball>"
   exit 3
 fi
+if [ $AP_FAILED = 1 ]; then exit 4; fi

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 ---
 # CamillaGUI v5 backend settings for K1000. install.sh copies this to
 # /opt/camillagui/config/camillagui.yml (gui-config.yml must sit next to it).

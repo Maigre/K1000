@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """K1000 controller: the one owner of the show state between the knobs, the screen, the engine
 (CamillaDSP over its websocket) and the disk. docs/03-v0-architecture.md §2 and §4.
 
@@ -75,7 +76,7 @@ from .profiles import (PROC_ASOUND, PROFILE_NAMES, Profile, ProfileChoice, card_
 from .state import BOOL_FIELDS, CHOICES, RANGES, REBUILD_FIELDS, State, atomic_write, load_state
 from .ui.input_map import (
     F_LOWCUT_ON, HINT_S, MUTE_TOGGLE, PAGES, ControlMap, Focus, GotoPage, Mute,
-    NextPage, Nudge, ResetLive, Toggle, apply_focus, map_event,
+    NextPage, Nudge, PhoneQr, PhoneToggle, ResetLive, Toggle, apply_focus, map_event,
 )
 
 log = logging.getLogger(__name__)
@@ -146,8 +147,13 @@ HINT_CONFIRM_SETUP = "MUTE OR CONFIRM ON SETUP (MAY CLICK)"
 HINT_PINNED = "PROFILE PINNED IN k1000.yaml"
 HINT_LIVE_RESET = "LIVE EQ RESET (ALL BANDS FLAT)"
 HINT_LIVE_FLAT = "LIVE EQ ALREADY FLAT"
+HINT_MUTE_CHANGED = "MUTE CHANGED · LOOK, HOLD B2 AGAIN"
 MSG_HELD_MUTED = "NO AUDIO FLOWING · HELD MUTED"
-MSG_KNOBS_OFFLINE = "KNOBS OFFLINE · USE PHONE MUTE / BYPASS"
+# The knobs-offline alert sends Thomas to the phone mute only while there is one to use (phone
+# servers on, SETUP › Phone on, the AP up: PhoneServer.remote_mute_ready); otherwise, after a
+# no-go or with the phone switched off, to what is left (the operator card: source down, bypass).
+MSG_KNOBS_OFFLINE = "KNOBS OFFLINE · SOURCE DOWN / BYPASS"
+MSG_KNOBS_OFFLINE_PHONE = "KNOBS OFFLINE · USE PHONE MUTE / BYPASS"
 MSG_PROFILE_ROUTING = "k1000.yaml ROUTING FIXED UP (SEE LOG)"
 NOTE_REBUILT = "STATE REBUILT · CHECK MASTER"
 NOTE_MISSING = "NO SAVED STATE · CHECK MASTER"
@@ -522,6 +528,11 @@ class Controller:
         self.status = Status(profile=profile.name, device=DEVICE_NAMES.get(profile.name, profile.name))
         self.changed = asyncio.Event()
         self.version = 0
+        self.phone: Any = None            # web.PhoneServer, set by __main__ (D-007); None = no phone
+        # Mute generation (mute_view): moves on every mute request and every change of the mute
+        # the operator sees, so an unmute decided on an older view is refused (set_mute(seen=)).
+        self.mute_seq = 0
+        self._mute_seen: tuple[bool, bool] | None = None
 
         self._engine_ready = False        # connect sync done on the current link
         self._syncing = False
@@ -698,8 +709,22 @@ class Controller:
         elif ok and self.status.knobs_ok is False:
             log.warning("knobs back online")
         self.status.knobs_ok = ok
-        self._set_message("knobs", 8, MSG_KNOBS_OFFLINE if ok is False else None)
+        self._set_message("knobs", 8, self._knobs_offline_text() if ok is False else None)
         self._changed()
+
+    def _knobs_offline_text(self) -> str:
+        ph = self.phone
+        try:
+            ready = ph is not None and ph.remote_mute_ready is True
+        except Exception:  # noqa: BLE001 - a phone surface bug must not hide the alert
+            ready = False
+        return MSG_KNOBS_OFFLINE_PHONE if ready else MSG_KNOBS_OFFLINE
+
+    def phone_changed(self) -> None:
+        """The phone surface changed (SETUP › Phone, the AP, its servers): while the knobs are
+        offline, the alert says whether a phone mute is there to use."""
+        if self.status.knobs_ok is False:
+            self._set_message("knobs", 8, self._knobs_offline_text())
 
     # ------------------------------------------------------------------ UI actions
     def nudge(self, field: str, detents: int | float, fine: bool = False) -> Any:
@@ -776,12 +801,21 @@ class Controller:
         self.show_hint(HINT_LIVE_RESET)
         self._local_edit()
 
-    def set_mute(self, on: bool | str | None = MUTE_TOGGLE) -> bool:
+    def set_mute(self, on: bool | str | None = MUTE_TOGGLE, seen: int | None = None) -> bool:
         """Main mute, sent at once (never queued behind other engine work). 'toggle' = the
-        opposite of what the screen shows."""
+        opposite of what the screen shows. `seen` (an unmute from a surface that LOOKED first:
+        B2's press, a phone's hold): the mute_view() generation it saw; if the mute changed
+        since, the unmute is refused (someone muted meanwhile) and the mute shown is returned.
+        A mute is never refused."""
         if on is None or on == MUTE_TOGGLE:
             on = not self.displayed_muted()
         on = bool(on)
+        if not on and seen is not None and seen != self.mute_view()[1]:
+            log.warning("unmute refused: the mute changed since it was seen (generation %s, now %s)",
+                        seen, self.mute_seq)
+            self.show_hint(HINT_MUTE_CHANGED)
+            return self.displayed_muted()
+        self.mute_seq += 1
         self.state.muted = on
         self._mute_want = on
         log.info("mute %s (operator)", "ON" if on else "OFF")
@@ -800,7 +834,7 @@ class Controller:
         return self.goto_page(PAGES[(i + 1) % len(PAGES)])
 
     def goto_page(self, page: str) -> str:
-        if page not in PAGES and page != "HWTEST":
+        if page not in PAGES and page not in ("HWTEST", "PHONE"):
             log.warning("unknown page %r", page)
             return self.page
         self.page = page
@@ -827,10 +861,21 @@ class Controller:
             return False
         return self.displayed_muted()
 
+    def mute_view(self) -> tuple[bool, int]:
+        """(the mute B2 acts against = b2_muted(), its generation). The generation moves when
+        the mute shown or b2_muted() changes between two calls, and on every set_mute(). B2's
+        press and every phone (web.PhoneBridge) read it; cheap, call it as often as needed."""
+        key = (self.displayed_muted(), self.b2_muted())
+        if key != self._mute_seen:
+            self._mute_seen = key
+            self.mute_seq += 1
+        return key[1], self.mute_seq
+
     def handle_event(self, event: Any) -> None:
         """A knob/button event -> input_map actions for the current page -> applied."""
+        muted, seq = self.mute_view()
         for action in map_event(self.page, self.focus, event, self.controls,
-                                muted=self.b2_muted()):
+                                muted=muted, mute_seq=seq):
             self.handle_action(action)
         self._changed()   # HWTEST log, held pushes, confirm marks
 
@@ -847,15 +892,30 @@ class Controller:
                 self.show_hint(f"LO-CUT ON · {self.state.lowcut_hz:.0f} Hz" if self.state.lowcut_on
                                else "LO-CUT OFF")
         elif isinstance(action, Mute):
-            self.set_mute(action.on)
+            self.set_mute(action.on, seen=action.seen)
         elif isinstance(action, ResetLive):
             self.reset_live()
         elif isinstance(action, NextPage):
             self.next_page()
         elif isinstance(action, GotoPage):
             self.goto_page(action.page)
+        elif isinstance(action, PhoneToggle):
+            self.phone_toggle()
+        elif isinstance(action, PhoneQr):
+            if self.phone is not None:
+                self.phone.select_qr(action.delta)
+                self._changed()
         else:
             log.debug("unhandled action %r", action)
+
+    def phone_toggle(self) -> bool | None:
+        """SETUP > Phone, E1 push: phone control on/off. None = no phone surface."""
+        if self.phone is None:
+            self.show_hint("PHONE DISABLED (k1000.yaml / --no-phone)")
+            return None
+        on = bool(self.phone.toggle())
+        self.show_hint("PHONE CONTROL ON" if on else "PHONE OFF · KNOBS ONLY")
+        return on
 
     def _setup_allowed(self, field: str, confirmed: bool) -> bool:
         if field == "profile" and self.profile_pinned:

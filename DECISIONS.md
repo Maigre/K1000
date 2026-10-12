@@ -135,10 +135,13 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
     auto-join after each automatic join, so a phone that drops mid-show may not come back by itself.
     The box screen gets a third QR, "FIRST TIME" (http://10.42.0.1/), for the one-time CA install.
     `setup-ap.sh --portal on` brings the catch-all back.
-  - **A network fence**: phones on the AP reach only DNS, DHCP, 80 and 443; no CamillaGUI, no SSH
-    (`--ssh on` opens it), no forwarding.
+  - **A network fence**: phones on the AP reach only DHCP, DNS, 80, 443 and 8080 (the page's plain
+    fallback), and ping; no CamillaGUI, no SSH (`--ssh on` opens it), no forwarding.
   - **The phone can unmute**, guarded: an unmute that saw an older mute state is refused.
-  - **No-go on Friday = the AP fully off** (`phone.enabled: false`), not only the page.
+  - **No-go on Friday = the AP fully off**, not only the page: `sudo /opt/k1000/net/setup-ap.sh
+    --down` (off the air, across reboots and later `install.sh --ap` runs) **and**
+    `phone: enabled: false` in `k1000.yaml` (no phone servers), then restart k1000 between shows.
+    `phone.enabled: false` alone leaves the Wi-Fi on the air (`docs/06-phone.md` §9).
   - The phone stays **portrait** for Sunday. An Android shell APK and a landscape EQ layout come
     after the gig (`ROADMAP.md` Phase 2).
   - Thomas's phone is a Pixel 4a. He stands up to ~10 m from the box: 5 GHz ch 36 first, 2.4 GHz

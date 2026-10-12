@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Screen pages for the 480x320 ZynScreen: render(page, state, status, focus) -> PIL image.
 
 Design rules (why it looks like this):
@@ -841,13 +842,18 @@ _PAGES = {"MAIN": _page_main, "LIVE": _page_live, "SETUP": _page_setup, "HWTEST"
 
 
 def render(page: str, state: Any, status: Any = None, focus: Any = None,
-           now: float | None = None) -> Image.Image:
-    """Render `page` (MAIN, LIVE, SETUP, HWTEST) with status-driven overlays -> 480x320 RGB.
+           now: float | None = None, phone: Any = None) -> Image.Image:
+    """Render `page` (MAIN, LIVE, SETUP, HWTEST, PHONE) with status-driven overlays -> 480x320 RGB.
+
+    PHONE is drawn by ui/qr.py from `phone` (web.PhoneScreenInfo; None = nothing known yet).
 
     Never raises: unknown page -> MAIN, missing fields -> '--' / '?', no status -> everything
     unknown (amber), and any unexpected error -> a 'UI ERROR' frame that still shows MUTED.
     """
     try:
+        if page == "PHONE":
+            from .qr import render_phone_page   # lazy: qr imports this module
+            return render_phone_page(phone, state, status, focus, now)
         return _render(page, state, status, focus, now)
     except Exception as e:   # the screen must keep updating; never take the loop down
         _log_render_error(e)

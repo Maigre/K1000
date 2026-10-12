@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """CamillaDSP v5 config from (Profile, State), and the minimal live edits between two States.
 
 Why it is shaped like this (docs/03-v0-architecture.md §3):

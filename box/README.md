@@ -8,9 +8,16 @@ Everything that runs on the K1000 (the Raspberry Pi 4 in the Zynthian V4 case). 
 | Unit | What | Depends on |
 |---|---|---|
 | `camilladsp.service` | the audio engine, CamillaDSP 5.0.0-beta.1, user `k1000`, real-time threads | nothing (audio never waits for the UI) |
-| `k1000.service` | `python3 -m k1000` in `/opt/k1000`: knobs, screen, state, persistence | wants the engine, copes when it is down |
+| `k1000.service` | `python3 -m k1000` in `/opt/k1000`: knobs, screen, state, persistence, and the phone page (https://10.42.0.1/, `k1000/web/`; ports 80/443/8080 on the AP address only) | wants the engine, copes when it is down |
 | `camillagui.service` | CamillaGUI v5 beta.2 on port 5005 (phone compact view, laptop editor) | nothing; lowest CPU priority, sandboxed |
 | `k1000-console.service` | at boot, waits for the ZynScreen's framebuffer, then keeps the Linux text console off it; done ~3 s later | nothing; k1000 wants it but never waits for it |
+| `k1000-ap-fence.service` | the phone AP's firewall (its own nftables table): from the K1000 Wi-Fi only DHCP, DNS, 80, 443, 8080 reach the box (16 connections per phone, 64 in all); 10.42.0.1 unreachable from `eth0` | nothing; loaded before any network |
+| `k1000-ap-hostapd.service` | the phone's Wi-Fi access point "K1000" on `wlan0` (hostapd, WPA2, PMF off, 5 GHz ch 36) | requires the fence (refuses to start without its table); bound to `wlan0`; refuses while another interface is in 10.42.0.0/24; NetworkManager leaves `wlan0` alone |
+| `k1000-ap-dnsmasq.service` | DHCP + DNS for the phones on the AP (10.42.0.0/24; only `k1000.home.arpa` resolves) | bound to `k1000-ap-hostapd` |
+
+The three `k1000-ap-*` units come from `net/` and are installed, updated and enabled by
+`net/setup-ap.sh` alone (`install.sh --ap`); a plain install.sh run only reports a changed one. The
+phone (D-007) is `docs/06-phone.md`.
 
 The order at power-on:
 
@@ -44,6 +51,13 @@ The order at power-on:
 | `/var/log/k1000/` | `camilladsp_rCURRENT.log` + up to 50 rotated ones (every engine start rotates, and every 256 kB), `soak.log` |
 | `/opt/camillagui/` | the GUI binary; `config/` comes from `box/camillagui/`; `files/` is the GUI's empty, read-only config folder |
 | `/etc/systemd/system/{camilladsp,k1000,camillagui,k1000-console}.service` | from `box/systemd/` |
+| `/etc/systemd/system/k1000-ap-{fence,hostapd,dnsmasq}.service`, `k1000-ap-hostapd.service.d/k1000-iface.conf` | from `box/net/`, by `net/setup-ap.sh` only (`install.sh --ap`); the drop-in binds hostapd to its interface |
+| `/etc/NetworkManager/dispatcher.d/90-k1000-ap-guard` | `net/k1000-ap-guard.sh`, by setup-ap.sh: stops the AP while another interface is in 10.42.0.0/24 (a laptop sharing on `eth0`), starts it again after; `journalctl -t k1000-ap-guard` |
+| `/etc/k1000/tls/` | the phone page's certificate: `k1000.crt`, `k1000.key`, `k1000-ca.crt` (public), root:k1000 0640 (install.sh with `K1000_TLS_DIR`; the CA's private key never comes here) |
+| `/etc/k1000/ap.psk` | the K1000 Wi-Fi password (generated once by setup-ap.sh, root:k1000 0640; shown only on the box screen) |
+| `/etc/k1000/ap.info`, `hostapd.conf`, `ap.env`, `ap-dnsmasq.conf`, `ap-fence.nft` | setup-ap.sh's choices (no secret; `state=down` after a no-go) and the files it generates (`hostapd.conf` is 0600: it holds the password) |
+| `/etc/NetworkManager/dnsmasq-shared.d/k1000.conf`, `/etc/NetworkManager/conf.d/k1000-ap-unmanaged.conf` | the AP's DNS (portal off by default), and `wlan0` left to hostapd |
+| `/var/lib/k1000/phone.json` | SETUP › Phone on/off, kept across restarts |
 | `/etc/systemd/system.conf.d/50-k1000-watchdog.conf` | `RuntimeWatchdogSec=15` |
 | `/etc/systemd/journald.conf.d/50-k1000-journal.conf` | journal on the SD card, 32 MB cap (applies at the next reboot) |
 | `/etc/modules-load.d/k1000.conf` | `i2c-dev` at boot: `/dev/i2c-1`, the knob board (install.sh `--boot`) |
@@ -69,6 +83,37 @@ ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/i
 ```
 
 Re-running is always safe. With nothing new, it ends with `0 changes`.
+
+**The phone (D-007), once per card**: the certificate and the access point. The full story, the
+one-time phone setup and the Friday go/no-go are in `docs/06-phone.md`.
+
+```sh
+# CA=the local CA's folder on the laptop (gitignored secrets, never in this repo)
+ssh k1000 'install -d -m 0700 /tmp/k1000-tls'          # the leaf + the CA's PUBLIC certificate, never ca.key
+scp "$CA"/{k1000.crt,k1000.key,k1000-ca.crt} k1000:/tmp/k1000-tls/
+ssh k1000 "sudo K1000_TLS_DIR=/tmp/k1000-tls K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/install.sh --ap; rm -rf /tmp/k1000-tls"
+```
+
+(Double quotes: `git describe` runs on the laptop, as in the Deploy lines above; `;` so the key
+copy is removed whatever install.sh says. install.sh checks the three files and the key against
+the certificate before it changes anything.)
+
+- `--ap` runs `net/setup-ap.sh`: the Wi-Fi "K1000" on `wlan0` (hostapd, PMF off, 5 GHz ch 36,
+  country FR, captive portal off, SSH fenced off), its DNS and its fence. `eth0` is never touched.
+  It keeps its earlier choices on a re-run (`/etc/k1000/ap.info`); change one with
+  `sudo /opt/k1000/net/setup-ap.sh --band bg|--portal on|--ssh on|--backend nm|--iface wlan1`.
+- k1000 loads a new certificate at its next start (between shows: `sudo systemctl restart k1000`).
+- **No-go** (the Friday checklist fails): `sudo /opt/k1000/net/setup-ap.sh --down` (off the air,
+  across reboots, and kept down by later `install.sh --ap` and `bootstrap.sh` runs) and
+  `phone: enabled: false` in `/etc/k1000/k1000.yaml`. Back on: `sudo /opt/k1000/net/setup-ap.sh --up`.
+- **A laptop on a direct `eth0` cable must not share its connection on 10.42.0.x** (NetworkManager's
+  "Shared to other computers" default is 10.42.0.1/24, the AP's subnet): the AP is then kept down
+  (setup-ap.sh exits 4, the hostapd unit refuses, the NetworkManager guard stops it), so that SSH
+  over `eth0` keeps working. Share on another subnet (e.g. `ipv4.addresses 10.43.0.1/24` on the
+  laptop's wired connection) or use the house network; the AP comes back by itself once the
+  address is gone.
+- install.sh exits 4 when only the access point failed (3: only CamillaGUI; 5: both); everything
+  else is installed either way.
 
 **Boot-level setup, once per card** (both apply at the next reboot; on a card made from scratch,
 `bootstrap.sh` does this, see "Fresh card (bootstrap)"):
@@ -180,8 +225,10 @@ A spare or replacement gig card from nothing (D-006, step 3):
 
 1. Raspberry Pi Imager: **Raspberry Pi OS Lite (64-bit)**. Settings: hostname `k1000`, user
    `k1000`, SSH on with **"Allow public-key authentication only"** and your SSH public key, Wi-Fi
-   country FR. Boot the box on Ethernet, on a network with internet. Log in once with your key
-   (`ssh k1000 true`): bootstrap switches SSH to keys only only after it has seen that.
+   country FR, **Wi-Fi SSID and password left empty** (`wlan0` becomes the phone's AP: setup-ap.sh
+   refuses to take an interface that is a Wi-Fi client). Boot the box on Ethernet, on a network
+   with internet. Log in once with your key (`ssh k1000 true`): bootstrap switches SSH to keys
+   only only after it has seen that.
 2. From the repo on the laptop:
 
    ```sh
@@ -192,8 +239,8 @@ A spare or replacement gig card from nothing (D-006, step 3):
    It runs as a systemd unit (`k1000-bootstrap-<time>`, log in `/var/log/k1000-bootstrap/`), so a
    lost session does not stop it. It runs `apt-get update` only when a package is missing,
    installs CamillaDSP 5.0.0-beta.1 (tarball and binary checked against pinned sha256 sums), runs
-   `install.sh --boot --headless` (CamillaGUI is pinned there; `--ap` is added once install.sh
-   offers it), switches SSH to keys only (`/etc/ssh/sshd_config.d/10-k1000-keyonly.conf`, the
+   `install.sh --boot --headless --ap` (CamillaGUI is pinned there; `--ap` brings up the phone's
+   access point, the certificate is the separate step under "Deploy"), switches SSH to keys only (`/etc/ssh/sshd_config.d/10-k1000-keyonly.conf`, the
    first box's file, checked with `sshd -t`, applied at the next boot), then
    `tools/k1000-lean.sh`. It never reboots by itself: it ends with
    `N changes. Now power-cycle the box`.
@@ -211,6 +258,8 @@ A spare or replacement gig card from nothing (D-006, step 3):
 
 - A re-run changes nothing: `0 changes: this card is already a K1000`.
 - `--dry-run` says what it would do and changes nothing.
+- `--no-ap`: everything but the phone's access point, which is marked down (a spare card after a
+  phone no-go); later runs, with or without `--no-ap`, keep it down (`setup-ap.sh --up` lifts it).
 - Offline: `CAMILLADSP_TARBALL=<camilladsp-linux-aarch64.tar.gz>` and
   `CAMILLAGUI_TARBALL=<camillagui_linux_aarch64.tar.gz>` (put them after `sudo`, like
   `K1000_REVISION`).
@@ -219,6 +268,7 @@ A spare or replacement gig card from nothing (D-006, step 3):
 
 ```sh
 systemctl status camilladsp k1000 camillagui      # all three at a glance
+sudo /opt/k1000/net/setup-ap.sh --status          # the phone's Wi-Fi: AP, fence, DNS, leases, phones seen
 journalctl -u k1000 -f                            # control service log (live)
 journalctl -u camilladsp -n 50                    # engine start/stop, "waiting for ...", ALSA errors
 tail -f /var/log/k1000/camilladsp_rCURRENT.log    # engine log (xruns, device errors, config loads)
@@ -290,12 +340,18 @@ for n in ("GetCaptureSignalPeakSince","GetPlaybackSignalPeakSince"):
   w.send(json.dumps({"command":n,"value":2.0})); print(n[3:10],[round(x,1) for x in json.loads(w.recv())["value"]])'
 ```
 
-## Phone and laptop: CamillaGUI
+## Phone: K1000's own page (D-007)
 
-- **The phone needs a network that the box is on.** Today the box has only its wired LAN (Wi-Fi
-  off), and the screen does not show the box's IP. How the phone reaches it at a gig (the box's
-  own access point, D-007, or a travel router on Ethernet) is a decision to prove at Friday's rig
-  test. Until then, the knobs carry the show.
+The phone joins the box's own Wi-Fi "K1000" (QR on SETUP › Phone) and opens
+`https://10.42.0.1/`: K1000's page, served by the k1000 service, driving the same controller as
+the knobs. Everything about it (the AP, the fence, the certificate, the one-time phone setup, the
+mute rules, troubleshooting, the Friday go/no-go) is in **`docs/06-phone.md`**. It is gated by
+the Friday rig test; on a no-go the AP goes fully off and the knobs carry the show. CamillaGUI is
+**not** reachable from the K1000 Wi-Fi (the fence).
+
+## Laptop (and a phone on the wired LAN): CamillaGUI
+
+- CamillaGUI is reached over the wired LAN only (`eth0`); the screen does not show the box's IP.
 - Phone (compact view): `http://<box-ip>:5005/gui/index.html?compactview`
   - **Levels only**: Main volume, mute and the meters. These are runtime commands, so they never
     send a config. k1000 follows the Main fader.
@@ -333,8 +389,8 @@ for n in ("GetCaptureSignalPeakSince","GetPlaybackSignalPeakSince"):
   - The GUI shows no active config file name: expected (the engine runs from `active.yml`,
     outside the GUI's folder).
 - After an engine restart, the GUI's first action can fail with 503. The next one works.
-- The GUI has no password and listens on every interface: anyone on the same network can change
-  or stop the engine.
+- The GUI has no password and listens on every interface: anyone on the same wired network can
+  change or stop the engine (the K1000 Wi-Fi cannot reach it: the fence).
 
 ## Knobs and buttons: confirm them before the rig test (OPEN)
 
@@ -420,7 +476,12 @@ cd /opt/k1000 && python3 -m pytest -q -p no:cacheprovider -m hw              # h
 ```
 
 `tools/tests` covers the engine unit's start script, the panel console guard, install.sh's helpers
-(headless leftovers, I2C at boot, `--deps`), the soak tool, the M4 bring-up tool, `k1000-lean.sh`
-(the guard, the dry run, the boot-file edits, the power-cycle check, the cloud-init gate, the
-detached run) and `bootstrap.sh` (apt only when needed, SSH keys only, the detached run), all
-against fakes (no service, card, package or speaker is touched).
+(headless leftovers, I2C at boot, `--deps`, the phone certificate, `--ap`), the soak tool, the M4
+bring-up tool, `k1000-lean.sh` (the guard, the dry run, the boot-file edits, the power-cycle check,
+the cloud-init gate, the detached run), `bootstrap.sh` (apt only when needed, SSH keys only, the
+detached run, `--no-ap`), `net/setup-ap.sh` (its defaults, `--down` kept by later runs and `--up`,
+every option, both backends, the subnet and Wi-Fi-client refusals, a hostapd that dies after its
+start, the fence's caps), the hostapd unit's refusals and `net/k1000-ap-guard.sh`, all against
+fakes (no service, card, package, network or speaker is touched). `tests/test_web.py`,
+`test_qr.py` and `test_phone_wiring.py` cover the phone page, its QR codes and its wiring into
+the controller (B2 and phone mute races).

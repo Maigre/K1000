@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# K1000 Wi-Fi access point, hostapd backend (the default): DHCP + DNS for the phones (setup-ap.sh).
+# With `--backend nm`, NetworkManager's own shared-mode dnsmasq does this instead.
+# The same DNS file as NetworkManager's (/etc/NetworkManager/dnsmasq-shared.d/k1000.conf: portal
+# on or off), included by /etc/k1000/ap-dnsmasq.conf. Leases in /run/k1000-ap (readable by the
+# k1000 service: the box screen's "phone on the Wi-Fi").
+[Unit]
+Description=K1000 Wi-Fi access point: DHCP + DNS (dnsmasq)
+Documentation=file:///opt/k1000/net/setup-ap.sh
+BindsTo=k1000-ap-hostapd.service
+After=k1000-ap-hostapd.service
+StartLimitIntervalSec=120
+StartLimitBurst=8
+
+[Service]
+Type=simple
+RuntimeDirectory=k1000-ap
+RuntimeDirectoryMode=0755
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/etc/k1000/ap-dnsmasq.conf
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=k1000-ap-hostapd.service

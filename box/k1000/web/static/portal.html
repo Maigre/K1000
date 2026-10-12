@@ -1,0 +1,55 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#000000">
+<title>K1000 Wi-Fi</title>
+<link rel="icon" href="/icons/icon-192.png" type="image/png">
+<link rel="stylesheet" href="/portal.css">
+<script src="/portal.js" defer></script>
+</head>
+<body data-app="{{APP_URL}}" data-ping="{{PING_URL}}" data-ca="{{CA}}" data-tls="{{TLS}}" data-on="{{ON}}">
+<main>
+  <div class="head">
+    <img src="/icons/icon-192.png" alt="" width="72" height="72">
+    <div><h1>K1000</h1><p class="sub">You are on the {{SSID}} Wi-Fi.</p></div>
+  </div>
+
+  <div id="off" class="card warn" hidden>Phone control is OFF on the box (SETUP › Phone). The page opens but controls nothing.</div>
+  <div id="check" class="card"><span id="check-text">Checking the K1000 certificate…</span></div>
+
+  <a id="open" class="btn primary" href="{{APP_URL}}">Open K1000</a>
+
+  <section id="signin" class="card" hidden>
+    <h2>This is Android's sign-in window</h2>
+    <p>It cannot check the K1000 certificate, and it is not where K1000 runs.</p>
+    <ol>
+      <li>Tap <b>⋮</b> (top right) › <b>Use this network as is</b>.</li>
+      <li>Open <b>Chrome</b> and go to <b id="here">http://10.42.0.1/</b> (this page): it then says whether the certificate is installed, and <b>Open K1000</b> works.</li>
+      <li>Once K1000 is installed: just tap its icon.</li>
+    </ol>
+  </section>
+
+  <section id="ca" class="card">
+    <h2>First time on this phone</h2>
+    <ol>
+      <li>The phone needs a screen lock (PIN, pattern…): Android refuses certificates without one.</li>
+      <li><a id="ca-link" class="btn" href="/k1000-ca.crt" download="k1000-ca.crt">Download the K1000 certificate</a>
+        Chrome may say the file "can't be downloaded securely": tap <b>Keep</b>.</li>
+      <li>Do NOT open the downloaded file (Android 11+ says "Can't install CA certificates" when you do).
+        Instead: Settings › Security &amp; privacy › More security settings › Encryption &amp; credentials ›
+        Install a certificate › <b>CA certificate</b> › <b>Install anyway</b> › pick <b>k1000-ca.crt</b>.</li>
+      <li>Come back here and reload: it should say <b>trusts the K1000 certificate ✓</b>. Then <b>Open K1000</b>,
+        and <b>Install</b> (or Chrome ⋮ › Add to Home screen).</li>
+    </ol>
+    <p class="note">This certificate can only vouch for the K1000 box (10.42.0.x and k1000.home.arpa),
+      never for another site. Android then shows "Network may be monitored": expected, harmless here.</p>
+  </section>
+
+  <p class="note">At a gig: airplane mode, then Wi-Fi on, then the K1000 icon.</p>
+</main>
+</body>
+</html>

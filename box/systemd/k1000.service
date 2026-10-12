@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # K1000 control service (knobs, screen, state, persistence). Installed by box/install.sh.
 #
 # Why it looks like this:
@@ -15,6 +16,12 @@
 #   PYTHONDONTWRITEBYTECODE: /opt/k1000 is root-owned and read-only for k1000.
 # - Restart=always + StartLimitIntervalSec=0: a crash never leaves the box without its control
 #   surface; audio itself does not depend on this service.
+# - CAP_NET_BIND_SERVICE (ambient, and the only capability in the bounding set): the phone page
+#   listens on 443 (HTTPS) and the captive portal on 80, as the k1000 user (D-007). The "+"
+#   ExecStartPre is not affected by CapabilityBoundingSet (it runs with full privileges).
+# - LimitNOFILE=4096 (default 1024): the phone servers' sockets come out of the same pool as the
+#   state file, the engine websocket and the knob bus. The AP fence already caps the page's ports
+#   (16 connections per phone, 64 in all); this is the margin behind it.
 
 [Unit]
 Description=K1000 control service (knobs, screen, state)
@@ -28,6 +35,8 @@ Type=simple
 User=k1000
 Group=k1000
 SupplementaryGroups=i2c gpio video audio
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 WorkingDirectory=/opt/k1000
 Environment=PYTHONPATH=/opt/k1000 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 ExecStartPre=+/bin/sh -c 'for v in /sys/class/vtconsole/vtcon*; do if grep -q "frame buffer" "$$v/name"; then echo 0 > "$$v/bind"; fi; done; exit 0'
@@ -35,6 +44,7 @@ ExecStart=/usr/bin/python3 -m k1000
 Restart=always
 RestartSec=1
 TimeoutStopSec=5
+LimitNOFILE=4096
 
 [Install]
 WantedBy=multi-user.target

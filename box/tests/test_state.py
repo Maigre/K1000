@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """State model, ranges and crash-safe persistence (no hardware, no engine)."""
 import json
 import math

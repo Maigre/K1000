@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for k1000.hw.mcp23017 (Zynthian V4 knobs + buttons).
 
 Unit tests drive a register-level fake MCP23017 (INTF/INTCAP latching, clear-on-read, DEFVAL
@@ -429,6 +430,48 @@ def test_accelerator_scales_fast_turns_and_resets_on_reverse_or_pause():
     assert a.scale(EncoderEvent(0, -1, 2.000)) == -1        # pause -> fine
     assert a.scale(EncoderEvent(1, 1, 2.001)) == 1          # per-encoder history
     assert a.scale(EncoderEvent(0, -3, 2.060)) == -12       # coalesced 3 detents in 60 ms = 50/s
+
+
+# ---------------------------------------------------------------------------------------------
+# The default bus: smbus2, never the GPL-2.0-only smbus (D-008)
+# ---------------------------------------------------------------------------------------------
+def test_default_bus_is_smbus2_and_the_driver_uses_only_its_api(monkeypatch):
+    """smbus2's SMBus (MIT) opened on the given bus number. smbus2 signatures, keyword `force`
+    included: the driver passes positional (addr, reg[, value|length]) only, as both modules take."""
+    import types
+
+    opened: list[int] = []
+
+    class FakeSMBus2:
+        def __init__(self, bus=None, force=False):
+            opened.append(bus)
+            self.chip = FakeChip()
+
+        def read_byte_data(self, i2c_addr, register, force=None):
+            return self.chip.read_byte_data(i2c_addr, register)
+
+        def write_byte_data(self, i2c_addr, register, value, force=None):
+            self.chip.write_byte_data(i2c_addr, register, value)
+
+        def read_i2c_block_data(self, i2c_addr, register, length, force=None):
+            assert length <= 32       # smbus2 refuses more (I2C_SMBUS_BLOCK_MAX)
+            return self.chip.read_i2c_block_data(i2c_addr, register, length)
+
+        def close(self):
+            opened.append(-1)
+
+    monkeypatch.setitem(sys.modules, "smbus2", types.SimpleNamespace(SMBus=FakeSMBus2))
+    monkeypatch.setitem(sys.modules, "smbus", None)          # importing it would raise
+    c = ZynthianControls(bus=1, use_irq=False, lines_factory=lambda chip, offs: None)
+    c.open()
+    try:
+        assert opened == [1] and c.healthy
+        assert c._chip.verify() == []
+        c._chip.read_guarded()
+    finally:
+        c.close()
+    assert opened == [1, -1]
+    assert "import smbus\n" not in pathlib.Path(m.__file__).read_text()
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1195,12 +1238,12 @@ def test_hw_pullup_loss_is_repaired_on_the_next_read_without_events():
     """The expander-only reset the config guard exists for, emulated from a second I2C handle:
     GPINTEN and GPPU back to their power-on 0x00 under the running driver (default timings).
     The next service read must see it and repair it (well before long_ms) with no event."""
-    import smbus
+    import smbus2
 
     async def scenario():
         c = ZynthianControls()
         c.start()
-        bus = smbus.SMBus(1)
+        bus = smbus2.SMBus(1)
         detect_ms, repair_ms = [], []
         try:
             await asyncio.sleep(0.3)

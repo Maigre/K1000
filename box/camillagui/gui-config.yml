@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 ---
 # CamillaGUI v5 front-end settings for K1000 (installed next to camillagui.yml).
 # The GUI re-reads this file on every page load; a syntax error stops the backend at start.

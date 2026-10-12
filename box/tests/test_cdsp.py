@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for k1000.cdsp — the CamillaDSP v5 websocket client.
 
 Two layers:

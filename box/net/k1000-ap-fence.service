@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# K1000 AP fence (installed by box/net/setup-ap.sh; docs/06-phone.md §6). Loads
+# /etc/k1000/ap-fence.nft, which setup-ap.sh generates for the AP interface: phones on the K1000
+# Wi-Fi reach only DHCP, DNS, the captive portal (80), the phone page (443) and its plain fallback
+# (8080), at most 16 connections per phone and 64 in all to those - never CamillaGUI (5005, no
+# authentication), rpcbind, SSH (unless `--ssh on`) - nothing on the AP is routed anywhere, and
+# the AP address (10.42.0.1) is not reachable from eth0. k1000-ap-hostapd.service requires it:
+# stopping this unit takes the AP down too.
+#
+# Its own nftables table (inet k1000_ap): NetworkManager's shared-mode tables (nm-shared-*) are
+# never touched, and nftables.service stays as it is (disabled on the box). Loaded before any
+# network comes up, like nftables.service; stopping the unit removes the table.
+[Unit]
+Description=K1000 AP fence (phones reach only the phone page)
+Documentation=file:///opt/k1000/net/setup-ap.sh
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target shutdown.target
+Conflicts=shutdown.target
+ConditionPathExists=/etc/k1000/ap-fence.nft
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/k1000/ap-fence.nft
+ExecReload=/usr/sbin/nft -f /etc/k1000/ap-fence.nft
+ExecStop=/usr/sbin/nft delete table inet k1000_ap
+
+[Install]
+WantedBy=sysinit.target

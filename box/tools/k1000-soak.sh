@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 # k1000-soak: every 10 s, append one line about the box's health to /var/log/k1000/soak.log.
 #
 # For the overnight soak (plan: Thu 15) and the 2-hour program run (test protocol step 8): leave
@@ -50,7 +51,7 @@ case "${1:-}" in
   --summary)
     MODE=summary
     if [ -n "${2:-}" ]; then K1000_SOAK_LOG=$2; export K1000_SOAK_LOG; fi ;;
-  -h|--help) sed -n '2,/^set -eu/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '3,/^set -eu/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
   *) echo "k1000-soak: unknown option '$1' (try --help)" >&2; exit 2 ;;
 esac
 export K1000_SOAK_MODE="$MODE"

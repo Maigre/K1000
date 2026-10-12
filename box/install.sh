@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # K1000 installer: deploys box/ onto the Raspberry Pi. Idempotent; a re-run with nothing new
 # changes nothing and ends with "0 changes". See README.md (same directory) for the full picture.
 #
@@ -16,6 +17,11 @@
 #                                 (applied at the next reboot). The rest of the lean OS (desktop
 #                                 purge, cloud-init, timers, swap, boot arguments) is
 #                                 tools/k1000-lean.sh (D-006)
+#   sudo ./install.sh --ap        ... and set up the phone's Wi-Fi access point "K1000" on wlan0 + its
+#                                 fence (net/setup-ap.sh, D-007; first time: hostapd, 5 GHz ch 36,
+#                                 portal off, SSH fenced off; later runs keep its choices, a no-go
+#                                 `setup-ap.sh --down` included). eth0 is never touched. Takes
+#                                 effect at once; the only way the AP's units are installed/updated
 #   ./install.sh --deps           print the apt packages it may install, one per line (bootstrap.sh
 #                                 runs apt-get update only when one is missing)
 #
@@ -24,6 +30,9 @@
 #   else the source tree's own REVISION file, e.g. a rollback copy of /opt/k1000.prev).
 # K1000_BOOT_DIR overrides /boot/firmware (only to test --boot on a copy).
 # CAMILLAGUI_TARBALL=<path> installs CamillaGUI from a local tarball instead of downloading it.
+# K1000_TLS_DIR=<dir> installs the phone page's HTTPS certificate from <dir> (k1000.crt, k1000.key,
+#   k1000-ca.crt) into /etc/k1000/tls, root:k1000 0640. Never the CA's private key (ca.key): it
+#   never leaves mgr-ran. Restart k1000 (between shows) to load a new certificate.
 #
 # Why each step exists is said where it happens. What it never does: touch /etc/k1000/k1000.yaml
 # once it exists (Thomas's settings), touch /var/lib/k1000 contents (live state; the one exception
@@ -36,25 +45,30 @@ APP=/opt/k1000
 PREV=/opt/k1000.prev
 GUI=/opt/camillagui
 UNITS=(camilladsp k1000 camillagui k1000-console)
-# smbus2 replaces smbus (D-008) and qrcode draws the phone's join codes (D-007); alsa-utils (aplay/
-# arecord probe the cards), fonts-dejavu-core (the UI's fonts) and usbutils (lsusb, M4 bring-up)
-# are not in Raspberry Pi OS Lite.
-APT_DEPS=(python3-websockets python3-smbus python3-smbus2 python3-libgpiod python3-yaml python3-pil
-          python3-numpy python3-qrcode python3-pytest rsync alsa-utils fonts-dejavu-core usbutils)
+AP_UNITS=(k1000-ap-fence k1000-ap-hostapd k1000-ap-dnsmasq)   # net/: set up by net/setup-ap.sh
+# smbus2 for the knob board (D-008: python3-smbus is GPL-2.0-only), qrcode for the PHONE page's
+# join codes and hostapd for the phone's access point (D-007, net/setup-ap.sh; installed even
+# without --ap, because a venue has no internet. Inert until then: Debian's own hostapd.service
+# needs /etc/hostapd/hostapd.conf, never created; K1000 runs k1000-ap-hostapd.service). alsa-utils
+# (aplay/arecord probe the cards), fonts-dejavu-core (the UI's fonts) and usbutils (lsusb, M4
+# bring-up) are not in Raspberry Pi OS Lite.
+APT_DEPS=(python3-websockets python3-smbus2 python3-libgpiod python3-yaml python3-pil python3-numpy
+          python3-qrcode python3-pytest rsync alsa-utils fonts-dejavu-core usbutils hostapd)
 # CamillaGUI v5.0.0-beta.2, linux aarch64. Pinned by hash: its binary reports "5.0.0-beta.1" in
 # --version, so the version string cannot tell an upgrade from a no-op.
 GUI_URL=https://github.com/HEnquist/camillagui-backend/releases/download/v5.0.0-beta.2/camillagui_linux_aarch64.tar.gz
 GUI_TGZ_SHA256=854552f3e74a156d25117a1ecca2df44c94aefbeb62e1c47ff23b19d6b0cc8a2
 GUI_BIN_SHA256=d993616caf6c67dc09b11a337d484ca2eca6c21c517305dc9d95df2f2e7bf14e
 
-DO_START=0 DO_BOOT=0 DO_HEADLESS=0
+DO_START=0 DO_BOOT=0 DO_HEADLESS=0 DO_AP=0
 for arg in "$@"; do
   case $arg in
+    --ap) DO_AP=1 ;;
     --start) DO_START=1 ;;
     --boot) DO_BOOT=1 ;;
     --headless) DO_HEADLESS=1 ;;
     --deps) printf '%s\n' "${APT_DEPS[@]}" device-tree-compiler; exit 0 ;;   # dtc: --boot
-    -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
+    -h|--help) awk 'NR > 2 && /^#/ { sub(/^# ?/, ""); print; next } NR > 2 { exit }' "$0"; exit 0 ;;
     *) echo "install.sh: unknown option '$arg' (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -115,6 +129,27 @@ case $SRC in
   "$PREV"|"$PREV"/*) die "do not run from $PREV (it is rewritten by this script); copy it first: sudo rm -rf /tmp/k1000-rollback && sudo cp -a $PREV /tmp/k1000-rollback && sudo /tmp/k1000-rollback/install.sh" ;;
 esac
 [ -d "$SRC/k1000" ] && [ -d "$SRC/systemd" ] || die "$SRC does not look like box/ (no k1000/ or systemd/)"
+
+# --- 0. the phone certificate (K1000_TLS_DIR), checked before anything changes -----------------
+# All three files present and the key matching the certificate, or nothing is installed at all: a
+# failed scp must not leave new code under old units (step 3 runs long before step 6). Step 4b
+# only copies them.
+TLS_FILES=(k1000.crt k1000.key k1000-ca.crt)
+if [ -n "${K1000_TLS_DIR:-}" ]; then
+  for f in "${TLS_FILES[@]}"; do
+    [ -f "$K1000_TLS_DIR/$f" ] || die "K1000_TLS_DIR=$K1000_TLS_DIR has no $f (nothing installed)"
+  done
+  if command -v openssl >/dev/null; then
+    crt_pub=$(openssl x509 -in "$K1000_TLS_DIR/k1000.crt" -noout -pubkey 2>/dev/null || true)
+    key_pub=$(openssl pkey -in "$K1000_TLS_DIR/k1000.key" -pubout 2>/dev/null || true)
+    if [ -z "$crt_pub" ] || [ "$crt_pub" != "$key_pub" ]; then
+      die "$K1000_TLS_DIR/k1000.key does not match its k1000.crt, or one is unreadable (nothing installed)"
+    fi
+  else
+    note "WARNING: no openssl: cannot check that k1000.key matches k1000.crt"
+  fi
+  [ ! -e "$K1000_TLS_DIR/ca.key" ] || note "WARNING: $K1000_TLS_DIR/ca.key is the CA's private key: it must not be on the box (not copied; delete it)"
+fi
 
 # --- 1. user and groups ------------------------------------------------------------------------
 # The services run as k1000: i2c (MCP23017), gpio (interrupt lines), video (/dev/fb0), audio (ALSA).
@@ -181,6 +216,35 @@ if [ -d /var/lib/k1000/coeffs ] && rmdir /var/lib/k1000/coeffs 2>/dev/null; then
   changed "removed the unused empty /var/lib/k1000/coeffs"
 fi
 
+# --- 4b. the phone page's certificate (K1000_TLS_DIR) -------------------------------------------
+# The leaf certificate + key for https://10.42.0.1/ and the local CA's PUBLIC certificate (served to
+# phones at http://10.42.0.1/k1000-ca.crt). k1000 reads them, nobody else: root:k1000 0640, in a
+# root:k1000 0750 directory. The CA's private key is never copied, even when it sits in that dir.
+# Checked in step 0.
+TLS=/etc/k1000/tls
+TLS_CHANGED=0
+put_tls() {
+  local src=$1 dst=$2
+  if [ -f "$dst" ] && cmp -s "$src" "$dst" && [ "$(stat -c '%U:%G %a' "$dst")" = "root:k1000 640" ]; then
+    return 0
+  fi
+  install -m 0640 -o root -g k1000 "$src" "$dst"
+  changed "installed $dst (root:k1000 0640)"
+  TLS_CHANGED=1
+}
+if [ -n "${K1000_TLS_DIR:-}" ]; then
+  if [ "$(stat -c '%U:%G %a' "$TLS" 2>/dev/null)" != "root:k1000 750" ]; then
+    install -d -o root -g k1000 -m 0750 "$TLS"
+    changed "directory $TLS (root:k1000 750)"
+  fi
+  for f in "${TLS_FILES[@]}"; do put_tls "$K1000_TLS_DIR/$f" "$TLS/$f"; done
+  if [ $TLS_CHANGED = 1 ] && [ $DO_START = 0 ] && systemctl is-active --quiet k1000.service; then
+    note "new phone certificate: k1000 loads it at its next start (between shows: sudo systemctl restart k1000)"
+  fi
+elif [ ! -f "$TLS/k1000.crt" ]; then
+  note "no phone certificate in $TLS: the phone page runs on plain HTTP (http://10.42.0.1:8080/, not installable). Deploy one: sudo K1000_TLS_DIR=<dir> $0"
+fi
+
 # --- 5. CamillaGUI -------------------------------------------------------------------------------
 # A convenience surface: if it cannot be installed (offline, bad hash) the rest of the install
 # still happens, and the script exits 3 at the end so the failure is not missed.
@@ -218,6 +282,15 @@ RELOAD=0
 for u in "${UNITS[@]}"; do
   put "$SRC/systemd/$u.service" "/etc/systemd/system/$u.service" 644
   if [ $PUT_CHANGED = 1 ]; then RELOAD=1; fi
+done
+# The phone AP's units (net/, D-007) are installed, updated and applied by net/setup-ap.sh alone
+# (--ap below), which decides which of them run (backend, --down) and restarts the AP when a unit
+# changed. Copying a newer unit here would hide that change from it (nothing left to apply), so
+# here a changed unit is only reported.
+AP_UNITS_STALE=()
+for u in "${AP_UNITS[@]}"; do
+  [ -e "/etc/systemd/system/$u.service" ] || continue
+  cmp -s "$SRC/net/$u.service" "/etc/systemd/system/$u.service" || AP_UNITS_STALE+=("$u")
 done
 # Reboot the box if PID 1 stops feeding the BCM2835 watchdog for 15 s (a hung box on a gig is
 # worse than a reboot: it comes back muted and ramps in). Overrides Pi OS's 40-rpi-* (1 min).
@@ -330,6 +403,21 @@ if [ $DO_HEADLESS = 1 ]; then
   note "headless changes take effect at the next reboot"
 fi
 
+# --- 8b. optional: the phone's Wi-Fi access point (--ap) -----------------------------------------
+# net/setup-ap.sh is idempotent, prints its own changes and keeps its earlier choices (band,
+# portal, backend, interface, SSH: /etc/k1000/ap.info). The first time it takes its defaults
+# (D-007 as refined: hostapd with PMF off and wlan0 unmanaged by NetworkManager, 5 GHz ch 36,
+# country FR, portal off, SSH fenced off). It touches only the AP (k1000-ap-* units, or the
+# k1000-ap NetworkManager connection), its DNS file, its fence and guard, /etc/k1000/ap.*, the
+# Wi-Fi country and radio; never eth0. A Friday no-go (`net/setup-ap.sh --down`) stays down: --ap
+# then only keeps the files current; `net/setup-ap.sh --up` brings the AP back.
+AP_FAILED=0
+if [ $DO_AP = 1 ]; then
+  bash "$SRC/net/setup-ap.sh" || { note "ERROR: net/setup-ap.sh failed (see above); everything else is installed"; AP_FAILED=1; }
+elif [ ${#AP_UNITS_STALE[@]} -gt 0 ]; then
+  note "the phone AP's units changed (${AP_UNITS_STALE[*]}): not applied; between shows: sudo $0 --ap"
+fi
+
 # --- 9. optional: (re)start (--start) ------------------------------------------------------------
 if [ $DO_START = 1 ]; then
   note "restarting ${UNITS[*]} (engine boots muted, k1000 ramps it in)"
@@ -341,8 +429,18 @@ fi
 for u in "${UNITS[@]}"; do
   note "$(printf '%-13s enabled=%-8s active=%s' "$u" "$(systemctl is-enabled "$u.service" 2>/dev/null || true)" "$(systemctl is-active "$u.service" 2>/dev/null || true)")"
 done
+for u in "${AP_UNITS[@]}"; do
+  [ -e "/etc/systemd/system/$u.service" ] || continue
+  note "$(printf '%-16s enabled=%-8s active=%s' "$u" "$(systemctl is-enabled "$u.service" 2>/dev/null || true)" "$(systemctl is-active "$u.service" 2>/dev/null || true)")"
+done
 note "deployed $(cat "$APP/REVISION" 2>/dev/null || echo '?'): $CHANGES changes"
+# Exit 3: CamillaGUI failed; 4: the access point failed; 5: both. Everything else is installed.
 if [ $GUI_FAILED = 1 ]; then
   note "ERROR: CamillaGUI is NOT installed (see the warning above); everything else is"
-  exit 3
 fi
+if [ $AP_FAILED = 1 ]; then
+  note "ERROR: the phone's access point is NOT set up (net/setup-ap.sh, see above); the knobs carry the show"
+fi
+if [ $GUI_FAILED = 1 ] && [ $AP_FAILED = 1 ]; then exit 5; fi
+if [ $GUI_FAILED = 1 ]; then exit 3; fi
+if [ $AP_FAILED = 1 ]; then exit 4; fi

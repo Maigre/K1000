@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # k1000-m4-bringup: the MOTU M4 bring-up helper (Tuesday 13). Run it ON THE BOX.
 #
 #   k1000-m4-bringup.sh
@@ -40,7 +41,7 @@ TTY_IN=${K1000_BRINGUP_TTY:-/dev/tty}
 RATE=48000
 TONE_DBFS=-40
 
-usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; }
+usage() { sed -n '3,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; }
 
 TONE=0 SPEAKERS_OFF=0 FREQ=1000
 while [ $# -gt 0 ]; do

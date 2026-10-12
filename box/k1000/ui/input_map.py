@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Knob and button semantics per page: hardware events -> UI actions.
 
 Why a pure table: the physical position of every knob and button on the Zynthian V4 shell is
@@ -82,8 +83,11 @@ MUTE_TOGGLE = "toggle"
 @dataclass(frozen=True)
 class Mute:
     """on=True/False sets the mute; on='toggle' flips it (only emitted when map_event was not
-    told the displayed mute — the dispatcher should always pass it)."""
+    told the displayed mute — the dispatcher should always pass it). `seen` (unmute only): the
+    mute generation the operator was looking at when the press started (Controller.mute_view);
+    the controller refuses the unmute if the mute changed since (a phone muted meanwhile)."""
     on: bool | Literal["toggle"] = MUTE_TOGGLE
+    seen: int | None = None
 
 
 def mute_action(muted: Any = None) -> "Mute":
@@ -112,7 +116,19 @@ class ShowHint:
     seconds: float = 2.5          # HINT_S
 
 
-Action = Nudge | Toggle | SelectSlot | SelectItem | NextPage | GotoPage | Mute | ResetLive | ShowHint
+@dataclass(frozen=True)
+class PhoneToggle:
+    """PHONE page, E1/E2 push: phone control on/off (web.PhoneServer.toggle). D-007."""
+
+
+@dataclass(frozen=True)
+class PhoneQr:
+    """PHONE page, E1 turn: the big QR steps Wi-Fi -> page URL -> first-time setup page."""
+    delta: int
+
+
+Action = (Nudge | Toggle | SelectSlot | SelectItem | NextPage | GotoPage | Mute | ResetLive | ShowHint
+          | PhoneToggle | PhoneQr)
 
 # ------------------------------------------------------------------------------------------
 # Field names, slots, pages, SETUP items (shared with pages.py)
@@ -133,7 +149,7 @@ LIVE_SLOT_LABELS: tuple[str, ...] = ("PEQ 1", "PEQ 2", "PEQ 3", "PEQ 4", "LO SHE
 LIVE_SLOT_SHORT: tuple[str, ...] = ("P1", "P2", "P3", "P4", "LS", "HS")
 
 PAGES: tuple[str, ...] = ("MAIN", "LIVE", "SETUP")   # B1 cycles these; HWTEST via SETUP
-ALL_PAGES: tuple[str, ...] = PAGES + ("HWTEST",)
+ALL_PAGES: tuple[str, ...] = PAGES + ("HWTEST", "PHONE")   # PHONE via SETUP > Phone (D-007)
 
 
 def live_field(slot: int, param: str) -> str:
@@ -163,6 +179,7 @@ SETUP_ITEMS: tuple[SetupItem, ...] = (
     SetupItem("Mono subs", "mono_subs", "rebuild"),
     SetupItem("Audition (dev)", "dev_audition", "rebuild"),
     SetupItem("Profile", "profile", "rebuild"),
+    SetupItem("Phone", "PHONE", "page"),          # QR codes + phone on/off (D-007)
     SetupItem("Knob test", "HWTEST", "page"),
 )
 
@@ -174,7 +191,7 @@ class Knob:
     field: str | None                 # None = unused on this page
     accel_up: int = 1                 # max detent multiplier on fast turns, per direction
     accel_down: int = 1
-    kind: Literal["nudge", "slot", "item", "setup_value"] = "nudge"
+    kind: Literal["nudge", "slot", "item", "setup_value", "phone_qr"] = "nudge"
     # The first detent after ARM_WINDOW_S of rest only wakes the knob (highlight + hint); the
     # next ones edit. For a value whose every change is audible as a dip (sub delay).
     arm: bool = False
@@ -201,6 +218,7 @@ KNOBS: dict[str, tuple[Knob, Knob, Knob, Knob]] = {
         Knob("", None),
     ),
     "HWTEST": (Knob("", None), Knob("", None), Knob("", None), Knob("", None)),
+    "PHONE": (Knob("QR", None, kind="phone_qr"), Knob("", None), Knob("", None), Knob("", None)),
 }
 
 # Screen corner of each logical encoder. Assumed (E1 top-left, E2 bottom-left, E3 top-right,
@@ -359,6 +377,9 @@ class Focus:
     confirm: str | None = None            # SETUP field waiting for its second push
     confirm_until: float = 0.0
     hw: HwTestLog = field(default_factory=HwTestLog)
+    # B2 press: (the mute B2 acts against, its generation) as the operator saw them when the
+    # press STARTED. B2 long fires 0.8 s later, while still held: it acts on that intent.
+    b2_seen: tuple[Any, Any] | None = None
 
     def editing_now(self, now: float | None = None) -> str | None:
         now = time.monotonic() if now is None else now
@@ -420,7 +441,7 @@ def _accel(knob: Knob, delta: int, last: tuple[float, int] | None, now: float,
 
 
 def map_event(page: str, focus: Focus, event: Any, cfg: Any = None, *,
-              muted: bool | None = None) -> list[Action]:
+              muted: bool | None = None, mute_seq: int | None = None) -> list[Action]:
     """Map one hardware event to actions for `page`.
 
     `event` is duck-typed: an encoder event has `.index`, `.delta` (signed detents) and
@@ -428,13 +449,16 @@ def map_event(page: str, focus: Focus, event: Any, cfg: Any = None, *,
     {'press', 'release', 'short', 'long'}. `cfg` is the k1000.yaml dict (or a ControlMap).
     `muted` is the mute the screen currently shows (`pages.displayed_muted(state, status)`):
     B2 long then emits `Mute(not muted)`; with None it falls back to `Mute('toggle')`.
+    `mute_seq` is its generation (Controller.mute_view). Both are recorded at the B2 PRESS: the
+    long press acts on what the operator meant when the finger went down (a mute stays a mute
+    whatever a phone did meanwhile; an unmute carries `seen` and is refused if the mute changed).
     """
     cmap = ControlMap.from_cfg(cfg)
     now = getattr(event, "ts", None)
     now = time.monotonic() if now is None else float(now)
 
     if page == "HWTEST":
-        return _hwtest(focus, event, cmap, muted)
+        return _hwtest(focus, event, cmap, muted, mute_seq)
 
     if _is_encoder(event):
         e = cmap.encoder_role(int(event.index))
@@ -457,6 +481,8 @@ def map_event(page: str, focus: Focus, event: Any, cfg: Any = None, *,
             return [SelectItem(delta)]
         if knob.kind == "setup_value":
             return _setup_turn(focus, delta, fine)
+        if knob.kind == "phone_qr":
+            return [PhoneQr(1 if delta > 0 else -1)]
         if knob.field is None:
             return []
         fld = knob.field.replace("{slot}", LIVE_SLOTS[focus.slot % len(LIVE_SLOTS)])
@@ -481,16 +507,16 @@ def map_event(page: str, focus: Focus, event: Any, cfg: Any = None, *,
             focus.turned.discard(n)
         # A push released after turning its knob (the fine-mode habit from LIVE) is not a
         # 'select': on SETUP it would flip a polarity or open a page.
+        if page == "PHONE" and kind == "short" and n in (0, 1) and not turned:
+            return [PhoneToggle()]
         if page == "SETUP" and kind == "short" and n in (0, 1) and not turned:
             return _setup_push(focus, now)
         return []
 
     if n == 0:   # B1 next page — on press, navigation should feel instant
         return [NextPage()] if kind == "press" else []
-    if n == 1:   # B2 mute — long press only
-        if kind == "long":
-            return [mute_action(muted)]
-        return [ShowHint(HINT_MUTE)] if kind == "short" else []
+    if n == 1:   # B2 mute — long press only, on the intent of its press
+        return _b2(focus, kind, muted, mute_seq)
     if n == 2:   # B3 Lo-Cut on/off — on a deliberate release, on MAIN (where it is shown)
         if kind != "short":
             return []
@@ -531,7 +557,28 @@ def _setup_push(focus: Focus, now: float) -> list[Action]:
     return []
 
 
-def _hwtest(focus: Focus, event: Any, cmap: ControlMap, muted: Any = None) -> list[Action]:
+def _b2(focus: Focus, kind: str, muted: Any, mute_seq: Any) -> list[Action]:
+    """B2: 'press' records what the operator sees; 'long' (0.8 s later, still held) acts on it.
+    Started on an unmuted box: always MUTE (a phone muting meanwhile must not turn it into an
+    unmute). Started on a muted box: UNMUTE with the generation seen, which the controller
+    refuses if the mute changed since. No press seen (an older event source): as before."""
+    if kind == "press":
+        focus.b2_seen = (muted, mute_seq)
+        return []
+    if kind == "long":
+        seen, focus.b2_seen = focus.b2_seen, None
+        if seen is None or seen[0] is None:
+            return [mute_action(muted)]
+        if not seen[0]:
+            return [Mute(True)]
+        return [Mute(False, seen[1] if isinstance(seen[1], int) else None)]
+    if kind in ("release", "short"):
+        focus.b2_seen = None
+    return [ShowHint(HINT_MUTE)] if kind == "short" else []
+
+
+def _hwtest(focus: Focus, event: Any, cmap: ControlMap, muted: Any = None,
+            mute_seq: Any = None) -> list[Action]:
     """Record raw activity. B2 long still mutes (the safety gesture works on every page);
     a long press on any OTHER switch leaves the test (back to SETUP)."""
     hw = focus.hw
@@ -557,9 +604,10 @@ def _hwtest(focus: Focus, event: Any, cmap: ControlMap, muted: Any = None) -> li
     hw.last = f"sw{idx} {kind}  = {name}"
     if kind in ("press", "short", "long"):   # keep the log readable: no 'release' lines
         hw.lines.append(hw.last)
+    if cmap.switch_role(idx) == ("B", 1):          # B2 mutes on every page, as everywhere
+        acts = _b2(focus, kind, muted, mute_seq)
+        return [a for a in acts if isinstance(a, Mute)]
     if kind == "long":
-        if cmap.switch_role(idx) == ("B", 1):
-            return [mute_action(muted)]
         return [GotoPage("SETUP")]
     return []
 

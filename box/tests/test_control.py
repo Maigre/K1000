@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for k1000.control (the Controller) and k1000.__main__ (the service wiring).
 
 Two layers:
@@ -1933,7 +1934,7 @@ class K1000Proc:
         env = dict(os.environ, PYTHONPATH=str(BOX), PYTHONUNBUFFERED="1", PYTHONDONTWRITEBYTECODE="1")
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "k1000", "--settings", str(self.settings), "--headless",
-             "--no-hw", "--stdin", "--test-devices"], cwd=str(BOX), env=env, text=True,
+             "--no-hw", "--no-phone", "--stdin", "--test-devices"], cwd=str(BOX), env=env, text=True,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         threading.Thread(target=self._read, daemon=True).start()
 
@@ -2187,6 +2188,37 @@ def test_knobs_offline_is_an_alert_on_the_screen(tmp_path: Path) -> None:
     assert ctl.status.message == ctl_mod.MSG_KNOBS_OFFLINE == ctl.status.alert
     ctl.set_knobs_ok(True)
     assert ctl.status.message == "" and ctl.status.alert == ""
+
+
+def test_knobs_offline_names_the_phone_mute_only_when_there_is_one(tmp_path: Path) -> None:
+    """SAFE-1: after a no-go (no phone servers, AP down) or with SETUP › Phone off, there is no
+    phone mute: the alert says what is left. It follows the phone while the knobs stay offline."""
+    class Phone:
+        remote_mute_ready = True
+
+    ctl, cl = make(tmp_path, State())
+    ph = Phone()
+    ctl.phone = ph
+    ctl.phone_changed()                                    # knobs fine: nothing to say
+    assert ctl.status.message == ""
+    ctl.set_knobs_ok(False)
+    assert ctl.status.alert == ctl_mod.MSG_KNOBS_OFFLINE_PHONE == "KNOBS OFFLINE · USE PHONE MUTE / BYPASS"
+    ph.remote_mute_ready = False                           # SETUP › Phone off, or the AP went down
+    ctl.phone_changed()
+    assert ctl.status.alert == ctl_mod.MSG_KNOBS_OFFLINE and "PHONE" not in ctl.status.alert
+    ph.remote_mute_ready = True
+    ctl.phone_changed()
+    assert ctl.status.alert == ctl_mod.MSG_KNOBS_OFFLINE_PHONE
+    ctl.phone = None                                       # --no-phone, or the surface failed
+    ctl.phone_changed()
+    assert ctl.status.alert == ctl_mod.MSG_KNOBS_OFFLINE
+    ctl.phone = object()                                   # a surface without the property: no phone
+    ctl.phone_changed()
+    assert ctl.status.alert == ctl_mod.MSG_KNOBS_OFFLINE
+    ctl.set_knobs_ok(True)
+    ctl.phone = ph
+    ctl.phone_changed()
+    assert ctl.status.alert == "" and ctl.status.message == ""
 
 
 def test_low_priority_notes_are_not_alerts(tmp_path: Path) -> None:

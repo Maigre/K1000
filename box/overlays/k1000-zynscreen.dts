@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * k1000-zynscreen — Zynthian V4 "ZynScreen 3.5" on Raspberry Pi OS (trixie, kernel 6.18).
  *

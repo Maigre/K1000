@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for the system side of the box: the camilladsp.service start script, the k1000-console.service
 panel guard, install.sh helpers, tools/k1000-soak.sh, tools/k1000-m4-bringup.sh, tools/k1000-lean.sh
 and bootstrap.sh.
@@ -1465,7 +1466,7 @@ def _ssh_block(tmp: Path, journal: str, sshd_ok: bool = True, keys: int = 1, dry
     return r, dropin
 
 
-ACCEPTED = "Accepted publickey for k1000 from 192.168.8.174 port 48310 ssh2: RSA SHA256:x\\n"
+ACCEPTED = "Accepted publickey for k1000 from 192.0.2.17 port 48310 ssh2: RSA SHA256:x\\n"
 
 
 def test_bootstrap_ssh_keys_only_after_a_key_login(tmp_path):

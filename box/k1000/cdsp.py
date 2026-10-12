@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Asyncio websocket client for CamillaDSP v5 (the only path from k1000 to the audio engine).
 
 Why it is shaped like this:

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """dspconfig + profiles: config generation, live diff ops, adoption, drift, click-safe plans.
 
 Unit tests need no hardware. Tests marked `engine` run the real camilladsp binary (on the box):

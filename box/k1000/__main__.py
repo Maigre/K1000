@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """`python3 -m k1000`: the K1000 control service (knobs, screen, state, persistence).
 
 Wiring only; the behaviour lives in `control.Controller`. What this file guarantees:
@@ -10,6 +11,9 @@ Wiring only; the behaviour lives in `control.Controller`. What this file guarant
 - It never mutes on the way out. SIGTERM/SIGINT persist the state and leave the engine exactly as
   it is: audio must survive a k1000 restart (docs/03 §2 "Audio never depends on the UI").
 - Logs go to stdout without timestamps (journald adds them).
+
+Phone (D-007, docs/06-phone.md): the PWA + captive portal run in this process (`web.PhoneServer`);
+`--no-phone` leaves them out. Like the screen and the knobs, a phone failure is never fatal.
 
 Test/bench flags: `--headless` (no framebuffer), `--no-hw` (no MCP23017 knobs), `--stdin` (one
 command per line on stdin, replies on stdout prefixed with '@'; see `COMMANDS`), and
@@ -46,7 +50,8 @@ KNOBS_ALARM_S = 1.0      # knobs unhealthy this long -> KNOBS OFFLINE (a retried
 
 COMMANDS = """\
 nudge <field> <detents> [fine]   set <field> <json value> [confirm]   toggle <field> [confirm]
-mute on|off|toggle   reset_live   page <MAIN|LIVE|SETUP|HWTEST>   next_page   hint <text>
+mute on|off|toggle   reset_live   page <MAIN|LIVE|SETUP|HWTEST|PHONE>   next_page   hint <text>
+phone on|off|toggle|status
 ev enc <0-3> <detents> | ev sw <0-7> <press|release|short|long>   (as if from the knobs)
 status   state   save   settle   help   quit"""
 
@@ -59,6 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--url", help="engine websocket (overrides engine.url)")
     p.add_argument("--headless", action="store_true", help="no screen")
     p.add_argument("--no-hw", action="store_true", help="no knobs/buttons (MCP23017)")
+    p.add_argument("--no-phone", action="store_true", help="no phone page / captive portal")
     p.add_argument("--stdin", action="store_true", help="read commands from stdin (bench/tests)")
     p.add_argument("--test-devices", action="store_true",
                    help="SignalGenerator -> File /dev/null devices (engine tests, never a show)")
@@ -119,9 +125,9 @@ async def screen_task(ctl: Controller, hw: dict[str, Any], retry_s: float = HW_R
     await render_loop(ctl, hw["fb"])
 
 
-def _draw(fb: Any, page: str, state: Any, status: Any, focus: Any) -> None:
+def _draw(fb: Any, page: str, state: Any, status: Any, focus: Any, phone: Any = None) -> None:
     from .ui import pages
-    fb.show(pages.render(page, state, status, focus))
+    fb.show(pages.render(page, state, status, focus, phone=phone))
 
 
 def _stop_frame(fb: Any) -> None:
@@ -184,7 +190,11 @@ async def render_loop(ctl: Controller, fb: Any) -> None:
         page, st, status, focus = ctl.snapshot()
         wait = _next_wake(focus, time.monotonic())
         try:
-            await asyncio.to_thread(_draw, fb, page, st, status, focus)
+            # the PHONE page: read in the loop thread (PhoneServer is not thread-safe); cheap,
+            # cached values (presence is refreshed every 2 s, RENDER_IDLE_S redraws it)
+            phone = getattr(ctl, "phone", None)
+            info = phone.screen_info() if (phone is not None and page == "PHONE") else None
+            await asyncio.to_thread(_draw, fb, page, st, status, focus, info)
             failed = False
         except Exception as e:   # noqa: BLE001 - the screen must never stop the controller
             if not failed:
@@ -346,6 +356,22 @@ async def run_command(ctl: Controller, line: str, stop: asyncio.Event) -> None:
         elif cmd == "hint":
             ctl.show_hint(" ".join(args))
             _reply("ok", {"cmd": cmd})
+        elif cmd == "phone":
+            ph = getattr(ctl, "phone", None)
+            if ph is None:
+                _reply("err", {"cmd": cmd, "why": "no phone surface (--no-phone or failed)"})
+            else:
+                arg = args[0] if args else "status"
+                if arg in ("on", "off"):
+                    ph.set_enabled(arg == "on")
+                elif arg == "toggle":
+                    ph.toggle()
+                elif arg != "status":
+                    raise ValueError(f"phone {arg}: on|off|toggle|status")
+                info = ph.screen_info()
+                _reply("ok", {"cmd": cmd, "on": ph.enabled, "phones": ph.phones, "url": info.url,
+                              "tls": info.tls, "ap_up": info.ap_up, "stations": info.stations,
+                              "ports": ph.ports, "error": info.error})
         elif cmd == "status":
             st = ctl.snapshot()[2]          # what the screen would show (ready included)
             _reply("status", {**st.__dict__, "page": ctl.page, "engine_ready": ctl.engine_ready})
@@ -383,6 +409,20 @@ async def stdin_loop(ctl: Controller, stop: asyncio.Event) -> None:
             await run_command(ctl, raw.decode("utf-8", "replace"), stop)
         except Exception:   # noqa: BLE001
             log.exception("command %r failed", raw)
+
+
+# =========================================================================== phone
+async def open_phone(ctl: Controller, settings: dict[str, Any]) -> Any:
+    """The phone surface (PWA + captive portal, D-007), or None. Never fatal: a missing
+    certificate or a refused port is logged and shown on SETUP > Phone; the knobs carry on."""
+    try:
+        from .web import PhoneServer, PhoneSettings
+        phone = PhoneServer(ctl, PhoneSettings.from_settings(settings))
+        await phone.start()      # with phone.enabled: false it only reports "disabled"
+        return phone
+    except Exception as e:   # noqa: BLE001
+        log.error("phone surface unavailable (%s): knobs only", e)
+        return None
 
 
 # =========================================================================== main
@@ -428,6 +468,9 @@ async def run(args: argparse.Namespace) -> int:
 
     hw: dict[str, Any] = {"fb": None, "controls": None}
     await ctl.start()
+    phone = None if args.no_phone else await open_phone(ctl, settings)
+    ctl.phone = phone
+    ctl.phone_changed()          # the knobs-offline alert names the phone mute only when it exists
     ui: list[asyncio.Task[Any]] = []          # screen + knobs: kept until the controller stopped
     if not args.headless:
         ui.append(loop.create_task(screen_task(ctl, hw), name="k1000-screen"))
@@ -438,6 +481,8 @@ async def run(args: argparse.Namespace) -> int:
     await stop.wait()
     log.info("stopping: saving the state, leaving the audio as it is")
     await _cancel([console] if console is not None else [])
+    if phone is not None:
+        await phone.stop()       # phones are told (1001) first; bounded to 1 s (TimeoutStopSec=5)
     # The screen keeps showing (and B2 keeps muting) while stop() lets a ramp/guard in flight
     # finish: a frozen 'MUTED' while the PA ramps up would say the opposite of the truth.
     await ctl.stop()
