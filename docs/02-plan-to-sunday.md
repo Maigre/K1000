@@ -23,9 +23,10 @@ Thomas's answers (`requirements.md` §5) tighten `01-approaches-review.md` into 
   - For: bus-powered (no PSU, one cable less), metal case, ESS DAC, LCD meters for every input and
     output (instant visual check on the road), the Linux quirk has been in the kernel since 5.6,
     and it takes 2 line inputs + a mic input with phantom at once.
-  - Caveats: its monitor knob scales outs 1-2, so set it full and cap/tape it, then calibrate with it
-    there. The monitor-mix / input-monitor must stay off, or raw input leaks into outs 1-2 past the
-    DSP.
+  - Caveats: its MONITOR knob scales outs 1-2, so set it fully clockwise and tape it, then calibrate
+    with it there. INPUT MONITOR MIX is a balance knob, not a switch: fully clockwise = USB playback
+    only; anywhere else, raw input leaks into outs 1-2 past the DSP and its mute. Tape it fully
+    clockwise and keep the MON buttons unlit (leak test: `docs/05-m4-day.md` step 6).
   - Alternative if the M4 can't arrive in time: Scarlett 4i4 Gen 4 (needs its PSU on a Pi 4).
 - **D-004 — Engine: CamillaDSP v5 beta** (latest beta at install, frozen before Friday). *Decided
   2026-10-12 by Thomas* over the v4.1.3 recommendation: no migration later, spectrum available early;
@@ -50,14 +51,14 @@ in L/R ─ trim ─ System PEQ (8 bands) ─ Live EQ (4 peaking/notch @0 dB + lo
 
 | Page | E1 | E2 | E3 | E4 |
 |---|---|---|---|---|
-| MAIN | master | sub↔top balance | sub delay | top Lo-Cut freq |
+| MAIN | master | sub↔top balance | sub delay (after 2.5 s at rest the first detent only wakes it) | top Lo-Cut freq |
 | LIVE EQ | slot select | frequency (push = fine) | gain | Q |
 
-Buttons:
+Buttons (as built after the 2026-10-12 integration round; the gig card is `docs/04-operator-card.md`):
 - B1 next page
-- B2 mute (long press)
-- B3 Lo-Cut on/off
-- B4 reset live EQ (long press)
+- B2 mute / unmute (long press), every page
+- B3 Lo-Cut on/off, MAIN only
+- B4 reset live EQ, LIVE only: two long presses within 5 s
 
 The screen shows the current page in large type, plus mute/clip state.
 
@@ -89,8 +90,9 @@ processing:
 
 ### Doesn't (after Sunday)
 
-Spectrum and suggest-notch (v5), the box's own Wi‑Fi AP, a read-only root, an output mute relay, a
-presets UI, and a final enclosure.
+Spectrum and suggest-notch (v5), a read-only root, an output mute relay, a presets UI, and a final
+enclosure. (The box's own Wi‑Fi AP + phone PWA moved forward on 2026-10-12, D-007, gated by a
+go/no-go at the Friday rig test.)
 
 ## 4. Schedule (rev 2 — after Thomas's answers of 2026-10-12)
 
@@ -112,8 +114,14 @@ label K1000's outputs. Any doubt during the gig means re-patching in a minute.
 
 ## 6. Test protocol (Friday or Saturday)
 
-1. **Power order**: K1000 on → screen shows `READY · MUTED` → speakers on. At the end, speakers
-   off first.
+0. **Before the speakers**: the Knob test is done and `controls:` confirmed (SETUP › Knob test,
+   `box/README.md`); hold B2 mutes all four Meyers, and B4 is not next to B2 by feel. The M4 front
+   panel is taped (MONITOR and INPUT MONITOR MIX fully clockwise, MON buttons unlit). Phone: go/no-go
+   on the own-AP PWA (D-007); if no-go, switch the phone off in SETUP and the knobs carry the show.
+1. **Power order**: K1000 on → screen shows MUTED → speakers on. The box powers up the way it was
+   powered down: `READY · MUTED` only if it was muted (hold B2) before power-off; otherwise it ramps
+   back to the saved level by itself ("RAMPS IN BY ITSELF"). So the end-of-night routine is: hold B2
+   until MUTED, speakers off, then K1000 off.
 2. **Thump check**: once, with the speakers on and the source silent, cycle K1000's power and
    listen. Note the result in `ROADMAP.md`.
 3. **Gain structure**: noise at −20 dBFS. Check the M4 meters, and that the Meyer limit LEDs stay
@@ -125,7 +133,8 @@ label K1000's outputs. Any doubt during the gig means re-patching in a minute.
 5. **Lo-Cut**: A/B on program. Default on when the subs are present.
 6. **System EQ**: measure with the mic (REW or Open Sound Meter on the laptop). Keep to a few broad
    cuts, then save.
-7. **Live drill**: place a notch from the knobs in under 10 s, then reset live.
+7. **Live drill**: place a notch from the knobs in under 10 s, then reset live (LIVE page, hold B4
+   twice).
 8. **Two-hour program run**, then read the xrun log.
 
 ## 7. Blocking on Thomas (today)

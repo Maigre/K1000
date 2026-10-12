@@ -28,7 +28,8 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
 
 - **Why**: bus-powered metal box, ESS DAC, LCD meters on all I/O, Linux-proven, 2 line in + mic with
   phantom at once, €289. Alternative: Focusrite Scarlett 4i4 Gen 4.
-- **Caveats**: monitor knob scales outs 1-2 (set full and cap); monitor-mix / input monitoring off.
+- **Caveats**: MONITOR knob scales outs 1-2 (fully clockwise, taped); INPUT MONITOR MIX is a balance
+  knob: fully clockwise = playback only (taped), MON buttons unlit, or raw input leaks into outs 1-2.
 - **Update 2026-10-12**: Thomas owns no 4-out interface; a **MOTU M4 at ~€150** may be available to
   him. Compared with the Scarlett 4i4 Gen 4 (€285 new): same class of converters for this use; the M4
   wins on bus power (no 2nd brick on a Pi 4), LCD meters on all I/O, and price; the Scarlett wins on

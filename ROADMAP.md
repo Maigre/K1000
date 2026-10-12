@@ -59,14 +59,14 @@ Progress:
 
 | # | What | When |
 |---|---|---|
-| 1 | Deploy the fix round; re-run the full suite on the box (`tests tools/tests`); restart camilladsp once on the bench (new start script); after the next reboot compare `systemd-analyze critical-chain camilladsp.service` with the 15.0 s baseline (persistent journal cost) | before Tue 13 |
+| 1 | ~~Deploy the fix round; full suite; new start script; persistent journal cost~~ — done 2026-10-12 evening (502 passed; journal flush off the critical chain) | ~~before Tue 13~~ |
 | 2 | M4 day, `docs/05-m4-day.md`: detect, check tool, tone identification, profile `m4`, loop and leak tests, levels, presence drills, 1 h soak, report back | Tue 13 |
 | 3 | Knob test → `controls:` in k1000.yaml (and `KNOB_CORNERS` if the labels sit at the wrong corners); label the shell; fill in "Where" on the operator card | Tue–Thu |
 | 4 | Thomas's calls: output mapping (keep tops on outs 1-2), M4 `target_level` (256 vs 512/768), power-on mute policy (today: the saved mute), B1 page cycle, sub delay on MAIN, Sunday source and cables, PSU | by Thu 15 |
 | 5 | Pin the M4 channel counts (4/4) in k1000.yaml after the probe; set the chosen `target_level` (next engine start) | Tue–Thu |
 | 6 | Overnight soak at the gig `target_level`; `--summary` clean | Thu 15 night |
 | 7 | Boot race: fbcon vs `k1000.service` ExecStartPre (cloud-init stays on until settled) | before Fri |
-| 8 | Owner edits outside these docs: `docs/02` §6 step 1 (READY · MUTED only after a saved mute), D-003 wording (INPUT MONITOR MIX is a balance knob: fully clockwise), §3 knob table (B3 MAIN, B4 LIVE twice, E3 wake-up), §6 Knob test + "hold B2 mutes all four Meyers" + M4 front panel + phone go/no-go; README "Sound state" (a missing `state.json` now comes back muted) | before Fri |
+| 8 | ~~Owner edits: `docs/02` §3/§6, D-003 wording, README "Sound state"~~ — done 2026-10-12 | ~~before Fri~~ |
 | 9 | D-007 phone AP + PWA: not built; go/no-go at the rig test, else the knobs carry the show | Fri 16 |
 | 10 | Print the operator card; pack the bypass kit, labelled, its patch written on the card | Sat 17 |
 
