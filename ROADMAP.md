@@ -217,6 +217,8 @@ parametric bands + the spectrum serve live notching better on 4 knobs).
      live PEQ, applied only on a tap.
   5. Later, a time-aligned transfer function with coherence, the way Smaart and Open Sound Meter do it
      (OSM is GPL-3, so its approach and code are compatible with K1000's licence).
+  - Steps 1–2 are built on branch `night/phone-rta` with the landscape layout (untested on a real
+    phone): `docs/11-phone-mic.md`.
 
 ## Phase 5 — Road-proofing
 

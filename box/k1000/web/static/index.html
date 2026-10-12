@@ -12,6 +12,7 @@
 <link rel="icon" href="/icons/icon-192.png" type="image/png">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
 <link rel="stylesheet" href="/app.css">
+<script src="/rta.js" defer></script>
 <script src="/app.js" defer></script>
 </head>
 <body class="nolink">
@@ -77,9 +78,27 @@
 
   <section id="page-live" class="page" hidden>
     <div class="graphwrap">
-      <canvas id="eq" aria-label="Live EQ: drag a band, long-press empty space to notch there"></canvas>
-      <div id="eq-hint" class="eqhint">drag a dot · long-press empty space = notch here</div>
+      <div class="graphbox"><canvas id="eq" aria-label="Live EQ: drag a band, long-press empty space to notch there"></canvas></div>
+      <!-- Phase 4 (docs/11-phone-mic.md): the phone's own mic behind the curve. Audio never leaves the phone.
+           One row: MIC + the EQ's gesture hint; with MIC on, the mic's chips take the hint's place, the
+           actions first and the settings last (on a narrow phone the row scrolls sideways to them). -->
+      <div id="rtabar" class="rtabar">
+        <button id="mic" aria-pressed="false" aria-label="phone mic spectrum behind the curve, on or off">MIC</button>
+        <span id="mic-proc" class="chipwarn" hidden>MIC PROCESSING ON</span>
+        <span id="rta-hint" class="rtahint">drag a dot · long-press empty space = notch here</span>
+        <span id="rta-opts" hidden>
+          <button id="rta-mode" aria-pressed="false" aria-label="response view: mic minus the box's program">RESPONSE</button>
+          <button id="rta-freeze" aria-pressed="false" aria-label="freeze the trace">FREEZE</button>
+          <button id="rta-hold" aria-label="clear the peak hold">HOLD</button>
+          <button id="resp-reset" aria-label="restart the average">RESET AVG</button>
+          <button id="rta-speed" aria-label="averaging speed">SLOW</button>
+          <button id="rta-smooth" aria-label="smoothing, fraction of an octave">1/12</button>
+          <button id="resp-win" aria-label="averaging window">20 s</button>
+        </span>
+      </div>
+      <div id="rta-msg" class="rtamsg" hidden></div>
     </div>
+    <div class="livecontrols">
     <div id="slots" class="slots"></div>
     <div class="block slot">
       <div class="row"><div class="lab" id="slot-name">PEQ 1</div><div id="slot-state" class="sub">flat</div></div>
@@ -114,6 +133,7 @@
         <button id="band-flat" class="hold ghost" data-hold="600"><b></b><span>hold: band flat</span></button>
         <button id="reset-live" class="ghost warn">RESET LIVE EQ…</button>
       </div>
+    </div>
     </div>
   </section>
 </main>

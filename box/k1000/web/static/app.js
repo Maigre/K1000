@@ -14,7 +14,10 @@
    - Drags are coalesced: at most one message per SEND_MS, the last value always sent.
    - No link = every control disabled and the page says so.
    - The page knows its own build (stamped by the box) and reloads itself once when the box was
-     updated, so a cached app never runs against a newer box. */
+     updated, so a cached app never runs against a newer box.
+   - The phone mic (Phase 4, docs/11-phone-mic.md) is opt-in per visit (a tap on MIC), local (the
+     audio never leaves the phone) and read-only: it draws behind the curve and never changes a
+     value by itself; its peak marker only lets "notch here" land on the peak. */
 "use strict";
 (() => {
   const BANDS = ["live_peq.0", "live_peq.1", "live_peq.2", "live_peq.3", "live_lowshelf", "live_highshelf"];
@@ -52,7 +55,7 @@
   let tab = load("k1000.tab", "main") === "live" ? "live" : "main";
   const echo = new Array(6).fill(0);     // until when local band values win (ms epoch)
   const local = new Array(6).fill(null); // optimistic band values while dragging
-  const stats = { sent: 0, t: {}, rxState: 0, connects: 0, hist: [] };
+  const stats = { sent: 0, t: {}, rxState: 0, connects: 0, hist: [], draws: 0 };
   let mutePend = null;                   // {want, timer}: a mute sent, its ack not seen yet
   let outdated = "";                     // the box's build when it differs from this page's
   let behind = false;                    // ...and a reload did not bring the new page
@@ -109,6 +112,7 @@
       if (ws !== sock) return;
       clearTimeout(connectTimer);
       open = true; link = "ok"; lastRx = Date.now(); retryMs = 500; stats.connects++;
+      psOn = false; syncProgspec();
       wake(); render();
     };
     sock.onmessage = (ev) => { if (ws !== sock) return; lastRx = Date.now(); onMessage(ev.data); };
@@ -131,7 +135,7 @@
       ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
       try { ws.close(); } catch (e) { /* already closed */ }
     }
-    ws = null; open = false;
+    ws = null; open = false; psOn = false;
     if (link === "ok") link = "nolink";
     flushCancel();
     if (drag && drag.wait) notchDone(false, null, "Link lost: the notch was not set");
@@ -179,12 +183,16 @@
         break;
       case "state":
         S = m; stats.rxState++;
+        systemChanged(m);
         stats.hist.push([Date.now(), m.master_db]); if (stats.hist.length > 60) stats.hist.shift();
         link = m.phone_on === false ? "off" : link === "old" ? "old" : "ok";
         render();
         break;
       case "m":
         M = m; drawMeters();
+        break;
+      case "ps":
+        onProgram(m);
         break;
       case "ack":
         if (m.id === "mute") muteDone(true, m.v, "");
@@ -385,9 +393,11 @@
   let flash = null; // {x, until}
   function drawEq() {
     if (tab !== "live" || !GW) return;
+    stats.draws++;
     const w = GW, h = GH;
     ctx.clearRect(0, 0, w, h);
     ctx.fillStyle = "#070707"; ctx.fillRect(0, 0, w, h);
+    drawMicUnder(w, h);                 // the phone mic's trace: behind the grid and the curve
     ctx.font = "11px system-ui, Roboto, sans-serif";
     ctx.textBaseline = "top"; ctx.textAlign = "center";
     for (const f of [20, 30, 40, 50, 60, 70, 80, 90, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 20000]) {
@@ -408,6 +418,7 @@
       ctx.fillStyle = g === 0 ? "#bbb" : "#777";
       ctx.fillText(g > 0 ? "+" + g : minus(String(g)), PAD.l - 5, y);
     }
+    drawMicLabels(w, h);
     // the summed live-EQ response
     const cos = [];
     for (let i = 0; i < 6; i++) {
@@ -435,6 +446,7 @@
       ctx.strokeStyle = "#ffb800"; ctx.lineWidth = 3;
       ctx.beginPath(); ctx.moveTo(flash.x, PAD.t); ctx.lineTo(flash.x, h - PAD.b); ctx.stroke(); ctx.lineWidth = 1;
     }
+    drawPeakMarker();
     // the dots: unselected first, the selected one on top
     const order = [0, 1, 2, 3, 4, 5].filter((i) => i !== sel).concat([sel]);
     ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.font = "bold 12px system-ui, Roboto, sans-serif";
@@ -546,6 +558,9 @@
   function notchHere(x, y, pid) {
     lp = null;
     if (!canEdit() || drag) return;
+    const fx = x;                       // where the finger is (the drag keeps this offset)
+    const pk = peakNear(x, y);          // a long-press on the mic's peak pointer notches AT the peak
+    if (pk) x = xOf(pk);
     const hz = sig3(clamp(fOf(x), 20, 20000));
     flash = { x, until: Date.now() + 700 };
     setTimeout(drawEq, 720);
@@ -558,12 +573,13 @@
     if (!send({ t: "notch", hz, s, id: "notch" })) { drawEq(); return; }
     local[s] = { f: hz, g, q }; echo[s] = Infinity;
     sel = s; save("k1000.sel", sel);
-    drag = { i: s, id: pid, dx: xOf(hz) - x, dy: yOf(clamp(g, G_BOT, G_TOP)) - y, q, wait: true, ended: false,
+    drag = { i: s, id: pid, dx: xOf(hz) - fx, dy: yOf(clamp(g, G_BOT, G_TOP)) - y, q, wait: true, ended: false, peak: !!pk,
       timer: setTimeout(() => notchDone(false, null, "No answer from K1000 for the notch"), ACK_MS) };
     renderSlots(); drawEq();
   }
   function notchDone(ok, v, why) {
     const d = drag && drag.wait ? drag : null;
+    const onPeak = !!(d && d.peak);
     if (d) clearTimeout(d.timer);
     if (!ok) {
       if (d) { local[d.i] = null; echo[d.i] = 0; drag = null; renderSlots(); drawEq(); }
@@ -578,8 +594,451 @@
     } else {
       select(v.s);
     }
-    toast("Notch " + SHORT[v.s] + " at " + fmtFreq(v.f) + " · " + fmtDb(v.g) + " dB · slide to move it", 1800);
+    toast("Notch " + SHORT[v.s] + (onPeak ? " on the peak, " : " at ") + fmtFreq(v.f) + " · " + fmtDb(v.g) + " dB · slide to move it", 1800);
   }
+
+  // ------------------------------------------------------------------ the phone mic (Phase 4)
+  // docs/11-phone-mic.md. Step 1, RTA: the phone's own mic spectrum behind the EQ curve, with
+  // processing requested off, uncalibrated, never sent anywhere. Step 2, RESPONSE: the mic's
+  // average minus the box's PROGRAM average ("ps" frames, asked for with "progspec" only while
+  // this view is open), both on the engine's grid with the engine's own estimator (rta.js), each
+  // averaged over 10/20 s so time alignment does not matter. The mic runs only on LIVE with the
+  // page visible, after a tap on MIC; MIC again, leaving LIVE or hiding the page stops every track.
+  const RT = window.K1000RTA || null;
+  const RTA_MS = 66;                 // <= ~15 fps
+  const RTA_SPAN = G_TOP - G_BOT;    // the RTA's dB per division = the EQ grid's (6 dB a line):
+                                     // a 12 dB ring stands two lines tall, like a 12 dB cut
+  const RTA_HEAD = 5;                // dB from the tracked loudest band to the top of the plot
+  const LOW_HZ = 100;                // phone mics are weak below: shaded, no peak marker there
+  const RESP_MS = 200;               // mic frames for the response: 5 per second
+  const SNAP_R = 24;                 // px: a long-press this close to the drawn peak pointer notches AT the peak
+  const SLOW_MS = 8;                 // steady RTA analysis slower than this per frame: fall back to FFT 8192
+  const WARM = 20;                   // frames of a session not timed for that (JIT, first buffers)
+  const SMOOTH = [12, 6, 3];
+  const PS_GRID = [10, 20000, 133];  // the box's grid (progspec.py); its frames say which they use
+  const DISP = RT ? RT.logPoints(20, 20000, 48) : new Float64Array(0);
+  const rta = {
+    mode: load("k1000.rta.mode", "rta") === "response" ? "response" : "rta",
+    speed: load("k1000.rta.speed", "slow") === "fast" ? "fast" : "slow",
+    frac: SMOOTH.includes(load("k1000.rta.frac", 12)) ? load("k1000.rta.frac", 12) : 12,
+    win: load("k1000.rta.win", 20) === 10 ? 10 : 20,
+    frozen: false, busy: false, msg: "", frames: 0, skipped: 0, slow: false,
+    disp: null, hold: null, top: null, peak: null, resp: null, respSpan: 0, progWhy: "", psAt: 0,
+    eqKey: "", shown: "",
+  };
+  const resp = RT ? { key: "", grid: null, table: null, fft: null, win: null, scratch: null, pw: null,
+    bands: null, mic: new RT.Window(21), prog: new RT.Window(21) } : null;
+  let mic = null, micGen = 0, rafId = 0, lastFrame = 0, lastResp = 0, psOn = false, lastTrack = null;
+  const rel = {
+    mic: $("#mic"), hint: $("#rta-hint"), opts: $("#rta-opts"), mode: $("#rta-mode"), speed: $("#rta-speed"),
+    smooth: $("#rta-smooth"), hold: $("#rta-hold"), freeze: $("#rta-freeze"), win: $("#resp-win"),
+    reset: $("#resp-reset"), proc: $("#mic-proc"), msg: $("#rta-msg"),
+  };
+
+  // The K1000 icon opens the page as an app (display: standalone): no address bar, so no site icon
+  // to tap. There the way back after a "Don't allow" is Chrome's own settings.
+  function standalone() {
+    try { return ["standalone", "fullscreen"].some((m) => window.matchMedia("(display-mode: " + m + ")").matches); } catch (e) { return false; }
+  }
+  function micError(e) {
+    const n = e && e.name;
+    if (n === "NotAllowedError" || n === "SecurityError" || n === "PermissionDeniedError") {
+      return standalone() ? "Mic blocked: Chrome › Settings › Site settings › Microphone › " + location.hostname
+        : "Mic blocked: allow it (address bar icon › Permissions)";
+    }
+    if (n === "NotFoundError" || n === "DevicesNotFoundError" || n === "OverconstrainedError") return "No microphone found on this phone";
+    if (n === "NotReadableError" || n === "TrackStartError" || n === "AbortError") return "The mic is busy: another app has it";
+    return "Mic unavailable (" + (n || "error") + ")";
+  }
+
+  async function micStart() {
+    if (mic || rta.busy) return;
+    rta.msg = "";
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!RT) rta.msg = "The mic analysis did not load: reload the page";
+    else if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      rta.msg = "The mic needs the HTTPS page (https://" + location.hostname + "/)";
+    } else if (!AC) rta.msg = "No Web Audio in this browser: no mic analysis";
+    if (rta.msg) { renderRta(); return; }
+    const gen = ++micGen;
+    rta.busy = true; renderRta();
+    let ac = null, stream = null;
+    try {
+      ac = new AC();                    // created inside the tap: allowed to run
+      stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: {
+        echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
+      if (gen !== micGen) throw Object.assign(new Error("cancelled"), { name: "Cancelled" });
+      const track = stream.getAudioTracks()[0];
+      if (!track) throw Object.assign(new Error("no audio track"), { name: "NotFoundError" });
+      if (ac.state !== "running") await ac.resume();
+      if (gen !== micGen) throw Object.assign(new Error("cancelled"), { name: "Cancelled" });
+      const src = ac.createMediaStreamSource(stream);
+      const an = ac.createAnalyser();
+      an.fftSize = 16384; an.smoothingTimeConstant = 0;
+      src.connect(an);                  // never to ac.destination: nothing is played back
+      const st = typeof track.getSettings === "function" ? track.getSettings() : {};
+      const keys = ["echoCancellation", "noiseSuppression", "autoGainControl"];
+      mic = { stream, track, ctx: ac, src, an, proc: keys.filter((k) => st[k] === true),
+        settings: { echoCancellation: st.echoCancellation, noiseSuppression: st.noiseSuppression,
+          autoGainControl: st.autoGainControl, sampleRate: st.sampleRate, channelCount: st.channelCount } };
+      lastTrack = track;
+      micBuffers();
+      track.addEventListener("ended", () => {
+        if (mic && mic.track === track) { micStop(); rta.msg = "The mic stopped (taken by another app?)"; renderRta(); }
+      });
+      rta.busy = false;
+      lastFrame = 0; lastResp = 0;
+      rafId = requestAnimationFrame(rtaLoop);
+      syncProgspec();
+    } catch (e) {
+      try { if (stream) stream.getTracks().forEach((t) => t.stop()); } catch (x) { /* already stopped */ }
+      try { if (ac) ac.close().catch(() => {}); } catch (x) { /* closed */ }
+      if (gen === micGen) { rta.busy = false; rta.msg = micError(e); }
+    }
+    renderRta(); drawEq();
+  }
+
+  // (re)allocate for the analyser's current FFT size
+  function micBuffers() {
+    const m = mic, an = m.an, n = an.frequencyBinCount;
+    m.binHz = m.ctx.sampleRate / an.fftSize;
+    m.fbuf = new Float32Array(n); m.pow = new Float64Array(n); m.tbuf = new Float32Array(an.fftSize);
+    m.ball = new RT.Ballistics(n);
+    m.sm = new Float64Array(DISP.length); m.dispDb = new Float64Array(DISP.length);
+    m.det = new Float64Array(DISP.length); m.detDb = new Float64Array(DISP.length);
+    m.band = new Float64Array(DISP.length);
+    m.level = m.level || new RT.LevelTracker({ riseTau: 0.15, fallDbPerS: 1 });
+    m.peaks = m.peaks || new RT.PeakTracker({ persistS: 1.5, tolOct: 1 / 12, releaseS: 0.6 });
+    m.frames = 0; m.cost = 0;           // this session's frames at this FFT size (the warm-up)
+    rta.hold = null;
+    resp.key = "";                      // the response bands follow the FFT size too
+  }
+
+  function micStop() {
+    micGen++;
+    rta.busy = false;
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    if (mic) {
+      const m = mic;
+      mic = null;
+      try { m.stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* already stopped */ }
+      try { m.src.disconnect(); } catch (e) { /* gone */ }
+      try { m.ctx.close().catch(() => {}); } catch (e) { /* closed */ }
+    }
+    rta.disp = rta.hold = rta.peak = rta.resp = rta.top = null;
+    rta.frozen = false; rta.respSpan = 0; rta.progWhy = "";
+    if (resp) { resp.mic.clear(); resp.prog.clear(); }
+    syncProgspec();
+    renderRta(); drawEq();
+  }
+
+  document.addEventListener("visibilitychange", () => { if (document.hidden) micStop(); });
+  window.addEventListener("pagehide", () => micStop());
+
+  // One requestAnimationFrame loop. FREEZE: nothing analysed, nothing redrawn (drawn once on the
+  // tap). RTA: analyse + draw at <= 15 fps. RESPONSE: a mic frame every RESP_MS, and the view is
+  // recomputed and redrawn only when a mic or program frame came in.
+  function rtaLoop(now) {
+    rafId = 0;
+    if (!mic) return;
+    rafId = requestAnimationFrame(rtaLoop);
+    if (rta.frozen) return;
+    const t = performance.now();
+    if (rta.mode === "response") {
+      if (t - lastResp < RESP_MS) return;
+      if (drag) { rta.skipped++; return; }  // the band moves: the average restarts anyway
+      lastResp = t;
+      try { respFrame(t / 1000); } catch (e) { rta.msg = "Mic analysis failed: " + e.message; micStop(); }
+      return;
+    }
+    if (now - lastFrame < RTA_MS) return;
+    if (drag) { rta.skipped++; return; }    // a finger is moving a band: the curve comes first
+    const dt = lastFrame ? Math.min(0.5, (now - lastFrame) / 1000) : RTA_MS / 1000;
+    lastFrame = now;
+    try { analyse(t / 1000, dt); } catch (e) { rta.msg = "Mic analysis failed: " + e.message; micStop(); return; }
+    drawEq();
+  }
+
+  function analyse(t, dt) {
+    const m = mic, t0 = performance.now();
+    m.an.getFloatFrequencyData(m.fbuf);
+    RT.fromDb(m.fbuf, m.pow);
+    m.ball.update(m.pow, dt);
+    rta.frames++; m.frames++;
+    RT.smoothFracOct(rta.speed === "fast" ? m.ball.fast : m.ball.slow, m.binHz, DISP, rta.frac, m.sm);
+    const d = RT.bandDb(RT.toDb(m.sm, m.dispDb), DISP, 1000, m.band);   // band power: pink reads flat
+    rta.disp = d;
+    if (!rta.hold || rta.hold.length !== d.length) rta.hold = Float64Array.from(d); else RT.peakHold(rta.hold, d);
+    let lvl = -Infinity;
+    for (let i = 0; i < DISP.length; i++) if (DISP[i] >= 40 && DISP[i] <= 16000 && d[i] > lvl) lvl = d[i];
+    rta.top = m.level.update(lvl + RTA_HEAD, dt);
+    // the peak detector: SLOW, 1/24 oct, whatever the display shows
+    RT.smoothFracOct(m.ball.slow, m.binHz, DISP, 24, m.det);
+    rta.peak = m.peaks.update(RT.findPeak(RT.toDb(m.det, m.detDb), DISP, { fMin: LOW_HZ, fMax: 16000 }), t);
+    // a slow phone: halve the FFT. Only steady frames count (not the first WARM of a session).
+    if (m.frames <= WARM) return;
+    const cost = performance.now() - t0;
+    m.cost = m.cost ? m.cost + 0.1 * (cost - m.cost) : cost;
+    if (m.an.fftSize > 8192 && m.frames > 2 * WARM && m.cost > SLOW_MS) {
+      m.an.fftSize = 8192; rta.slow = true; micBuffers();
+    }
+  }
+  // leaving or entering a view: the RTA's averages, hold, level and marker start afresh
+  function rtaRestart() {
+    rta.disp = rta.hold = rta.top = rta.peak = null;
+    lastFrame = 0; lastResp = 0;
+    if (!mic) return;
+    mic.ball.reset(); mic.level.reset(); mic.peaks.reset();
+    mic.frames = 0; mic.cost = 0;
+  }
+
+  // ------------------------------------------------------------------ RESPONSE (step 2)
+  function respGrid(g) {
+    const key = g.join(",");
+    if (!mic || key === resp.key) return;
+    const rate = mic.ctx.sampleRate;
+    const grid = RT.engineGrid(g[0], g[1], g[2]);
+    const n = Math.min(RT.engineFftLen(rate, grid.min), mic.an.fftSize);
+    resp.key = key; resp.grid = grid;
+    resp.perOct = 1 / Math.log2(grid.ratio);
+    resp.fft = new RT.FFT(n); resp.win = RT.hann(n);
+    resp.scratch = { re: new Float64Array(n), im: new Float64Array(n) };
+    resp.pw = new Float64Array(n / 2 + 1); resp.bands = new Float64Array(grid.n);
+    resp.table = RT.bandTable(grid, rate / n, n / 2 + 1);
+    respReset();
+  }
+  function respReset() {
+    if (!resp) return;
+    resp.mic.clear(); resp.prog.clear();
+    rta.resp = null; rta.respSpan = 0;
+  }
+  // while K1000 is muted the mic hears the room, not the PA: nothing goes into the average
+  function respPaused() { return !!(S && S.muted); }
+  function respFrame(t) {
+    if (!resp.key) respGrid(PS_GRID);
+    rta.frames++;
+    if (!respPaused()) {
+      mic.an.getFloatTimeDomainData(mic.tbuf);
+      const p = RT.hannPower(mic.tbuf, resp.fft, resp.win, resp.scratch, resp.pw);
+      resp.mic.push(t, RT.bandPeaks(p, resp.table, resp.bands));
+    }
+    respUpdate(t);
+  }
+  function respUpdate(t) {
+    respCompute(t);
+    renderRtaMsg();
+    if (!drag) drawEq();
+  }
+  function respCompute(t) {
+    const mm = resp.mic.mean(t, rta.win), pm = resp.prog.mean(t, rta.win);
+    rta.respSpan = mm && pm ? Math.min(mm.span, pm.span, rta.win) : 0;
+    if (!mm || !pm || mm.mean.length !== pm.mean.length) { rta.resp = null; return; }
+    const r = RT.response(mm.mean, pm.mean, resp.grid.f);
+    r.raw = r.db;
+    r.db = RT.smoothDb(r.db, resp.perOct / rta.frac);   // 1/12 (as is), 1/6 or 1/3 octave, exactly
+    r.mic = mm.count; r.prog = pm.count;
+    rta.resp = r;
+  }
+  // a "ps" frame from the box: its program spectrum, L and R power-averaged, on its grid
+  function onProgram(m) {
+    rta.psAt = performance.now();
+    if (!mic || rta.mode !== "response" || !RT) return;
+    const g = m.grid;
+    if (!Array.isArray(g) || g.length !== 3 || !g.every(num) || !(g[0] > 0 && g[1] > g[0] && g[2] >= 2 && g[2] <= 4096)) return;
+    respGrid(g);
+    if (rta.frozen) return;
+    if (!Array.isArray(m.m) || m.m.length !== g[2]) { rta.progWhy = String(m.why || "no data"); renderRtaMsg(); return; }
+    rta.progWhy = "";
+    if (respPaused()) return;
+    const p = new Float64Array(g[2]);
+    for (let i = 0; i < p.length; i++) p[i] = num(m.m[i]) ? RT.dbToPow(m.m[i]) : 0;
+    const t = performance.now() / 1000;
+    resp.prog.push(t, p);
+    respUpdate(t);
+  }
+  // the box's program frames flow only while this view is open: tell the box on every change
+  function syncProgspec() {
+    const want = !!mic && rta.mode === "response" && tab === "live";
+    if (!open || !ws) { psOn = false; return; }
+    if (want !== psOn && send({ t: "progspec", on: want }, true)) psOn = want;
+  }
+  // The response includes what K1000 does after the program tap (docs/11 §5): when the live EQ,
+  // the balance, the Lo-Cut or the profile change, the average starts again. The master only
+  // moves the whole trace, which the 0 dB offset absorbs.
+  function systemChanged(st) {
+    const k = JSON.stringify([st.bands || null, st.balance_db, st.lowcut_on, st.lowcut_hz, st.profile]);
+    if (k === rta.eqKey) return;
+    if (rta.eqKey && mic && rta.mode === "response") respReset();
+    rta.eqKey = k;
+  }
+
+  // ------------------------------------------------------------------ drawing (inside drawEq)
+  const yR = (db) => PAD.t + (rta.top - db) / RTA_SPAN * (GH - PAD.t - PAD.b);
+  function traceTo(xs, ys, from, to) { for (let i = from; i < to; i++) ctx.lineTo(xs(i), ys(i)); }
+  function drawMicUnder(w, h) {
+    if (!mic) return;
+    const top = PAD.t, bot = h - PAD.b, cy = (y) => Math.max(top, Math.min(bot, y));
+    if (rta.mode === "rta" && rta.disp && rta.top !== null) {
+      const xs = (i) => xOf(DISP[i]), ys = (i) => cy(yR(rta.disp[i]));
+      ctx.beginPath(); ctx.moveTo(xs(0), bot); traceTo(xs, ys, 0, DISP.length); ctx.lineTo(xs(DISP.length - 1), bot); ctx.closePath();
+      ctx.fillStyle = "rgba(0,140,165,0.30)"; ctx.fill();
+      ctx.beginPath(); ctx.moveTo(xs(0), ys(0)); traceTo(xs, ys, 1, DISP.length);
+      ctx.strokeStyle = "rgba(0,200,235,0.80)"; ctx.lineWidth = 1.25; ctx.stroke();
+      if (rta.hold) {
+        const hy = (i) => cy(yR(rta.hold[i]));
+        ctx.beginPath(); ctx.moveTo(xs(0), hy(0)); traceTo(xs, hy, 1, DISP.length);
+        ctx.strokeStyle = "rgba(140,235,255,0.50)"; ctx.setLineDash([2, 3]); ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
+      }
+      ctx.lineWidth = 1;
+    }
+    if (rta.mode === "response" && rta.resp && !rta.resp.quiet) {
+      const f = resp.grid.f, d = rta.resp.db, y0 = yOf(0);
+      ctx.strokeStyle = "#35d6ff"; ctx.lineWidth = 2;
+      ctx.fillStyle = "rgba(0,190,255,0.16)";
+      let i = 0;
+      while (i < f.length) {                              // one filled run per gap-free stretch
+        while (i < f.length && (!Number.isFinite(d[i]) || f[i] < 20)) i++;
+        const a = i;
+        while (i < f.length && Number.isFinite(d[i])) i++;
+        if (i - a < 2) continue;
+        const xs = (k) => xOf(Math.min(20000, f[k])), ys = (k) => cy(yOf(d[k]));
+        ctx.beginPath(); ctx.moveTo(xs(a), y0); traceTo(xs, ys, a, i); ctx.lineTo(xs(i - 1), y0); ctx.closePath(); ctx.fill();
+        ctx.beginPath(); ctx.moveTo(xs(a), ys(a)); traceTo(xs, ys, a + 1, i); ctx.stroke();
+      }
+      ctx.lineWidth = 1;
+    }
+    // below 100 Hz the phone mic is weak: a dark veil OVER its traces (the grid and the EQ curve
+    // are drawn after it, so they stay bright), and a dashed edge just inside it
+    const xl = xOf(LOW_HZ);
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    ctx.fillRect(PAD.l, top, xl - PAD.l, bot - top);
+    ctx.strokeStyle = "rgba(255,184,0,0.45)"; ctx.setLineDash([3, 4]);
+    ctx.beginPath(); ctx.moveTo(Math.round(xl) - 1.5, top); ctx.lineTo(Math.round(xl) - 1.5, bot); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  function respNote() {
+    if (!mic || rta.mode !== "response") return "";
+    if (!open) return "No link: the response needs the box";
+    if (respPaused()) return "MUTED: response paused";
+    if (rta.progWhy === "no audio data" || (rta.resp && rta.resp.quiet)) return "PLAY MUSIC: the program is too quiet";
+    if (rta.progWhy) return "Program spectrum: " + rta.progWhy;
+    if (!rta.psAt || performance.now() - rta.psAt > 3000) return "Waiting for the box's program…";
+    return "";
+  }
+  function drawMicLabels(w, h) {
+    if (!mic) return;
+    ctx.save();
+    ctx.textAlign = "left"; ctx.textBaseline = "top"; ctx.font = "bold 10px system-ui, Roboto, sans-serif";
+    ctx.fillStyle = "#4fcbe6";
+    const tail = (rta.mode === "rta" ? (rta.speed === "fast" ? " · FAST" : "")
+      : " · " + Math.round(rta.respSpan) + "/" + rta.win + " s") + (rta.frozen ? " · FROZEN" : "");
+    let label = (rta.mode === "rta" ? "PHONE MIC · uncalibrated" : "RESPONSE · uncalibrated mic − program") + tail;
+    if (rta.mode !== "rta" && ctx.measureText(label).width > w - PAD.l - PAD.r - 8) label = "RESPONSE · uncalibrated" + tail;
+    ctx.fillText(label, PAD.l + 4, PAD.t + 3);
+    ctx.font = "9px system-ui, Roboto, sans-serif"; ctx.fillStyle = "rgba(200,200,200,0.8)"; ctx.textBaseline = "bottom";
+    ctx.fillText("low conf.", PAD.l + 3, h - PAD.b - 3);
+    // the response's notes sit on the graph (the chip row stays one line)
+    const note = respNote();
+    if (note && /^PLAY MUSIC/.test(note)) {
+      ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.font = "bold 20px system-ui, Roboto, sans-serif";
+      ctx.fillStyle = "rgba(255,184,0,0.9)";
+      ctx.fillText("PLAY MUSIC", (PAD.l + w - PAD.r) / 2, PAD.t + (h - PAD.t - PAD.b) * 0.16);   // above 0 dB: clear of the cuts
+    } else if (note) {
+      ctx.textBaseline = "top"; ctx.font = "bold 11px system-ui, Roboto, sans-serif"; ctx.fillStyle = "rgba(255,184,0,0.95)";
+      ctx.fillText(note, PAD.l + 4, PAD.t + 16);
+    }
+    ctx.restore();
+  }
+  // where the peak pointer is drawn (its tip), or null. FREEZE keeps it: that is when it is read.
+  function markerAt() {
+    const pk = mic && rta.mode === "rta" ? rta.peak : null;
+    if (!pk || !rta.disp || rta.top === null || !GW) return null;
+    const i = clampInt(Math.round(Math.log2(pk.f / DISP[0]) * 48), 0, DISP.length - 1);
+    return { f: pk.f, x: xOf(pk.f), y: Math.max(PAD.t + 26, Math.min(GH - PAD.b, yR(rta.disp[i]))) };
+  }
+  function drawPeakMarker() {
+    const mk = markerAt();
+    if (!mk) return;
+    const { x, y } = mk;
+    ctx.save();
+    ctx.fillStyle = "#00c8ff"; ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, y - 2); ctx.lineTo(x - 6, y - 12); ctx.lineTo(x + 6, y - 12); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.font = "bold 11px system-ui, Roboto, sans-serif"; ctx.textBaseline = "bottom";
+    const txt = fmtHz(mk.f);
+    const tw = ctx.measureText(txt).width;
+    ctx.textAlign = "left";
+    const tx = clamp(x - tw / 2, PAD.l + 2, GW - PAD.r - tw - 2);
+    ctx.fillText(txt, tx, y - 13);
+    ctx.restore();
+  }
+  // A long-press ON the pointer (within SNAP_R px of its middle, both ways): "notch here" lands on
+  // the peak. Anywhere else it lands under the finger, as always. The marker never acts by itself.
+  function peakNear(x, y) {
+    const mk = markerAt();
+    return mk && Math.hypot(x - mk.x, y - (mk.y - 10)) <= SNAP_R ? mk.f : 0;
+  }
+
+  // ------------------------------------------------------------------ the chip row
+  // The line under the chip row: why the mic is off (denied, no mic, taken). The response's own
+  // notes (PLAY MUSIC, MUTED, waiting...) are drawn on the graph, so the row never grows with MIC on.
+  function renderRtaMsg() {
+    const text = mic ? "" : rta.msg;
+    if (text === rta.shown) return;
+    rta.shown = text;
+    rel.msg.textContent = text; rel.msg.hidden = !text;
+  }
+  function renderRta() {
+    const on = !!mic, isResp = rta.mode === "response";
+    rel.mic.setAttribute("aria-pressed", on ? "true" : "false");
+    rel.mic.textContent = rta.busy ? "MIC…" : "MIC";
+    rel.opts.hidden = !on;
+    rel.hint.hidden = on || rta.busy;
+    rel.mode.setAttribute("aria-pressed", isResp ? "true" : "false");
+    rel.speed.hidden = isResp; rel.speed.textContent = rta.speed === "fast" ? "FAST" : "SLOW";
+    rel.smooth.textContent = "1/" + rta.frac;
+    rel.hold.hidden = isResp;
+    rel.freeze.setAttribute("aria-pressed", rta.frozen ? "true" : "false");
+    rel.win.hidden = !isResp; rel.win.textContent = rta.win + " s";
+    rel.reset.hidden = !isResp;
+    rel.proc.hidden = !(on && mic.proc.length);
+    rel.proc.title = on && mic.proc.length ? "Still on: " + mic.proc.join(", ") : "";
+    renderRtaMsg();
+  }
+  rel.mic.addEventListener("click", () => { if (mic || rta.busy) { micStop(); rta.msg = ""; renderRta(); } else micStart(); });
+  rel.mode.addEventListener("click", () => {
+    rta.mode = rta.mode === "response" ? "rta" : "response"; save("k1000.rta.mode", rta.mode);
+    respReset(); rtaRestart(); rta.progWhy = ""; rta.psAt = 0;
+    syncProgspec(); renderRta(); drawEq();
+  });
+  rel.speed.addEventListener("click", () => { rta.speed = rta.speed === "fast" ? "slow" : "fast"; save("k1000.rta.speed", rta.speed); rta.hold = null; renderRta(); });
+  rel.smooth.addEventListener("click", () => {
+    rta.frac = SMOOTH[(SMOOTH.indexOf(rta.frac) + 1) % SMOOTH.length]; save("k1000.rta.frac", rta.frac);
+    rta.hold = null;
+    if (rta.resp && rta.resp.raw && resp.perOct) rta.resp.db = RT.smoothDb(rta.resp.raw, resp.perOct / rta.frac);
+    renderRta(); drawEq();
+  });
+  rel.hold.addEventListener("click", () => { rta.hold = null; drawEq(); });
+  rel.freeze.addEventListener("click", () => {
+    rta.frozen = !rta.frozen;
+    if (!rta.frozen) { lastFrame = 0; lastResp = 0; }
+    renderRta(); drawEq();
+  });
+  rel.win.addEventListener("click", () => { rta.win = rta.win === 20 ? 10 : 20; save("k1000.rta.win", rta.win); renderRta(); });
+  rel.reset.addEventListener("click", () => { respReset(); drawEq(); });
+
+  Object.assign(window.K1000, {
+    rta: () => ({
+      on: !!mic, busy: rta.busy, mode: rta.mode, speed: rta.speed, frac: rta.frac, win: rta.win, frozen: rta.frozen,
+      msg: rta.msg || respNote(), line: rel.msg.hidden ? "" : rel.msg.textContent, marker: markerAt(), frames: rta.frames, skipped: rta.skipped, slow: rta.slow,
+      fft: mic ? mic.an.fftSize : 0, rate: mic ? mic.ctx.sampleRate : 0, track: mic ? mic.track.readyState : null,
+      proc: mic ? mic.proc.slice() : null, settings: mic ? mic.settings : null, peak: rta.peak, top: rta.top,
+      hold: !!rta.hold, span: RTA_SPAN, paused: respPaused(), ps: psOn, progWhy: rta.progWhy, respSpan: rta.respSpan,
+      resp: rta.resp ? { quiet: rta.resp.quiet, offset: rta.resp.offset, progRef: rta.resp.progRef, valid: rta.resp.valid,
+        mic: rta.resp.mic, prog: rta.resp.prog, f: Array.from(resp.grid.f), db: Array.from(rta.resp.db, (v) => (Number.isFinite(v) ? v : null)) } : null,
+    }),
+    lastTrack: () => (lastTrack ? lastTrack.readyState : null),
+  });
+  renderRta();
 
   // ------------------------------------------------------------------ controls
   $$("[data-nudge]").forEach((b) => b.addEventListener("click", () => {
@@ -675,10 +1134,13 @@
     $$("#tabs button").forEach((b) => b.setAttribute("aria-selected", b.dataset.tab === t ? "true" : "false"));
     $("#page-main").hidden = t !== "main";
     $("#page-live").hidden = t !== "live";
+    if (t !== "live") micStop();        // the mic runs on LIVE only
     if (t === "live") sizeCanvas();
   }
   $$("#tabs button").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
   window.addEventListener("resize", sizeCanvas);
+  // the graph's box also changes with the layout (rotation, the chip row wrapping)
+  if (window.ResizeObserver) new ResizeObserver(() => { if (tab === "live") sizeCanvas(); }).observe(cv);
 
   // ------------------------------------------------------------------ box updated -> reload once
   // The service worker serves the cached shell first (instant start, offline): the first launch

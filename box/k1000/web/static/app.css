@@ -79,8 +79,24 @@ main { flex: 1; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling
 
 /* ---------------------------------------------------------------- live EQ */
 .graphwrap { border-bottom: 1px solid var(--line); padding-bottom: 4px; }
-#eq { display: block; width: 100%; height: clamp(190px, 29vh, 250px); touch-action: none; background: #070707; }
-.eqhint { padding: 3px 14px 0; font-size: 12px; color: #6a6a6a; }
+/* the canvas fills its box: the box's size comes from the layout, never from the bitmap */
+.graphbox { position: relative; height: clamp(190px, 29vh, 250px); }
+#eq { position: absolute; inset: 0; display: block; width: 100%; height: 100%; touch-action: none; background: #070707; }
+
+/* ---------------------------------------------------------------- phone mic (Phase 4) */
+/* One line whatever is on: with MIC on the chips scroll INSIDE the row (never the page, never a
+   second row pushing the band controls down). 44 px targets: it is tapped one-handed. */
+.rtabar { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; min-height: 52px; padding: 4px 14px;
+  overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: none; }
+.rtabar::-webkit-scrollbar { display: none; }
+#rta-opts { display: contents; }
+.rtabar button, .rtabar .chipwarn { flex: none; }
+.rtabar button { min-height: 44px; font-size: 14px; padding: 0 10px; border-radius: 8px; background: #141414; color: var(--dim); border-color: #333; letter-spacing: .03em; white-space: nowrap; }
+.rtabar button[aria-pressed="true"] { background: var(--cyan); color: #000; border-color: var(--cyan); }
+#mic { min-width: 58px; color: var(--fg); border-color: #555; }
+.rtahint { flex: 1 1 auto; min-width: 0; font-size: 12px; line-height: 1.25; color: #6a6a6a; }
+.chipwarn { background: #3c3200; color: var(--yellow); border: 1px solid var(--amber); font-size: 12px; font-weight: 800; padding: 6px 8px; border-radius: 6px; white-space: nowrap; }
+.rtamsg { padding: 2px 14px 2px; font-size: 13px; line-height: 1.3; color: var(--amber); }
 .slots { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; padding: 10px 14px 4px; }
 .slots button { min-height: 50px; font-size: 17px; color: var(--dim); background: #141414; border-color: #333; }
 .slots button.cut { background: #ff5a00; color: #000; border-color: #ff5a00; }
@@ -125,6 +141,8 @@ body.muted #page-main .big { color: var(--dim); }
 body.nolink main button, body.off main button, body.nolink #mute, body.off #mute { opacity: .3; pointer-events: none; }
 body.nolink main .big, body.nolink main .mid, body.nolink .pval, body.off main .big, body.off main .mid { color: var(--faint); }
 body.nolink #eq, body.off #eq { opacity: .45; pointer-events: none; }
+/* the phone mic is local: it works without the box (the RESPONSE view says it needs the link) */
+body.nolink .rtabar button, body.off .rtabar button { opacity: 1; pointer-events: auto; }
 
 /* ---------------------------------------------------------------- modal, toast */
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.78); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 10; }
@@ -146,4 +164,59 @@ body.nolink #eq, body.off #eq { opacity: .45; pointer-events: none; }
   .block { padding-left: 12px; padding-right: 12px; }
   .slots { padding-left: 12px; padding-right: 12px; gap: 5px; }
   .big { font-size: 64px; }
+}
+
+/* ---------------------------------------------------------------- landscape phones
+   (after the gig: manifest orientation "any"). The status bar and the tabs share one row, the
+   footer is one row (meters | mute), LIVE puts the graph large on the left and the band controls
+   in a column on the right, MAIN puts its three blocks side by side. Tall screens (tablets,
+   desktops) keep the portrait layout. */
+@media (orientation: landscape) and (max-height: 540px) {
+  body { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+  #bar { grid-column: 1; grid-row: 1; min-height: 40px; }
+  #tabs { grid-column: 2; grid-row: 1; width: 250px; border-bottom: 0; border-left: 1px solid var(--line); }
+  #tabs button { min-height: 40px; font-size: 15px; }
+  #banners { grid-column: 1 / -1; grid-row: 2; }
+  .banner { padding: 6px 12px; font-size: 14px; }
+  .banner small { font-size: 12px; }
+  main { grid-column: 1 / -1; grid-row: 3; min-height: 0; }
+  #foot { grid-column: 1 / -1; grid-row: 4; display: grid; grid-template-columns: minmax(0, 1fr) clamp(260px, 38vw, 360px);
+    gap: 4px 14px; align-items: center; padding: 6px 10px calc(6px + env(safe-area-inset-bottom)); }
+  .meters { margin-bottom: 0; gap: 4px 12px; }
+  .mute { min-height: 52px; font-size: 18px; }
+  .toast { top: calc(46px + env(safe-area-inset-top)); left: auto; right: 10px; transform: none; max-width: min(340px, calc(38vw - 16px)); }
+
+  /* LIVE: the graph left (most of the width), the band controls right */
+  #page-live:not([hidden]) { display: grid; grid-template-columns: minmax(0, 1fr) clamp(300px, 38vw, 360px); height: 100%; }
+  #page-live .graphwrap { display: flex; flex-direction: column; min-height: 0; border-bottom: 0; border-right: 1px solid var(--line); padding-bottom: 2px; }
+  #page-live .graphbox { flex: 1 1 auto; height: auto; min-height: 110px; }
+  .rtabar { padding: 4px 10px; }
+  .rtabar button { font-size: 13px; padding: 0 9px; }
+  .rtamsg { padding: 1px 10px 0; font-size: 12px; }
+  .livecontrols { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  .slots { gap: 5px; padding: 8px 10px 2px; }
+  .slots button { min-height: 44px; font-size: 15px; }
+  .slot { padding: 6px 10px 10px; }
+  .prow { grid-template-columns: 66px minmax(0, 1fr); gap: 6px; margin-top: 6px; }
+  .prow .steps { gap: 5px; }
+  .prow .steps button { min-height: 44px; font-size: 17px; }
+  .pname { font-size: 13px; }
+  .pval { font-size: 19px; }
+  .actions { margin-top: 8px; gap: 6px; }
+  .actions button { min-height: 44px; font-size: 14px; }
+
+  /* MAIN: the three blocks side by side */
+  #page-main:not([hidden]) { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); height: 100%; min-height: min-content; }
+  /* the steps sit low, next to the thumbs and the MUTE bar; the values stay on top */
+  #page-main .block { display: flex; flex-direction: column; border-bottom: 0; border-right: 1px solid var(--line); padding: 10px 12px 12px; min-width: 0; }
+  #page-main .block .steps { margin-top: auto; }
+  #page-main .block:last-child { border-right: 0; }
+  .lab { font-size: 15px; }
+  .lab .dim { display: block; font-size: 12px; }
+  .big { font-size: 60px; margin: 0 0 8px; }
+  .mid { font-size: 46px; margin: 0 0 8px; }
+  .big small, .mid small { font-size: 18px; }
+  #page-main .steps { gap: 6px; }
+  #page-main .steps button { min-height: 56px; font-size: 16px; }
+  .switch { min-width: 84px; min-height: 44px; font-size: 16px; }
 }

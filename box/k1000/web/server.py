@@ -28,6 +28,10 @@ Why it is shaped like this:
   screen's render loop waits on; a second waiter would steal its wake-ups. The pump reads
   `Controller.version` (falling back to comparing snapshots) every `tick_s` instead, and only
   while a phone is connected.
+- **The program spectrum is opt-in and separate** (`progspec`, Phase 4, docs/11-phone-mic.md): a
+  phone with its RESPONSE view open asks for it (`progspec {on}`); the box then polls the engine's
+  capture-side spectrum on its OWN engine connection (it can never queue in front of a mute), at
+  most 2 Hz, and each phone gets only the latest frame. The last phone to stop (or leave) stops it.
 """
 from __future__ import annotations
 
@@ -58,6 +62,7 @@ from websockets.http11 import Request, Response
 from .. import __version__
 from ..state import N_LIVE_PEQ, RANGES, atomic_write
 from ..ui.input_map import LIVE_SLOT_LABELS, LIVE_SLOT_SHORT, LIVE_SLOTS
+from .progspec import ProgramSpectrum, program_channels
 
 log = logging.getLogger("k1000.web")
 
@@ -84,7 +89,7 @@ PHONE_RANGES: tuple[str, ...] = (
     "live_lowshelf.freq", "live_lowshelf.gain", "live_lowshelf.q",
     "live_highshelf.freq", "live_highshelf.gain", "live_highshelf.q",
 )
-MESSAGE_TYPES = ("ping", "nudge", "set", "band", "notch", "mute", "reset_live")
+MESSAGE_TYPES = ("ping", "nudge", "set", "band", "notch", "mute", "reset_live", "progspec")
 MAX_MESSAGE = 1024               # bytes: the largest legal phone message is ~120
 MAX_ABS = 1e9                    # any number a phone sends is refused beyond this
 OUT_MAX = 32                     # replies queued per phone (pongs/errs dropped first when full)
@@ -777,6 +782,8 @@ class _Client:
     out: collections.deque[str] = field(default_factory=collections.deque)
     tracebacks: int = 0              # per-phone: the first failure is logged with a traceback,
     log_bucket: _Bucket | None = None    # later ones as one line, throttled
+    ps: bool = False                 # this phone has its RESPONSE view open (wants program frames)
+    sent_ps: int = -1
 
 
 class _QuietHandshakes(logging.Filter):
@@ -828,7 +835,8 @@ class PhoneServer:
 
     def __init__(self, ctl: Any, settings: PhoneSettings | None = None, *,
                  static_dir: Path | str | None = None, clock: Callable[[], float] = time.monotonic,
-                 tick_s: float = 0.05, send_timeout_s: float = 2.0, presence_s: float = 2.0) -> None:
+                 tick_s: float = 0.05, send_timeout_s: float = 2.0, presence_s: float = 2.0,
+                 spectrum_client: Callable[[str], Any] | None = None) -> None:
         self.ctl = ctl
         self.cfg = settings or PhoneSettings()
         self.static_dir = Path(static_dir) if static_dir else STATIC_DIR
@@ -872,6 +880,15 @@ class PhoneServer:
         self.stats: dict[str, int] = {"connects": 0, "refused": 0, "rate_limited": 0, "errors": 0,
                                       "dropped": 0, "dropped_replies": 0}
         self.rx: dict[str, int] = {}
+        # The program spectrum for the phones' RESPONSE view (progspec.py): its own engine
+        # connection, polled only while a phone asks; `spectrum_client` = tests' fake engine.
+        self._ps_json = ""
+        self._ps_seq = 0
+        self.progspec = ProgramSpectrum(
+            on_frame=self._on_program_frame,
+            url_of=lambda: str(getattr(getattr(self.ctl, "client", None), "url", "") or ""),
+            channels_of=lambda: program_channels(getattr(self.ctl, "profile", None)),
+            client_factory=spectrum_client)
 
     # ------------------------------------------------------------------ public
     @property
@@ -915,6 +932,7 @@ class PhoneServer:
         if not on:
             for c in list(self._clients):
                 self._spawn(self._close(c, CLOSE_OFF, "phone off"), "k1000-web-close")
+        self._sync_progspec()
         self._notify_ready()
         return on
 
@@ -1017,6 +1035,10 @@ class PhoneServer:
         tasks, self._tasks = list(self._tasks), []
         for t in tasks:
             t.cancel()
+        for c in self._clients:              # no handler finishing during the close restarts it
+            c.ps = False
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(self.progspec.close(), max(0.1, timeout / 2))
         waits: list[Any] = []
         for srv in self._ws_servers:
             with contextlib.suppress(Exception):
@@ -1351,6 +1373,9 @@ class PhoneServer:
         finally:
             self._clients.discard(c)
             self._dirty = True
+            if c.ps:
+                c.ps = False
+                self._sync_progspec()
             sender.cancel()
             with contextlib.suppress(BaseException):
                 await sender
@@ -1427,6 +1452,12 @@ class PhoneServer:
         if not urgent and not c.bucket.take():
             self.stats["rate_limited"] += 1
             return self._err(c, mid, "too fast")
+        if t == "progspec":                  # not a control: the RESPONSE view's program frames
+            on = msg.get("on")
+            if not isinstance(on, bool):
+                return self._err(c, mid, "progspec needs on: true or false")
+            self._set_progspec(c, on)
+            return {"t": "ack", "id": mid, "v": on} if mid is not None else None
         try:
             ok, value, why = self.bridge.apply(msg)
         except Exception as e:  # noqa: BLE001 - a controller error stays with this message
@@ -1445,6 +1476,30 @@ class PhoneServer:
                 return {"t": "err", "id": mid, "why": why, "v": value}
             return self._err(c, mid, why)
         return {"t": "ack", "id": mid, "v": value} if mid is not None else None
+
+    # ------------------------------------------------------------------ program spectrum
+    def _set_progspec(self, c: _Client, on: bool) -> None:
+        if on and not c.ps:
+            c.sent_ps = self._ps_seq         # frames from now on, never an old one
+        c.ps = on
+        self._sync_progspec()
+
+    def _sync_progspec(self) -> None:
+        """Poll the program spectrum while (and only while) a connected phone wants it."""
+        want = self._on and any(cl.ps for cl in self._clients)
+        if want and not self.progspec.active:
+            self._ps_json = ""
+        try:
+            self.progspec.set_active(want)
+        except RuntimeError:                 # no running loop (shutdown): nothing to poll
+            pass
+
+    def _on_program_frame(self, frame: dict[str, Any]) -> None:
+        self._ps_json = json.dumps(frame, allow_nan=False)
+        self._ps_seq += 1
+        for c in self._clients:
+            if c.ps:
+                c.kick.set()
 
     def _err(self, c: _Client, mid: Any, why: str) -> dict[str, Any] | None:
         if c.errors is not None and not c.errors.take():
@@ -1479,6 +1534,10 @@ class PhoneServer:
                     seq, text = self._meter_seq, self._meter_json
                     await self._send(c, text)
                     c.sent_meter = seq
+                if c.ps and c.sent_ps != self._ps_seq and self._ps_json:
+                    seq, text = self._ps_seq, self._ps_json
+                    await self._send(c, text)
+                    c.sent_ps = seq
         except (ConnectionClosed, asyncio.CancelledError):
             return
         except Exception:   # noqa: BLE001

@@ -4,9 +4,9 @@
    of every other file, so any change to the page installs a fresh cache. */
 "use strict";
 const BUILD = "__K1000_BUILD__";
-const CACHE = "k1000-" + BUILD;
+const CACHE = "k1000-v2-" + BUILD;   // v2: + rta.js (phone mic), landscape layout
 const SHELL = [
-  "/", "/app.js", "/app.css", "/manifest.webmanifest",
+  "/", "/rta.js", "/app.js", "/app.css", "/manifest.webmanifest",
   "/icons/icon-192.png", "/icons/icon-512.png", "/icons/maskable-192.png", "/icons/maskable-512.png",
 ];
 
