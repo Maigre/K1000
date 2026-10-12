@@ -88,6 +88,23 @@ Friday itself is `docs/02` §6: thump check, gain structure (Meyer limit LEDs, t
 
 - Spectrum view (CamillaDSP v5) with peak markers; tap-to-notch; supervised suggest-notch.
 - Noise generator + RTA on the measurement mic; later a transfer-function view; REW import/export.
+- **Phone mic as a walk-around measurement input** (Thomas, 2026-10-12). It is possible because the
+  PWA runs over HTTPS: browsers give a page the mic only in a secure context. Steps, each usable on
+  its own:
+  1. Phone RTA: the phone's own mic spectrum behind the PWA's EQ curve, with peak hold, for spotting
+     ringing and harshness. Mic processing is requested off (no AGC, noise suppression or echo
+     cancellation); check that Chrome on the Pixel 4a honours it.
+  2. A live response view, magnitude only: the phone's mic spectrum and the box's program spectrum
+     (CamillaDSP capture side), each averaged over ~10–20 s, then subtracted. That gives PA + room
+     without pink noise, and the long averaging makes time alignment unnecessary. Averaging while
+     walking the room gives a spatial average.
+  3. Phone mic calibration, once at the bench: the measurement mic on M4 input 1 and the phone side
+     by side on pink noise. The box stores the phone's correction curve. Phone mics are weak below
+     ~100 Hz, so sub alignment stays with the measurement mic.
+  4. Suggest-notch on that response: cuts only (dips are usually cancellations), proposed as a free
+     live PEQ, applied only on a tap.
+  5. Later, a time-aligned transfer function with coherence, the way Smaart and Open Sound Meter do it
+     (OSM is GPL-3, so its approach and code are compatible with K1000's licence).
 
 ## Phase 5 — Road-proofing
 
