@@ -1,0 +1,47 @@
+NOTICE: what this app is made of, and under which licences
+==========================================================
+
+K1000 for Android
+-----------------
+Part of K1000, https://github.com/Maigre/K1000 (the app's source is in android/; the complete
+corresponding source of every release is at that address).
+
+K1000 is free software: you can redistribute it and/or modify it under the terms of the GNU General
+Public License as published by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version. It is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License (GPL-3.0.txt, below).
+SPDX-License-Identifier: GPL-3.0-or-later
+
+The app carries the K1000 CA certificate (a public certificate, part of K1000).
+
+Third-party software in this app
+--------------------------------
+ZXing Android Embedded 4.3.0
+  https://github.com/journeyapps/zxing-android-embedded
+  Copyright (C) 2012-201 ZXing authors, Journey Mobile
+  Licensed under the Apache License, Version 2.0 (Apache-2.0.txt, below).
+
+ZXing ("Zebra Crossing") core 3.5.4
+  https://github.com/zxing/zxing
+  Copyright ZXing authors
+  Licensed under the Apache License, Version 2.0 (Apache-2.0.txt, below).
+  ZXing's NOTICE file, verbatim:
+
+--------------------------------------------------------------------------------
+NOTICES FOR BARCODE4J
+--------------------------------------------------------------------------------
+
+Barcode4J
+Copyright 2002-2010 Jeremias Märki
+Copyright 2005-2006 Dietmar Bürkle
+
+Portions of this software were contributed under section 5 of the
+Apache License. Contributors are listed under:
+http://barcode4j.sourceforge.net/contributors.html
+
+--------------------------------------------------------------------------------
+NOTICES FOR JCOMMANDER
+--------------------------------------------------------------------------------
+
+Copyright 2010 Cedric Beust cedric@beust.com

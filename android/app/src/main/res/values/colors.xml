@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<resources>
+    <color name="k1000_black">#FF000000</color>
+    <color name="k1000_amber">#FFFFB300</color>
+    <color name="k1000_text">#FFEEEEEE</color>
+    <color name="k1000_dim">#FFAAAAAA</color>
+    <color name="k1000_error">#FFFF6E40</color>
+    <color name="ic_launcher_background">#FF000000</color>
+</resources>

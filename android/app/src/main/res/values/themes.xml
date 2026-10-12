@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.K1000" parent="android:Theme.Material.NoActionBar">
+        <item name="android:colorAccent">@color/k1000_amber</item>
+        <item name="android:colorPrimary">@color/k1000_black</item>
+        <item name="android:windowBackground">@color/k1000_black</item>
+        <item name="android:statusBarColor" tools:ignore="NewApi">@color/k1000_black</item>
+        <item name="android:navigationBarColor">@color/k1000_black</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

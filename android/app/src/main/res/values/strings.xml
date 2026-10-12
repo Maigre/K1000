@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<resources>
+    <string name="app_name" translatable="false">K1000</string>
+
+    <!-- First run / change Wi-Fi -->
+    <string name="setup_title">Connect to K1000</string>
+    <string name="setup_text">On the box: SETUP › Phone shows the K1000 Wi-Fi code. Scan it once; the app keeps it and joins K1000 by itself from then on. Mobile data stays on for the rest of the phone.</string>
+    <string name="setup_scan">Scan the Wi-Fi QR code</string>
+    <string name="setup_or_type">Or type the password printed under the code:</string>
+    <string name="setup_ssid_hint">Wi-Fi name</string>
+    <string name="setup_password_hint">Wi-Fi password (e.g. abcd-efgh-jkmn)</string>
+    <string name="setup_join">Join K1000</string>
+    <string name="setup_system">I joined K1000 in Android\'s Wi-Fi settings (fallback: the app then follows that K1000 network, and no other Wi-Fi)</string>
+    <string name="setup_cancel">Cancel</string>
+    <string name="scan_prompt">Scan the Wi-Fi code on the K1000 screen</string>
+    <string name="err_no_camera">Without the camera the code cannot be scanned: type the password instead.</string>
+    <string name="scan_cancel">Cancel</string>
+    <string name="setup_about">About &amp; licences</string>
+    <string name="about_close">Close</string>
+    <string name="about_header">K1000 for Android %1$s\nFree software: GNU General Public License, version 3 or (at your option) any later version. No warranty.\nSource code: https://github.com/Maigre/K1000 (the app is in android/).\n\nThe notices and licences of everything in this app follow.</string>
+
+    <!-- Status -->
+    <string name="status_retry">Retry</string>
+    <string name="status_wifi">Turn Wi-Fi on</string>
+    <string name="status_change">Change K1000 Wi-Fi</string>
+    <string name="st_joining_title">Joining K1000…</string>
+    <string name="st_joining_text">The first time, Android asks to connect to “K1000”: tap Connect. Stay near the box.</string>
+    <string name="st_joining_system_text">Waiting for K1000. Join it in Android\'s Wi-Fi settings (Settings › Network &amp; internet › Internet). The app follows the K1000 network only (a 10.42.0.x address), never another Wi-Fi.</string>
+    <string name="st_not_connected_title">Not connected to K1000</string>
+    <string name="st_lost_text">The phone left the K1000 Wi-Fi. It rejoins by itself as soon as the box is in range again.</string>
+    <string name="st_lost_system_text">The phone left the K1000 Wi-Fi (it may be on another Wi-Fi now). Rejoin K1000 in Android\'s Wi-Fi settings.</string>
+    <string name="st_wifi_off_text">Wi-Fi is off. Turn it on: the app rejoins K1000 by itself.</string>
+    <string name="st_unavailable_text">K1000 was not found, or the connection was declined. Is the box on, with its Wi-Fi on (SETUP › Phone)?</string>
+    <string name="st_request_failed">Android refused to look for K1000: %1$s</string>
+    <string name="st_page_error_text">The phone is on the K1000 Wi-Fi, but the box\'s page did not answer (%1$s). Is K1000 running, with the phone page on?</string>
+    <string name="st_blocked_title">K1000 blocked on this phone</string>
+    <string name="st_blocked_text">The phone is on the K1000 Wi-Fi, but Android does not let this app use it: usually a VPN that apps may not bypass (or “Block connections without VPN”). Turn the VPN off while you use K1000; the app tries again by itself every few seconds.</string>
+    <string name="st_tls_title">Not the K1000 box</string>
+    <string name="st_tls_text">The box\'s certificate was refused: %1$s. The app talks only to a box with a certificate from the K1000 CA.</string>
+    <string name="st_permission_title">Allow local network access</string>
+    <string name="st_permission_text">Android needs your permission for K1000 to reach the box on its own Wi-Fi (Nearby devices › local network). Tap Retry to allow it.</string>
+    <string name="st_broken_title">This K1000 app is broken</string>
+    <string name="st_broken_text">Its built-in K1000 certificate cannot be used (%1$s). Install a correct build.</string>
+</resources>

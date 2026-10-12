@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later
+
+     TLS trust for the K1000 app. The K1000 CA (res/raw/k1000_ca.pem, public certificate only) is
+     trusted for the box's two names and for nothing else, and they trust nothing but it: no system
+     CA, no user CA. The CA itself is name-constrained to 10.42.0.0/24 + k1000.home.arpa.
+     Every other host trusts NO CA at all (empty base trust anchors): the app only ever talks to
+     the box, and this also covers what WebView's request interception does not see (WebSockets).
+     No cleartext anywhere.
+     Custom trust anchors also exempt these names from certificate transparency (Android 17+). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors />
+    </base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">10.42.0.1</domain>
+        <domain includeSubdomains="false">k1000.home.arpa</domain>
+        <trust-anchors>
+            <certificates src="@raw/k1000_ca" />
+        </trust-anchors>
+    </domain-config>
+</network-security-config>
