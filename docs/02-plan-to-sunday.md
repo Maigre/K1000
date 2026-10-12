@@ -27,8 +27,9 @@ Thomas's answers (`requirements.md` §5) tighten `01-approaches-review.md` into 
     there. The monitor-mix / input-monitor must stay off, or raw input leaks into outs 1-2 past the
     DSP.
   - Alternative if the M4 can't arrive in time: Scarlett 4i4 Gen 4 (needs its PSU on a Pi 4).
-- **D-004 — Engine for v0: CamillaDSP v4.1.3** (stable). v5 (beta since 2026-10-08) waits until
-  after the gig: it brings the spectrum, but not onto a stage on Sunday.
+- **D-004 — Engine: CamillaDSP v5 beta** (latest beta at install, frozen before Friday). *Decided
+  2026-10-12 by Thomas* over the v4.1.3 recommendation: no migration later, spectrum available early;
+  the soak test and the bypass kit carry the beta risk.
 
 ## 3. v0 scope
 
@@ -68,6 +69,24 @@ laptop for the system EQ at the tune.
 - State is saved on every change, to a writable location.
 - systemd restarts CamillaDSP and the control service if either dies.
 
+**Audio devices: two profiles, one pipeline.** Development starts on the Zynthian's own HiFiBerry
+board (2 in / 2 out) while the MOTU M4 is being bought, then moves to the M4 without touching the
+processing:
+
+| Profile | Device (by ALSA card name, never number) | Output mapping |
+|---|---|---|
+| `dev` | Zynthian HiFiBerry board (exact board/overlay checked on the box) | 4 logical outs → 2 physical: each side = top + sub summed (full-range audition), or a dev switch to hear tops or subs alone |
+| `m4` | MOTU M4 | 4 → 4: Sub L/R, Top L/R |
+
+- Everything up to the logical outputs is identical, so the control service doesn't know which
+  profile runs. Only the device block and the last mixer differ.
+- Switching profiles is a device change, so CamillaDSP does a full stop/start (a second of silence).
+  That's fine on the bench, never during a show.
+- **Gig rule: the `m4` profile is pinned.** If the M4 is missing at boot, the screen says so. There
+  is no silent fallback to the HiFiBerry, which isn't wired to the speakers.
+- The two boards are never used together (one for capture, the other for playback): two clocks would
+  need resampling and would drift.
+
 ### Doesn't (after Sunday)
 
 Spectrum and suggest-notch (v5), the box's own Wi‑Fi AP, a read-only root, an output mute relay, a
@@ -77,8 +96,8 @@ presets UI, and a final enclosure.
 
 | Day | Who | What |
 |---|---|---|
-| **Mon 12** | Thomas | get the interface (MOTU M4 ~€150 offer, D-003); flash **Raspberry Pi OS Lite 64-bit on a new SD card** (D-005) — hostname `k1000`, SSH with his public key, network; keep the Zynthian card aside |
-| Tue 13 | Claude, on the box over SSH | display + encoders on Pi OS (port the Zynthian overlays); CamillaDSP v0 pipeline (on the Zynthian's own 2-out card until the M4 is in) |
+| **Mon 12** | Thomas | (M4 pickup moved to Tue 13, D-003); flash **Raspberry Pi OS Lite 64-bit on a new SD card** (D-005) — hostname `k1000`, SSH with his public key, network; keep the Zynthian card aside |
+| Tue 13 | Thomas: gets the M4 · Claude, on the box over SSH | display + encoders on Pi OS (port the Zynthian overlays); CamillaDSP v5 beta + v0 pipeline on the `dev` profile (HiFiBerry), `m4` profile ready |
 | Wed 14 | Claude | control service (encoders ↔ CamillaDSP websocket), state persistence, mute-at-boot, systemd units, CamillaGUI compact view |
 | Thu 15 | Thomas: HPO prep + Pauline call (pm) · Claude | M4 plugged → switch device, calibrate gains; **overnight soak** with an xrun log |
 | **Fri 16** | Thomas | **rig test + mic tune** (§6) — same day as HPO episode 2, where he is support only |
@@ -114,4 +133,4 @@ label K1000's outputs. Any doubt during the gig means re-patching in a minute.
 1. The interface: MOTU M4 (~€150 offer) — D-003.
 2. The fresh Pi OS card online with SSH (key-based; nothing secret goes into this repo).
 3. ~~Friday vs HPO episode 2~~ — answered: same day, Thomas is support only at HPO.
-4. CamillaDSP v4.1.3 vs v5 beta — D-004.
+4. ~~CamillaDSP v4.1.3 vs v5 beta~~ — answered: v5 beta (D-004).

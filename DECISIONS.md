@@ -36,7 +36,7 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   holds: **M4**, checked before buying (all 4 outs, scratch-free pots, solid USB-C, firmware version).
 - **Decision**: *pending Thomas.*
 
-## D-004 — Engine for v0: CamillaDSP v4.1.3 (stable) · proposed 2026-10-12
+## D-004 — Engine for v0: CamillaDSP v5 beta · decided 2026-10-12
 
 - **Why**: v5.0.0-beta.1 (2026-10-08) brings the spectrum analyzer and lookahead limiter, but a beta
   does not go on a gig on 2026-10-18. Move to v5 after the first outing (configs and websocket client
@@ -47,7 +47,11 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   breaking config/websocket changes, no pycamilladsp v5 yet, CamillaGUI v5 backend rewritten in
   Rust 2 days ago — new code on every layer we'd stand on during the gig. The control service is
   written so the v5 move is a small adapter change.
-- **Decision**: *pending Thomas.*
+- **Decision**: **CamillaDSP v5 beta** (latest beta at install time, then frozen for the gig) —
+  Thomas, 2026-10-12, over the v4.1.3 recommendation. Consequences: config written in the v5 format;
+  the control service speaks the v5 websocket directly (no pycamilladsp v5 yet); CamillaGUI v5 beta
+  for the phone; the spectrum becomes available early (stretch, not v0 scope); the soak test and the
+  bypass kit carry the beta risk.
 
 ## D-005 — Base OS: fresh Raspberry Pi OS Lite (64-bit) · decided 2026-10-12
 
