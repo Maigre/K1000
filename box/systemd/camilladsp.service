@@ -1,0 +1,62 @@
+# K1000 audio engine. Installed to /etc/systemd/system/ by box/install.sh.
+#
+# Why it looks like this:
+# - `-m -g-40`: the engine always boots MUTED at -40 dB; k1000.service ramps it in. The negative
+#   gain must touch the flag (`-g-40`): `-g -40` is parsed as an unknown option.
+# - Audio never depends on the UI: this unit does not need k1000.service (nor /opt/k1000: the start
+#   logic is inline here); if k1000 dies the engine keeps playing what it has.
+# - ONE lifecycle, always started from the file: the shell waits, with no websocket yet, until
+#   /var/lib/k1000/active.yml passes `camilladsp -c`, then execs the engine on it. k1000 owns that
+#   file and (re)writes it when it is missing or invalid. There is deliberately no `-w` fallback:
+#   in wait mode a lost or missing device leaves camilladsp alive but Inactive forever (systemd sees
+#   nothing to restart), whereas started from a file it EXITS (code 0) whenever processing stops,
+#   and Restart=always brings it back muted from active.yml.
+# - So a missing audio device (M4 not plugged) means: exit 0 at start, retry every second, forever
+#   (StartLimitIntervalSec=0; the default 5 starts / 10 s would give up for good). Plugging the M4
+#   in brings audio back with no human action. There is no websocket while it is absent.
+# - The log must never take the audio down: camilladsp panics (exit 101, no audio) when its `-o`
+#   file cannot be written, so `-o` is passed only when /var/log/k1000 is a writable directory;
+#   otherwise the engine logs to stderr, i.e. the journal.
+# - Real-time: camilladsp promotes its audio threads to SCHED_FIFO (priority 10 by default);
+#   CAP_SYS_NICE + LimitRTPRIO allow that as user k1000 (log must not say "could not get real time
+#   priority"). LimitMEMLOCK lets it lock memory.
+# - Log: with --log_rotate_size the live file is /var/log/k1000/camilladsp_rCURRENT.log; every start
+#   rotates the previous one to camilladsp_r<date>.log, 3 kept.
+# - `$$` is systemd's escape for a literal `$` handed to the shell; `%` would be a systemd specifier,
+#   so the script has none. The "waiting" line goes to the journal once, then every 30 s.
+
+[Unit]
+Description=K1000 CamillaDSP engine (boots muted)
+Documentation=file:///opt/k1000/README.md
+After=sound.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=k1000
+Group=audio
+ExecStart=/bin/sh -c '\
+  cfg=/var/lib/k1000/active.yml; logdir=/var/log/k1000; n=0; \
+  until out=$$(/usr/local/bin/camilladsp -c "$$cfg" 2>&1); do \
+    if [ "$$n" -eq 0 ]; then echo "k1000: waiting for a valid $$cfg (k1000.service writes it): $$(echo "$$out" | grep -v " INFO " | tail -n 1)" >&2; fi; \
+    n=$$((n + 1)); if [ "$$n" -ge 30 ]; then n=0; fi; \
+    sleep 1; \
+  done; \
+  set -- -m -g-40 -p 1234 -a 127.0.0.1; \
+  if [ -d "$$logdir" ] && [ -w "$$logdir" ]; then \
+    set -- "$$@" -o "$$logdir/camilladsp.log" --log_rotate_size 1000000 --log_keep_nbr 3; \
+  else \
+    echo "k1000: $$logdir is not a writable directory, the engine logs to the journal only" >&2; \
+  fi; \
+  exec /usr/local/bin/camilladsp "$$@" "$$cfg"'
+AmbientCapabilities=CAP_SYS_NICE
+LimitRTPRIO=95
+LimitMEMLOCK=infinity
+Restart=always
+RestartSec=1
+TimeoutStopSec=5
+# The engine is the last thing the kernel should kill under memory pressure.
+OOMScoreAdjust=-900
+
+[Install]
+WantedBy=multi-user.target

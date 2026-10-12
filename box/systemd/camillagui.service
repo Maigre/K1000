@@ -1,0 +1,35 @@
+# CamillaGUI v5 (phone compact view + laptop editor) on http://<box>:5005/gui/index.html.
+# Installed by box/install.sh; binary + config in /opt/camillagui (config/ comes from box/camillagui/).
+#
+# Why it looks like this:
+# - It is a convenience surface: audio and the knobs never depend on it, so it only orders itself
+#   after the engine and runs at a lower CPU priority (Nice) than everything else.
+# - It listens on all interfaces with no authentication, so it is sandboxed and can write NOTHING:
+#   read-only system, no /home, and no ReadWritePaths. Its config_dir (/opt/camillagui/files) is an
+#   empty root-owned folder, so its file API (list, upload, delete, rename, Save) never reaches
+#   K1000's state in /var/lib/k1000 (state.json holds the system tune, active.yml the engine's boot
+#   config). The GUI changes the engine only, through Apply; k1000 adopts and saves the result.
+# - Restart=always + StartLimitIntervalSec=0, like the other K1000 units.
+
+[Unit]
+Description=K1000 CamillaGUI (web UI on port 5005)
+Documentation=file:///opt/k1000/README.md
+After=network.target camilladsp.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=k1000
+Group=k1000
+ExecStart=/opt/camillagui/camillagui -c /opt/camillagui/config/camillagui.yml
+Restart=always
+RestartSec=2
+TimeoutStopSec=5
+Nice=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

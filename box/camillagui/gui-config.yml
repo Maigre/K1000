@@ -1,0 +1,41 @@
+---
+# CamillaGUI v5 front-end settings for K1000 (installed next to camillagui.yml).
+# The GUI re-reads this file on every page load; a syntax error stops the backend at start.
+#
+# Phone: open http://<box>:5005/gui/index.html?compactview
+# The phone is for LEVELS only (plan §3): Main volume, mute and the meters. Those are runtime
+# commands (/api/param/volume, /api/param/mute); they never send a config.
+#
+# Why there are NO custom_shortcuts: every shortcut move POSTs the WHOLE config the page loaded
+# when it was opened (CamillaGUI v5 beta.2 never refreshes it). That silently reverts everything
+# changed since then: knob moves (a feedback notch: the howl comes back), the system EQ applied at
+# the tune (k1000 then adopts and saves the reverted values), a mono_subs change (a pipeline
+# rebuild at show time) and, from a tab left open across a profile change, the devices (the engine
+# restarts onto the other card; the HiFiBerry is not wired to the PA). PEQ, Lo-Cut and sub delay
+# live on the knobs. Adding a shortcut back is a decision for Thomas, knowing all of the above.
+#
+# The Aux1/Aux2 faders (subs/tops, i.e. the balance) are not in the compact view either; the
+# normal view's side panel has them ("Aux faders"), as runtime commands.
+page_title: K1000
+# v0 runs one clock with no resampling and no multithreading: hide what does not apply.
+hide_capture_samplerate: true
+hide_silence: false
+hide_capture_device: false
+hide_playback_device: false
+hide_rate_monitoring: true
+hide_multithreading: true
+# Laptop editor: explicit Apply, never automatic (Apply also sends the whole config: reload the
+# page right before editing, see README).
+apply_config_automatically: false
+save_config_automatically: false
+status_update_interval: 1000
+# Main fader slider: -80..0 dB, the same as RANGES["master_db"] (0 dB is also the engine's volume_limit).
+volume_range: 80
+volume_max: 0
+spectrum_n_bins: 60
+spectrum_max_rate: 10
+spectrum_min_freq: 20
+spectrum_max_freq: 20000
+spectrum_min_db: -100
+spectrum_max_db: 0
+custom_shortcuts: []

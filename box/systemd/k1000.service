@@ -1,0 +1,37 @@
+# K1000 control service (knobs, screen, state, persistence). Installed by box/install.sh.
+#
+# Why it looks like this:
+# - Wants/After camilladsp: start the engine first, but k1000 copes with the engine being down
+#   (it shows ENGINE DOWN and re-applies when the websocket comes back), so no Requires=.
+# - The "+" prefix runs the ExecStartPre as root: unbinding the Linux framebuffer console from the
+#   ZynScreen (vtcon "frame buffer device") needs root, and without it the console's text and
+#   cursor draw over the UI. The loop matches by name so it survives vtcon renumbering.
+# - User k1000 with groups i2c (MCP23017 knobs), gpio (interrupt lines), video (/dev/fb0),
+#   audio (ALSA probing) instead of root.
+# - PYTHONUNBUFFERED: log lines reach the journal immediately (journalctl -u k1000 -f).
+#   PYTHONDONTWRITEBYTECODE: /opt/k1000 is root-owned and read-only for k1000.
+# - Restart=always + StartLimitIntervalSec=0: a crash never leaves the box without its control
+#   surface; audio itself does not depend on this service.
+
+[Unit]
+Description=K1000 control service (knobs, screen, state)
+Documentation=file:///opt/k1000/README.md
+Wants=camilladsp.service
+After=camilladsp.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=k1000
+Group=k1000
+SupplementaryGroups=i2c gpio video audio
+WorkingDirectory=/opt/k1000
+Environment=PYTHONPATH=/opt/k1000 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+ExecStartPre=+/bin/sh -c 'for v in /sys/class/vtconsole/vtcon*; do if grep -q "frame buffer" "$$v/name"; then echo 0 > "$$v/bind"; fi; done; exit 0'
+ExecStart=/usr/bin/python3 -m k1000
+Restart=always
+RestartSec=1
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target

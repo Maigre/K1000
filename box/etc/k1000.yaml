@@ -1,0 +1,45 @@
+# /etc/k1000/k1000.yaml - K1000 box settings (read at start of the k1000 service).
+# Missing or broken file = built-in defaults (same values as below). Edit, then restart k1000.
+
+# Device profile. GIG RULE: `m4` (pinned - if the MOTU M4 is missing the screen says so, no
+# fallback). `dev` = the Zynthian's HiFiBerry board, bench only (not wired to the speakers).
+profile: dev
+
+profiles:
+  dev:
+    capture_device: hw:sndrpihifiberry
+    playback_device: hw:sndrpihifiberry
+    capture_channels: 2
+    playback_channels: 2
+    capture_format: S32_LE
+    playback_format: S32_LE
+    input_map: [0, 1]            # program L, R = capture channels (0-based)
+    probe: false                 # facts proven on the box; never opened by the probe
+  m4:
+    capture_device: hw:M4
+    playback_device: hw:M4
+    capture_channels: null       # null = probe the M4 (assumed 4 if it cannot be probed)
+    playback_channels: null      # null = probe (assumed 4)
+    capture_format: null         # null = best format the device offers (S32_LE first)
+    playback_format: null
+    input_map: [2, 3]            # program L, R = M4 line inputs 3-4 (0-based capture channels)
+    output_map: [TopL, TopR, SubL, SubR]   # physical out1..out4 <- logical channel
+    probe: true
+
+# Physical -> logical controls (MCP23017 indices, see docs/03-v0-architecture.md §1).
+# Switch positions are unknown until the HWTEST page identifies them: fix them here.
+# Keys as read by k1000/ui/input_map.py (ControlMap.from_cfg); invalid entries -> these defaults.
+controls:
+  encoders: [0, 1, 2, 3]         # E1..E4 = physical encoder index
+  pushes: [0, 1, 2, 3]           # push of E1..E4 = physical switch index (sw0..sw3)
+  buttons: [4, 5, 6, 7]          # B1..B4 = physical switch index (sw4..sw7)
+  reverse: [false, false, false, false]   # flip an encoder's direction
+
+engine:
+  url: ws://127.0.0.1:1234
+  boot_gain_db: -40.0            # Main fader at connect, before the ramp to the saved master
+  boot_ramp_s: 3.0
+
+paths:
+  state: /var/lib/k1000/state.json
+  active_config: /var/lib/k1000/active.yml

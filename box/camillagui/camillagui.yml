@@ -1,0 +1,36 @@
+---
+# CamillaGUI v5 backend settings for K1000. install.sh copies this to
+# /opt/camillagui/config/camillagui.yml (gui-config.yml must sit next to it).
+#
+# Why these values:
+# - The engine's websocket is local only (camilladsp -a 127.0.0.1 -p 1234); the GUI is the one
+#   network-facing surface, on every interface, port 5005 (phone on the venue Wi-Fi, laptop).
+# - config_dir / coeff_dir are an EMPTY root-owned folder that the sandboxed service cannot write
+#   (camillagui.service has no ReadWritePaths). The GUI's file API is unauthenticated: pointed at
+#   /var/lib/k1000 it could list, delete, rename or overwrite state.json (the system tune) and
+#   active.yml. Here it has nothing to touch: the Files tab and the phone's quick config switch
+#   stay empty (a listed file would be one tap from replacing the whole engine config), and Save
+#   fails on purpose. The GUI loads its start config from the engine ("Loaded from DSP"), and
+#   changes reach the engine only through Apply; k1000 adopts them and saves them itself.
+# - camilladsp runs without a statefile (it boots from active.yml, muted), and the active file
+#   lives outside config_dir, so on_get_active_config is unset: the GUI then names the config
+#   from the engine's own config path ("active.yml"). on_set_active_config stays unset on
+#   purpose: the GUI must not be able to point the engine's boot at another file.
+# - With log rotation on, the engine's live log file is camilladsp_rCURRENT.log.
+camilla_host: "127.0.0.1"
+camilla_port: 1234
+bind_address: "0.0.0.0"
+port: 5005
+config_dir: "/opt/camillagui/files"
+coeff_dir: "/opt/camillagui/files/coeffs"
+default_config: null
+statefile_path: null
+log_file: "/var/log/k1000/camilladsp_rCURRENT.log"
+on_get_active_config: null
+on_set_active_config: null
+supported_capture_types: null
+supported_playback_types: null
+# The Pi also runs the audio: meters at 15 Hz are plenty on a phone.
+level_smoothing_ms: 200
+level_max_update_hz: 15
+allow_absolute_paths: false
