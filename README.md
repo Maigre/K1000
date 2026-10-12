@@ -25,5 +25,6 @@ place, from a portable surface.
 |---|---|
 | `docs/requirements.md` | What K1000 must do, as currently understood, and the open questions |
 | `docs/01-approaches-review.md` | First review of buy / build approaches |
+| `docs/02-plan-to-sunday.md` | v0 plan for the first gig (2026-10-18) |
 | `DECISIONS.md` | Decision log |
 | `ROADMAP.md` | Phases and progress |

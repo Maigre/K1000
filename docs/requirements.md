@@ -1,80 +1,83 @@
-# K1000 — requirements (draft 0, 2026-10-12)
+# K1000 — requirements (draft 1, 2026-10-12)
 
-What K1000 must do, as understood from Thomas's first brief. **Draft**: every line marked *(?)* is an
-assumption waiting for an answer (see "Open questions" at the bottom).
+What K1000 must do. Draft 0 (first brief) → **draft 1** after Thomas's answers of 2026-10-12
+(§5). Remaining assumptions are marked *(?)*.
 
 ## 1. The rig it drives
 
 | Box | Qty | Notes |
 |---|---|---|
-| Meyer USW (USW-1P *(?)*) | 2 | self-powered sub, balanced XLR line in + loop out |
-| Meyer UPA-1P | 2–4 | self-powered 2-way top, balanced XLR line in + loop out |
+| Meyer **USW-1P** (confirmed) | 2 | self-powered 2×15″ sub, **built-in low-pass**, balanced XLR in + loop |
+| Meyer UPA-1P | 2–4 | self-powered 12″ + horn, balanced XLR in + loop; 3rd/4th box daisy-chained off the loop for now |
 
 The boxes already carry their own amplification, crossover and protection. K1000 does **system**
-processing in front of them, the job Meyer's LD-1A / LD-3 line drivers and later the Galileo did.
+processing in front of them, the job Meyer's LD-1A / LD-2 line drivers and later the Galileo did.
+Meyer designed this pair to take the **same full-range signal** (see `01-approaches-review.md` §1).
 
 ## 2. Use context — what makes this not a standard PA head
 
 - **Mobile and roaming**: the system is on wheels, changes place during a day/show, often outdoor.
-- **Measurement is the exception**: a pre-show measured tune is sometimes possible, often not.
+- **Measurement is the exception**: a pre-show measured tune is sometimes possible (Thomas owns a
+  measurement mic), often not.
 - **Correction is live**: notch, shelve, rebalance subs/tops *during* the show, by ear, depending on
   where we are, how it sounds and who plays.
-- Operator: Thomas *(?)*, possibly walking around the audience area while adjusting.
+- Mains (230 V) is always available. **No rack** in the rig.
 
 ## 3. Functions
 
 ### Inputs
-- **I1–2**: stereo line (main program) — must have.
-- Option: a 2nd stereo line, or 1–2 mic inputs (announcements, and/or the measurement mic) *(?)*.
+- **I1–2**: stereo line (main program) — must.
+- A measurement-mic input (phantom) — should (pre-show tune).
+- 2nd stereo line / mics — not needed now.
 
-### Outputs (balanced line, XLR)
-- Must: **Sub L, Sub R, Top L, Top R** (4).
-- Probably wanted: **Top 2 L/R** (6) so a 2nd pair of UPA-1P can be a fill/delay pair with its own
-  delay, gain and EQ instead of daisy-chained off the loop out *(?)*.
-- Mono-sub option (sum L+R to both subs) — common outdoors *(?)*.
+### Outputs (balanced line)
+- **4 outputs: Sub L, Sub R, Top L, Top R** — enough for now (confirmed). Extra UPA-1P pairs ride on
+  the loop outs. 6 outs stays a later option, not a requirement.
+- Mono-sub option (sum L+R to both subs) *(?)*.
 
 ### Processing
 | Where | What | Priority |
 |---|---|---|
-| Input | input gain/trim, input select/mix, mono sum switch | must |
+| Input | input trim, mono sum switch | must |
 | Master | **master level**, mute, **sub↔top balance** as one macro control | must |
+| Tops | **switchable Lo-Cut** (LD-2 style, 12 dB/oct, ~100–160 Hz) | must |
+| Subs | **polarity**, **delay** (subs off-plane from tops); *no extra low-pass by default* | must |
 | System EQ layer | parametric EQ set at tune time (measured or by ear), stored per preset | must |
-| **Live EQ layer** | separate, quick notches/shelves on top of the system EQ; one-tap "reset live" | must |
-| Per output | gain, mute, polarity, delay (ms / m), HPF/LPF (LR24/LR48…), a few PEQ bands | must |
-| Per output | peak limiter (keep the boxes' own limiters from working) | nice |
+| **Live EQ layer** | separate notch/shelf slots on top of the system EQ; one-move "reset live" | must |
+| Per output | gain, mute, polarity, delay | must |
+| Per output | peak limiter (keep the boxes' own limiters idle) | nice |
 | Global | presets/snapshots (by place type), A/B compare | should |
-| Measurement | pink noise out, mic in, RTA / transfer function view, EQ suggestion | later |
-| Live assist | spectrum view with peak markers → "notch here" in one move | should |
+| Measurement | noise out, mic in, RTA / transfer function, EQ suggestion | later |
+| Live assist | spectrum view with peak markers → "notch here" in one move | later |
 
 ### Control
-- **Physical**: at least master level, sub/top balance, mute, live-EQ access — usable in the dark
-  and in sunlight, without a phone.
-- **Remote**: phone or small tablet over Wi‑Fi, so the operator can listen from the audience area
-  while adjusting.
-- Either surface alone must be enough to run a show *(?)*.
+- **Knobs first** (confirmed): the device's own encoders + screen run the show without a phone —
+  master, balance, mute, live EQ, usable in the dark and in sunlight.
+- **Phone second, Android before iOS**: over Wi‑Fi, to adjust while listening from the audience area.
 
 ## 4. Non-functional
 
-- **Compact, road-proof**, fits the rig's transport (rack? case?) *(?)*.
-- **Fast to sound** after power-on, and **survives power cuts** (no corrupted state).
-- **No thump** on power-up/down into the self-powered boxes (or a documented power order).
-- **Fails safe**: a crashed UI must never take the audio with it.
-- Latency low enough to be irrelevant live (≤ ~5 ms) *(?)*.
-- Sound quality on par with the source chain: balanced outs, +4 dBu nominal, enough headroom.
+- **Compact**: smaller than a 19″ rack unit, carried loose or in a small case (confirmed: no rack).
+- **Robust for use on the move**: survives transport, power cuts and a crashed UI without taking the
+  audio down; fast to sound after power-on.
+- **Audio quality to match the Meyer boxes**: balanced outputs, low noise, enough headroom (the boxes
+  start limiting near 0 dBV, so headroom is easy; noise and transients are the real criteria).
+- **No thump** on power-up/down into the self-powered boxes (mute-at-boot + documented power order).
+- **Budget**: compact — spend where it buys robustness and audio quality, not features.
+- Latency irrelevant live (≤ ~10 ms) *(?)*.
 
-## 5. Open questions (for Thomas)
+## 5. Answers (2026-10-12)
 
-1. **Sub model**: USW-1P, or another USW variant? (Changes the useful crossover region.)
-2. **Outputs**: 4 or 6? Stereo or mono subs? Ever a sub array (end-fire / cardioid) or delay towers?
-3. **Inputs**: what feeds it — a mixer, DJ, player? Are mic inputs really wanted, and for what?
-4. **Build vs buy**: is building K1000 part of the goal (a tool you want to own and hack), or is the
-   *function* the goal and a good off-the-shelf box is fine?
-5. **Budget** envelope (rough: < €300 / < €800 / < €2 000 / more)?
-6. **Form factor**: is there a 19" rack in the rig (1U / half-rack welcome), or a separate case? Power:
-   always mains, or sometimes battery/generator?
-7. **Control posture**: phone-first with a few hard controls, or hardware-first with the phone as a bonus?
-   Which phone/tablet (iOS / Android)?
-8. **Measurement**: do you own a measurement mic? Preferred tool (Smaart, REW, Open Sound Meter, phone app)?
-9. **Zynthian V4**: does it boot today, which Pi (4 GB?), and is it truly free to repurpose?
-10. **Repo licence** (public repo has none yet): MIT, GPL-3, AGPL…?
-11. **Date**: is there an outing you want K1000 on (sets whether a bought hedge is needed meanwhile)?
+| # | Question | Answer |
+|---|---|---|
+| 1 | Sub model | **USW-1P** |
+| 2 | Outputs | **4 is enough for now** |
+| 3 | Inputs | stereo line; mic input for measurement (owns a mic) |
+| 4 | Build vs buy | likes **DIY and compactness**; would consider a ready-made box if it truly covers the need |
+| 5 | Budget | **compact**, but **robust** (reliable on the move) and **high audio quality** to match Meyer |
+| 6 | Form factor / power | **230 V available**, **no rack**; target smaller than 19″ width |
+| 7 | Control posture | **knobs first**; phone: **Android** before iOS |
+| 8 | Measurement mic | **yes** |
+| 9 | Zynthian V4 state | *open* — needed to start the build |
+| 10 | Repo licence | *open* |
+| 11 | Date | **testable Friday 2026-10-16, gig Sunday 2026-10-18** |

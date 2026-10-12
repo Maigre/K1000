@@ -9,8 +9,10 @@ Answer the open questions (`docs/requirements.md` §5), pick the lead(s) (D-002)
 
 - 2026-10-12 — project created; first approaches review: `docs/01-approaches-review.md`
   (proposed lead: CamillaDSP on a Pi, prototyped on the owned Zynthian V4 + a 4-out USB interface).
+- 2026-10-12 — Thomas's answers → requirements draft 1; plan with a date: `docs/02-plan-to-sunday.md`
+  (test Fri 16 / gig Sun 18 → v0 minimal, stable, bypassable). D-002..D-004 proposed.
 
-## Phase 1 — Bench proof *(if D is chosen)*
+## Phase 1 — v0 for the 2026-10-18 gig *(if D is chosen)* — plan: `docs/02-plan-to-sunday.md`
 
 - Zynthian V4 (or any Pi 4/5) + class-compliant USB interface + CamillaDSP (v4.1.3, eye on v5).
 - Fixed-slot pipeline: Lo-Cut, system PEQ, live notch slots, delay, polarity, Aux faders per group.
