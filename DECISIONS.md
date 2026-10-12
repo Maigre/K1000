@@ -67,3 +67,47 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
 - **Fallback**: if the screen fights past Tuesday, boot the ZynthianOS card with its services
   disabled.
 
+
+## D-006 — Reaching Lite: converge the card in place now, fresh-Lite gig card via a bootstrap · proposed 2026-10-12
+
+- **Context**: D-005 said Lite, but the card was flashed with the **desktop** image ("Raspberry Pi
+  reference 2026-10-06", pi-gen `b2cd98a9`, `stage4`; 1649 packages). Thomas wants a minimal Lite with
+  the best performance and boot time. At that commit the desktop is exactly Lite (`stage2`) plus ten
+  metapackages: `rpd-preferences rpd-theme rpd-wayland-core rpd-x-core` (stage3) and `rpd-applications
+  rpd-developer rpd-graphics rpd-utilities rpd-wayland-extras rpd-x-extras` (stage4).
+- **Proposal**:
+  1. **Now, remotely** — purge those ten + `autoremove --purge`. This converges to the same build's
+     Lite package set. Simulate first, and refuse any plan that touches ssh, NetworkManager or the
+     kernel/firmware.
+  2. **Then tune the boot beyond Lite**, since performance and boot time come from what *runs*, not
+     what is installed. Lite still ships cloud-init (2.6 s on k1000's critical path),
+     NetworkManager-wait-online (4.3 s), bluetooth, avahi, rpcbind/nfs, the apt/man-db timers, a
+     boot-time EEPROM check and the swap resize.
+  3. **Later, with Thomas at the box** — write a fresh Lite on a second card and run
+     `box/bootstrap.sh` (fresh Lite + key → complete K1000). That proves the build is reproducible
+     and gives a **spare card for the gig case**. Then pick which card is primary.
+- **Why not only a fresh flash now**: it needs Thomas's hands on the card and repeats the bring-up,
+  and the end state is the same package set.
+
+## D-007 — Phone access: the box's own Wi-Fi AP, QR code on screen, captive portal → a K1000 phone page · proposed 2026-10-12
+
+- **Context**: at gigs there is no house network. Thomas's idea: the Pi runs an access point, the
+  screen shows a QR code to join it, and a captive portal opens the interface. The plan had put the
+  box's own AP after Sunday (`docs/02-plan-to-sunday.md` §3).
+- **Proposal** (Thomas's idea, with refinements):
+  - **AP**: NetworkManager on the onboard `wlan0`; `eth0` is untouched. WPA2 with a random password
+    that is shown only on the box screen, so physical access is the authorisation. Country FR,
+    5 GHz ch 36 by default.
+  - **QR**: a Wi-Fi QR (`WIFI:T:WPA;S:…;P:…;;`), which Android 10+ joins in one tap. Once a phone
+    holds a DHCP lease, the screen shows a second QR with the URL.
+  - **Captive portal**: dnsmasq answers every name with the box, and a small HTTP server on :80 makes
+    Android raise "Sign in to network". This is a bonus, not the main path: Android's sign-in window
+    is a stripped browser that may close, and a "no internet" network can push traffic to mobile
+    data. The robust gig setup is the phone in airplane mode with Wi-Fi on.
+  - **The page**: K1000's own, served by the k1000 service (python3-websockets, no new dependency),
+    driving the same controller as the knobs (same clamps, same click-safe moves, one state). It is
+    not CamillaGUI, which POSTs whole configs and can undo knob work. Scope: MAIN (master, mute,
+    balance) and LIVE EQ (notch slots: frequency/gain/Q). B2 on the box stays the master mute, and a
+    SETUP toggle switches the phone off.
+- **Gate**: built before Friday, alongside the integration. Go/no-go at the 16/10 rig test; if it is
+  not proven there, it is off on Sunday and the knobs carry the show.
