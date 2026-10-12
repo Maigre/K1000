@@ -101,8 +101,8 @@ go/no-go at the Friday rig test.)
 | **Mon 12** | Thomas | (M4 pickup moved to Tue 13, D-003); flash **Raspberry Pi OS Lite 64-bit on a new SD card** (D-005) — hostname `k1000`, SSH with his public key, network; keep the Zynthian card aside |
 | Tue 13 | Thomas: gets the M4 · Claude, on the box over SSH | display + encoders on Pi OS (port the Zynthian overlays); CamillaDSP v5 beta + v0 pipeline on the `dev` profile (HiFiBerry), `m4` profile ready |
 | Wed 14 | Claude | control service (encoders ↔ CamillaDSP websocket), state persistence, mute-at-boot, systemd units, CamillaGUI compact view |
-| Thu 15 | Thomas: HPO prep + Pauline call (pm) · Claude | M4 plugged → switch device, calibrate gains; **overnight soak** with an xrun log |
-| **Fri 16** | Thomas | **rig test + mic tune** (§6) — same day as HPO episode 2, where he is support only |
+| Thu 15 | Thomas: another project (pm) · Claude | M4 plugged → switch device, calibrate gains; **overnight soak** with an xrun log |
+| **Fri 16** | Thomas | **rig test + mic tune** (§6) — same day as another project, where he is support only |
 | Sat 17 | — | buffer: fixes from Friday |
 | **Sun 18** | Thomas | gig, **bypass kit in the case** |
 
@@ -141,5 +141,5 @@ label K1000's outputs. Any doubt during the gig means re-patching in a minute.
 
 1. The interface: MOTU M4 (~€150 offer) — D-003.
 2. The fresh Pi OS card online with SSH (key-based; nothing secret goes into this repo).
-3. ~~Friday vs HPO episode 2~~ — answered: same day, Thomas is support only at HPO.
+3. ~~Friday vs another project the same day~~ — answered: Thomas is support only there.
 4. ~~CamillaDSP v4.1.3 vs v5 beta~~ — answered: v5 beta (D-004).

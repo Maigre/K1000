@@ -47,8 +47,8 @@ gantt
 | **Mon 12** ✅ | v0 built, deployed, reboot proven; integration round (drills, review, 42 fixes, re-accepted); phone PWA built and reviewed in a worktree; Lite conversion prepared; UI v1 design started | Knob corners confirmed; 10 clicks = +10; fast turns feel inaccurate; go for the Lite reboots |
 | **Tue 13** | Lite conversion applied with timed reboots; phone wiring + smbus2 + licence headers; AP up on the box (hostapd); UI v1 build starts | M4 day (`docs/05-m4-day.md`): detect, tone check, profile `m4`, loop and leak tests, 1 h soak |
 | **Wed 14** | UI v1 build, knob fast-turn fix, accept on the box. **Freeze in the evening**: what is not accepted by then is switched off or rolled back | Knob labels on the shell; phone: install the CA, join by QR, install the PWA (`docs/06-phone.md`) |
-| **Thu 15** | Gig profile `m4` pinned, gig `target_level` set; **overnight soak** on the gig build; user documentation written and checked | HPO prep + Pauline's call (pm). Fresh Lite on a second SD card → `bootstrap.sh` makes the spare |
-| **Fri 16** | Standby for fixes | **Rig test + mic tune** (`docs/02` §6), the go/no-go per item (below). Same day as HPO, where Thomas is support only |
+| **Thu 15** | Gig profile `m4` pinned, gig `target_level` set; **overnight soak** on the gig build; user documentation written and checked | Another project in the afternoon. Fresh Lite on a second SD card → `bootstrap.sh` makes the spare |
+| **Fri 16** | Standby for fixes | **Rig test + mic tune** (`docs/02` §6), the go/no-go per item (below). Same day as another project, where Thomas is support only |
 | **Sat 17** | Fixes from Friday only | Buffer; print the operator card; pack the bypass kit, labelled |
 | **Sun 18** | — | **Gig**, bypass kit in the case |
 
