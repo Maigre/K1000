@@ -352,6 +352,105 @@ def test_fine_marker_stays_visible_under_the_muted_band():
     assert all(without.getpixel(p) == pages.AMBER for p in region)
 
 
+def _band_line(state, status, focus=None):
+    return pages._mute_hint(pages._Ctx(focus or Focus(), 0.0), state, status)[1]
+
+
+def test_muted_band_says_ready_only_when_the_engine_runs_in_sync():
+    s = st.State(muted=True)
+    run = dict(device_present=True, muted=True)
+    assert _band_line(s, pages.ScreenStatus(engine="Running", ready=True, **run)) == \
+        "READY · hold B2 to unmute"
+    for engine in ("Starting", "Paused"):         # not processing: no READY
+        assert _band_line(s, pages.ScreenStatus(engine=engine, ready=True, **run)) == \
+            "hold B2 to unmute"
+    assert _band_line(s, pages.ScreenStatus(engine="Running", ready=False, **run)) == \
+        "hold B2 to unmute"                       # sync failed: knob edits do not reach it
+
+
+def test_muted_band_tells_a_k1000_hold_from_the_operators_mute():
+    """K1000 holding Main before its own ramp is not 'READY · hold B2 to unmute': it comes in
+    by itself, and B2 keeps it muted."""
+    held = st.State(muted=False)
+    status = dict(device_present=True, muted=True, ramping=True, ready=False,
+                  message="NO AUDIO FLOWING · HELD MUTED", alert="NO AUDIO FLOWING · HELD MUTED")
+    for engine in ("Starting", "Running"):
+        assert _band_line(held, pages.ScreenStatus(engine=engine, **status)) == \
+            "RAMPS IN BY ITSELF · hold B2 to keep muted"
+    # the operator's own mute during the ramp: the reason, never 'ramps in'
+    assert _band_line(st.State(muted=True), pages.ScreenStatus(engine="Starting", **status)) == \
+        "NO AUDIO FLOWING · HELD MUTED"
+    # a hint toast still wins for its 2.5 s
+    f = Focus(hint="HOLD B2 TO MUTE / UNMUTE", hint_until=math.inf)
+    assert pages._mute_hint(pages._Ctx(f, 0.0), held, pages.ScreenStatus(**status))[0]
+
+
+@pytest.mark.parametrize("page", ["MAIN", "LIVE", "SETUP"])
+def test_controller_alerts_are_visible_while_muted(page):
+    s = st.State(muted=True)
+    base = dict(device_present=True, engine="Running", muted=True, ready=True)
+    plain = pages.render(page, s, pages.ScreenStatus(**base), Focus(), now=0.0)
+    alert = pages.render(page, s, pages.ScreenStatus(alert="CANNOT SAVE STATE",
+                                                     message="CANNOT SAVE STATE", **base),
+                         Focus(), now=0.0)
+    diff = sum(a != b for a, b in zip(plain.getdata(), alert.getdata()))
+    assert diff > 200, diff
+
+
+def test_setup_shows_the_controller_alert_in_its_footer():
+    s = st.State()
+    base = dict(device_present=True, engine="Running", ready=True)
+    plain = pages.render("SETUP", s, pages.ScreenStatus(**base), Focus(), now=0.0)
+    busy = pages.render("SETUP", s, pages.ScreenStatus(alert="APPLYING SETUP…", **base),
+                        Focus(), now=0.0)
+    assert plain.getpixel((5, pages.H - 5)) == pages.BG
+    assert busy.getpixel((5, pages.H - 5)) == (60, 50, 0)
+
+
+def test_engine_down_does_not_promise_a_restart_for_a_stall():
+    stalled = pages.render("MAIN", st.State(), pages.ScreenStatus(engine="Stalled",
+                                                                  device_present=True), Focus())
+    inactive = pages.render("MAIN", st.State(), pages.ScreenStatus(engine="Inactive",
+                                                                   device_present=True), Focus())
+    row = [(x, y) for x in range(480) for y in range(238, 258)]
+    assert any(stalled.getpixel(p) != inactive.getpixel(p) for p in row)
+
+
+def _red_in_status_bar(img) -> int:
+    return sum(img.getpixel((x, pages.STATUS_H // 2)) == pages.RED for x in range(40, 330))
+
+
+def test_clip_and_input_clip_pills_in_the_status_bar():
+    s = st.State()
+    ok = dict(device_present=True, engine="Running", ready=True)
+    assert _red_in_status_bar(pages.render("LIVE", s, pages.ScreenStatus(**ok), Focus())) == 0
+    out = pages.render("LIVE", s, pages.ScreenStatus(clip=(False, False, True, False), **ok), Focus())
+    inp = pages.render("LIVE", s, pages.ScreenStatus(in_clip=True, **ok), Focus())
+    assert _red_in_status_bar(out) > 10 and _red_in_status_bar(inp) > 10
+    both = pages.render("MAIN", st.State(muted=True),
+                        pages.ScreenStatus(in_clip=True, clip=(True,) * 4, muted=True, **ok), Focus())
+    assert _red_in_status_bar(both) > _red_in_status_bar(inp)
+
+
+def test_fine_label_never_covers_a_unitless_value():
+    s = st.State()
+    s.live_peq[1].q = 8.0
+    f = Focus(slot=1, editing="live_peq.1.q", edit_until=math.inf, held={3})
+    img = pages.render("LIVE", s, pages.ScreenStatus(**OK), f, now=0.0)
+    d = pages._Draw(Image.new("RGB", (10, 10)))
+    fine_left = int(pages.W - 4 - 6 - d.textlength("FINE", font=pages.font(14)))
+    # the value's digits (BG on the amber box) stay left of FINE on every row they occupy
+    assert not any(img.getpixel((x, y)) == pages.BG
+                   for x in range(fine_left - 2, pages.W - 6) for y in range(230, 272))
+
+
+def test_lowcut_toggle_highlights_the_lowcut_quadrant():
+    s = st.State()
+    f = Focus(editing="lowcut_on", edit_until=math.inf)
+    img = pages.render("MAIN", s, pages.ScreenStatus(**OK), f, now=0.0)
+    assert img.getpixel((pages.METER_X1 + 8, 252)) == pages.AMBER     # E4 box (bottom right)
+
+
 # --- fail closed: unknown is never shown as healthy ---------------------------------------
 def _status_bar_has(img, colour) -> bool:
     return any(img.getpixel((x, y)) == colour for x in range(0, 480, 1)
@@ -506,19 +605,36 @@ def test_main_knobs():
     f = Focus()
     assert map_event("MAIN", f, Enc(0, 1, ts=10.0)) == [Nudge("master_db", 1, False)]
     assert map_event("MAIN", f, Enc(1, -1, ts=11.0)) == [Nudge("balance_db", -1, False)]
-    assert map_event("MAIN", f, Enc(2, 2, ts=12.0)) == [Nudge("sub_delay_ms", 2, False)]
+    arm = map_event("MAIN", f, Enc(2, 2, ts=12.0))              # sub delay: wakes up first
+    assert arm == [ShowHint(im.HINT_ARM.format("SUB DELAY"))] and f.editing_now(12.1) == "sub_delay_ms"
+    assert map_event("MAIN", f, Enc(2, 2, ts=12.5)) == [Nudge("sub_delay_ms", 2, False)]
     assert map_event("MAIN", f, Enc(3, -1, ts=13.0)) == [Nudge("lowcut_hz", -1, False)]
     assert map_event("MAIN", f, Enc(0, 0, ts=14.0)) == []
+
+
+def test_sub_delay_brushed_once_does_not_change_it():
+    """Every settled sub-delay change dips the subs (delay guard): one brushed detent on the
+    show page must not. A detent after ARM_WINDOW_S of rest only wakes the knob again."""
+    f = Focus()
+    assert not any(isinstance(a, Nudge) for a in map_event("MAIN", f, Enc(2, 1, ts=100.0)))
+    assert map_event("MAIN", f, Enc(2, 1, ts=101.0)) == [Nudge("sub_delay_ms", 1, False)]
+    assert map_event("MAIN", f, Enc(2, -1, ts=103.0)) == [Nudge("sub_delay_ms", -1, False)]
+    later = 103.0 + im.ARM_WINDOW_S + 0.1                       # at rest again: wake first
+    assert not any(isinstance(a, Nudge) for a in map_event("MAIN", f, Enc(2, 1, ts=later)))
+    # other MAIN knobs and LIVE knobs act on their first detent
+    assert map_event("MAIN", Focus(), Enc(1, 1, ts=0.0)) == [Nudge("balance_db", 1, False)]
+    assert map_event("LIVE", Focus(), Enc(2, 1, ts=0.0)) == [Nudge("live_peq.0.gain", 1, False)]
 
 
 def test_fine_while_push_held():
     f = Focus()
     assert map_event("MAIN", f, Sw(2, "press")) == []          # sw2 = E3 push
-    assert map_event("MAIN", f, Enc(2, 1, ts=1.0)) == [Nudge("sub_delay_ms", 1, True)]
+    assert map_event("MAIN", f, Enc(2, 1, ts=1.0)) == [Nudge("sub_delay_ms", 1, True)]   # deliberate
     assert map_event("MAIN", f, Sw(2, "long")) == []           # still held
     assert map_event("MAIN", f, Enc(2, 1, ts=1.01)) == [Nudge("sub_delay_ms", 1, True)]  # no accel
     map_event("MAIN", f, Sw(2, "release"))
-    assert map_event("MAIN", f, Enc(2, 1, ts=5.0)) == [Nudge("sub_delay_ms", 1, False)]
+    assert map_event("MAIN", f, Enc(2, 1, ts=2.0)) == [Nudge("sub_delay_ms", 1, False)]
+    assert map_event("MAIN", f, Enc(2, 1, ts=5.0)) == [ShowHint(im.HINT_ARM.format("SUB DELAY"))]
 
 
 def test_acceleration_master_down_faster_than_up_and_frequency():
@@ -563,11 +679,59 @@ def test_buttons():
     assert map_event("MAIN", f, Sw(5, "press")) == []
     assert map_event("MAIN", f, Sw(5, "short")) == [ShowHint(im.HINT_MUTE)]
     assert map_event("MAIN", f, Sw(5, "long")) == [Mute("toggle")]
-    assert map_event("LIVE", f, Sw(6, "short")) == [Toggle("lowcut_on")]
-    assert map_event("LIVE", f, Sw(6, "long")) == []
-    assert map_event("LIVE", f, Sw(7, "short")) == [ShowHint(im.HINT_RESET)]
-    assert map_event("LIVE", f, Sw(7, "long")) == [ResetLive()]
+    assert map_event("MAIN", f, Sw(6, "short")) == [Toggle("lowcut_on")]
+    assert map_event("MAIN", f, Sw(6, "long")) == []
+    assert map_event("LIVE", f, Sw(7, "short", ts=1.0)) == [ShowHint(im.HINT_RESET)]
     assert map_event("SETUP", f, Sw(5, "long")) == [Mute("toggle")]   # mute works everywhere
+
+
+@pytest.mark.parametrize("page", ["LIVE", "SETUP"])
+def test_b3_lowcut_acts_on_main_only(page):
+    """Tapping buttons in the dark to find the mute must not change the tops' low end on a
+    page that does not show it."""
+    assert map_event(page, Focus(), Sw(6, "short")) == [ShowHint(im.HINT_LOWCUT_ON_MAIN)]
+
+
+def test_b4_reset_live_needs_live_page_and_a_second_long_press():
+    f = Focus()
+    for page in ("MAIN", "SETUP"):                 # never off LIVE: hint only
+        assert map_event(page, f, Sw(7, "long", ts=1.0)) == [ShowHint(im.HINT_RESET_ON_LIVE)]
+        assert map_event(page, f, Sw(7, "short", ts=1.0)) == [ShowHint(im.HINT_RESET_ON_LIVE)]
+    first = map_event("LIVE", f, Sw(7, "long", ts=10.0))
+    assert first == [ShowHint(im.HINT_RESET_AGAIN, im.CONFIRM_WINDOW_S)]
+    apply_focus(f, first[0], now=10.0)
+    assert f.hint_now(14.0) == im.HINT_RESET_AGAIN          # stays up for the whole window
+    assert map_event("LIVE", f, Sw(7, "long", ts=12.0)) == [ResetLive()]
+    assert f.confirm is None
+    # an expired confirm arms again instead of resetting
+    map_event("LIVE", f, Sw(7, "long", ts=20.0))
+    assert map_event("LIVE", f, Sw(7, "long", ts=30.0)) == [ShowHint(im.HINT_RESET_AGAIN,
+                                                                     im.CONFIRM_WINDOW_S)]
+    # a B4 confirm never confirms a SETUP rebuild item (and the other way round)
+    g = Focus(item=next(i for i, it in enumerate(im.SETUP_ITEMS) if it.field == "mono_subs"))
+    map_event("LIVE", g, Sw(7, "long", ts=40.0))
+    assert map_event("SETUP", g, Sw(0, "short", ts=41.0)) == [ShowHint(im.HINT_CONFIRM)]
+
+
+def test_setup_push_after_a_fine_turn_is_not_a_select():
+    """The LIVE fine-mode habit (hold a push, turn, release fast = 'short') must not flip the
+    selected SETUP item (a polarity) or open a page."""
+    idx = next(i for i, it in enumerate(im.SETUP_ITEMS) if it.field == "sub_inverted")
+    f = Focus(item=idx)
+    assert map_event("SETUP", f, Sw(1, "press", ts=1.0)) == []
+    map_event("SETUP", f, Enc(1, 1, ts=1.1))
+    assert map_event("SETUP", f, Sw(1, "short", ts=1.3)) == []          # no Toggle
+    assert map_event("SETUP", f, Sw(1, "press", ts=2.0)) == []          # a plain push still selects
+    assert map_event("SETUP", f, Sw(1, "short", ts=2.1)) == [Toggle("sub_inverted")]
+
+
+def test_slot_and_item_follow_every_detent():
+    """A fast turn reaches the controller as one merged event: every detent counts."""
+    assert map_event("LIVE", Focus(), Enc(0, 3)) == [SelectSlot(3)]
+    assert map_event("SETUP", Focus(), Enc(0, -2)) == [SelectItem(-2)]
+    f = Focus()
+    apply_focus(f, SelectSlot(3))
+    assert f.slot == 3
 
 
 @pytest.mark.parametrize("page", im.ALL_PAGES)

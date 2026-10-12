@@ -10,10 +10,13 @@
 #                                 config.txt loads it, add vt.global_cursor_default=0 to cmdline.txt
 #   sudo ./install.sh --headless  ... and boot to the console instead of the desktop, with PipeWire/
 #                                 WirePlumber masked, so nothing but CamillaDSP opens the audio
-#                                 interfaces (applied at the next reboot)
+#                                 interfaces; the desktop image's unused services (Bluetooth,
+#                                 printing, NFS/rpcbind) disabled and the tty1 auto-login removed
+#                                 (applied at the next reboot)
 #
 # Run it from a checkout of box/ or an rsync'd copy (e.g. /opt/k1000-src), never from /opt/k1000.prev.
-# K1000_REVISION=<text> records what is deployed in /opt/k1000/REVISION (default: git describe).
+# K1000_REVISION=<text> records what is deployed in /opt/k1000/REVISION (default: git describe,
+#   else the source tree's own REVISION file, e.g. a rollback copy of /opt/k1000.prev).
 # K1000_BOOT_DIR overrides /boot/firmware (only to test --boot on a copy).
 # CAMILLAGUI_TARBALL=<path> installs CamillaGUI from a local tarball instead of downloading it.
 #
@@ -83,6 +86,20 @@ own_dir() {
   fi
 }
 
+# revision_of SRC: what SRC holds, for /opt/k1000/REVISION. git describe in a checkout; else the
+# REVISION file a copy of /opt/k1000(.prev) carries (the README rollback reinstalls one), marked
+# as reinstalled (never twice); else "unknown".
+revision_of() {
+  local src=$1 r
+  if r=$(git -C "$src" describe --always --dirty 2>/dev/null) && [ -n "$r" ]; then
+    printf '%s\n' "$r"
+  elif [ -s "$src/REVISION" ] && r=$(head -n 1 "$src/REVISION") && [ -n "$r" ]; then
+    printf '%s (reinstalled from %s)\n' "${r% (reinstalled from *}" "$src"
+  else
+    printf 'unknown (from %s)\n' "$src"
+  fi
+}
+
 [ "$(id -u)" = 0 ] || die "run as root: sudo $0 $*"
 command -v systemctl >/dev/null || die "systemd not found: this runs on the K1000 box only"
 case $SRC in
@@ -121,7 +138,7 @@ fi
 # mtimes are not mirrored (-O), so writing REVISION does not make the next run see a change.
 # Before anything changes, the running version is kept in /opt/k1000.prev (rollback: README).
 if [ "$SRC" != "$APP" ]; then
-  RSYNC=(rsync -rlptgoO --delete --chown=root:root --chmod=D755,Fu+rw,Fgo+r,Fgo-w
+  RSYNC=(rsync -rlptgoO --delete --chown=root:root "--chmod=D755,Fu+rw,Fgo+r,Fgo-w"
          --exclude='.*' --exclude=__pycache__ --exclude='*.pyc' --exclude=/REVISION)
   pending=$("${RSYNC[@]}" --dry-run --itemize-changes "$SRC/" "$APP/" 2>/dev/null || true)
   if [ -n "$pending" ]; then
@@ -133,7 +150,7 @@ if [ "$SRC" != "$APP" ]; then
     n=$("${RSYNC[@]}" --itemize-changes "$SRC/" "$APP/" | wc -l)
     changed "synced $SRC -> $APP ($n entries)"
   fi
-  rev=${K1000_REVISION:-$(git -C "$SRC" describe --always --dirty 2>/dev/null || echo "unknown (from $SRC)")}
+  rev=${K1000_REVISION:-$(revision_of "$SRC")}
   printf '%s\n' "$rev" > "$TMP/REVISION"
   put "$TMP/REVISION" "$APP/REVISION" 644
 fi
@@ -203,6 +220,22 @@ RuntimeWatchdogSec=15
 EOF
 put "$TMP/watchdog.conf" /etc/systemd/system.conf.d/50-k1000-watchdog.conf 644
 if [ $PUT_CHANGED = 1 ]; then RELOAD=1; fi
+# Keep the journal across reboots. Raspberry Pi OS keeps it in RAM only (40-rpi-volatile-
+# storage.conf), so after a dropout and a power cycle k1000's log and the engine's start/stop
+# lines were gone. Capped at 32 MB; synced to the SD card every 30 s (and at once for critical
+# messages). Read the previous boot with `journalctl -b -1`.
+cat > "$TMP/journald.conf" <<'EOF'
+# K1000 (box/install.sh): keep the journal on disk across reboots, capped at 32 MB.
+# Sorts after Raspberry Pi OS's 40-rpi-volatile-storage.conf (Storage=volatile), so this value wins.
+[Journal]
+Storage=persistent
+SystemMaxUse=32M
+SyncIntervalSec=30s
+EOF
+put "$TMP/journald.conf" /etc/systemd/journald.conf.d/50-k1000-journal.conf 644
+if [ $PUT_CHANGED = 1 ]; then
+  note "persistent journal: applies at the next reboot (or now: sudo systemctl restart systemd-journald)"
+fi
 if [ $RELOAD = 1 ]; then
   systemctl daemon-reload
   note "systemd reloaded"
@@ -247,6 +280,26 @@ if [ $DO_HEADLESS = 1 ]; then
       changed "masked user unit $u for all users (undo: systemctl --global unmask $u)"
     fi
   done
+  # The desktop image's services a DSP box never uses: Bluetooth, printing (cups watches for
+  # printers), NFS client + rpcbind (port 111 open on every interface). Only units that are
+  # plainly "enabled" are touched (a static unit cannot be disabled; absent ones are skipped).
+  for u in bluetooth.service cups.service cups.socket cups.path rpcbind.service rpcbind.socket nfs-blkmap.service; do
+    if [ "$(systemctl is-enabled "$u" 2>/dev/null || true)" = enabled ]; then
+      systemctl disable --quiet "$u"
+      changed "disabled $u (undo: systemctl enable $u)"
+    fi
+  done
+  # The image auto-logs k1000 (passwordless sudo) into tty1: an invisible root-capable shell for
+  # any USB keyboard, since the ZynScreen does not show the console. A local login then asks for
+  # k1000's password (SSH is unchanged). The drop-in is renamed, not deleted (systemd reads only *.conf).
+  autologin=/etc/systemd/system/getty@tty1.service.d/autologin.conf
+  if [ -e "$autologin" ]; then
+    mv "$autologin" "$autologin.k1000-off"
+    changed "tty1 auto-login removed (undo: mv $autologin.k1000-off $autologin)"
+  fi
+  # Not done here on purpose: disabling cloud-init (touch /etc/cloud/cloud-init.disabled) would
+  # start k1000 ~2.3 s earlier, right where fbcon binds the ZynScreen (~7 s): k1000's root
+  # ExecStartPre could unbind the console before it exists. Decide it together with that race.
   note "headless changes take effect at the next reboot"
 fi
 

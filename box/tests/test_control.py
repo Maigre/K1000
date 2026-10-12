@@ -5,7 +5,7 @@ Two layers:
   controller uses: ops emitted per action, clamping, the balance macro, the boot ramp, mute
   priority, setup-action refusal, adoption of external edits, reconnect rules, persistence;
 * `engine` tests against a real camilladsp (SignalGenerator -> File /dev/null, never the ALSA
-  card) on the private port 12346: the controller in-process through a scripted show, an engine
+  card) on the private port $K1000_CONTROL_TEST_PORT (default 12346): the controller in-process through a scripted show, an engine
   kill + restart (muted restart -> ramp), and `python3 -m k1000` as a subprocess killed and
   restarted while the engine keeps playing unchanged.
 
@@ -44,7 +44,7 @@ from k1000.state import RANGES, State, delay_samples
 
 BOX = Path(__file__).resolve().parents[1]
 CDSP_BIN = "/usr/local/bin/camilladsp"
-ENGINE_PORT = 12346
+ENGINE_PORT = int(os.environ.get("K1000_CONTROL_TEST_PORT", "12346"))
 
 
 def run(coro: Any, limit: float = 30.0) -> Any:
@@ -108,6 +108,7 @@ class FakeClient:
         self.refuse: set[str] = set()
         self.hooks: list[asyncio.Task[Any]] = []
         self.on_write: Any = None       # optional async callback(entry) after each write
+        self.cap_peaks: list[float] | None = None   # GetCaptureSignalPeakSinceLast (None: unknown)
 
     # -- lifecycle
     def _fire(self, hook: Any) -> None:
@@ -188,6 +189,8 @@ class FakeClient:
         self._need()
         if name == "GetPlaybackSignalPeakSinceLast":
             return list(self.peaks)
+        if name == "GetCaptureSignalPeakSinceLast" and self.cap_peaks is not None:
+            return list(self.cap_peaks)
         raise CdspError(name, "Invalid", "fake: unknown")
 
     # -- writes
@@ -1016,10 +1019,20 @@ def test_knob_and_button_events_through_input_map(tmp_path: Path) -> None:
         ctl.handle_event(EncoderEvent(0, 1, time.monotonic()))        # E1 on LIVE = slot select
         ctl.handle_event(EncoderEvent(2, -2, time.monotonic()))       # E3 = gain of PEQ 2
         assert ctl.state.live_peq[1].gain == -1.0
-        ctl.handle_event(SwitchEvent(7, "long", time.monotonic()))    # B4 long: reset live
+        ctl.handle_event(SwitchEvent(7, "long", time.monotonic()))    # B4 long: arms only
+        assert ctl.state.live_peq[1].gain == -1.0
+        assert ctl.focus.hint_now() == "HOLD B4 AGAIN TO RESET ALL LIVE EQ"
+        ctl.handle_event(SwitchEvent(7, "long", time.monotonic()))    # B4 long again: reset
         assert ctl.state.live_peq[1].gain == 0.0
-        ctl.handle_event(SwitchEvent(6, "short", time.monotonic()))   # B3: Lo-Cut off
+        assert ctl.focus.hint_now() == ctl_mod.HINT_LIVE_RESET        # said on the screen
+        ctl.handle_event(SwitchEvent(6, "short", time.monotonic()))   # B3 on LIVE: hint only
+        assert ctl.state.lowcut_on is True and "MAIN" in (ctl.focus.hint_now() or "")
+        ctl.goto_page("MAIN")
+        ctl.handle_event(SwitchEvent(6, "short", time.monotonic()))   # B3 on MAIN: Lo-Cut off
         assert ctl.state.lowcut_on is False
+        assert ctl.focus.hint_now() == "LO-CUT OFF" and ctl.focus.editing_now() == "lowcut_on"
+        ctl.handle_event(SwitchEvent(7, "long", time.monotonic()))    # B4 off LIVE: hint only
+        assert "LIVE" in (ctl.focus.hint_now() or "")
         assert await ctl.settle(5.0)
         await ctl.stop()
 
@@ -1086,6 +1099,7 @@ def test_console_commands(tmp_path: Path, capsys: pytest.CaptureFixture[str]) ->
         assert ctl.state.muted is True and ctl.page == "LIVE"
         status = json.loads(out[5].split(" ", 1)[1])
         assert status["engine_ready"] is True and status["page"] == "LIVE"
+        assert status["ready"] is True and status["alert"] == "" and status["in_clip"] is False
         assert out[6].startswith("@err") and out[7].startswith("@err") and stop.is_set()
         await ctl.stop()
 
@@ -1495,8 +1509,10 @@ def test_torn_state_json_is_rebuilt_from_active_yml_not_defaults(tmp_path: Path)
     (tmp_path / "state.json").write_text('{"schema": 1, "master_db": -10.0, "sys_peq": [{"fr')
     paths = Paths(tmp_path / "state.json", tmp_path / "active.yml")
     st, note = recover_state(paths)
-    assert note and st.sys_peq[2].gain == -4.0 and st.top_inverted is True
+    assert note == ctl_mod.NOTE_REBUILT and st.sys_peq[2].gain == -4.0 and st.top_inverted is True
     assert delay_samples(st.sub_delay_ms) == 72 and (tmp_path / "state.json.bad").exists()
+    # the calibrated master is lost with state.json: start MUTED, never ramp into the default
+    assert st.muted is True and st.master_db == State().master_db
 
     async def body() -> None:
         ctl, cl = make(tmp_path, st, cfg=yaml.safe_load(active_text))     # the engine booted it
@@ -1505,21 +1521,43 @@ def test_torn_state_json_is_rebuilt_from_active_yml_not_defaults(tmp_path: Path)
         assert on_disk["filters"]["sys_peq_3"]["parameters"]["gain"] == -4.0
         assert cl.cfg["filters"]["sys_peq_3"]["parameters"]["gain"] == -4.0
         assert json.loads((tmp_path / "state.json").read_text())["sys_peq"][2]["gain"] == -4.0
+        # fresh engine: parked at the (default) master, still muted; the operator decides
+        assert ("mute", 0, False) not in cl.log
+        assert cl.faders[0] == {"volume": State().master_db, "mute": True}
         await ctl.stop()
 
     run(body())
-    # first boot (nothing on disk): defaults, nothing to say
+    # first boot (nothing on disk): defaults, unmuted, nothing to say
     st2, note2 = recover_state(Paths(tmp_path / "x" / "s.json", tmp_path / "x" / "a.yml"))
     assert note2 == "" and st2.to_dict() == State().to_dict()
-    # state.json moved away on purpose (README "Sound state"): defaults, even with active.yml
+    # state.json moved away (README "Sound state") while active.yml shows a set-up box:
+    # defaults, but MUTED (the show master is unknown)
     st4, note4 = recover_state(Paths(tmp_path / "x" / "s.json", tmp_path / "active.yml"))
-    assert note4 == "" and st4.to_dict() == State().to_dict()
+    assert note4 == ctl_mod.NOTE_MISSING and st4.muted is True
+    assert st4.to_dict() == State(muted=True).to_dict()
     # a good state.json wins over active.yml
     good = Paths(tmp_path / "g" / "s.json", tmp_path / "active.yml")
     good.state.parent.mkdir()
     good.state.write_text(json.dumps(State(master_db=-3.0).to_dict()))
     st3, note3 = recover_state(good)
     assert note3 == "" and st3.master_db == -3.0 and st3.sys_peq[2].gain == 0.0
+
+
+def test_rebuilt_muted_state_adopts_a_playing_engine_unchanged(tmp_path: Path) -> None:
+    """k1000 restarted after a torn state.json while the engine plays at the show level: the
+    rebuilt state starts muted, but a playing engine is adopted as it plays (no mute, no ramp,
+    no level change): audio never depends on the UI."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-35.0), playing=True)
+        ctl.state.muted = True                          # what recover_state hands over
+        ctl._applied.muted = True
+        await boot(ctl)
+        assert not any(e[0] in ("mute", "fader") and e[1] == 0 for e in cl.log), cl.log
+        assert cl.faders[0] == {"volume": -35.0, "mute": False}
+        assert ctl.state.muted is False and ctl.state.master_db == -35.0
+        await ctl.stop()
+
+    run(body())
 
 
 def test_first_overwrite_of_active_yml_keeps_the_previous_one(tmp_path: Path) -> None:
@@ -2050,3 +2088,574 @@ def test_engine_service_process_kill_restart_and_sigterm(tmp_path: Path) -> None
     finally:
         k.kill(signal.SIGKILL)
         eng.kill()
+
+
+# ======================================================================= integration-review fixes
+def _band(ctl: Controller) -> str:
+    """What the MUTED band would say right now (pages._mute_hint over a controller snapshot)."""
+    from k1000.ui import pages
+    page, st, status, focus = ctl.snapshot()
+    return pages._mute_hint(pages._Ctx(focus, time.monotonic()), st, status)[1]
+
+
+def test_b2_during_a_held_boot_ramp_keeps_main_muted(tmp_path: Path) -> None:
+    """Engine not processing yet, K1000 holds Main muted before its ramp: the screen says Main
+    comes in by itself and B2 keeps it muted; B2 long then MUTES (the ramp is cancelled into a
+    held mute), it never sends an unmute into an engine that is not running."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-10.0))
+        cl.engine_state = "Starting"
+        await ctl.start()
+        await until(lambda: ctl.status.message == ctl_mod.MSG_HELD_MUTED, what="held muted")
+        assert ctl.displayed_muted() and ctl.state.muted is False
+        assert _band(ctl).startswith("RAMPS IN BY ITSELF")
+        assert ctl.b2_muted() is False
+        n = len(cl.log)
+        ctl.handle_event(SwitchEvent(5, "long", time.monotonic()))
+        assert ctl.state.muted is True
+        await asyncio.sleep(0.05)
+        assert ("mute", 0, False) not in cl.log[n:]
+        assert _band(ctl) == ctl_mod.MSG_HELD_MUTED          # the reason, not READY
+        cl.engine_state = "Running"
+        await until(lambda: ctl.engine_ready and not ctl.ramping, what="ramp finished")
+        assert ("mute", 0, False) not in cl.log
+        assert cl.faders[0]["mute"] is True and ctl.displayed_muted()
+        assert _band(ctl) == "READY · hold B2 to unmute"
+        await ctl.stop()
+
+    run(body())
+
+
+def test_operator_unmute_during_a_setup_guard_waits_for_the_engine(tmp_path: Path) -> None:
+    """A setup guard holds Main muted AT THE SHOW LEVEL while the engine is not processing: an
+    unmute sent then would come in as a step on resume. The operator's unmute is recorded and
+    goes out only once the guard brought Main back with the engine running."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-10.0), playing=True)
+        await boot(ctl)
+
+        async def pause_on_upload(entry: tuple[Any, ...]) -> None:
+            if entry[0] == "config":
+                cl.engine_state = "Paused"
+        cl.on_write = pause_on_upload
+        assert ctl.toggle("mono_subs", confirmed=True)
+        await until(lambda: ctl.status.message == ctl_mod.MSG_HELD_MUTED, what="guard holds Main")
+        assert _band(ctl) == ctl_mod.MSG_HELD_MUTED and ctl.b2_muted() is False
+        n = len(cl.log)
+        ctl.set_mute(True)                  # e.g. the console, then changing one's mind
+        ctl.set_mute(False)
+        await asyncio.sleep(0.1)
+        assert ("mute", 0, False) not in cl.log[n:] and cl.faders[0]["mute"] is True
+        m = len(cl.log)
+        cl.engine_state = "Running"
+        assert await ctl.settle(3.0)
+        assert ("mute", 0, False) in cl.log[m:] and cl.faders[0] == {"volume": -10.0, "mute": False}
+        assert ctl.state.muted is False and ctl.state.mono_subs is True
+        await ctl.stop()
+
+    run(body())
+
+
+def test_stop_during_a_setup_guard_never_releases_a_held_unmute(tmp_path: Path) -> None:
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-10.0), playing=True)
+        await boot(ctl)
+
+        async def pause_on_upload(entry: tuple[Any, ...]) -> None:
+            if entry[0] == "config":
+                cl.engine_state = "Paused"
+        cl.on_write = pause_on_upload
+        assert ctl.toggle("mono_subs", confirmed=True)
+        await until(lambda: ctl.status.message == ctl_mod.MSG_HELD_MUTED, what="guard holds Main")
+        n = len(cl.log)
+        ctl.set_mute(True)
+        ctl.set_mute(False)
+        await ctl.stop()
+        assert ("mute", 0, False) not in cl.log[n:] and cl.faders[0]["mute"] is True
+        assert FADER_MAIN_BIT in decode_marker(cl.faders[MARKER_FADER]["volume"])   # next k1000
+
+    run(body())
+
+
+FADER_MAIN_BIT = dc.FADER_MAIN
+
+
+def test_knobs_offline_is_an_alert_on_the_screen(tmp_path: Path) -> None:
+    ctl, cl = make(tmp_path, State())
+    assert ctl.status.knobs_ok is None and ctl.status.message == ""
+    ctl.set_knobs_ok(False)
+    assert ctl.status.message == ctl_mod.MSG_KNOBS_OFFLINE == ctl.status.alert
+    ctl.set_knobs_ok(True)
+    assert ctl.status.message == "" and ctl.status.alert == ""
+
+
+def test_low_priority_notes_are_not_alerts(tmp_path: Path) -> None:
+    """Drift notes (a GUI cut kept) must not replace the unmute line in the MUTED band."""
+    ctl, cl = make(tmp_path, State())
+    ctl._set_message("held", 1, "TOPS GROUP -3.0 dB OUTSIDE K1000")
+    assert ctl.status.message and ctl.status.alert == ""
+    ctl._set_message("setup", 4, "APPLYING SETUP…")
+    assert ctl.status.alert == "APPLYING SETUP…"
+
+
+def test_edits_toward_silence_are_saved_at_once(tmp_path: Path) -> None:
+    """A power cut right after B2 (or after pulling the master down) must not boot the PA back
+    unmuted / louder: those edits skip the debounce. Raising the level keeps it."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-10.0), playing=True,
+                       persist_debounce_s=30.0, persist_max_delay_s=60.0)
+        await boot(ctl)
+        sp = tmp_path / "state.json"
+
+        def saved() -> dict[str, Any]:
+            return json.loads(sp.read_text())
+
+        ctl.set_mute(True)
+        await until(lambda: saved()["muted"] is True, timeout=1.0, what="mute saved at once")
+        ctl.nudge("master_db", -10)
+        await until(lambda: saved()["master_db"] == -15.0, timeout=1.0, what="master down saved")
+        ctl.nudge("master_db", 4)                       # up: debounced as before
+        await asyncio.sleep(0.6)
+        assert saved()["master_db"] == -15.0
+        await ctl.stop()                                # ...and saved on the way out
+        assert saved()["master_db"] == -13.0
+
+    run(body())
+
+
+def test_invisible_meter_changes_do_not_wake_the_screen(tmp_path: Path) -> None:
+    """Input noise hovering around the meter floor re-rendered identical frames at 10 fps."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        cl.peaks = [-99.7, -99.7]
+        await ctl.meter_once()
+        v = ctl.version
+        for p in ([-100.0, -100.0], [-70.0, -88.0], [-99.2, -61.0]):
+            cl.peaks = p
+            await ctl.meter_once()
+        assert ctl.version == v and ctl.status.levels[0] == -99.2      # stored, not redrawn
+        cl.peaks = [-10.0, -10.0]
+        await ctl.meter_once()
+        assert ctl.version > v
+        v = ctl.version
+        cl.peaks = [-10.05, -9.95]                       # under one meter step
+        await ctl.meter_once()
+        assert ctl.version == v
+        cl.peaks = [-12.0, -10.0]
+        await ctl.meter_once()
+        assert ctl.version > v
+        await ctl.stop()
+
+    run(body())
+
+
+def test_input_clip_is_latched_from_the_program_inputs(tmp_path: Path) -> None:
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        await ctl.meter_once()
+        assert ctl.status.in_clip is False                 # engine without the command: off
+        cl.cap_peaks = [-20.0, -0.3]                       # dev input_map (0, 1): R hits the ADC
+        await ctl.meter_once()
+        assert ctl.status.in_clip is True and ctl.status.clip == [False] * 4
+        cl.cap_peaks = [-20.0, -20.0]
+        await ctl.meter_once()
+        assert ctl.status.in_clip is True                  # latched CLIP_HOLD_S
+        await ctl.stop()
+
+    run(body())
+
+
+def gui_default_config() -> dict[str, Any]:
+    """CamillaGUI's built-in config (what a page loaded while the engine was down holds)."""
+    return {"title": None, "description": None,
+            "devices": {"samplerate": 48000, "chunksize": 1024, "capture_samplerate": 44100,
+                        "resampler": {"type": "AsyncSinc", "profile": "Balanced"},
+                        "volume_limit": None, "enable_rate_adjust": False,
+                        "capture": {"type": "Alsa", "channels": 2, "device": "hw:0"},
+                        "playback": {"type": "Alsa", "channels": 2, "device": "hw:0"}},
+            "mixers": {}, "filters": {}, "processors": {}, "pipeline": []}
+
+
+def test_engine_moved_to_another_card_is_put_back(tmp_path: Path) -> None:
+    """A CamillaGUI Apply of its default config moves the engine to hw:0 (on m4: the
+    HiFiBerry, the PA goes silent). With the profile's card present, K1000 uploads the
+    profile's whole config (device restart, Main muted, then the boot ramp), after a second
+    look, at most once per RESTORE_MIN_INTERVAL_S. A pipeline restore that would keep hw:0 is
+    not attempted."""
+    async def body() -> None:
+        st = State(master_db=-12.0)
+        st.sys_peq[1].gain = -3.0
+        ctl, cl = make(tmp_path, st, playing=True)
+        ctl.same_card = lambda a, b: a == b            # hw:0 is NOT this profile's card here
+        await boot(ctl)
+        expected_devices = copy.deepcopy(cl.cfg["devices"])
+        cl.cfg = gui_default_config()                  # the phone pressed Apply
+        n = len(cl.log)
+        await ctl.poll_once()                          # first look: nothing yet
+        assert not any(e[0] == "config" for e in cl.log[n:])
+        await ctl.poll_once()                          # second look: repair
+        assert await ctl.settle(5.0)
+        ups = [e[1] for e in cl.log[n:] if e[0] == "config"]
+        assert len(ups) == 1 and ups[0]["devices"] == expected_devices
+        assert ups[0]["filters"]["sys_peq_2"]["parameters"]["gain"] == -3.0   # the tune
+        after = nomark(cl.log[n:])
+        assert after.index(("mute", 0, True)) < after.index(("config", ups[0]))
+        ramp = faders_sent(after[after.index(("config", ups[0])):], 0)
+        assert ramp[0] == -40.0 and ramp[-1] == -12.0                     # boot ramp, no step
+        assert cl.faders[0] == {"volume": -12.0, "mute": False}
+        # the same thing again right away: rate-limited
+        cl.cfg = gui_default_config()
+        m = len(cl.log)
+        await ctl.poll_once()
+        await ctl.poll_once()
+        assert not any(e[0] == "config" for e in cl.log[m:])
+        assert "PIPELINE CHANGED" in ctl.status.message or "DEVICES" in ctl.status.message
+        await ctl.stop()
+
+    run(body())
+
+
+def test_device_options_alone_never_restart_the_engine(tmp_path: Path) -> None:
+    """Same card under another name (hw:0 = hw:sndrpihifiberry), or another chunksize: not a
+    wrong card. Reported, never repaired while audio runs."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(), playing=True)
+        ctl.same_card = lambda a, b: True
+        await boot(ctl)
+        cl.cfg["devices"]["capture"]["device"] = "hw:0"
+        cl.cfg["devices"]["chunksize"] = 1024
+        n = len(cl.log)
+        for _ in range(3):
+            await ctl.poll_once()
+        assert not any(e[0] in ("config", "mute") for e in cl.log[n:])
+        assert ctl.status.drift and "DEVICES" in ctl.status.message
+        await ctl.stop()
+
+    run(body())
+
+
+def test_no_device_repair_while_the_profile_card_is_absent(tmp_path: Path) -> None:
+    """Moving the engine to an absent card would only trade one silence for an engine restart
+    loop: the repair waits for the card (NO DEVICE says why meanwhile)."""
+    async def body() -> None:
+        present = {"v": True}
+        ctl, cl = make(tmp_path, State(), playing=True, device_probe=lambda d: present["v"])
+        ctl.same_card = lambda a, b: a == b
+        await boot(ctl)
+        present["v"] = False
+        cl.cfg = gui_default_config()
+        n = len(cl.log)
+        for _ in range(3):
+            await ctl.poll_once()
+        assert await ctl.settle(5.0)
+        ups = [e[1]["devices"]["playback"]["device"] for e in cl.log[n:] if e[0] == "config"]
+        assert "hw:sndrpihifiberry" not in ups      # (a pipeline restore may keep hw:0)
+        present["v"] = True                     # the card is back: repaired after a 2nd look
+        await ctl.poll_once()
+        await ctl.poll_once()
+        assert await ctl.settle(5.0)
+        ups = [e[1]["devices"]["playback"]["device"] for e in cl.log[n:] if e[0] == "config"]
+        assert ups[-1] == "hw:sndrpihifiberry"
+        await ctl.stop()
+
+    run(body())
+
+
+def test_same_card_resolves_proc_links(tmp_path: Path) -> None:
+    proc = tmp_path / "asound"
+    (proc / "card0").mkdir(parents=True)
+    (proc / "card1").mkdir()
+    (proc / "sndrpihifiberry").symlink_to("card0")
+    (proc / "M4").symlink_to("card1")
+    same = ctl_mod._same_card
+    assert same("hw:0", "hw:sndrpihifiberry", proc) is True
+    assert same("hw:CARD=sndrpihifiberry,DEV=0", "hw:sndrpihifiberry", proc) is True
+    assert same("hw:0", "hw:M4", proc) is False
+    assert same("hw:7", "hw:M4", proc) is False          # the live card is gone
+    assert same("hw:0", "hw:Nope", proc) is None         # profile's card unknown: cannot tell
+    assert same("default", "hw:M4", proc) is None
+
+
+def test_profile_routing_fixups_are_shown(tmp_path: Path) -> None:
+    m4 = load_profile("m4", {"profiles": {"m4": {"input_map": [3, 4]}}}, probe=False)
+    assert m4.input_map == (2, 3)                         # the profile's line inputs, not 0-1
+    ctl = Controller(FakeClient(None), m4, State(), Paths(tmp_path / "s.json", tmp_path / "a.yml"))
+    assert ctl.status.message == ctl_mod.MSG_PROFILE_ROUTING
+    ok = Controller(FakeClient(None), load_profile("m4", {}, probe=False), State(),
+                    Paths(tmp_path / "s.json", tmp_path / "a.yml"))
+    assert ok.status.message == ""
+
+
+def test_reset_live_says_so(tmp_path: Path) -> None:
+    ctl, cl = make(tmp_path, State())
+    ctl.reset_live()
+    assert ctl.focus.hint_now() == ctl_mod.HINT_LIVE_FLAT
+    ctl.state.live_peq[0].gain = -6.0
+    ctl.reset_live()
+    assert ctl.focus.hint_now() == ctl_mod.HINT_LIVE_RESET and ctl.state.live_peq[0].gain == 0.0
+
+
+# ----------------------------------------------------------------------- service wiring
+class FakeControls:
+    """ZynthianControls surface for knobs_task: healthy flag, closable, events on demand."""
+
+    def __init__(self) -> None:
+        self.healthy = True
+        self.closed = False
+        self.queue: asyncio.Queue[Any] = asyncio.Queue()
+
+    async def next_event(self, timeout: float | None = None) -> Any:
+        from k1000.hw.mcp23017 import ControlsClosed
+        ev = await self.queue.get()
+        if ev is None:
+            raise ControlsClosed("closed")
+        return ev
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_knobs_are_retried_until_they_answer_and_offline_is_shown(tmp_path: Path) -> None:
+    from k1000 import __main__ as main_mod
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-20.0), playing=True)
+        await boot(ctl)
+        fc = FakeControls()
+        calls: list[bool] = []
+
+        def opener(settings: Any, quiet: bool = False) -> Any:
+            calls.append(quiet)
+            return fc if len(calls) >= 3 else None
+
+        hw: dict[str, Any] = {"controls": None}
+        seen: list[str] = []
+        task = asyncio.get_running_loop().create_task(
+            main_mod.knobs_task(ctl, {}, hw, retry_s=0.02, opener=opener))
+        await until(lambda: (seen.append(ctl.status.message) or hw["controls"] is fc), what="opened")
+        assert ctl_mod.MSG_KNOBS_OFFLINE in seen and calls[:3] == [False, True, True]
+        await until(lambda: ctl.status.knobs_ok is True, what="knobs ok")
+        assert ctl.status.message == ""
+        fc.queue.put_nowait(SwitchEvent(5, "long", time.monotonic()))      # B2 works
+        await until(lambda: ctl.state.muted is True, what="mute from the knobs")
+        fc.queue.put_nowait(None)                       # the event stream fails: reopened
+        await until(lambda: fc.closed and len(calls) >= 4, what="reopen")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await ctl.stop()
+
+    run(body())
+
+
+def test_knobs_unhealthy_for_a_while_raise_the_alarm(tmp_path: Path) -> None:
+    from k1000 import __main__ as main_mod
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State())
+        fc = FakeControls()
+        task = asyncio.get_running_loop().create_task(
+            main_mod.watch_knobs(ctl, fc, period=0.01, alarm_s=0.1))
+        await until(lambda: ctl.status.knobs_ok is True, what="ok")
+        fc.healthy = False                       # a glitch the driver heals quickly: silent
+        await asyncio.sleep(0.04)
+        fc.healthy = True
+        await asyncio.sleep(0.05)
+        assert ctl.status.knobs_ok is True
+        fc.healthy = False                       # a lasting fault: alarm
+        await until(lambda: ctl.status.message == ctl_mod.MSG_KNOBS_OFFLINE, what="alarm")
+        fc.healthy = True
+        await until(lambda: ctl.status.message == "", what="cleared")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    run(body())
+
+
+def test_open_controls_closes_a_half_opened_driver(monkeypatch: pytest.MonkeyPatch) -> None:
+    from k1000 import __main__ as main_mod
+    from k1000.hw import mcp23017
+
+    closed: list[bool] = []
+
+    class Broken:
+        def start(self) -> None:
+            raise mcp23017.ControlsError("Errno 121")
+
+        def close(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setattr(mcp23017, "ZynthianControls", Broken)
+    assert main_mod.open_controls({}) is None and closed == [True]
+
+
+def test_screen_is_retried_until_the_panel_appears(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from k1000 import __main__ as main_mod
+
+    class FakeFb:
+        def __init__(self) -> None:
+            self.frames = 0
+
+        def show(self, img: Any) -> bool:
+            self.frames += 1
+            return True
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        fb = FakeFb()
+        calls: list[bool] = []
+
+        def fake_open(quiet: bool = False) -> Any:
+            calls.append(quiet)
+            return fb if len(calls) >= 3 else None
+
+        monkeypatch.setattr(main_mod, "open_screen", fake_open)
+        hw: dict[str, Any] = {"fb": None}
+        task = asyncio.get_running_loop().create_task(main_mod.screen_task(ctl, hw, retry_s=0.02))
+        await until(lambda: fb.frames >= 1, timeout=10.0, what="frames once the panel appeared")
+        assert calls[:3] == [False, True, True] and hw["fb"] is fb
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await ctl.stop()
+
+    run(body())
+
+
+def test_render_loop_sleeps_while_nothing_changes_and_wakes_for_expiry(tmp_path: Path) -> None:
+    from k1000 import __main__ as main_mod
+
+    class FakeFb:
+        def __init__(self) -> None:
+            self.t: list[float] = []
+
+        def show(self, img: Any) -> bool:
+            self.t.append(time.monotonic())
+            return True
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        fb = FakeFb()
+        task = asyncio.get_running_loop().create_task(main_mod.render_loop(ctl, fb))
+        await until(lambda: len(fb.t) >= 1, timeout=10.0, what="first frame")
+        await asyncio.sleep(0.3)                 # warm-up done; drain anything pending
+        n = len(fb.t)
+        await asyncio.sleep(0.8)                 # nothing changes: no frame at meter rate
+        assert len(fb.t) - n <= 1
+        t0 = time.monotonic()
+        ctl.show_hint("x", 0.2)                  # a frame now, another when it expires
+        await until(lambda: any(t > t0 + 0.2 for t in fb.t), timeout=2.0, what="expiry frame")
+        assert min(t for t in fb.t if t > t0 + 0.2) < t0 + 0.6
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await ctl.stop()
+
+    run(body())
+
+
+def test_render_loop_rewrites_a_static_frame_now_and_then(tmp_path: Path,
+                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    from k1000 import __main__ as main_mod
+    monkeypatch.setattr(main_mod, "FORCE_WRITE_S", 0.3)
+    monkeypatch.setattr(main_mod, "RENDER_IDLE_S", 0.1)
+
+    class FakeFb:
+        def __init__(self) -> None:
+            self.invalidated = 0
+
+        def show(self, img: Any) -> bool:
+            return True
+
+        def invalidate(self) -> None:
+            self.invalidated += 1
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        fb = FakeFb()
+        task = asyncio.get_running_loop().create_task(main_mod.render_loop(ctl, fb))
+        await until(lambda: fb.invalidated >= 2, timeout=10.0, what="periodic rewrite")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await ctl.stop()
+
+    run(body())
+
+
+def test_console_injects_knob_events_and_highlights_nudges(tmp_path: Path,
+                                                            capsys: pytest.CaptureFixture[str]) -> None:
+    from k1000.__main__ import run_command
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-20.0), playing=True)
+        await boot(ctl)
+        stop = asyncio.Event()
+        await run_command(ctl, "nudge master_db 1", stop)
+        assert ctl.focus.editing_now() == "master_db"
+        await run_command(ctl, "page LIVE", stop)
+        await run_command(ctl, "ev enc 0 2", stop)                  # E1 on LIVE: slot +2
+        assert ctl.focus.slot == 2
+        await run_command(ctl, "ev sw 3 press", stop)               # E4 push held = FINE
+        assert ctl.focus.held == {3}
+        await run_command(ctl, "ev sw 5 long", stop)                # B2 long
+        assert ctl.state.muted is True
+        await run_command(ctl, "ev sw 5 sideways", stop)
+        out = [l for l in capsys.readouterr().out.splitlines() if l.startswith("@")]
+        assert out[-1].startswith("@err") and all(l.startswith("@ok") for l in out[:-1])
+        await ctl.stop()
+
+    run(body())
+
+
+def test_sigterm_keeps_the_screen_live_until_the_controller_stopped(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stop during a ramp: the panel must follow the audio until stop() returns (it froze on
+    'MUTED' for 2.6 s while Main ramped up), then show the stop frame."""
+    from k1000 import __main__ as main_mod
+
+    frames: list[tuple[float, Any]] = []
+    window: dict[str, float] = {}
+
+    class FakeFb:
+        def show(self, img: Any) -> bool:
+            frames.append((time.monotonic(), img))
+            return True
+
+        def close(self) -> None:
+            pass
+
+    client = FakeClient(dc.generate(DEV, State()))
+    monkeypatch.setattr(main_mod, "CamillaClient", lambda url, **kw: client)
+    monkeypatch.setattr(main_mod, "open_screen", lambda quiet=False: FakeFb())
+    real_stop = Controller.stop
+
+    async def slow_stop(self: Controller, *a: Any, **kw: Any) -> None:
+        window["start"] = time.monotonic()
+        self.show_hint("stopping", 5.0)          # something visible changes during stop()
+        await asyncio.sleep(0.4)
+        await real_stop(self, *a, **kw)
+        window["end"] = time.monotonic()
+
+    monkeypatch.setattr(Controller, "stop", slow_stop)
+    settings = tmp_path / "k1000.yaml"
+    settings.write_text(yaml.safe_dump({"profile": "dev"}))
+    args = main_mod.build_parser().parse_args([
+        "--settings", str(settings), "--state", str(tmp_path / "state.json"),
+        "--active-config", str(tmp_path / "active.yml"), "--no-hw"])
+
+    async def body() -> int:
+        async def stopper() -> None:
+            await until(lambda: len(frames) >= 1, timeout=10.0, what="first frame")
+            await asyncio.sleep(0.3)
+            os.kill(os.getpid(), signal.SIGTERM)
+        t = asyncio.get_running_loop().create_task(stopper())
+        code = await main_mod.run(args)
+        await t
+        return code
+
+    assert run(body()) == 0
+    during = [t for t, _ in frames if window["start"] < t < window["end"]]
+    assert during, "no frame drawn while stop() ran"
+    assert frames[-1][0] >= window["end"]        # the stop frame comes last

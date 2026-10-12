@@ -42,9 +42,12 @@ Why it is shaped like this:
   while a mute without that record is someone's decision and is never released.
 - **Persistence is debounced and atomic** (`state.atomic_write`): state.json + active.yml, once
   the edits pause for `persist_debounce_s` (at most `persist_max_delay_s` after the first unsaved
-  edit), and only when the content changed (SD card wear). A failed write is retried with a
-  backoff (`SAVE_RETRY_S`). A torn state.json is rebuilt from active.yml (`recover_state`), the
-  file the engine boots from, instead of overwriting the tune with defaults.
+  edit), and only when the content changed (SD card wear). An edit toward silence (the
+  operator's mute, master turned down) is saved at once (at most every URGENT_SAVE_GAP_S): a
+  power cut right after it must not boot the PA back louder or unmuted. A failed write is
+  retried with a backoff (`SAVE_RETRY_S`). A torn state.json is rebuilt from active.yml
+  (`recover_state`), the file the engine boots from, instead of overwriting the tune with
+  defaults; the faders it cannot know come back MUTED.
 - **Audio never depends on this process.** `stop()` waits for the engine work in flight (a
   restore, a guard), persists, and leaves the engine as it is; it never mutes.
 """
@@ -67,11 +70,12 @@ import yaml
 from . import dspconfig as dc
 from .cdsp import CdspError, CdspNoConfig, CdspUnavailable
 from .dspconfig import FADER_MAIN, FADER_SUBS, FADER_TOPS, Fader, FaderMute, Op, Rebuild, SetValue
-from .profiles import PROFILE_NAMES, Profile, ProfileChoice, card_present, load_profile
+from .profiles import (PROC_ASOUND, PROFILE_NAMES, Profile, ProfileChoice, card_id, card_present,
+                       load_profile)
 from .state import BOOL_FIELDS, CHOICES, RANGES, REBUILD_FIELDS, State, atomic_write, load_state
 from .ui.input_map import (
-    HINT_S, MUTE_TOGGLE, PAGES, ControlMap, Focus, GotoPage, Mute, NextPage, Nudge, ResetLive,
-    Toggle, apply_focus, map_event,
+    F_LOWCUT_ON, HINT_S, MUTE_TOGGLE, PAGES, ControlMap, Focus, GotoPage, Mute,
+    NextPage, Nudge, ResetLive, Toggle, apply_focus, map_event,
 )
 
 log = logging.getLogger(__name__)
@@ -103,6 +107,7 @@ METER_S = 0.1                # output peak meters
 OWN_WRITE_S = 0.5            # our own writes are not "external edits" for this long
 PERSIST_DEBOUNCE_S = 1.0
 PERSIST_MAX_DELAY_S = 5.0
+URGENT_SAVE_GAP_S = 0.25        # saves toward silence (mute, master down): not more often
 # Delay/polarity edits are applied under a group-fader mute (smooth_ops guard). Waiting for the
 # knob to pause first turns a fast E3 turn into one dip instead of one dip per detent.
 GUARD_SETTLE_S = 0.15
@@ -111,7 +116,13 @@ RESTORE_MIN_INTERVAL_S = 30.0   # at most one automatic pipeline restore per int
 FIX_MAX_REPEATS = 3             # identical drift fixes re-sent at most this often in a row
 CLIP_DBFS = -0.1                # a playback peak at/above this lights the clip box
 CLIP_HOLD_S = 3.0
+IN_CLIP_DBFS = -0.5             # a capture (ADC) peak at/above this lights IN CLIP
 METER_FLOOR_DB = -100.0
+# The screen's meter shows -60..0 dBFS at ~4 px/dB: level changes below that floor or under
+# METER_STEP_DB are invisible and must not wake the render loop (input noise hovering around
+# the floor re-rendered identical frames at 10 fps: ~15 % of a core).
+METER_SHOWN_FLOOR_DB = -60.0
+METER_STEP_DB = 0.25
 UPLOAD_TIMEOUT_S = 10.0
 SYNC_RETRY_S = 2.0
 SAVE_RETRY_S = (2.0, 5.0, 10.0)   # backoff after a failed state/config write (SD card trouble)
@@ -133,7 +144,15 @@ ENGINE_DOWN_STATES = ("Inactive", "Stalled")
 HINT_STILL_MUTED = "STILL MUTED · HOLD B2 TO UNMUTE"
 HINT_CONFIRM_SETUP = "MUTE OR CONFIRM ON SETUP (MAY CLICK)"
 HINT_PINNED = "PROFILE PINNED IN k1000.yaml"
+HINT_LIVE_RESET = "LIVE EQ RESET (ALL BANDS FLAT)"
+HINT_LIVE_FLAT = "LIVE EQ ALREADY FLAT"
 MSG_HELD_MUTED = "NO AUDIO FLOWING · HELD MUTED"
+MSG_KNOBS_OFFLINE = "KNOBS OFFLINE · USE PHONE MUTE / BYPASS"
+MSG_PROFILE_ROUTING = "k1000.yaml ROUTING FIXED UP (SEE LOG)"
+NOTE_REBUILT = "STATE REBUILT · CHECK MASTER"
+NOTE_MISSING = "NO SAVED STATE · CHECK MASTER"
+# Messages at/above this priority are alerts: also shown inside the MUTED band and on SETUP.
+ALERT_PRIO = 4
 
 
 class _LinkChanged(CdspUnavailable):
@@ -228,6 +247,10 @@ class Status:
     ramping: bool = False
     version: str = ""
     drift: list[str] = field(default_factory=list)
+    ready: bool = False              # connect sync done: edits reach the engine
+    alert: str = ""                  # most urgent message (priority >= ALERT_PRIO)
+    in_clip: bool = False            # an input_map capture channel clipped (latched)
+    knobs_ok: bool | None = None     # None = no knobs expected (--no-hw) / not reported
 
     def copy(self) -> "Status":
         return dataclasses.replace(self, levels=list(self.levels), clip=list(self.clip),
@@ -317,6 +340,33 @@ def _clamp_fader(idx: int, db: float) -> float:
     return db
 
 
+def _lower(new: Any, old: Any) -> bool:
+    try:
+        return float(new) < float(old)
+    except (TypeError, ValueError):
+        return False
+
+
+def _same_card(a: str, b: str, proc_root: str | Path = PROC_ASOUND) -> bool | None:
+    """Do ALSA names `a` and `b` point at the same card? 'hw:0' and 'hw:sndrpihifiberry' do on
+    the box (/proc/asound/<id> is a link to cardN). None = cannot tell (non-hw names, a card
+    that is not registered)."""
+    ia, ib = card_id(a), card_id(b)
+    if ia is None or ib is None:
+        return None
+    if ia == ib:
+        return True
+    pa, pb = Path(proc_root) / ia, Path(proc_root) / ib
+    try:
+        if not pb.exists():
+            return None
+        if not pa.exists():
+            return False          # the live device's card is gone: not the profile's card
+        return pa.resolve() == pb.resolve()
+    except OSError:
+        return None
+
+
 def _no_mute(s: State) -> State:
     c = s.copy()
     c.muted = False
@@ -371,19 +421,24 @@ def recover_state(paths: Paths) -> tuple[State, str]:
     Why: camilladsp boots from active.yml, so after a torn state.json that file IS the tune
     (system PEQ, trims, delays, polarity). Starting from defaults would overwrite active.yml at
     once and patch the defaults over the engine: the tune gone from both. Faders live only in
-    state.json, so master/balance/mute come back as defaults (unmuted: the boot ramp brings
-    Main in at the default master). A MISSING state.json still means defaults (first boot, or
-    moved away on purpose: README "Sound state"; atomic writes never leave it missing).
-    Returns (state, note); note is "" unless rebuilt.
+    state.json, so master/balance come back as defaults, and the calibrated master may be well
+    below the default: the state starts MUTED (a fresh engine parks Main at the master and stays
+    muted until the operator checks it and holds B2; an engine already playing is adopted as it
+    plays, mute included). A MISSING state.json means defaults (first boot, or moved away on
+    purpose: README "Sound state"; atomic writes never leave it missing), also MUTED when
+    active.yml shows the box was set up before (not a first boot).
+    Returns (state, note); note is "" on a normal start.
     """
     st = load_state(paths.state)        # logs, and keeps a .bad copy of a corrupt file
+    missing = False
     try:
         data = json.loads(paths.state.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             return st, ""
         why = "not a JSON object"
     except FileNotFoundError:
-        return st, ""
+        missing = True
+        why = "missing"
     except Exception as e:  # noqa: BLE001 - OSError, UnicodeDecodeError, ValueError...
         why = f"unreadable ({type(e).__name__})"
     try:
@@ -393,12 +448,20 @@ def recover_state(paths: Paths) -> tuple[State, str]:
     name = _k1000_profile(cfg.get("title")) if isinstance(cfg, dict) else None
     if name is None:
         return st, ""
+    if missing:
+        st = st.copy()
+        st.muted = True
+        log.warning("state.json missing while %s holds a K1000 config: defaults, MUTED (check "
+                    "the master before unmuting)", paths.active_config)
+        return st, NOTE_MISSING
     base = State()
     base.profile = name                  # dev_audition is read from the mixers only for dev
     rebuilt = dc.state_from_config(cfg, None, base)
+    rebuilt.muted = True
     log.warning("state.json %s: state rebuilt from %s (the tune the engine boots from); "
-                "master/balance/mute are defaults", why, paths.active_config)
-    return rebuilt, "STATE REBUILT FROM active.yml"
+                "master/balance are defaults, MUTED until the operator checks the master", why,
+                paths.active_config)
+    return rebuilt, NOTE_REBUILT
 
 
 # =========================================================================== controller
@@ -495,6 +558,14 @@ class Controller:
         self._aux_offset: dict[int, float] = {i: 0.0 for i in AUX_FADERS}
         self._aux_ext_mute: set[int] = set()
         self._messages: dict[str, tuple[int, str]] = {}
+        self._urgent_save = False         # an edit toward silence: save without the debounce
+        self._last_save = -math.inf
+        self._in_clip_until = 0.0
+        self._meter_key: Any = None
+        self._device_seen = 0             # polls in a row with the engine on the wrong card
+        self._last_repair = -math.inf
+        # Is `a` the same ALSA card as `b`? (/proc/asound/<id> -> cardN). Injectable for tests.
+        self.same_card: Callable[[str, str], bool | None] = _same_card
         self._logged: set[Any] = set()
         self._tasks: list[asyncio.Task[Any]] = []
         self._started = False
@@ -504,6 +575,7 @@ class Controller:
             self._set_message("settings", 5, f"SETTINGS: {profile_choice.error}")
         for w in profile.warnings:
             log.warning("profile %s: %s", profile.name, w)
+        self._note_profile_routing(profile)
 
     # ------------------------------------------------------------------ lifecycle
     @property
@@ -613,7 +685,21 @@ class Controller:
 
     def snapshot(self) -> tuple[str, State, Status, Focus]:
         """Copies safe to hand to a render thread."""
+        self.status.ready = self._engine_ready
         return self.page, self.state.copy(), self.status.copy(), copy.deepcopy(self.focus)
+
+    def set_knobs_ok(self, ok: bool | None) -> None:
+        """The knob service reports whether the MCP23017 answers (None = no knobs expected).
+        While it does not, the screen says so: B2 (mute) does nothing then."""
+        if ok == self.status.knobs_ok:
+            return
+        if ok is False:
+            log.error("knobs offline: B2 mute and the knobs do nothing until they recover")
+        elif ok and self.status.knobs_ok is False:
+            log.warning("knobs back online")
+        self.status.knobs_ok = ok
+        self._set_message("knobs", 8, MSG_KNOBS_OFFLINE if ok is False else None)
+        self._changed()
 
     # ------------------------------------------------------------------ UI actions
     def nudge(self, field: str, detents: int | float, fine: bool = False) -> Any:
@@ -634,7 +720,7 @@ class Controller:
             log.warning("nudge %r refused: %s", field, e)
             return None
         if new != old:
-            self._local_edit()
+            self._local_edit(urgent=field == "master_db" and _lower(new, old))
         return new
 
     def set_value(self, field: str, value: Any, confirmed: bool = False) -> Any:
@@ -650,7 +736,7 @@ class Controller:
             log.warning("set %r=%r refused: %s", field, value, e)
             return None
         if new != old:
-            self._local_edit()
+            self._local_edit(urgent=field == "master_db" and _lower(new, old))
         return new
 
     def toggle(self, field: str, confirmed: bool = False) -> bool:
@@ -679,12 +765,15 @@ class Controller:
         return True
 
     def reset_live(self) -> None:
-        """B4 long: the live EQ layer back to flat (smoothed by the worker)."""
+        """B4 long (confirmed): the live EQ layer back to flat (smoothed by the worker). Says so
+        on the screen: nothing else on MAIN would show it."""
         new = self.state.live_reset()
         if new.to_dict() == self.state.to_dict():
+            self.show_hint(HINT_LIVE_FLAT)
             return
         self.state = new
         log.info("live EQ reset")
+        self.show_hint(HINT_LIVE_RESET)
         self._local_edit()
 
     def set_mute(self, on: bool | str | None = MUTE_TOGGLE) -> bool:
@@ -696,7 +785,7 @@ class Controller:
         self.state.muted = on
         self._mute_want = on
         log.info("mute %s (operator)", "ON" if on else "OFF")
-        self._mark_dirty()
+        self._mark_dirty(urgent=on)
         self._changed()
         if self._mute_task is None or self._mute_task.done():
             try:
@@ -726,10 +815,22 @@ class Controller:
         """The mute the screen shows: the engine's Main mute, else the state's."""
         return bool(self.status.muted) if self.status.muted is not None else bool(self.state.muted)
 
+    def b2_muted(self) -> bool:
+        """The mute B2 long acts against (it asks for the opposite).
+
+        Normally the one the screen shows. But while K1000 ITSELF holds Main muted on its way to
+        bringing it in (a boot ramp parked, a setup guard) and the operator has not muted, the
+        screen says Main comes in by itself and that B2 keeps it muted: B2 then means MUTE (the
+        operator's mute, which the ramp/guard honours), never an unmute into an engine that is
+        not processing yet."""
+        if (self._ramping or FADER_MAIN in self._guards) and not self._operator_muted():
+            return False
+        return self.displayed_muted()
+
     def handle_event(self, event: Any) -> None:
         """A knob/button event -> input_map actions for the current page -> applied."""
         for action in map_event(self.page, self.focus, event, self.controls,
-                                muted=self.displayed_muted()):
+                                muted=self.b2_muted()):
             self.handle_action(action)
         self._changed()   # HWTEST log, held pushes, confirm marks
 
@@ -742,7 +843,9 @@ class Controller:
             self.nudge(action.field, action.detents, action.fine)
         elif isinstance(action, Toggle):
             # input_map emits a Toggle on a rebuild field only after the SETUP double push.
-            self.toggle(action.field, confirmed=True)
+            if self.toggle(action.field, confirmed=True) and action.field == F_LOWCUT_ON:
+                self.show_hint(f"LO-CUT ON · {self.state.lowcut_hz:.0f} Hz" if self.state.lowcut_on
+                               else "LO-CUT OFF")
         elif isinstance(action, Mute):
             self.set_mute(action.on)
         elif isinstance(action, ResetLive):
@@ -763,9 +866,9 @@ class Controller:
             return False
         return True
 
-    def _local_edit(self) -> None:
+    def _local_edit(self, urgent: bool = False) -> None:
         self._gen += 1
-        self._mark_dirty()
+        self._mark_dirty(urgent=urgent)
         self._changed()
         self._kick.set()
 
@@ -779,9 +882,19 @@ class Controller:
         else:
             self._messages.pop(key, None)
         msg = max(self._messages.values())[1] if self._messages else ""
-        if msg != self.status.message:
+        alerts = [m for m in self._messages.values() if m[0] >= ALERT_PRIO]
+        alert = max(alerts)[1] if alerts else ""
+        if msg != self.status.message or alert != self.status.alert:
             self.status.message = msg
+            self.status.alert = alert
             self._changed()
+
+    def _note_profile_routing(self, profile: Profile) -> None:
+        """A k1000.yaml input_map/output_map that could not be used as written is only a log
+        line otherwise: a wrong program input (a mic to the PA) or an unrouted output must show."""
+        bad = [w for w in profile.warnings
+               if any(k in w for k in ("input_map", "output_map", "not routed"))]
+        self._set_message("profile", 5, MSG_PROFILE_ROUTING if bad else None)
 
     def _log_once(self, key: Any, level: int, msg: str, *args: Any) -> None:
         if key not in self._logged:
@@ -946,6 +1059,16 @@ class Controller:
             want = self._mute_want
             if not self.client.connected:
                 return
+            if want is False and self._main_guard_holds():
+                # A setup guard holds Main muted AT THE SHOW LEVEL until the engine runs: an
+                # unmute now would come in as a step when audio resumes (README, Volume
+                # control). The operator's wish is recorded (state.muted False); the guard
+                # unmutes once the engine runs, then this sends it (a no-op by then). Stopping:
+                # the guard's own finish, or the next k1000 (Main's marker bit), brings Main in.
+                if self._stopping:
+                    return
+                await asyncio.sleep(0.02)
+                continue
             try:
                 await self.client.set_fader_mute(FADER_MAIN, want)
             except CdspUnavailable:
@@ -961,6 +1084,10 @@ class Controller:
             if self._mute_want == want:
                 self._mute_want = None
             self._changed()
+
+    def _main_guard_holds(self) -> bool:
+        """A setup guard (not a boot ramp: Main is parked low there) holds Main muted."""
+        return FADER_MAIN in self._guards and not self._ramping
 
     # ------------------------------------------------------------------ apply worker
     async def _worker(self) -> None:
@@ -1103,6 +1230,7 @@ class Controller:
             self.profile = new_profile
             self.status.profile = new_profile.name
             self.status.device = DEVICE_NAMES.get(new_profile.name, new_profile.name)
+            self._note_profile_routing(new_profile)
             self._refresh_device()
         # Faders: only what the guard/ramp actually sent (tracked in _applied); the worker sends
         # any level change made in the same edit on its next pass.
@@ -1532,9 +1660,18 @@ class Controller:
         aux_ops, aux_held = self._aux_drift(faders, skip_f, reset=aux_reset)
 
         expected = self._expected(engine_view)
+        wrong = self.wrong_devices(live, expected) if self.status.device_present is True else []
+        if not wrong:
+            self._device_seen = 0
+        elif not connect and await self._maybe_repair_devices(live, expected, wrong):
+            return    # devices + pipeline back from the profile; the next poll re-reconciles
         drift = dc.config_drift(live, expected, skip_pointers=recent_p)
         held: list[str] = []
-        if drift.rebuild:
+        if drift.rebuild and wrong:
+            # A pipeline restore keeps the live devices: useless there (and refused when the
+            # channel counts differ). The device repair puts both back.
+            self._set_message("drift", 2, "PIPELINE CHANGED OUTSIDE K1000")
+        elif drift.rebuild:
             await self._maybe_restore(live, expected, drift.rebuild, connect)
         else:
             self._rebuild_seen = 0
@@ -1749,8 +1886,9 @@ class Controller:
             self._changed()
         if devices:
             self._log_once(("devices", tuple(devices)), logging.WARNING,
-                           "engine devices differ from K1000's (not fixed while audio runs; "
-                           "fixed at the next engine start or from SETUP): %s", "; ".join(devices))
+                           "engine devices differ from K1000's (not fixed while audio runs on "
+                           "the profile's card; fixed at the next engine start, e.g. a power "
+                           "cycle): %s", "; ".join(devices))
             self._set_message("devices", 1, "ENGINE DEVICES CHANGED OUTSIDE K1000")
         else:
             self._set_message("devices", 1, None)
@@ -1760,6 +1898,57 @@ class Controller:
             self._set_message("held", 1, text)
         else:
             self._set_message("held", 1, None)
+
+    def wrong_devices(self, live: Any, expected: dict[str, Any]) -> list[str]:
+        """Why the engine cannot be playing the profile's program to the profile's outputs: a
+        capture/playback side of another type, on another ALSA card, or with another channel
+        count (e.g. a CamillaGUI page loaded while the engine was down holds the GUI's default
+        config, hw:0 2/2 ch, and its Apply moves the engine there: on m4, card 0 is the
+        HiFiBerry). [] when it may well be right (other device options only, or cannot tell)."""
+        out: list[str] = []
+        ld = dc._dict(dc._as_cfg(live).get("devices"))
+        ed = dc._dict(expected.get("devices"))
+        for side in ("capture", "playback"):
+            lv, ev = dc._dict(ld.get(side)), dc._dict(ed.get(side))
+            if not ev:
+                continue
+            if lv.get("type") != ev.get("type"):
+                out.append(f"{side} type {lv.get('type')!r} != {ev.get('type')!r}")
+                continue
+            if ev.get("type") != "Alsa":
+                continue
+            ldev, edev = lv.get("device"), ev.get("device")
+            if isinstance(ldev, str) and isinstance(edev, str) and ldev != edev:
+                if self.same_card(ldev, edev) is False:
+                    out.append(f"{side} on {ldev!r}, not {edev!r}")
+                    continue
+            if lv.get("channels") != ev.get("channels"):
+                out.append(f"{side} channels {lv.get('channels')!r} != {ev.get('channels')!r}")
+        return out
+
+    async def _maybe_repair_devices(self, live: Any, expected: dict[str, Any],
+                                    wrong: list[str]) -> bool:
+        """The engine runs on the wrong card/channels while the profile's card is present: the
+        PA plays nothing (or the wrong input) whatever the knobs do, and a pipeline restore
+        keeps the live devices, so it cannot help. Put the profile's whole config back (device
+        restart, Main muted around it, then the boot ramp): already silent, so this is the safe
+        direction. Second look first, at most once per RESTORE_MIN_INTERVAL_S. True = done."""
+        self._device_seen += 1
+        if self._device_seen < 2:
+            return False
+        now = self._clock()
+        if now - self._last_repair < RESTORE_MIN_INTERVAL_S:
+            return False
+        self._last_repair = now
+        log.warning("engine is not on the profile's devices (%s): restoring %s's config (device "
+                    "restart, Main muted, then the boot ramp)", "; ".join(wrong), self.profile.name)
+        self._set_message("devices", 1, "RESTORING ENGINE DEVICES")
+        ok = await self._guarded_upload(_keep_cuts(expected, live), ramp_after=True,
+                                        epoch=self._epoch)
+        if ok:   # what was uploaded was generated from the engine view (`_applied`)
+            self._device_seen = 0
+            self._applied.profile = self.profile.name
+        return True
 
     async def _maybe_restore(self, live: Any, expected: dict[str, Any], reasons: list[str],
                              connect: bool) -> None:
@@ -1880,7 +2069,10 @@ class Controller:
             await asyncio.sleep(self.meter_s)
 
     async def meter_once(self) -> None:
-        """Output peaks since the last read -> logical meters + clip latch."""
+        """Output peaks since the last read -> logical meters + clip latch; the program input
+        channels' capture peaks -> IN CLIP latch (the M4's line inputs clip in the ADC, before
+        any K1000 gain, and nothing on the output side shows it)."""
+        cap: Any = None
         if not self.client.connected:
             levels = [METER_FLOOR_DB] * 4
         else:
@@ -1889,22 +2081,42 @@ class Controller:
             except (CdspUnavailable, CdspError):
                 peaks = None
             levels = logical_levels(self.profile, self._applied.dev_audition, peaks)
+            try:
+                cap = await self.client.command("GetCaptureSignalPeakSinceLast")
+            except (CdspUnavailable, CdspError):
+                cap = None
         now = self._clock()
         for i, lv in enumerate(levels):
             self._peak_hold[i] = max(self._peak_hold[i], lv)
             if lv >= CLIP_DBFS:
                 self._clip_until[i] = now + CLIP_HOLD_S
+        if isinstance(cap, (list, tuple)):
+            for ch in set(self.profile.input_map):
+                v = cap[ch] if 0 <= ch < len(cap) else None
+                if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= IN_CLIP_DBFS:
+                    if now >= self._in_clip_until:
+                        log.warning("input clipping (capture channel %d at %.2f dBFS): the "
+                                    "source must come down", ch, v)
+                    self._in_clip_until = now + CLIP_HOLD_S
         clip = [now < t for t in self._clip_until]
-        if levels != self.status.levels or clip != self.status.clip:
-            self.status.levels, self.status.clip = levels, clip
+        in_clip = now < self._in_clip_until
+        # What the screen can show: -60..0 dBFS in METER_STEP_DB steps. Store every value, wake
+        # the render loop only when the picture changes.
+        key = (tuple(round(max(METER_SHOWN_FLOOR_DB, min(0.0, lv)) / METER_STEP_DB)
+                     for lv in levels), tuple(clip), in_clip)
+        self.status.levels, self.status.clip, self.status.in_clip = levels, clip, in_clip
+        if key != self._meter_key:
+            self._meter_key = key
             self._changed()
 
     # ------------------------------------------------------------------ persistence
-    def _mark_dirty(self) -> None:
+    def _mark_dirty(self, urgent: bool = False) -> None:
         now = self._clock()
         if self._dirty_since is None:
             self._dirty_since = now
         self._last_change = now
+        if urgent:
+            self._urgent_save = True
         self._persist_kick.set()
 
     async def _persist_loop(self) -> None:
@@ -1915,9 +2127,18 @@ class Controller:
                 now = self._clock()
                 due = min(self._last_change + self.persist_debounce_s,
                           self._dirty_since + self.persist_max_delay_s)
+                if self._urgent_save:
+                    due = min(due, self._last_save + URGENT_SAVE_GAP_S)
                 if now < due:
-                    await asyncio.sleep(due - now)
+                    # Woken early by an urgent edit (mute, master down) arriving meanwhile.
+                    self._persist_kick.clear()
+                    try:
+                        await asyncio.wait_for(self._persist_kick.wait(), due - now)
+                    except (TimeoutError, asyncio.TimeoutError):
+                        pass
                     continue
+                self._urgent_save = False
+                self._last_save = self._clock()
                 if await self._save_async():
                     self._save_failures = 0
                     break

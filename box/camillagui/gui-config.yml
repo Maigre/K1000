@@ -14,8 +14,14 @@
 # restarts onto the other card; the HiFiBerry is not wired to the PA). PEQ, Lo-Cut and sub delay
 # live on the knobs. Adding a shortcut back is a decision for Thomas, knowing all of the above.
 #
-# The Aux1/Aux2 faders (subs/tops, i.e. the balance) are not in the compact view either; the
-# normal view's side panel has them ("Aux faders"), as runtime commands.
+# The compact view always shows two icons, "Change to normal view" and "Change to dashboard
+# view" (no setting hides them). The normal view has Apply to DSP, Stop processing and an "Apply
+# automatically" checkbox, none with a confirmation: the phone rule (README) is to stay in the
+# compact view and never Apply or Stop from the phone.
+#
+# The Aux1/Aux2 faders (normal and dashboard views) are k1000's sub and top groups (balance macro
+# +b/2, -b/2), not a balance control: k1000 pulls a raise back down, but keeps a cut or a mute
+# (shown on the box screen) until it is undone here. The balance is E2 on the box.
 page_title: K1000
 # v0 runs one clock with no resampling and no multithreading: hide what does not apply.
 hide_capture_samplerate: true
@@ -30,6 +36,10 @@ apply_config_automatically: false
 save_config_automatically: false
 status_update_interval: 1000
 # Main fader slider: -80..0 dB, the same as RANGES["master_db"] (0 dB is also the engine's volume_limit).
+# One swipe can travel the whole slider in about half a second (+3 dB per touch event, sent every
+# 250 ms, ramped over 300 ms). AFTER Friday's gain-structure step: volume_max = show level + 6 dB,
+# volume_range = 80 + volume_max (the bottom stays at -80). Change it here and deploy (install.sh
+# overwrites the box's copy); it applies at the next page load. The Aux sliders share this range.
 volume_range: 80
 volume_max: 0
 spectrum_n_bins: 60

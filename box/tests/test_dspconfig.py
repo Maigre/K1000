@@ -98,6 +98,24 @@ def test_bad_maps_fall_back_with_warnings():
     assert any("not routed" in w for w in p.warnings)
 
 
+def test_bad_input_map_falls_back_to_the_profiles_own_inputs():
+    """m4 'input_map: [3, 4]' (reading 'line inputs 3-4' literally) must not feed the PA from
+    inputs 1-2 (the mic preamps): the profile's own line inputs are used, with a warning."""
+    p = pf.load_profile("m4", {"profiles": {"m4": {"input_map": [3, 4]}}}, probe=False)
+    assert p.input_map == (2, 3) and any("input_map" in w for w in p.warnings)
+
+
+def test_target_level_per_profile():
+    assert pf.load_profile("m4", {}, probe=False).target_level == 256
+    p = pf.load_profile("m4", {"profiles": {"m4": {"target_level": 768}}}, probe=False)
+    assert p.target_level == 768 and not p.warnings
+    assert d.generate(p, State())["devices"]["target_level"] == 768
+    assert d.generate(pf.load_profile("dev", {}), State())["devices"]["target_level"] == 256
+    for bad, want in ((5000, 1536), (10, 64), ("768", 256), (512.5, 256), (True, 256)):
+        q = pf.load_profile("m4", {"profiles": {"m4": {"target_level": bad}}}, probe=False)
+        assert q.target_level == want and any("target_level" in w for w in q.warnings), bad
+
+
 def _fake_prober(probe):
     return lambda device: probe
 

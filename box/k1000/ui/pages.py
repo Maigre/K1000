@@ -28,9 +28,9 @@ from typing import Any, Sequence
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .input_map import (F_BALANCE, F_LOWCUT_FREQ, F_MASTER, F_SLOT, F_SUB_DELAY, KNOB_CORNERS,
-                        LIVE_SLOT_LABELS, LIVE_SLOT_SHORT, LIVE_SLOTS, PAGES, SETUP_ITEMS, Focus,
-                        knob_labels)
+from .input_map import (F_BALANCE, F_LOWCUT_FREQ, F_LOWCUT_ON, F_MASTER, F_SLOT, F_SUB_DELAY,
+                        KNOB_CORNERS, LIVE_SLOT_LABELS, LIVE_SLOT_SHORT, LIVE_SLOTS, PAGES,
+                        SETUP_ITEMS, Focus, knob_labels)
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +81,13 @@ class ScreenStatus:
     levels: peak dBFS of the 4 logical outputs (Sub L, Sub R, Top L, Top R).
     clip:   per-output clip flag, latched by the controller for a few seconds.
     muted:  the engine's actual Main mute; None -> fall back to state.muted.
+    ready:  the controller is in sync with the engine (False: knob edits do not reach it yet);
+            the MUTED band says READY only when the engine runs AND this is not False.
+    ramping: a boot ramp is pending or running (K1000 brings Main in by itself).
+    alert:  the controller's most urgent message (APPLYING SETUP…, HELD MUTED, SYNC FAILED,
+            KNOBS OFFLINE…): also shown inside the MUTED band and on SETUP, where `message`
+            has no room.
+    in_clip: the INPUT (ADC) clipped recently (latched by the controller).
     The controller must set engine and device_present explicitly: the defaults are "unknown".
     """
     profile: str = ""
@@ -93,6 +100,10 @@ class ScreenStatus:
     muted: bool | None = None
     message: str = ""                    # one line for the middle strip (e.g. "ramping in")
     stop_reason: str = ""                # engine stop reason, shown on ENGINE DOWN
+    ready: bool | None = None
+    ramping: bool = False
+    alert: str = ""
+    in_clip: bool = False
 
 
 # ------------------------------------------------------------------------------------------
@@ -352,8 +363,9 @@ def _quadrant(c: _Ctx, e: int, label: str, value: str, unit: str, sub: str,
     else:
         d.text((x1 - pad, label_y), tag, font=ftag, fill=CYAN, anchor="ra")
         d.text((x1 - pad - 30, label_y - 2), label, font=flab, fill=AMBER, anchor="ra")
-    # value (highlighted while being edited)
-    edited = field_key is not None and c.editing == field_key
+    # value (highlighted while being edited; B3 toggling the Lo-Cut highlights its frequency)
+    edited = field_key is not None and (c.editing == field_key or (
+        field_key == F_LOWCUT_FREQ and c.editing == F_LOWCUT_ON))
     fine = e in c.held
     box = (x0 + 4, val_cy - box_half, x1 - 4, val_cy + box_half)
     if edited:
@@ -363,10 +375,14 @@ def _quadrant(c: _Ctx, e: int, label: str, value: str, unit: str, sub: str,
     if unit:
         funit = font(20)
         unit_w = int(d.textlength(unit, font=funit)) + 6
-    fval = _fit(d, value, value_size, (x1 - x0) - 16 - unit_w)
+    # FINE sits at the box's right edge: keep the value clear of it (a unit-less value such as
+    # Q would otherwise run under it).
+    fine_w = int(d.textlength("FINE", font=font(14))) + 12 if fine else 0
+    room = (x1 - x0) - fine_w
+    fval = _fit(d, value, value_size, room - 16 - unit_w)
     vw = d.textlength(value, font=fval)
     total = vw + unit_w
-    vx = x0 + ((x1 - x0) - total) / 2
+    vx = x0 + (room - total) / 2
     d.text((vx, val_cy), value, font=fval, fill=fg, anchor="lm")
     if unit:
         d.text((vx + vw + 6, val_cy + 14), unit, font=font(20), fill=BG if edited else DIM,
@@ -399,6 +415,16 @@ def _status_bar(c: _Ctx, page: str, state: Any, status: Any, muted: bool) -> Non
         d.rounded_rectangle((lx, 4, lx + mw, STATUS_H - 5), radius=4, fill=BAND_RED)
         d.text((lx + mw / 2, cy), "MUTED", font=fp, fill=FG, anchor="mm")
         lx += mw + 6
+    # A latched clip, readable at arm's length (the meter's clip boxes are 12 px): CLIP = an
+    # output reached full scale, IN CLIP = the input ADC did (no K1000 knob fixes that one).
+    pills = [t for t, on in (("IN CLIP", _truth(_get(status, "in_clip", None))),
+                             ("CLIP", any(bool(_truth(v)) for v in _seq(_get(status, "clip", None)))))
+             if on]
+    for t in pills:
+        cw = int(d.textlength(t, font=fp)) + 12
+        d.rounded_rectangle((lx, 4, lx + cw, STATUS_H - 5), radius=4, fill=RED)
+        d.text((lx + cw / 2, cy), t, font=fp, fill=FG, anchor="mm")
+        lx += cw + 6
     # right side first, so the left text gets whatever room is left
     engine = engine_state(status)
     if engine is None:
@@ -429,8 +455,14 @@ def _status_bar(c: _Ctx, page: str, state: Any, status: Any, muted: bool) -> Non
         left = profile.upper() + (f" · {device}" if device else "")
         lcol = FG if present else ORANGE
     lx += 2
-    room = max(40, x - 20 - lx)
-    d.text((lx, cy), left, font=_fit(d, left, 17, room), fill=lcol, anchor="lm")
+    room = x - 20 - lx
+    # Pills (MUTED, CLIP...) come first; the profile text shrinks, then loses the device name,
+    # then goes: it never overprints the engine state.
+    for text in (left, left.split(" · ")[0]):
+        f = _fit(d, text, 17, max(1, room))
+        if room > 0 and d.textlength(text, font=f) <= room:
+            d.text((lx, cy), text, font=f, fill=lcol, anchor="lm")
+            break
 
 
 def _meter(c: _Ctx, status: Any, y0: int = STATUS_H + 8, y1: int = H - 30) -> None:
@@ -476,10 +508,11 @@ def _meter(c: _Ctx, status: Any, y0: int = STATUS_H + 8, y1: int = H - 30) -> No
     fl = font(13)
     cx_sub = x + bw + gap / 2 - 1
     cx_top = x + 2 * (bw + gap) + bw + gap / 2 + 2
-    d.text((cx_sub, y1 + 4), "SUB", font=fl, fill=DIM, anchor="ma")
-    d.text((cx_top, y1 + 4), "TOP", font=fl, fill=DIM, anchor="ma")
-    d.text((cx_sub, y1 + 16), "L R", font=font(11), fill=FAINT, anchor="ma")
-    d.text((cx_top, y1 + 16), "L R", font=font(11), fill=FAINT, anchor="ma")
+    # (kept clear of the 4 px MUTED frame at the bottom edge)
+    d.text((cx_sub, y1 + 2), "SUB", font=fl, fill=DIM, anchor="ma")
+    d.text((cx_top, y1 + 2), "TOP", font=fl, fill=DIM, anchor="ma")
+    d.text((cx_sub, y1 + 13), "L R", font=font(11), fill=FAINT, anchor="ma")
+    d.text((cx_top, y1 + 13), "L R", font=font(11), fill=FAINT, anchor="ma")
 
 
 def _unknown_notice(status: Any) -> str:
@@ -646,10 +679,15 @@ def _page_setup(c: _Ctx, state: Any, status: Any) -> None:
         d.polygon([(W // 2 - 8, yb), (W // 2 + 8, yb), (W // 2, yb + 8)], fill=DIM)
     hint_fn = getattr(c.focus, "hint_now", None)
     hint = hint_fn(c.now) if callable(hint_fn) else None
+    alert = str(_get(status, "alert", "") or "")
     if hint:
         d.rectangle((0, H - FOOTER_H, W, H), fill=AMBER)
         d.text((W // 2, H - FOOTER_H // 2), hint, font=_fit(d, hint, 20, W - 20), fill=BG,
                anchor="mm")
+    elif alert:   # e.g. APPLYING SETUP… on the page that triggers rebuilds
+        d.rectangle((0, H - FOOTER_H, W, H), fill=(60, 50, 0))
+        d.text((W // 2, H - FOOTER_H // 2), alert, font=_fit(d, alert, 20, W - 20),
+               fill=YELLOW, anchor="mm")
 
 
 def _page_hwtest(c: _Ctx, state: Any, status: Any) -> None:
@@ -722,19 +760,37 @@ def _overlay_engine_down(c: _Ctx, state: Any, status: Any) -> None:
     if reason:
         d.text((W // 2, 200), reason, font=_fit(d, reason, 22, W - 30, FONT_REG), fill=FG,
                anchor="mm")
-    d.text((W // 2, 248), "restarting automatically…", font=font(20, FONT_REG), fill=DIM,
+    # Stalled = the capture gives no data: the engine waits for it, nothing restarts it.
+    stalled = engine is not None and str(engine).strip().upper() == "STALLED"
+    note = "no input data · check the interface / USB" if stalled else "restarting automatically…"
+    d.text((W // 2, 248), note, font=_fit(d, note, 20, W - 30, FONT_REG), fill=DIM,
            anchor="mm")
     tail = ("audio may be off — bypass if it persists" if engine is None
             else "NO AUDIO — bypass if it persists")
     d.text((W // 2, 286), tail, font=_fit(d, tail, 20, W - 20), fill=RED, anchor="mm")
 
 
-def _mute_hint(c: _Ctx, status: Any) -> tuple[str | None, str]:
-    """(active hint or None, the unmute line: 'READY · hold B2 to unmute' when the engine runs)."""
-    engine = engine_state(status)
-    ready = engine is not None and engine.upper() in ENGINE_OK
+def _mute_hint(c: _Ctx, state: Any, status: Any) -> tuple[str | None, str]:
+    """(active hint or None, what the MUTED band says next to MUTED).
+
+    The band must never tell the operator something false about what happens next:
+    - K1000 itself holds Main muted on its way to a boot ramp (and the operator did not mute):
+      it comes in BY ITSELF, and B2 keeps it muted (the controller resolves B2 that way);
+    - a controller alert (APPLYING SETUP…, NO AUDIO FLOWING · HELD MUTED, ENGINE SYNC FAILED,
+      KNOBS OFFLINE…) says why, instead of READY;
+    - READY only when the engine RUNS (not Paused/Starting) and the controller is in sync.
+    """
     hint_fn = getattr(c.focus, "hint_now", None)
     hint = hint_fn(c.now) if callable(hint_fn) else None
+    engine = engine_state(status)
+    running = engine is not None and engine.upper() == "RUNNING"
+    if _truth(_get(status, "ramping", None)) and _truth(_get(state, "muted", None)) is False:
+        # (the status bar says whether the engine is processing yet: STARTING / RUNNING)
+        return hint, "RAMPS IN BY ITSELF · hold B2 to keep muted"
+    alert = str(_get(status, "alert", "") or "")
+    if alert:
+        return hint, alert
+    ready = running and _truth(_get(status, "ready", None)) is not False
     return hint, ("READY · hold B2 to unmute" if ready else "hold B2 to unmute")
 
 
@@ -748,7 +804,7 @@ def _overlay_muted(c: _Ctx, state: Any, status: Any, page: str = "MAIN") -> None
     """
     d = c.d
     d.rectangle((0, STATUS_H, W - 1, H - 1), outline=BAND_RED, width=4)
-    hint, unmute = _mute_hint(c, status)
+    hint, unmute = _mute_hint(c, state, status)
     if page == "SETUP":
         if not hint:
             d.rectangle((0, H - FOOTER_H, W, H), fill=BAND_RED)
@@ -757,6 +813,7 @@ def _overlay_muted(c: _Ctx, state: Any, status: Any, page: str = "MAIN") -> None
             fx = 14 + int(d.textlength("MUTED", font=font(22))) + 12
             d.text((W - 14, cy), unmute, font=_fit(d, unmute, 18, W - fx - 14, FONT_REG),
                    fill=FG, anchor="rm")
+        # else: the hint has the footer (drawn by the page) for its 2.5 s
         return
     if page == "HWTEST":
         box = (W - 120, STATUS_H + 6, W - 10, STATUS_H + 32)
@@ -889,7 +946,8 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
     s.live_peq[3].gain = -3.0
     s.live_lowshelf.gain = 2.0
     run = ScreenStatus(profile="m4", device="MOTU M4", device_present=True, engine="Running",
-                       load=7.4, levels=(-14.0, -15.5, -9.0, -2.5), clip=(False, False, False, True))
+                       load=7.4, levels=(-14.0, -15.5, -9.0, -2.5), clip=(False, False, False, True),
+                       ready=True)
     edit = Focus(editing=F_MASTER, edit_until=inf)
     live = Focus(slot=1, editing="live_peq.1.gain", edit_until=inf, held={1})
     setup = Focus(item=3)
@@ -902,9 +960,9 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
                               "balance_db": -12.0, "sub_delay_ms": 50.0})
     muted = State.from_dict({**s.to_dict(), "muted": True})
     dev = ScreenStatus(profile="dev", device="HiFiBerry", device_present=True, engine="Paused",
-                       load=0.1)
+                       load=0.1, ready=True)
     dev_muted = ScreenStatus(profile="dev", device="HiFiBerry", device_present=True,
-                             engine="Running", load=0.1, muted=True)
+                             engine="Running", load=0.1, muted=True, ready=True)
     run_muted = ScreenStatus(**{**run.__dict__, "muted": True})
     return [
         ("main", "MAIN", s, run, Focus()),
@@ -929,6 +987,20 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
         ("engine_down", "MAIN", s, ScreenStatus(profile="m4", device="MOTU M4", engine=None),
          Focus()),
         ("hint", "MAIN", s, run, Focus(hint="HOLD B2 TO MUTE / UNMUTE", hint_until=inf)),
+        # K1000 holds Main before its own boot ramp: not 'READY · hold B2 to unmute'
+        ("muted_ramp_hold", "MAIN", s, ScreenStatus(**{**run.__dict__, "engine": "Starting",
+                                                       "muted": True, "ramping": True,
+                                                       "ready": False, "levels": (-100.0,) * 4,
+                                                       "clip": (False,) * 4}), Focus()),
+        ("setup_applying", "SETUP", s, ScreenStatus(**{**dev.__dict__, "engine": "Running",
+                                                       "alert": "APPLYING SETUP…",
+                                                       "message": "APPLYING SETUP…"}),
+         Focus(item=10)),
+        ("knobs_offline", "LIVE", muted, ScreenStatus(**{**run_muted.__dict__,
+                                                         "alert": "KNOBS OFFLINE · USE PHONE MUTE / BYPASS",
+                                                         "message": "KNOBS OFFLINE · USE PHONE MUTE / BYPASS"}),
+         Focus(slot=1)),
+        ("input_clip", "LIVE", s, ScreenStatus(**{**run.__dict__, "in_clip": True}), live),
     ]
 
 

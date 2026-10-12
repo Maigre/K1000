@@ -27,7 +27,10 @@ profiles:
     probe: true
 
 # Physical -> logical controls (MCP23017 indices, see docs/03-v0-architecture.md §1).
-# Switch positions are unknown until the HWTEST page identifies them: fix them here.
+# UNCONFIRMED DEFAULTS until SETUP > Knob test (HWTEST) on the box has identified every button
+# and knob by physical position (README "Knobs and buttons"). Hold-B2 = MUTE and hold-B4 = RESET
+# LIVE EQ are the same gesture: a wrong `buttons` order swaps them. Fix them here, then restart
+# k1000, and label the buttons on the shell.
 # Keys as read by k1000/ui/input_map.py (ControlMap.from_cfg); invalid entries -> these defaults.
 controls:
   encoders: [0, 1, 2, 3]         # E1..E4 = physical encoder index

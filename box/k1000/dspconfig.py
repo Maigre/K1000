@@ -373,7 +373,7 @@ def generate(profile: Profile, state: State) -> dict[str, Any]:
         "devices": {
             "samplerate": SAMPLERATE,
             "chunksize": CHUNKSIZE,
-            "target_level": TARGET_LEVEL,
+            "target_level": int(getattr(profile, "target_level", TARGET_LEVEL) or TARGET_LEVEL),
             "enable_rate_adjust": False,
             "volume_ramp_time_ms": VOLUME_RAMP_MS,
             "volume_limit": MAIN_LIMIT_DB,

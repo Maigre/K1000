@@ -56,6 +56,15 @@ ALSA_TO_CDSP: dict[str, str] = {
 FORMAT_PREFERENCE: tuple[str, ...] = ("S32_LE", "S24_3_LE", "S24_4_LE", "S16_LE", "F32_LE", "F64_LE")
 CDSP_FORMATS = frozenset(FORMAT_PREFERENCE)
 
+# devices.target_level: playback buffer (frames) kept when a chunk arrives. 256 = 1 chunk, the
+# contract value, proven on the I2S HiFiBerry. A USB interface may need more margin against
+# underruns (more latency: 256 frames = 5.3 ms at 48 kHz): `profiles.<name>.target_level` in
+# k1000.yaml, clamped to CamillaDSP's usable range ((2 + queuelimit 4) * chunksize 256 max). A
+# change is a devices change: it takes effect at the next ENGINE start (k1000 rewrites
+# active.yml when it starts), never at show time.
+TARGET_LEVEL = 256
+TARGET_LEVEL_RANGE = (64, 1536)
+
 
 # Key `load_settings` adds when the file exists but cannot be used as written.
 SETTINGS_ERROR = "_error"
@@ -126,6 +135,7 @@ class Profile:
     probe: bool = False
     present: bool | None = None
     warnings: list[str] = field(default_factory=list)
+    target_level: int = TARGET_LEVEL
 
 
 _DEFAULTS: dict[str, dict[str, Any]] = {
@@ -478,7 +488,8 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
 
     `overrides` may be the whole settings dict (its `profiles.<name>` section is used) or that
     section directly. Keys: capture_device, playback_device, capture_channels, playback_channels,
-    capture_format, playback_format, input_map [L, R], output_map [phys1..physN], probe.
+    capture_format, playback_format, input_map [L, R], output_map [phys1..physN], probe,
+    target_level (frames, 64..1536).
     `probe` None = profile default (m4 probes, dev does not: its facts are proven and the box's
     HiFiBerry is shared). Probed channel counts beat configured ones the device refuses.
     `name` is normalised ('M4' -> 'm4'); only an unknown name raises (ProfileError). Malformed
@@ -542,10 +553,16 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
         imap_t = tuple(d["input_map"])  # type: ignore[assignment]
     nc = d["capture_channels"]
     if not all(0 <= c < nc for c in imap_t):
-        fallback = (0, 1) if nc >= 2 else (0, 0)
+        # The profile's own program inputs if they exist (m4: line 3-4), never quietly another
+        # physical input first (m4 0-1 = the mic/instrument preamps: a measurement mic to the PA).
+        default = tuple(d["input_map"])
+        if all(0 <= c < nc for c in default):
+            fallback = default
+        else:
+            fallback = (0, 1) if nc >= 2 else (0, 0)
         warnings.append(f"{name}: input_map {list(imap_t)} outside {nc} capture channels; "
                         f"using {list(fallback)}")
-        imap_t = fallback
+        imap_t = fallback  # type: ignore[assignment]
 
     # output map: physical i <- logical output_map[i]
     omap = ov.get("output_map", d["output_map"])
@@ -563,6 +580,17 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
         if missing:
             warnings.append(f"{name}: not routed to any output: {', '.join(missing)}")
 
+    tl = ov.get("target_level", TARGET_LEVEL)
+    if isinstance(tl, bool) or not isinstance(tl, int):
+        warnings.append(f"{name}: target_level {tl!r} is not a whole number of frames; "
+                        f"using {TARGET_LEVEL}")
+        tl = TARGET_LEVEL
+    elif not TARGET_LEVEL_RANGE[0] <= tl <= TARGET_LEVEL_RANGE[1]:
+        clamped = min(TARGET_LEVEL_RANGE[1], max(TARGET_LEVEL_RANGE[0], tl))
+        warnings.append(f"{name}: target_level {tl} outside {TARGET_LEVEL_RANGE[0]}.."
+                        f"{TARGET_LEVEL_RANGE[1]}; using {clamped}")
+        tl = clamped
+
     for w in warnings:
         log.warning("%s", w)
     return Profile(
@@ -572,5 +600,5 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
         capture_format=d["capture_format"], playback_format=d["playback_format"],
         input_map=imap_t, output_map=omap_t,
         audition=d["audition"], pinned=d["pinned"], probe=do_probe,
-        present=present, warnings=warnings,
+        present=present, warnings=warnings, target_level=tl,
     )

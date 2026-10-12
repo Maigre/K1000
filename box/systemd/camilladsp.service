@@ -11,9 +11,17 @@
 #   in wait mode a lost or missing device leaves camilladsp alive but Inactive forever (systemd sees
 #   nothing to restart), whereas started from a file it EXITS (code 0) whenever processing stops,
 #   and Restart=always brings it back muted from active.yml.
-# - So a missing audio device (M4 not plugged) means: exit 0 at start, retry every second, forever
-#   (StartLimitIntervalSec=0; the default 5 starts / 10 s would give up for good). Plugging the M4
-#   in brings audio back with no human action. There is no websocket while it is absent.
+# - A missing audio device (M4 not plugged, switched off) is waited for BEFORE the exec: the shell
+#   also checks that every ALSA card named in active.yml (`device: hw:<id>`) is registered in
+#   /proc/asound/<id> (the same entry k1000 reads to show NO DEVICE), every second, and execs the
+#   engine within a second of the card appearing. Plugging the M4 in brings audio back with no
+#   human action. There is no websocket while it is absent. Why wait instead of failing: started
+#   on an absent device, camilladsp exits (code 0) within ~20 ms; a relaunch every second rotated
+#   the engine log every second and deleted the log of the run that failed within seconds.
+#   The wait is capped (wmax=30 s): then the engine is started anyway, its own open decides, and it
+#   exits and is retried as before. So even a wrong /proc check can hold audio back 30 s at most.
+#   No /proc/asound at all (no ALSA procfs) = no check. Exit 0 + Restart=always retries forever
+#   (StartLimitIntervalSec=0; the default 5 starts / 10 s would give up for good).
 # - The log must never take the audio down: camilladsp panics (exit 101, no audio) when its `-o`
 #   file cannot be written, so `-o` is passed only when /var/log/k1000 is a writable directory;
 #   otherwise the engine logs to stderr, i.e. the journal.
@@ -21,9 +29,11 @@
 #   CAP_SYS_NICE + LimitRTPRIO allow that as user k1000 (log must not say "could not get real time
 #   priority"). LimitMEMLOCK lets it lock memory.
 # - Log: with --log_rotate_size the live file is /var/log/k1000/camilladsp_rCURRENT.log; every start
-#   rotates the previous one to camilladsp_r<date>.log, 3 kept.
-# - `$$` is systemd's escape for a literal `$` handed to the shell; `%` would be a systemd specifier,
-#   so the script has none. The "waiting" line goes to the journal once, then every 30 s.
+#   (and every 256 kB) rotates it to camilladsp_r<date>.log. 50 are kept (12.8 MB at most), so the
+#   log of a failed run survives a restart burst and the soak's xruns_all keeps its history.
+# - `$$` is systemd's escape for a literal `$` handed to the shell; `%` would be a systemd specifier
+#   and a backslash a systemd escape, so the script has neither (only the line continuations).
+#   A "waiting" line goes to the journal when what is waited for changes, else every 30 s.
 
 [Unit]
 Description=K1000 CamillaDSP engine (boots muted)
@@ -36,15 +46,35 @@ Type=simple
 User=k1000
 Group=audio
 ExecStart=/bin/sh -c '\
-  cfg=/var/lib/k1000/active.yml; logdir=/var/log/k1000; n=0; \
-  until out=$$(/usr/local/bin/camilladsp -c "$$cfg" 2>&1); do \
-    if [ "$$n" -eq 0 ]; then echo "k1000: waiting for a valid $$cfg (k1000.service writes it): $$(echo "$$out" | grep -v " INFO " | tail -n 1)" >&2; fi; \
-    n=$$((n + 1)); if [ "$$n" -ge 30 ]; then n=0; fi; \
+  cfg=/var/lib/k1000/active.yml; logdir=/var/log/k1000; asound=/proc/asound; wmax=30; \
+  n=0; w=0; last=; \
+  while :; do \
+    if out=$$(/usr/local/bin/camilladsp -c "$$cfg" 2>&1); then \
+      [ -d "$$asound" ] || break; \
+      miss=; \
+      for d in $$(sed -n "s/[[:space:]]#.*//; s/^[[:space:]]*device:[[:space:]]*//p" "$$cfg" | tr -c "[:alnum:]_:,=.-" " "); do \
+        case $$d in hw:*|plughw:*) ;; *) continue ;; esac; \
+        c=$$(echo "$${d#*hw:}" | cut -d, -f1); c=$${c#CARD=}; \
+        case $$c in "") continue ;; *[!0-9]*) ;; *) c=card$$c ;; esac; \
+        [ -e "$$asound/$$c" ] || case "$$miss " in *" $$d "*) ;; *) miss="$$miss $$d" ;; esac; \
+      done; \
+      [ -z "$$miss" ] && break; \
+      if [ "$$w" -ge "$$wmax" ]; then \
+        echo "k1000: audio device(s)$$miss still not in $$asound after $$w s: starting the engine anyway (it exits and is retried if the device is really missing)" >&2; \
+        break; \
+      fi; \
+      w=$$((w + 1)); kind="dev$$miss"; \
+      msg="k1000: waiting for audio device(s)$$miss (not in $$asound: check the USB cable and the power switch)"; \
+    else \
+      kind=cfg; msg="k1000: waiting for a valid $$cfg (k1000.service writes it): $$(echo "$$out" | grep -v " INFO " | tail -n 1)"; \
+    fi; \
+    if [ "$$kind" != "$$last" ] || [ "$$n" -ge 30 ]; then echo "$$msg" >&2; last=$$kind; n=0; fi; \
+    n=$$((n + 1)); \
     sleep 1; \
   done; \
   set -- -m -g-40 -p 1234 -a 127.0.0.1; \
   if [ -d "$$logdir" ] && [ -w "$$logdir" ]; then \
-    set -- "$$@" -o "$$logdir/camilladsp.log" --log_rotate_size 1000000 --log_keep_nbr 3; \
+    set -- "$$@" -o "$$logdir/camilladsp.log" --log_rotate_size 256000 --log_keep_nbr 50; \
   else \
     echo "k1000: $$logdir is not a writable directory, the engine logs to the journal only" >&2; \
   fi; \

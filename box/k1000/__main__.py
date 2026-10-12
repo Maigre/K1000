@@ -2,8 +2,11 @@
 
 Wiring only; the behaviour lives in `control.Controller`. What this file guarantees:
 
-- It starts whatever is there: no screen -> headless, no knobs -> no knobs (both logged), no
-  engine -> ENGINE DOWN until it appears. Nothing here may stop the controller from running.
+- It starts whatever is there and keeps trying for the rest: no screen yet (the panel's fbtft
+  probe can lose the boot race) -> retried every HW_RETRY_S; knobs that do not answer (loose
+  ribbon, an I2C glitch at boot) -> retried every HW_RETRY_S, and the screen says KNOBS OFFLINE
+  meanwhile (B2 mute does nothing then); no engine -> ENGINE DOWN until it appears. Nothing here
+  may stop the controller from running, and the audio never waits for the UI.
 - It never mutes on the way out. SIGTERM/SIGINT persist the state and leave the engine exactly as
   it is: audio must survive a k1000 restart (docs/03 §2 "Audio never depends on the UI").
 - Logs go to stdout without timestamps (journald adds them).
@@ -22,6 +25,7 @@ import logging
 import os
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -30,15 +34,20 @@ from .cdsp import CamillaClient
 from .control import FADER_CEILING_DB, Controller, EngineSettings, Paths, recover_state
 from .profiles import (SETTINGS_PATH, ProfileError, card_present, choose_profile, load_profile,
                        load_settings)
+from .ui.input_map import Nudge, apply_focus
 
 log = logging.getLogger("k1000")
 
 RENDER_MAX_FPS = 15.0
-RENDER_IDLE_S = 0.2      # re-render at least this often (hint / edit-highlight expiry)
+RENDER_IDLE_S = 1.0      # re-render at least this often (hints/highlights wake it on expiry)
+HW_RETRY_S = 2.0         # screen / knobs not there: try again this often
+FORCE_WRITE_S = 5.0      # rewrite the panel even if the frame did not change (heals overdraw)
+KNOBS_ALARM_S = 1.0      # knobs unhealthy this long -> KNOBS OFFLINE (a retried glitch is not)
 
 COMMANDS = """\
 nudge <field> <detents> [fine]   set <field> <json value> [confirm]   toggle <field> [confirm]
 mute on|off|toggle   reset_live   page <MAIN|LIVE|SETUP|HWTEST>   next_page   hint <text>
+ev enc <0-3> <detents> | ev sw <0-7> <press|release|short|long>   (as if from the knobs)
 status   state   save   settle   help   quit"""
 
 
@@ -66,13 +75,15 @@ def setup_logging(level: str) -> None:
 
 
 # =========================================================================== screen
-def open_screen() -> Any:
-    """The ZynScreen framebuffer, or None (headless) when there is none."""
+def open_screen(quiet: bool = False) -> Any:
+    """The ZynScreen framebuffer, or None when there is none (yet). `quiet`: a retry, log at
+    debug level only."""
+    lvl = logging.DEBUG if quiet else logging.WARNING
     try:
         from .ui.display import Framebuffer, find_fb_device
         dev = find_fb_device() or "/dev/fb0"
         if not Path(dev).exists():
-            log.warning("no framebuffer (%s): running headless", dev)
+            log.log(lvl, "no framebuffer (%s) yet: retrying every %g s", dev, HW_RETRY_S)
             return None
         fb = Framebuffer(dev)
         fb.unbind_console()     # root's ExecStartPre normally did it already
@@ -80,8 +91,24 @@ def open_screen() -> Any:
         log.info("screen on %s", dev)
         return fb
     except Exception as e:   # noqa: BLE001 - no screen is never fatal
-        log.warning("screen unavailable (%s): running headless", e)
+        log.log(lvl, "screen unavailable (%s): retrying every %g s", e, HW_RETRY_S)
         return None
+
+
+async def screen_task(ctl: Controller, hw: dict[str, Any], retry_s: float = HW_RETRY_S) -> None:
+    """The screen for the whole life of the process: a panel that registers late (or not at
+    all) is retried, never given up on (a dark UI for a whole gig is not an option)."""
+    tries = 0
+    while hw.get("fb") is None:
+        fb = open_screen(tries > 0)
+        tries += 1
+        if fb is None:
+            await asyncio.sleep(retry_s)
+            continue
+        hw["fb"] = fb
+        if tries > 1:
+            log.warning("screen found after %d tries", tries)
+    await render_loop(ctl, hw["fb"])
 
 
 def _draw(fb: Any, page: str, state: Any, status: Any, focus: Any) -> None:
@@ -105,6 +132,17 @@ def _stop_frame(fb: Any) -> None:
         log.debug("stop frame failed: %s", e)
 
 
+def _next_wake(focus: Any, now: float) -> float:
+    """Seconds until the next frame that would differ without any change: a hint, an edit
+    highlight or a SETUP confirm expiring (+10 ms), capped at RENDER_IDLE_S."""
+    out = RENDER_IDLE_S
+    for attr in ("hint_until", "edit_until", "confirm_until"):
+        t = getattr(focus, attr, 0.0)
+        if isinstance(t, (int, float)) and t > now:
+            out = min(out, t - now + 0.01)
+    return max(0.0, out)
+
+
 async def render_loop(ctl: Controller, fb: Any) -> None:
     """Re-render on change, at most RENDER_MAX_FPS (meters change ~10 times a second), and at
     least every RENDER_IDLE_S. PIL work runs in a thread so knob events stay responsive."""
@@ -118,13 +156,25 @@ async def render_loop(ctl: Controller, fb: Any) -> None:
     min_dt = 1.0 / RENDER_MAX_FPS
     last = 0.0
     failed = False
+    wait = 0.0
+    forced = loop.time()
     while True:
-        await ctl.wait_changed(RENDER_IDLE_S)
+        # Woken by a change, by the next hint/highlight/confirm expiry (the only things the
+        # pages draw from the clock), else every RENDER_IDLE_S. An unchanged frame is never
+        # rendered at meter rate (that alone cost ~15 % of a core).
+        await ctl.wait_changed(wait)
         dt = loop.time() - last
         if dt < min_dt:
             await asyncio.sleep(min_dt - dt)
         last = loop.time()
+        if last - forced >= FORCE_WRITE_S and hasattr(fb, "invalidate"):
+            # Framebuffer.show skips a frame identical to the last one written; anything that
+            # drew over the panel meanwhile (fbcon bound because the panel registered after
+            # the root unbind, a glitch) would stay until the UI changes.
+            fb.invalidate()
+            forced = last
         page, st, status, focus = ctl.snapshot()
+        wait = _next_wake(focus, time.monotonic())
         try:
             await asyncio.to_thread(_draw, fb, page, st, status, focus)
             failed = False
@@ -135,8 +185,10 @@ async def render_loop(ctl: Controller, fb: Any) -> None:
 
 
 # =========================================================================== knobs
-def open_controls(settings: dict[str, Any]) -> Any:
-    """The MCP23017 knobs, or None when absent (logged; the box then runs without knobs)."""
+def open_controls(settings: dict[str, Any], quiet: bool = False) -> Any:
+    """The MCP23017 knobs, or None when they do not answer (logged once; `knobs_task` retries).
+    A half-opened driver is closed again (its INT lines and bus released for the retry)."""
+    controls = None
     try:
         from .hw.mcp23017 import ZynthianControls
         controls = ZynthianControls()
@@ -144,8 +196,72 @@ def open_controls(settings: dict[str, Any]) -> Any:
         log.info("knobs on i2c-1 0x20 (irq=%s)", getattr(controls, "irq", "?"))
         return controls
     except Exception as e:   # noqa: BLE001 - ControlsError, ImportError, PermissionError...
-        log.warning("knobs unavailable (%s): running without knobs", e)
+        log.log(logging.DEBUG if quiet else logging.ERROR,
+                "knobs unavailable (%s): retrying every %g s", e, HW_RETRY_S)
+        if controls is not None:
+            try:
+                controls.close()
+            except Exception:   # noqa: BLE001
+                pass
         return None
+
+
+async def watch_knobs(ctl: Controller, controls: Any, period: float = 0.25,
+                      alarm_s: float = KNOBS_ALARM_S) -> None:
+    """KNOBS OFFLINE on the screen while the driver reports I2C trouble for > alarm_s (it
+    retries and recovers by itself; a glitch it heals within that time stays silent)."""
+    loop = asyncio.get_running_loop()
+    bad_since: float | None = None
+    while True:
+        healthy = bool(getattr(controls, "healthy", True)) and not getattr(controls, "closed", False)
+        now = loop.time()
+        if healthy:
+            bad_since = None
+            ctl.set_knobs_ok(True)
+        else:
+            bad_since = now if bad_since is None else bad_since
+            if now - bad_since >= alarm_s:
+                ctl.set_knobs_ok(False)
+        await asyncio.sleep(period)
+
+
+async def knobs_task(ctl: Controller, settings: dict[str, Any], hw: dict[str, Any],
+                     retry_s: float = HW_RETRY_S,
+                     opener: Callable[..., Any] = open_controls) -> None:
+    """The knobs for the whole life of the process: opened (retried every `retry_s` while the
+    MCP23017 does not answer, KNOBS OFFLINE on the screen meanwhile), events fed to the
+    controller, health watched; if the event stream ever fails, closed and reopened."""
+    tries = 0
+    while True:
+        controls = hw.get("controls")
+        if controls is None:
+            # In the loop thread, like the first open always was: start() binds the loop.
+            controls = opener(settings, tries > 0)
+            tries += 1
+            if controls is None:
+                ctl.set_knobs_ok(False)
+                await asyncio.sleep(retry_s)
+                continue
+            hw["controls"] = controls
+            if tries > 1:
+                log.warning("knobs available after %d tries", tries)
+        tries = 0
+        ctl.set_knobs_ok(True)
+        watch = asyncio.get_running_loop().create_task(watch_knobs(ctl, controls),
+                                                       name="k1000-knobs-watch")
+        try:
+            await input_loop(ctl, controls)
+        finally:
+            watch.cancel()
+            await asyncio.gather(watch, return_exceptions=True)
+        # input_loop only returns when the event stream failed: start over
+        ctl.set_knobs_ok(False)
+        hw["controls"] = None
+        try:
+            controls.close()
+        except Exception:   # noqa: BLE001
+            pass
+        await asyncio.sleep(retry_s)
 
 
 async def input_loop(ctl: Controller, controls: Any) -> None:
@@ -156,7 +272,7 @@ async def input_loop(ctl: Controller, controls: Any) -> None:
         except ControlsClosed:
             return
         except ControlsError as e:
-            log.error("knobs failed (%s): running without knobs", e)
+            log.error("knobs failed (%s): reopening them", e)
             return
         if ev is None:
             continue
@@ -181,7 +297,23 @@ async def run_command(ctl: Controller, line: str, stop: asyncio.Event) -> None:
     try:
         if cmd == "nudge":
             v = ctl.nudge(args[0], float(args[1]), len(args) > 2 and args[2] == "fine")
+            if v is not None:    # the edit highlight, as a knob turn shows it
+                apply_focus(ctl.focus, Nudge(args[0], 0))
             _reply("ok" if v is not None else "err", {"cmd": cmd, "field": args[0], "value": v})
+        elif cmd == "ev":
+            # A knob event, exactly as the MCP23017 driver would deliver it (slot/item select,
+            # held pushes = FINE, B1..B4 with their press kinds): bench tests of the real UI.
+            from .hw.mcp23017 import EncoderEvent, SwitchEvent
+            kind, idx = args[0].lower(), int(args[1])
+            if kind == "enc":
+                ev: Any = EncoderEvent(idx, int(args[2]), time.monotonic())
+            elif kind == "sw" and args[2] in ("press", "release", "short", "long"):
+                ev = SwitchEvent(idx, args[2], time.monotonic())
+            else:
+                raise ValueError(f"ev {kind} {args[2:]}: expected 'enc <i> <d>' or 'sw <i> <kind>'")
+            ctl.handle_event(ev)
+            _reply("ok", {"cmd": cmd, "page": ctl.page, "slot": ctl.focus.slot,
+                          "item": ctl.focus.item, "held": sorted(ctl.focus.held)})
         elif cmd == "set":
             try:
                 value = json.loads(args[1])
@@ -207,7 +339,7 @@ async def run_command(ctl: Controller, line: str, stop: asyncio.Event) -> None:
             ctl.show_hint(" ".join(args))
             _reply("ok", {"cmd": cmd})
         elif cmd == "status":
-            st = ctl.status.copy()
+            st = ctl.snapshot()[2]          # what the screen would show (ready included)
             _reply("status", {**st.__dict__, "page": ctl.page, "engine_ready": ctl.engine_ready})
         elif cmd == "state":
             _reply("state", ctl.state.to_dict())
@@ -286,19 +418,35 @@ async def run(args: argparse.Namespace) -> int:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
 
-    fb = None if args.headless else open_screen()
-    controls = None if args.no_hw else open_controls(settings)
+    hw: dict[str, Any] = {"fb": None, "controls": None}
     await ctl.start()
-    tasks: list[asyncio.Task[Any]] = []
-    if controls is not None:
-        tasks.append(loop.create_task(input_loop(ctl, controls), name="k1000-input"))
-    if fb is not None:
-        tasks.append(loop.create_task(render_loop(ctl, fb), name="k1000-render"))
-    if args.stdin:
-        tasks.append(loop.create_task(stdin_loop(ctl, stop), name="k1000-stdin"))
+    ui: list[asyncio.Task[Any]] = []          # screen + knobs: kept until the controller stopped
+    if not args.headless:
+        ui.append(loop.create_task(screen_task(ctl, hw), name="k1000-screen"))
+    if not args.no_hw:
+        ui.append(loop.create_task(knobs_task(ctl, settings, hw), name="k1000-knobs"))
+    console = loop.create_task(stdin_loop(ctl, stop), name="k1000-stdin") if args.stdin else None
 
     await stop.wait()
     log.info("stopping: saving the state, leaving the audio as it is")
+    await _cancel([console] if console is not None else [])
+    # The screen keeps showing (and B2 keeps muting) while stop() lets a ramp/guard in flight
+    # finish: a frozen 'MUTED' while the PA ramps up would say the opposite of the truth.
+    await ctl.stop()
+    await _cancel(ui)
+    fb = hw.get("fb")
+    if fb is not None:
+        _stop_frame(fb)
+        fb.close()
+    await client.close()
+    controls = hw.get("controls")
+    if controls is not None:
+        controls.close()
+    log.info("stopped")
+    return 0
+
+
+async def _cancel(tasks: list[asyncio.Task[Any]]) -> None:
     for t in tasks:
         t.cancel()
     for t in tasks:
@@ -306,15 +454,6 @@ async def run(args: argparse.Namespace) -> int:
             await t
         except BaseException:   # noqa: BLE001
             pass
-    await ctl.stop()
-    if fb is not None:
-        _stop_frame(fb)
-        fb.close()
-    await client.close()
-    if controls is not None:
-        controls.close()
-    log.info("stopped")
-    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

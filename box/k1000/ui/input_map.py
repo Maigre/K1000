@@ -16,6 +16,11 @@ Safety rules carried here (contract §4, knob semantics):
 - B2 mute and B4 reset-live act on a LONG press only; a short press only shows a hint.
 - B2 long mutes on EVERY page, the Knob test included (there, the other switches' long press
   leaves the test instead).
+- B4 reset-live acts on the LIVE page only and needs a second long press within
+  CONFIRM_WINDOW_S: the same gesture as the B2 panic mute must never wipe the feedback notches
+  by mistake. B3 (Lo-Cut) acts on MAIN only, where its value is shown.
+- SUB DELAY on MAIN (every settled change dips the subs under the delay guard) wakes up on a
+  first detent and changes from the next one: a brushed knob does not drop the subs.
 - B2 emits an explicit `Mute(bool)` when the dispatcher passes the mute the screen shows
   (`map_event(..., muted=pages.displayed_muted(state, status))`): the operator presses for the
   opposite of what they see, never for a state the controller has not adopted yet.
@@ -104,6 +109,7 @@ class ResetLive:
 @dataclass(frozen=True)
 class ShowHint:
     text: str
+    seconds: float = 2.5          # HINT_S
 
 
 Action = Nudge | Toggle | SelectSlot | SelectItem | NextPage | GotoPage | Mute | ResetLive | ShowHint
@@ -169,6 +175,9 @@ class Knob:
     accel_up: int = 1                 # max detent multiplier on fast turns, per direction
     accel_down: int = 1
     kind: Literal["nudge", "slot", "item", "setup_value"] = "nudge"
+    # The first detent after ARM_WINDOW_S of rest only wakes the knob (highlight + hint); the
+    # next ones edit. For a value whose every change is audible as a dip (sub delay).
+    arm: bool = False
 
 
 # E1..E4 per page — the contract's knob table, as data.
@@ -176,7 +185,7 @@ KNOBS: dict[str, tuple[Knob, Knob, Knob, Knob]] = {
     "MAIN": (
         Knob("MASTER", F_MASTER, accel_up=2, accel_down=4),
         Knob("BALANCE", F_BALANCE),
-        Knob("SUB DELAY", F_SUB_DELAY),
+        Knob("SUB DELAY", F_SUB_DELAY, arm=True),
         Knob("LO-CUT", F_LOWCUT_FREQ, accel_up=4, accel_down=4),
     ),
     "LIVE": (
@@ -220,9 +229,14 @@ except Exception:  # pragma: no cover - keeps the UI usable if the driver module
 
 HINT_MUTE = "HOLD B2 TO MUTE / UNMUTE"
 HINT_RESET = "HOLD B4 TO RESET LIVE EQ"
+HINT_RESET_AGAIN = "HOLD B4 AGAIN TO RESET ALL LIVE EQ"
+HINT_RESET_ON_LIVE = "RESET LIVE EQ: B4 ON THE LIVE PAGE"
+HINT_LOWCUT_ON_MAIN = "LO-CUT: B3 ON THE MAIN PAGE"
 HINT_PUSH_TOGGLE = "PUSH TO CHANGE"
 HINT_CONFIRM = "PUSH AGAIN TO APPLY (MAY CLICK)"
+HINT_ARM = "{} · TURN AGAIN TO CHANGE"
 CONFIRM_WINDOW_S = 5.0
+F_RESET_LIVE = "reset_live"    # pseudo-field: B4's pending confirm
 
 # ------------------------------------------------------------------------------------------
 # Physical -> logical mapping (from /etc/k1000/k1000.yaml, section `controls:`)
@@ -304,6 +318,7 @@ class ControlMap:
 # ------------------------------------------------------------------------------------------
 EDIT_HIGHLIGHT_S = 2.5
 HINT_S = 2.5
+ARM_WINDOW_S = 2.5        # an `arm` knob at rest this long needs a wake-up detent again
 
 
 @dataclass
@@ -339,6 +354,7 @@ class Focus:
     hint: str | None = None
     hint_until: float = 0.0
     held: set[int] = field(default_factory=set)          # logical encoders whose push is down
+    turned: set[int] = field(default_factory=set)        # held pushes whose knob was turned
     last_turn: dict[int, tuple[float, int]] = field(default_factory=dict)  # enc -> (ts, sign)
     confirm: str | None = None            # SETUP field waiting for its second push
     confirm_until: float = 0.0
@@ -372,7 +388,7 @@ def apply_focus(focus: Focus, action: Action, now: float | None = None) -> bool:
         focus.confirm = None
         return True
     if isinstance(action, ShowHint):
-        focus.hint, focus.hint_until = action.text, now + HINT_S
+        focus.hint, focus.hint_until = action.text, now + action.seconds
         return True
     if isinstance(action, (Nudge, Toggle)):
         focus.editing, focus.edit_until = action.field, now + EDIT_HIGHLIGHT_S
@@ -432,15 +448,21 @@ def map_event(page: str, focus: Focus, event: Any, cfg: Any = None, *,
         last = focus.last_turn.get(e)
         focus.last_turn[e] = (now, 1 if delta > 0 else -1)
         fine = e in focus.held
+        if fine:
+            focus.turned.add(e)       # its release is the end of a fine turn, not a 'select'
+        # Slot/item: every detent counts (the driver merges a fast turn into one event).
         if knob.kind == "slot":
-            return [SelectSlot(1 if delta > 0 else -1)]
+            return [SelectSlot(delta)]
         if knob.kind == "item":
-            return [SelectItem(1 if delta > 0 else -1)]
+            return [SelectItem(delta)]
         if knob.kind == "setup_value":
             return _setup_turn(focus, delta, fine)
         if knob.field is None:
             return []
         fld = knob.field.replace("{slot}", LIVE_SLOTS[focus.slot % len(LIVE_SLOTS)])
+        if knob.arm and not fine and (last is None or now - last[0] > ARM_WINDOW_S):
+            focus.editing, focus.edit_until = fld, now + EDIT_HIGHLIGHT_S
+            return [ShowHint(HINT_ARM.format(knob.label))]
         return [Nudge(fld, _accel(knob, delta, last, now, fine), fine)]
 
     # switches
@@ -450,11 +472,16 @@ def map_event(page: str, focus: Focus, event: Any, cfg: Any = None, *,
     kind = getattr(event, "kind", "")
     group, n = role
     if group == "P":
+        turned = n in focus.turned
         if kind == "press":
             focus.held.add(n)
+            focus.turned.discard(n)
         elif kind in ("release", "short"):
             focus.held.discard(n)
-        if page == "SETUP" and kind == "short" and n in (0, 1):
+            focus.turned.discard(n)
+        # A push released after turning its knob (the fine-mode habit from LIVE) is not a
+        # 'select': on SETUP it would flip a polarity or open a page.
+        if page == "SETUP" and kind == "short" and n in (0, 1) and not turned:
             return _setup_push(focus, now)
         return []
 
@@ -464,11 +491,19 @@ def map_event(page: str, focus: Focus, event: Any, cfg: Any = None, *,
         if kind == "long":
             return [mute_action(muted)]
         return [ShowHint(HINT_MUTE)] if kind == "short" else []
-    if n == 2:   # B3 Lo-Cut on/off — on a deliberate release
-        return [Toggle(F_LOWCUT_ON)] if kind == "short" else []
-    if n == 3:   # B4 reset live EQ — long press only
+    if n == 2:   # B3 Lo-Cut on/off — on a deliberate release, on MAIN (where it is shown)
+        if kind != "short":
+            return []
+        return [Toggle(F_LOWCUT_ON)] if page == "MAIN" else [ShowHint(HINT_LOWCUT_ON_MAIN)]
+    if n == 3:   # B4 reset live EQ — LIVE page, long press, confirmed by a second long press
+        if page != "LIVE":
+            return [ShowHint(HINT_RESET_ON_LIVE)] if kind in ("short", "long") else []
         if kind == "long":
-            return [ResetLive()]
+            if focus.confirm_now(now) == F_RESET_LIVE:
+                focus.confirm = None
+                return [ResetLive()]
+            focus.confirm, focus.confirm_until = F_RESET_LIVE, now + CONFIRM_WINDOW_S
+            return [ShowHint(HINT_RESET_AGAIN, CONFIRM_WINDOW_S)]
         return [ShowHint(HINT_RESET)] if kind == "short" else []
     return []
 
