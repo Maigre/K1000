@@ -126,6 +126,23 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
     credentials → Install a certificate → CA certificate). The portal serves it at
     `http://10.42.0.1/k1000-ca.crt`.
   - The leaf is valid until 2029-01-14.
+- **Update 2026-10-12 (evening), implementation defaults after the phone review:**
+  - **The AP runs on hostapd, PMF unset, not on NetworkManager's AP.** Verified hub knowledge
+    (rpi-internal-wifi-ap-hostapd, 2026-09-03): on the Pi 4's own Broadcom chip, NetworkManager's
+    wpa_supplicant AP completes the handshake and then drops Apple and older-Android clients about
+    6 s later, before DHCP. NetworkManager leaves wlan0 alone; eth0 is untouched.
+  - **Captive DNS off by default.** With it on, Android never offers "stay connected" and pauses
+    auto-join after each automatic join, so a phone that drops mid-show may not come back by itself.
+    The box screen gets a third QR, "FIRST TIME" (http://10.42.0.1/), for the one-time CA install.
+    `setup-ap.sh --portal on` brings the catch-all back.
+  - **A network fence**: phones on the AP reach only DNS, DHCP, 80 and 443; no CamillaGUI, no SSH
+    (`--ssh on` opens it), no forwarding.
+  - **The phone can unmute**, guarded: an unmute that saw an older mute state is refused.
+  - **No-go on Friday = the AP fully off** (`phone.enabled: false`), not only the page.
+  - The phone stays **portrait** for Sunday. An Android shell APK and a landscape EQ layout come
+    after the gig (`ROADMAP.md` Phase 2).
+  - Thomas's phone is a Pixel 4a. He stands up to ~10 m from the box: 5 GHz ch 36 first, 2.4 GHz
+    as the fallback.
 
 
 ## D-008 — Licence: GNU GPLv3 (or later) · decided 2026-10-12
@@ -142,3 +159,36 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
     `piscreen2r` overlay, stays **GPL-2.0**. It is a separate firmware artefact, never linked with
     the Python code.
 - Nothing third-party is vendored; fonts (DejaVu) are used from the system.
+
+## D-009 — Live UI v1: one SHOW page with every live EQ control, alignment off the front · decided 2026-10-12
+
+- **Ask** (Thomas, after using the v0 panel): take sub delay and Lo-Cut off the front page ("it
+  might be a risky mistake to touch"); put every live control on one page; show the applied EQ over
+  a live spectrum like a pro console, with LS · EQ1–4 · HS selection; maybe a GEQ toggle. Also: the
+  knobs feel imprecise when turned fast.
+- **Design**: `docs/07-live-ui-v1.md` (pro-console research, mockups in `docs/ui/v1/`, engine and
+  panel probes), critiqued from a FOH engineer's seat. Knob analysis: `docs/08-knob-precision.md`.
+- **Decided** (Thomas, 2026-10-12, from four options each):
+  - **SHOW** is the front page: E1 master, E2/E3/E4 = frequency/gain/Q of the selected band, band
+    select LS · 1 · 2 · 3 · 4 · HS on a B3 tap, the EQ curve (computed from the engine's own filters)
+    over the program spectrum. The encoder push stays "fine".
+  - **The sub/top balance lives on ALIGN only**, not on SHOW.
+  - **B4 tap = notch helper**: it selects a free band at a notch Q (about 1/6 octave), at the
+    spectrum peak if there is one, and never changes gain, so it is inaudible until E3 cuts. **Reset
+    all live EQ moves to SETUP**, with a confirm and a one-step undo.
+  - **ALIGN** (master, balance, sub delay, Lo-Cut) is **locked**: a turn on the alignment knobs shows
+    "LOCKED · HOLD B3 TO EDIT", and a B3 hold unlocks them for 30 s. Master and balance stay live.
+    Lo-Cut on/off moves to SETUP with a confirm.
+  - **Sunday is DJ/program only**: the spectrum shows the music, not the room. It is built behind a
+    SETUP switch and decided at Friday's rig test.
+- **Defaults taken with them** (from the research and the critique):
+  - No EQ in/out (bypassing would bring rings back) and no GEQ (on four encoders it is slower and
+    coarser than parametric bands).
+  - B1 tap = next page, B1 hold = SHOW, and ALIGN/SETUP return to SHOW after 60 s idle.
+  - Knob decoder fixed (patches A + B), and acceleration only on genuinely fast spins, never on
+    master up.
+  - A master-up guard against a wrong-knob sweep.
+  - Shorter fader ramps so the master answers the hand.
+  - System alerts get their own place and colour, apart from hints.
+- **Gate**: accepted on the box by the Wednesday 14 evening freeze, otherwise Sunday runs v0. Thursday's
+  soak runs v1 with the spectrum on.
