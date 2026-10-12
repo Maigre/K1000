@@ -77,3 +77,4 @@ processing in front of them, the job Meyer's LD-1A / LD-3 line drivers and later
 8. **Measurement**: do you own a measurement mic? Preferred tool (Smaart, REW, Open Sound Meter, phone app)?
 9. **Zynthian V4**: does it boot today, which Pi (4 GB?), and is it truly free to repurpose?
 10. **Repo licence** (public repo has none yet): MIT, GPL-3, AGPL…?
+11. **Date**: is there an outing you want K1000 on (sets whether a bought hedge is needed meanwhile)?
