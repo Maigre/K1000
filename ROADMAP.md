@@ -175,6 +175,21 @@ parametric bands + the spectrum serve live notching better on 4 knobs).
   hold-to-mute; HTTPS from the name-constrained local CA. Phone setup: `docs/06-phone.md`.
 - **After the gig:** presets per place type, EQ A/B, the curve and spectrum on the phone, and a GEQ
   view only if the field trial asks for it.
+- **Phone orientation** (Thomas, 12/10): portrait stays the default and stays locked for Sunday
+  (one thumb, hold-to-mute under it). After the gig, a landscape "EQ focus" layout when the phone is
+  turned (wide curve and spectrum, band controls at the side), the way console remote apps adapt
+  rather than force.
+- **Android app** (Thomas, 12/10): not before Sunday. After it, a thin WebView shell (the UI stays
+  served by the box), published as a signed APK in the GitHub releases for sideloading, not on the
+  Play Store. What it adds over the PWA:
+  - It bundles the K1000 CA, trusted only for 10.42.0.1 and `k1000.home.arpa`, so there is no CA
+    install in Android settings.
+  - It joins the K1000 Wi-Fi itself and binds its traffic to it, so mobile data stays on for the rest
+    of the phone (today: airplane mode + Wi-Fi during the show).
+  - It keeps the screen awake and gives real haptics.
+  - It gives raw mic access (Android's unprocessed source) for the phone-mic measurement (Phase 4).
+
+  Cost ~1–2 days with real-phone testing; the signing key goes to the hub's `secrets/`.
 
 ## Phase 3 — Field trial
 
