@@ -1,7 +1,83 @@
 # K1000 — roadmap
 
-D-002 (architecture) is decided: D1, CamillaDSP on the Zynthian V4 (`DECISIONS.md`). Progress is
-recorded here as dated lines under each phase.
+Where K1000 stands, what comes next and in which order, and the gates that decide what plays on
+Sunday 18 October. Decisions live in `DECISIONS.md`. Each phase below keeps its own dated progress
+lines.
+
+*Status as of Mon 2026-10-12, evening.* v0 runs on the box: the integration round is done (K1000
+`ca742e7`, 502 tests). The MOTU M4 arrives Tue 13. The rig test is Fri 16 and the gig Sun 18.
+
+## At a glance
+
+| Phase | Goal | State | Gate |
+|---|---|---|---|
+| 0 — Frame | Questions answered, lead picked | **done** 12/10 | — |
+| 1 — v0 for the gig | A trustworthy, bypassable head for Sunday | **in progress**: code done and deployed; Lite, M4, soak still to do | Fri 16 rig test |
+| 2 — Live UI v1 | Every live control on one page, EQ curve over a spectrum; phone PWA | **pulled forward in part** (Thomas, 12/10): design running, phone built | Wed 14 freeze, Fri go/no-go |
+| 3 — Field trial | The gig is the first outing; debrief | Sun 18 | debrief Mon 19 |
+| 4 — Assist & measurement | Spectrum tools, suggest-notch, phone mic as a measurement input | after the gig | — |
+| 5 — Road-proofing | Read-only root, enclosure, power, spare surface | after the gig | — |
+
+## The week to the gig
+
+```mermaid
+gantt
+    title K1000 - the week to the gig
+    dateFormat YYYY-MM-DD
+    axisFormat %a %d
+    tickInterval 1day
+    section Box and code
+    v0 built, deployed, integration round   :done, 2026-10-12, 1d
+    Lite conversion and boot tuning         :active, 2026-10-12, 2d
+    Phone wiring, AP on the box              :2026-10-13, 1d
+    Live UI v1 build and knob fix           :2026-10-13, 2d
+    Code freeze (Wed night)                 :milestone, 2026-10-15, 0d
+    User documentation                      :2026-10-14, 2d
+    Overnight soak on the gig build         :2026-10-15, 1d
+    section Thomas
+    M4 day                                  :2026-10-13, 1d
+    Knob labels, phone CA, spare card       :2026-10-13, 3d
+    Rig test and mic tune                   :crit, 2026-10-16, 1d
+    Buffer, print card, pack bypass kit     :2026-10-17, 1d
+    Gig                                     :crit, milestone, 2026-10-18, 0d
+```
+
+| Day | Box and code (Claude) | Thomas |
+|---|---|---|
+| **Mon 12** ✅ | v0 built, deployed, reboot proven; integration round (drills, review, 42 fixes, re-accepted); phone PWA built and reviewed in a worktree; Lite conversion prepared; UI v1 design started | Knob corners confirmed; 10 clicks = +10; fast turns feel inaccurate; go for the Lite reboots |
+| **Tue 13** | Lite conversion applied with timed reboots; phone wiring + smbus2 + licence headers; AP up on the box (hostapd); UI v1 build starts | M4 day (`docs/05-m4-day.md`): detect, tone check, profile `m4`, loop and leak tests, 1 h soak |
+| **Wed 14** | UI v1 build, knob fast-turn fix, accept on the box. **Freeze in the evening**: what is not accepted by then is switched off or rolled back | Knob labels on the shell; phone: install the CA, join by QR, install the PWA (`docs/06-phone.md`) |
+| **Thu 15** | Gig profile `m4` pinned, gig `target_level` set; **overnight soak** on the gig build; user documentation written and checked | HPO prep + Pauline's call (pm). Fresh Lite on a second SD card → `bootstrap.sh` makes the spare |
+| **Fri 16** | Standby for fixes | **Rig test + mic tune** (`docs/02` §6), the go/no-go per item (below). Same day as HPO, where Thomas is support only |
+| **Sat 17** | Fixes from Friday only | Buffer; print the operator card; pack the bypass kit, labelled |
+| **Sun 18** | — | **Gig**, bypass kit in the case |
+
+### Gates
+
+1. **Wed 14 evening — code freeze.** Thursday's soak and Friday's test must run the build that
+   plays on Sunday, so after this point only fixes for Friday's findings go in.
+2. **Thu 15 night — soak.** `k1000-soak.sh --summary` must be clean (no xrun, no restart, no
+   throttling) on the M4 with the gig `target_level`, PSU and closed case.
+3. **Fri 16 — rig test go/no-go**, item by item:
+   - K1000 in the chain at all. If no-go, the bypass, which is the old direct cabling.
+   - Live UI v1. If no-go, redeploy the v0 build (`/opt/k1000.prev` or the tagged commit), one
+     command.
+   - The phone. If no-go, the AP goes fully off and the knobs carry the show.
+4. **Sun 18 — gig.** Afterwards, note what was touched, missed or failed (#t-006 in the hub).
+
+## Workstreams now
+
+| Stream | State | Next |
+|---|---|---|
+| v0 control service | done, on the box (`ca742e7`) | — |
+| Integration round | done: drills, five-lens review, 42 fixes, re-accepted | power-cut drill: Thomas pulls the plug on Friday (the permission system refused the simulated one) |
+| Lite OS (D-006) | prepared and reviewed: `k1000-lean.sh` (972 desktop packages out, /usr 4.3 → ~1.6 GB), `bootstrap.sh`, console guard (`k1000-console.service`) | apply tonight with timed reboots (Thomas's go, 12/10); then cloud-init off and the boot measured |
+| Phone (D-007) | PWA + portal + AP scripts + network fence built and reviewed in a worktree (481 tests; browser e2e 75/75) | wire into main; AP on **hostapd** with PMF off (hub knowledge: NetworkManager's AP on the Pi's chip drops older Android clients); captive DNS off by default; 5 GHz (Thomas: up to ~10 m), 2.4 GHz fallback |
+| Live UI v1 (Thomas, 12/10) | design running: pro-console research, SHOW/ALIGN mockups, spectrum and panel-speed probes, FOH critique | build Tue–Wed on top of the phone wiring; freeze Wed evening |
+| Knobs | corners confirmed; a click counts exactly one step (10 clicks = +10); fast turns are inaccurate | fast-turn fix (acceleration and spin handling) with UI v1; trace tool for evidence |
+| Licence (D-008) | GPL-3.0-or-later, `LICENSE` in the repo | smbus → smbus2 swap and SPDX headers with the phone wiring |
+| User documentation (Thomas, 12/10) | planned | written once the code settles (Wed), then claim-checked against the code and the box |
+| Interface (D-003) | MOTU M4 chosen, picked up Tue 13 | M4 day; pin 4/4 channels; choose `target_level` |
 
 ## Phase 0 — Frame · *done 2026-10-12*
 
@@ -18,8 +94,8 @@ Answer the open questions (`docs/requirements.md` §5), pick the lead(s) (D-002)
 
 - Zynthian V4 + class-compliant USB interface (MOTU M4) + CamillaDSP **5.0.0-beta.1** (D-004).
 - Fixed-slot pipeline: Lo-Cut, system PEQ, live notch slots, delay, polarity, Aux faders per group.
-- Phone control via CamillaGUI compact view; encoders → master / balance / notch freq / notch gain.
-- Measure: boot-to-audio time, power-on/off thump into a box, 8-hour soak with xrun logging.
+- Knobs and screen first; the phone joins through the box's own AP (D-007), gated Friday.
+- Measure: boot-to-audio time, power-on/off thump into a box, overnight soak with xrun logging.
 - Exit: audio is trustworthy on the bench, and the control loop feels fast.
 
 Progress:
@@ -44,44 +120,65 @@ Progress:
   ~5 % (was ~14–19 %).
 - 2026-10-12 — Docs: operator card `docs/04-operator-card.md` (one printed A4 page), M4 procedure
   `docs/05-m4-day.md`, contract corrected to the build (`docs/03-v0-architecture.md` §7).
+- 2026-10-12 — Lite conversion prepared (D-006): the removal plan matches the Lite image's own package
+  list plus K1000's needs; guarded, detached apt runs; `bootstrap.sh` for a fresh card. Not applied
+  yet: the permission system refused an agent's reboot; Thomas gave the go the same evening.
+- 2026-10-12 — Thomas at the box: knob corners right, a click = one step, fast turns inaccurate;
+  he set Lo-Cut on, mono subs on and master −19 dB himself.
 
-### What v0 has now (in the repo; on the box once the fix round is deployed)
+### What v0 has now (on the box)
 
 | Area | State |
 |---|---|
 | Pipeline | input trim, 8 system PEQ, 4 live PEQ + 2 shelves, split (mono-subs option), sub/top polarity, delay (whole samples), top Lo-Cut, sub low-pass, Aux group faders (balance), 4 output trims, Main master + mute |
 | Knobs and screen | MAIN / LIVE EQ / SETUP / Knob test pages; B2 mute on every page; guarded B4 reset; meters with CLIP / IN CLIP; MUTED band with alerts; NO DEVICE / ENGINE DOWN |
 | Audio safety | boots muted; ramp gated on Running; Aux4 marker; outside cuts kept, raises pulled down; pipeline restore and device repair; mute saved at once; torn state recovered muted |
-| Ops | restart-forever units, device wait, watchdog, persistent journal (from the next reboot), soak tool with `--summary`, M4 bring-up tool, rollback |
-| Phone | CamillaGUI compact view, levels only (README phone rule). No network for the phone at a gig yet |
+| Ops | restart-forever units, device wait, watchdog, persistent journal, soak tool with `--summary`, M4 bring-up tool, rollback |
+| Phone | CamillaGUI compact view on the LAN only, levels only. The own-AP PWA is built but not wired yet |
 
 ### Left before Friday 16 (rig test)
 
 | # | What | When |
 |---|---|---|
-| 1 | ~~Deploy the fix round; full suite; new start script; persistent journal cost~~ — done 2026-10-12 evening (502 passed; journal flush off the critical chain) | ~~before Tue 13~~ |
+| 1 | ~~Deploy the fix round; full suite; new start script; persistent journal cost~~ — done 2026-10-12 evening | ~~before Tue 13~~ |
 | 2 | M4 day, `docs/05-m4-day.md`: detect, check tool, tone identification, profile `m4`, loop and leak tests, levels, presence drills, 1 h soak, report back | Tue 13 |
-| 3 | Knob test → `controls:` in k1000.yaml (and `KNOB_CORNERS` if the labels sit at the wrong corners); label the shell; fill in "Where" on the operator card | Tue–Thu |
-| 4 | Thomas's calls: output mapping (keep tops on outs 1-2), M4 `target_level` (256 vs 512/768), power-on mute policy (today: the saved mute), B1 page cycle, sub delay on MAIN, Sunday source and cables, PSU | by Thu 15 |
+| 3 | Knob test → `controls:` in k1000.yaml; label the shell; fill in "Where" on the operator card (the corners are confirmed; buttons still to label) | Tue–Thu |
+| 4 | Thomas's calls: output mapping (keep tops on outs 1-2), M4 `target_level` (256 vs 512/768), power-on mute policy (today: the saved mute), Sunday source and cables, PSU | by Thu 15 |
 | 5 | Pin the M4 channel counts (4/4) in k1000.yaml after the probe; set the chosen `target_level` (next engine start) | Tue–Thu |
 | 6 | Overnight soak at the gig `target_level`; `--summary` clean | Thu 15 night |
-| 7 | Boot race: fbcon vs `k1000.service` ExecStartPre (cloud-init stays on until settled) | before Fri |
+| 7 | Boot race fbcon vs k1000 (console guard) and cloud-init off: proven by the Lite conversion's reboots | Tue 13 |
 | 8 | ~~Owner edits: `docs/02` §3/§6, D-003 wording, README "Sound state"~~ — done 2026-10-12 | ~~before Fri~~ |
-| 9 | D-007 phone AP + PWA: not built; go/no-go at the rig test, else the knobs carry the show | Fri 16 |
-| 10 | Print the operator card; pack the bypass kit, labelled, its patch written on the card | Sat 17 |
+| 9 | Phone: wire, AP up, Thomas installs the CA and the PWA; go/no-go at the rig test, else the AP goes off | Tue–Fri |
+| 10 | Live UI v1 accepted on the box by Wed evening, else Sunday runs v0 | Wed 14 |
+| 11 | Power-cut check: pull the plug at show level, then power on again; the state file survives and the box comes back as it should | Fri 16 |
+| 12 | Print the operator card (redrawn for UI v1 if it goes); pack the bypass kit, labelled, its patch written on the card | Sat 17 |
 
 Friday itself is `docs/02` §6: thump check, gain structure (Meyer limit LEDs, then the phone's
-`volume_max` = show level + 6 dB), sub alignment, Lo-Cut A/B, system EQ, live drill, 2-hour run.
+ceiling = show level + 6 dB), sub alignment, Lo-Cut A/B (160 vs 100 Hz), system EQ, live drill,
+2-hour run.
 
-## Phase 2 — Live-correction UI v1
+## Phase 2 — Live-correction UI v1 · *pulled forward in part, 2026-10-12*
 
-- K1000 control service (state, presets, System/Live EQ layers, macros) over the engine API.
-- Encoder pages on the device screen + a dedicated phone web UI served on the box's own AP.
-- Presets per place type, A/B, "reset live".
+Thomas's direction after using the v0 panel (12/10): take sub delay and Lo-Cut off the front page;
+put every live control on one page; show the applied EQ curve over a live spectrum, like a pro
+console, with LS · 1 · 2 · 3 · 4 · HS band selection; a GEQ toggle was floated (recommendation: no;
+parametric bands + the spectrum serve live notching better on 4 knobs).
+
+- **For Sunday, if accepted by Wed evening:**
+  - SHOW page: master on E1; freq, gain and Q of the selected band on E2–E4; band select on a
+    button; the curve over the spectrum; the sub/top balance placed as the design decides.
+  - ALIGN page: sub delay, top delay, Lo-Cut.
+  - SETUP keeps the rest; B1 hold returns to SHOW.
+  - Knob fast-turn fix.
+  - Design: `docs/07-live-ui-v1.md` + `docs/ui/v1/`. Knob analysis: `docs/08-knob-precision.md`.
+- **Phone PWA on the box's own AP** (D-007): live EQ curve with draggable bands, "notch here",
+  hold-to-mute; HTTPS from the name-constrained local CA. Phone setup: `docs/06-phone.md`.
+- **After the gig:** presets per place type, EQ A/B, the curve and spectrum on the phone, and a GEQ
+  view only if the field trial asks for it.
 
 ## Phase 3 — Field trial
 
-- One real outing on the rig; log what was touched, what was missing, whether Wi‑Fi held.
+- The 18/10 gig is the first outing; log what was touched, what was missing, whether Wi‑Fi held.
 - Decide the final hardware shape (Zynthian shell kept / Pi 5 + Stream Deck+ / Pi 5 + DAC8x).
 
 ## Phase 4 — Assist & measurement
@@ -110,4 +207,4 @@ Friday itself is `docs/02` §6: thump check, gain structure (Meyer limit LEDs, t
 
 - Read-only root, watchdog/supervisor, mute-at-boot (+ optional output mute relay), enclosure,
   power, labelling, a spare surface.
-- python3-smbus → python3-smbus2 (D-008); a box gesture to release CamillaGUI Aux cuts.
+- A box gesture to release CamillaGUI Aux cuts.
