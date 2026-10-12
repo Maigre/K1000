@@ -17,7 +17,8 @@ Thomas's answers (`requirements.md` §5) tighten `01-approaches-review.md` into 
 
 ## 2. Proposed decisions (see `DECISIONS.md`)
 
-- **D-002 — Architecture: D1.** Zynthian V4 (owned) + USB interface + CamillaDSP.
+- **D-002 — Architecture: D1.** Zynthian V4 (owned) + USB interface + CamillaDSP. *Decided 2026-10-12.*
+- **D-005 — Base OS: fresh Raspberry Pi OS Lite 64-bit** on a new card. *Decided 2026-10-12.*
 - **D-003 — Interface: MOTU M4** (€289).
   - For: bus-powered (no PSU, one cable less), metal case, ESS DAC, LCD meters for every input and
     output (instant visual check on the road), the Linux quirk has been in the kernel since 5.6,
@@ -72,16 +73,16 @@ laptop for the system EQ at the tune.
 Spectrum and suggest-notch (v5), the box's own Wi‑Fi AP, a read-only root, an output mute relay, a
 presets UI, and a final enclosure.
 
-## 4. Schedule
+## 4. Schedule (rev 2 — after Thomas's answers of 2026-10-12)
 
 | Day | Who | What |
 |---|---|---|
-| **Mon 12** | Thomas | confirm D-002/D-003; **order the M4 today** (or use an interface already owned); power the Zynthian on the LAN with SSH reachable |
-| Tue 13 | Claude, on the Zynthian over SSH | CamillaDSP beside ZynthianOS (Zynthian services stopped); pipeline v0, developed on the Zynthian's own 2-out card until the M4 arrives; encoder reader + screen pages |
-| Wed 14 | Claude | control service (encoders ↔ CamillaDSP websocket), state persistence, mute-at-boot, CamillaGUI compact view |
-| Thu 15 | Thomas: HPO prep + Pauline call (pm) · Claude | M4 arrives → switch the device, calibrate gains; **overnight soak** with an xrun log |
-| **Fri 16** | Thomas | **HPO episode 2 is the same day** (hub, unconfirmed) → rig test now, or Saturday? |
-| Sat 17 | Thomas | rig test + mic tune (if Friday is taken) |
+| **Mon 12** | Thomas | get the interface (MOTU M4 ~€150 offer, D-003); flash **Raspberry Pi OS Lite 64-bit on a new SD card** (D-005) — hostname `k1000`, SSH with his public key, network; keep the Zynthian card aside |
+| Tue 13 | Claude, on the box over SSH | display + encoders on Pi OS (port the Zynthian overlays); CamillaDSP v0 pipeline (on the Zynthian's own 2-out card until the M4 is in) |
+| Wed 14 | Claude | control service (encoders ↔ CamillaDSP websocket), state persistence, mute-at-boot, systemd units, CamillaGUI compact view |
+| Thu 15 | Thomas: HPO prep + Pauline call (pm) · Claude | M4 plugged → switch device, calibrate gains; **overnight soak** with an xrun log |
+| **Fri 16** | Thomas | **rig test + mic tune** (§6) — same day as HPO episode 2, where he is support only |
+| Sat 17 | — | buffer: fixes from Friday |
 | **Sun 18** | Thomas | gig, **bypass kit in the case** |
 
 ## 5. Bypass: the fallback that makes Sunday safe
@@ -110,7 +111,7 @@ label K1000's outputs. Any doubt during the gig means re-patching in a minute.
 
 ## 7. Blocking on Thomas (today)
 
-1. An interface on hand, or order the M4 now?
-2. The Zynthian powered on and reachable over SSH. Give the address/route; credentials go
-   to the hub's `secrets/`, never to this repo.
-3. Friday vs HPO episode 2: which day is the rig test?
+1. The interface: MOTU M4 (~€150 offer) — D-003.
+2. The fresh Pi OS card online with SSH (key-based; nothing secret goes into this repo).
+3. ~~Friday vs HPO episode 2~~ — answered: same day, Thomas is support only at HPO.
+4. CamillaDSP v4.1.3 vs v5 beta — D-004.
