@@ -10,6 +10,7 @@ Everything that runs on the K1000 (the Raspberry Pi 4 in the Zynthian V4 case). 
 | `camilladsp.service` | the audio engine, CamillaDSP 5.0.0-beta.1, user `k1000`, real-time threads | nothing (audio never waits for the UI) |
 | `k1000.service` | `python3 -m k1000` in `/opt/k1000`: knobs, screen, state, persistence | wants the engine, copes when it is down |
 | `camillagui.service` | CamillaGUI v5 beta.2 on port 5005 (phone compact view, laptop editor) | nothing; lowest CPU priority, sandboxed |
+| `k1000-console.service` | at boot, waits for the ZynScreen's framebuffer, then keeps the Linux text console off it; done ~3 s later | nothing; k1000 wants it but never waits for it |
 
 The order at power-on:
 
@@ -42,9 +43,13 @@ The order at power-on:
 | `/var/lib/k1000/state.json`, `active.yml` | live state and the generated engine config (written by k1000, atomically) |
 | `/var/log/k1000/` | `camilladsp_rCURRENT.log` + up to 50 rotated ones (every engine start rotates, and every 256 kB), `soak.log` |
 | `/opt/camillagui/` | the GUI binary; `config/` comes from `box/camillagui/`; `files/` is the GUI's empty, read-only config folder |
-| `/etc/systemd/system/{camilladsp,k1000,camillagui}.service` | from `box/systemd/` |
+| `/etc/systemd/system/{camilladsp,k1000,camillagui,k1000-console}.service` | from `box/systemd/` |
 | `/etc/systemd/system.conf.d/50-k1000-watchdog.conf` | `RuntimeWatchdogSec=15` |
 | `/etc/systemd/journald.conf.d/50-k1000-journal.conf` | journal on the SD card, 32 MB cap (applies at the next reboot) |
+| `/etc/modules-load.d/k1000.conf` | `i2c-dev` at boot: `/dev/i2c-1`, the knob board (install.sh `--boot`) |
+| `/etc/rpi/swap.conf.d/50-k1000.conf` | swap in RAM only (zram), from `tools/k1000-lean.sh` |
+| `/var/backups/k1000-lean/` | `tools/k1000-lean.sh`: every removal plan it ran (or refused), the boot files it backed up, and each run's log and exit status (`run-<time>.log`, `.rc`) |
+| `/var/log/k1000-bootstrap/` | `bootstrap.sh`: each run's log and exit status |
 
 ## Deploy
 
@@ -65,7 +70,8 @@ ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/i
 
 Re-running is always safe. With nothing new, it ends with `0 changes`.
 
-**Fresh SD card, once** (both apply at the next reboot):
+**Boot-level setup, once per card** (both apply at the next reboot; on a card made from scratch,
+`bootstrap.sh` does this, see "Fresh card (bootstrap)"):
 
 ```sh
 ssh k1000 "sudo /opt/k1000-src/install.sh --boot --headless --start && sudo reboot"
@@ -76,6 +82,9 @@ ssh k1000 "sudo /opt/k1000-src/install.sh --boot --headless --start && sudo rebo
   - makes sure `config.txt` has `dtoverlay=k1000-zynscreen,rotate=270`
   - adds `vt.global_cursor_default=0` to `cmdline.txt`, which stops the console cursor blinking
     on the ZynScreen. The original file is kept as `cmdline.txt.k1000-orig`.
+  - turns I2C on for the knob board: `dtparam=i2c_arm=on` in `config.txt` (when no `[all]`/`[pi4]`
+    line has it) and `i2c-dev` loaded at boot (`/etc/modules-load.d/k1000.conf`) and now.
+    Raspberry Pi OS Lite has neither: without them there is no `/dev/i2c-1` and the knobs are dead.
 - `--headless`:
   - boots to the console instead of the desktop: `multi-user.target`, so no labwc session
   - masks PipeWire/WirePlumber for all users, so nothing but CamillaDSP ever opens the audio
@@ -84,12 +93,127 @@ ssh k1000 "sudo /opt/k1000-src/install.sh --boot --headless --start && sudo rebo
     client with rpcbind (port 111 open on every interface)
   - removes the tty1 auto-login (an invisible, sudo-capable shell for any USB keyboard): a
     local login then needs k1000's password
-  - leaves cloud-init on, on purpose: turning it off starts k1000 ~2.3 s earlier, right when
-    the ZynScreen console appears (~7 s), so k1000's console unbind could run before it
+  - leaves cloud-init on: `tools/k1000-lean.sh` turns it off, and only once
+    `k1000-console.service` (every install.sh run installs it) has run at a boot and found the
+    panel. Without that guard, the faster boot starts k1000 before the ZynScreen registers
+    (~7 s), k1000's console unbind finds nothing, and the console then draws over the UI
   - undo with `sudo systemctl set-default graphical.target`,
     `sudo systemctl --global unmask pipewire.socket pipewire.service pipewire-pulse.socket pipewire-pulse.service wireplumber.service filter-chain.service`,
     `sudo systemctl enable bluetooth cups cups.socket cups.path rpcbind rpcbind.socket nfs-blkmap`
     and `sudo mv /etc/systemd/system/getty@tty1.service.d/autologin.conf.k1000-off /etc/systemd/system/getty@tty1.service.d/autologin.conf`
+
+## Lean OS (`tools/k1000-lean.sh`)
+
+D-006: the box runs Raspberry Pi OS Lite plus K1000, with nothing at boot or during a show that
+K1000 does not need. `tools/k1000-lean.sh` gets there from the desktop image the first card was
+flashed with, and from a fresh Lite card (where the desktop purge finds next to nothing to do).
+Every step is idempotent: a converged box answers `0 changes`.
+
+| Step | What | Why |
+|---|---|---|
+| `keep` | `apt-mark manual` every package K1000 needs (`KEEP` in the script) | no autoremove can take one |
+| `desktop` | purge the ten `rpd-*` metapackages and the installed leftovers (`pinentry-gnome3`, `rpi-connect(-lite)`, chromium, firefox, vlc, cups, pipewire, plymouth...), then autoremove | ~970 packages: the card becomes Lite + K1000 |
+| `services` | cloud-init off (`/etc/cloud/cloud-init.disabled`), once `k1000-console.service` has run at this boot and found the panel; `NetworkManager-wait-online`, `rpi-eeprom-update`, `e2scrub_reap` disabled | cloud-init sat on k1000's boot path (~2.6 s); no bootloader update staged at a gig |
+| `timers` | `apt-daily`, `apt-daily-upgrade`, `man-db`, `e2scrub_all` disabled | no apt or man-db work in the middle of a show (and no internet at gigs) |
+| `swap` | `/etc/rpi/swap.conf.d/50-k1000.conf`: `Mechanism=zram` | no 2 GB swap file re-made on the SD card at every boot (1.5 s), no writeback to the SD card hours into a show |
+| `boot` | `cmdline.txt`: `quiet`, `logo.nologo`, no `splash`/`plymouth` arguments; `config.txt`: `disable_splash=1` | a quiet panel and console at boot |
+
+- **The guard.** Every removal is simulated first (`apt-get -s`) and its plan saved in
+  `/var/backups/k1000-lean/`. A plan that names a package K1000, the boot, SSH, the network, the
+  Wi-Fi/AP, systemd, libc, Python or ALSA needs is refused: exit 1, nothing removed.
+- Before a removal or a boot edit, `cmdline.txt` and `config.txt` are copied next to themselves
+  (`*.k1000-lean-<step>-<time>`) and, with the initramfs images, into `/var/backups/k1000-lean/`.
+- **It survives a lost SSH session.** A real run re-runs itself as a transient systemd unit
+  (`k1000-lean-<time>`) and the terminal only follows its log. Purging the desktop takes minutes
+  (apt, man-db, and plymouth's removal rebuilds the initramfs, which raspi-firmware then copies
+  onto `/boot/firmware` in place). Killed halfway, that leaves a card that may not boot. If the
+  session drops, the run goes on: read `/var/backups/k1000-lean/run-<time>.log`, and
+  `run-<time>.rc` holds its exit status once it is done.
+- **The power-cycle check** (`--check`, read-only; also at the end of every real run that changed
+  something and right after a removal): `dpkg --audit` is empty; the boot packages are
+  installed; `initramfs8` (and `initramfs_2712`) are byte-identical to the newest
+  `/boot/initrd.img-*-rpi-v8` (`-2712`) and list an `/init`; `cmdline.txt` is one line with the
+  same `root=` this boot used and `rootwait`; `kernel8.img` and `config.txt` are there; `i2c-dev`
+  is loaded at boot. Any failure prints what to fix and says **do NOT power-cycle**. After an
+  interrupted run, run `--check` before anything else.
+- **One change set per power cycle.** After each, check the box: SSH answers, the engine is
+  Running, Main is back at its saved level, the panel shows K1000.
+
+```sh
+ssh k1000 "sudo /opt/k1000-src/tools/k1000-lean.sh --dry-run"         # what would change (the desktop plan takes ~1 min)
+ssh k1000 "sudo /opt/k1000-src/tools/k1000-lean.sh --only desktop"    # runs as a unit; ends with the check; then power-cycle
+ssh k1000 "/opt/k1000-src/tools/k1000-lean.sh --check"                # before ANY power cycle, above all after a lost session
+ssh k1000 "sudo /opt/k1000-src/tools/k1000-lean.sh --only services"   # then power-cycle and check; then timers, swap, boot
+```
+
+If the session dropped: `ssh k1000 'ls -t /var/backups/k1000-lean/run-*; systemctl list-units "k1000-lean-*"'`
+shows whether it is still running; `tail` its log.
+
+Measured on the first box (2026-10-12, desktop image converged this way, one power cycle per
+step; seconds after power-on, from the boot probe):
+
+| | desktop image | Lean (all steps) |
+|---|---|---|
+| systemd userspace | 16.0 s | 7.0 s |
+| engine Running | 10.9 s | 7.9 s |
+| Main back at its saved level | 15.5 s | 12.4 s |
+| packages / `/usr` | 1650 / 4.3 GB | 678 / 1.6 GB |
+
+The panel now registers at ~2.0 s (7.0 s before: the smaller initramfs), so k1000 always starts
+after it; `k1000-console.service` still logs `console unbound 1 time(s)` at every boot.
+
+Left as they are, on purpose:
+
+- avahi-daemon: `k1000.local` on a network whose addresses nobody knows; it is not on the
+  engine's boot path.
+- Bluetooth is disabled (install.sh `--headless`), but there is no `dtoverlay=disable-bt`: that
+  overlay moves the PL011 UART, and the `serial0` console with it, onto GPIO 14/15, which the
+  Zynthian V4 board wires to its MIDI DIN ports.
+- console-setup, keyboard-setup, udisks2, fstrim, logrotate: Lite defaults, off the engine's boot
+  path.
+
+Undo: every line the script prints says how. The saved plans list what to `apt-get install` again.
+
+## Fresh card (bootstrap)
+
+A spare or replacement gig card from nothing (D-006, step 3):
+
+1. Raspberry Pi Imager: **Raspberry Pi OS Lite (64-bit)**. Settings: hostname `k1000`, user
+   `k1000`, SSH on with **"Allow public-key authentication only"** and your SSH public key, Wi-Fi
+   country FR. Boot the box on Ethernet, on a network with internet. Log in once with your key
+   (`ssh k1000 true`): bootstrap switches SSH to keys only only after it has seen that.
+2. From the repo on the laptop:
+
+   ```sh
+   rsync -a --delete --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
+   ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/bootstrap.sh"
+   ```
+
+   It runs as a systemd unit (`k1000-bootstrap-<time>`, log in `/var/log/k1000-bootstrap/`), so a
+   lost session does not stop it. It runs `apt-get update` only when a package is missing,
+   installs CamillaDSP 5.0.0-beta.1 (tarball and binary checked against pinned sha256 sums), runs
+   `install.sh --boot --headless` (CamillaGUI is pinned there; `--ap` is added once install.sh
+   offers it), switches SSH to keys only (`/etc/ssh/sshd_config.d/10-k1000-keyonly.conf`, the
+   first box's file, checked with `sshd -t`, applied at the next boot), then
+   `tools/k1000-lean.sh`. It never reboots by itself: it ends with
+   `N changes. Now power-cycle the box`.
+3. Power-cycle, wait ~20 s, then check:
+
+   ```sh
+   ssh k1000 'systemctl is-active camilladsp k1000 camillagui; cat /opt/k1000/REVISION'
+   ```
+
+4. Run the bootstrap command once more, then power-cycle again. The first run leaves cloud-init
+   on, because the panel guard had not run at a boot yet; this run turns it off.
+5. Settings: `/etc/k1000/k1000.yaml` starts from `box/etc/k1000.yaml` (profile `dev`, default knob
+   map). Copy the main card's file over (profile pin, the confirmed `controls:`), then
+   `sudo systemctl restart k1000`.
+
+- A re-run changes nothing: `0 changes: this card is already a K1000`.
+- `--dry-run` says what it would do and changes nothing.
+- Offline: `CAMILLADSP_TARBALL=<camilladsp-linux-aarch64.tar.gz>` and
+  `CAMILLAGUI_TARBALL=<camillagui_linux_aarch64.tar.gz>` (put them after `sudo`, like
+  `K1000_REVISION`).
 
 ## Everyday commands (on the box)
 
@@ -295,5 +419,8 @@ cd /opt/k1000 && python3 -m pytest -q -p no:cacheprovider tests tools/tests   # 
 cd /opt/k1000 && python3 -m pytest -q -p no:cacheprovider -m hw              # hardware tests (opt-in; stop k1000 first)
 ```
 
-`tools/tests` covers the engine unit's start script, install.sh's helpers, the soak tool and the
-M4 bring-up tool, all against fakes (no service, card or speaker is touched).
+`tools/tests` covers the engine unit's start script, the panel console guard, install.sh's helpers
+(headless leftovers, I2C at boot, `--deps`), the soak tool, the M4 bring-up tool, `k1000-lean.sh`
+(the guard, the dry run, the boot-file edits, the power-cycle check, the cloud-init gate, the
+detached run) and `bootstrap.sh` (apt only when needed, SSH keys only, the detached run), all
+against fakes (no service, card, package or speaker is touched).

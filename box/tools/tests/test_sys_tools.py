@@ -1,5 +1,6 @@
-"""Tests for the system side of the box: the camilladsp.service start script, install.sh helpers,
-tools/k1000-soak.sh and tools/k1000-m4-bringup.sh.
+"""Tests for the system side of the box: the camilladsp.service start script, the k1000-console.service
+panel guard, install.sh helpers, tools/k1000-soak.sh, tools/k1000-m4-bringup.sh, tools/k1000-lean.sh
+and bootstrap.sh.
 
 Self-contained (no k1000 import, no hardware, no live service touched): the unit's shell script is
 extracted the way systemd unquotes it and run against a temp config, a fake /proc/asound and a
@@ -27,6 +28,9 @@ UNIT = BOX / "systemd" / "camilladsp.service"
 INSTALL = BOX / "install.sh"
 SOAK = BOX / "tools" / "k1000-soak.sh"
 BRINGUP = BOX / "tools" / "k1000-m4-bringup.sh"
+CONSOLE_UNIT = BOX / "systemd" / "k1000-console.service"
+LEAN = BOX / "tools" / "k1000-lean.sh"
+BOOTSTRAP = BOX / "bootstrap.sh"
 PORT = int(os.environ.get("K1000_SYS_TEST_PORT", "12372"))
 
 
@@ -268,6 +272,114 @@ def test_switch_back_to_a_present_card_while_waiting(tmp_path):
     st.finish()
 
 
+# --------------------------------------------------------------------------- k1000-console.service
+class ConsoleGuard:
+    """k1000-console.service's script against a fake /sys: graphics/fbN/name and
+    vtconsole/vtconN/{name,bind}, as the kernel lays them out."""
+
+    def __init__(self, tmp: Path, wmax: int = 40, watch: int = 10) -> None:
+        self.gfx = tmp / "graphics"
+        self.vtc = tmp / "vtconsole"
+        self.gfx.mkdir()
+        for vt, name, bind in (("vtcon0", "(S) dummy device", "1"), ("vtcon1", "(M) frame buffer device", "0")):
+            (self.vtc / vt).mkdir(parents=True)
+            (self.vtc / vt / "name").write_text(name + "\n")
+            (self.vtc / vt / "bind").write_text(bind + "\n")
+        s = exec_start(CONSOLE_UNIT.read_text())
+        for a, b in (("gfx=/sys/class/graphics", f"gfx={self.gfx}"), ("vtc=/sys/class/vtconsole", f"vtc={self.vtc}"),
+                     ("wmax=600", f"wmax={wmax}"), ("watch=30", f"watch={watch}")):
+            assert s.count(a) == 1, a
+            s = s.replace(a, b)
+        assert s.count("sleep 0.1") == 2
+        self.script = s.replace("sleep 0.1", "sleep 0.02")
+        self.proc: subprocess.Popen | None = None
+
+    def fb(self, n: int, name: str) -> None:
+        (self.gfx / f"fb{n}").mkdir()
+        (self.gfx / f"fb{n}" / "name").write_text(name + "\n")
+
+    def bind(self, vt: str = "vtcon1") -> str:
+        return (self.vtc / vt / "bind").read_text().strip()
+
+    def takeover(self) -> None:                     # what fbcon does when it binds a framebuffer
+        (self.vtc / "vtcon1" / "bind").write_text("1\n")
+
+    def start(self) -> None:
+        self.proc = subprocess.Popen(["sh", "-c", self.script], stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, text=True)
+
+    def finish(self, timeout: float = 10) -> tuple[int, str, str]:
+        assert self.proc is not None
+        out, err = self.proc.communicate(timeout=timeout)
+        return self.proc.returncode, out, err
+
+
+def test_console_unit_script_is_valid_sh():
+    r = subprocess.run(["sh", "-n", "-c", exec_start(CONSOLE_UNIT.read_text())], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+
+@pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="no systemd-analyze")
+def test_console_unit_verifies_with_systemd():
+    r = subprocess.run(["systemd-analyze", "verify", str(CONSOLE_UNIT)], capture_output=True, text=True)
+    assert "escape" not in (r.stdout + r.stderr).lower(), r.stdout + r.stderr
+
+
+def test_console_guard_is_wanted_never_waited_for():
+    """k1000 must not wait for the panel: Wants= only, no ordering either way."""
+    k = (BOX / "systemd" / "k1000.service").read_text()
+    assert re.search(r"^Wants=.*\bk1000-console\.service\b", k, re.M)
+    assert not re.search(r"^(After|Requires|BindsTo)=.*k1000-console", k, re.M)
+    c = CONSOLE_UNIT.read_text()
+    assert not re.search(r"^(Before|After)=", c, re.M)
+    assert "WantedBy=multi-user.target" in c and "RemainAfterExit=yes" in c
+    assert re.search(r"^UNITS=\(.*\bk1000-console\b.*\)", INSTALL.read_text(), re.M)
+
+
+def test_console_guard_unbinds_a_panel_that_registers_after_k1000(tmp_path):
+    """The ops-1 race: the guard starts first, the panel registers later and fbcon binds it."""
+    g = ConsoleGuard(tmp_path)
+    g.start()
+    time.sleep(0.2)
+    g.fb(0, "fb_ili9486")
+    g.takeover()
+    rc, out, err = g.finish()
+    assert rc == 0, err
+    assert g.bind() == "0" and g.bind("vtcon0") == "1"      # the dummy console is never touched
+    assert "ZynScreen is fb0" in out and "console unbound 1 time(s)" in out
+
+
+def test_console_guard_catches_a_bind_that_lands_after_the_device(tmp_path):
+    """fbcon binds in the same kernel call that creates fbN: the device can be seen first."""
+    g = ConsoleGuard(tmp_path, watch=15)
+    g.fb(0, "fb_ili9486")
+    g.start()
+    time.sleep(0.12)
+    g.takeover()
+    rc, out, _ = g.finish()
+    assert rc == 0 and g.bind() == "0" and "console unbound 1 time(s)" in out
+
+
+def test_console_guard_finds_the_panel_by_name_behind_hdmi(tmp_path):
+    g = ConsoleGuard(tmp_path)
+    g.fb(0, "vc4drmfb")
+    g.fb(1, "fb_ili9486")
+    g.takeover()
+    g.start()
+    rc, out, _ = g.finish()
+    assert rc == 0 and g.bind() == "0" and "ZynScreen is fb1" in out
+
+
+def test_console_guard_without_a_panel_touches_nothing(tmp_path):
+    g = ConsoleGuard(tmp_path, wmax=5)
+    g.fb(0, "vc4drmfb")                              # HDMI only: its console stays
+    g.takeover()
+    g.start()
+    rc, out, err = g.finish()
+    assert rc == 0 and g.bind() == "1"
+    assert "no ZynScreen framebuffer" in err and out == ""
+
+
 # --------------------------------------------------------------------------- install.sh
 def test_install_sh_syntax():
     assert subprocess.run(["bash", "-n", str(INSTALL)]).returncode == 0
@@ -275,8 +387,8 @@ def test_install_sh_syntax():
 
 @pytest.mark.skipif(shutil.which("shellcheck") is None, reason="no shellcheck")
 def test_shellcheck_clean():
-    r = subprocess.run(["shellcheck", str(INSTALL), str(SOAK), str(BRINGUP)], capture_output=True,
-                       text=True)
+    r = subprocess.run(["shellcheck", str(INSTALL), str(SOAK), str(BRINGUP), str(LEAN), str(BOOTSTRAP)],
+                       capture_output=True, text=True)
     assert r.returncode == 0, r.stdout
 
 
@@ -325,7 +437,7 @@ def test_install_keeps_the_journal_and_never_touches_the_network():
     assert "/etc/systemd/journald.conf.d/50-k1000-journal.conf" in text
     disabled = re.search(r"for u in (bluetooth\.service[^;]*); do", text).group(1).split()
     assert not [u for u in disabled if re.search(r"NetworkManager|ssh|wpa|avahi|network", u)]
-    # cloud-init stays enabled on purpose (it would move k1000's start onto the fbcon bind, see install.sh)
+    # cloud-init is tools/k1000-lean.sh's call (after k1000-console.service), never install.sh's
     assert not re.search(r"^\s*touch\s+/etc/cloud/cloud-init\.disabled", text, re.M)
 
 
@@ -788,3 +900,600 @@ def test_bad_freq_is_refused(tmp_path):
         r = box.run("--tone", "--i-have-turned-the-speakers-off", *args)
         assert r.returncode == 2
     assert box.calls() == []
+
+
+# --------------------------------------------------------------------------- k1000-lean.sh
+def _lean_src(body: str, **env: str) -> subprocess.CompletedProcess:
+    """Source k1000-lean.sh (no main) and run `body` in the same bash."""
+    prog = f'set -euo pipefail\nset --\nsource "{LEAN}"\n{body}\n'
+    return subprocess.run(["bash", "-c", prog], capture_output=True, text=True, env=dict(os.environ, **env))
+
+
+@pytest.mark.parametrize("pkg", ["openssh-server", "network-manager", "python3-numpy", "python3-pil",
+                                 "libasound2t64", "alsa-utils", "linux-image-rpi-v8", "raspi-firmware",
+                                 "initramfs-tools", "systemd-timesyncd", "dnsmasq-base", "wpasupplicant",
+                                 "python3.13", "libpython3.13-stdlib", "fonts-dejavu-core", "python3-qrcode",
+                                 "nftables", "firmware-brcm80211", "sudo", "cron"])
+def test_lean_guard_refuses_a_plan_that_removes_what_must_survive(tmp_path, pkg):
+    plan = tmp_path / "plan"
+    plan.write_text(f"chromium\n{pkg}\nlightdm\n")
+    r = _lean_src(f'guard_plan "{plan}"')
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "REFUSED" in r.stderr and f"  {pkg}\n" in r.stderr and "chromium" not in r.stderr
+
+
+def test_lean_guard_passes_a_desktop_plan(tmp_path):
+    plan = tmp_path / "plan"
+    plan.write_text("\n".join(["chromium", "lightdm", "labwc", "libgtk-3-0t64", "python3.13-tk", "libdbus-glib-1-2",
+                               "pipewire", "wireplumber", "plymouth", "rpd-theme", "network-manager-gnome",
+                               "python3-pygame", "rpi-connect", "cups-daemon", "libpython3.13-dev"]) + "\n")
+    r = _lean_src(f'guard_plan "{plan}"')
+    assert r.returncode == 0, r.stderr
+
+
+class LeanBox:
+    """k1000-lean.sh against fake dpkg/apt/systemctl/lsinitramfs and temp /etc, /boot and /boot/firmware.
+
+    The card is healthy by default: the boot packages installed, initramfs8/_2712 identical to their
+    /boot/initrd.img-* sources, i2c-dev in modules-load.d, and (`guard="boot"`) k1000-console.service
+    started by this boot and logging that it found the panel. Runs in the foreground
+    (K1000_LEAN_FOREGROUND=1) unless a test removes it."""
+
+    CMDLINE = ("console=serial0,115200 console=tty1 root=PARTUUID=230baedc-02 rootfstype=ext4 fsck.repair=yes "
+               "rootwait quiet splash plymouth.ignore-serial-consoles cfg80211.ieee80211_regdom=FR "
+               "vt.global_cursor_default=0")
+    ESSENTIAL = ["raspi-firmware", "linux-image-rpi-v8", "initramfs-tools", "raspberrypi-sys-mods", "systemd",
+                 "udev", "kmod", "sudo", "openssh-server", "network-manager", "wpasupplicant", "python3"]
+    INITRD = b"K1000-INITRAMFS\n" * 4096
+
+    def __init__(self, tmp: Path, pkgs: dict[str, str], plan: list[str], units: dict[str, str],
+                 guard: str = "boot") -> None:
+        self.tmp = tmp
+        self.w = tmp / "w"
+        self.boot = tmp / "boot"
+        self.initrd = tmp / "initrd"
+        self.etc = tmp / "etc"
+        self.state = tmp / "state"
+        fb = tmp / "bin"
+        for d in (self.w, self.boot, self.initrd, self.etc / "cloud", self.etc / "rpi", self.etc / "modules-load.d",
+                  fb, self.w / "units", self.w / "show"):
+            d.mkdir(parents=True, exist_ok=True)
+        (self.boot / "cmdline.txt").write_text(self.CMDLINE)          # no final newline, like the box's
+        (self.boot / "config.txt").write_text("[all]\ndtparam=spi=on\ndtoverlay=k1000-zynscreen,rotate=270\n")
+        (self.boot / "kernel8.img").write_bytes(b"KERNEL" * 1000)
+        for fl, dst in (("v8", "initramfs8"), ("2712", "initramfs_2712")):
+            (self.initrd / f"initrd.img-6.18.50+rpt-rpi-{fl}").write_bytes(self.INITRD)
+            (self.boot / dst).write_bytes(self.INITRD)
+        (self.etc / "modules-load.d" / "k1000.conf").write_text("# K1000\ni2c-dev\n")
+        (self.w / "proc_cmdline").write_text("reboot=w coherent_pool=1M 8250.nr_uarts=1 " + self.CMDLINE + "\n")
+        allpkgs = {p: "manual" for p in self.ESSENTIAL}
+        allpkgs.update(pkgs)
+        (self.w / "pkgs").write_text("".join(f"{p} ii \n" for p in allpkgs))
+        (self.w / "auto").write_text("".join(f"{p}\n" for p, how in allpkgs.items() if how == "auto"))
+        (self.w / "plan").write_text("".join(f"Purg {p} [1.0]\n" for p in plan))
+        for u, st in units.items():
+            (self.w / "units" / u).write_text(st + "\n")
+        if guard == "boot":
+            self.guard_ran(9_712_345, "k1000-console: ZynScreen is fb0 (waited 0 s); console unbound 1 time(s)")
+        w = self.w
+        _bin(fb, "dpkg-query", f'cat "{w}/pkgs"\n')
+        _bin(fb, "dpkg", f'case $1 in --audit) cat "{w}/audit" 2>/dev/null ;; --print-architecture) echo arm64 ;; esac\n')
+        _bin(fb, "id", 'echo 0\n')
+        # Like the real one: ~1 MB of listing with init near the top, so a `| grep -q` reader closes the
+        # pipe early and this dies of SIGPIPE (F1). NOINIT in the image: a listing without init.
+        _bin(fb, "lsinitramfs", 'if grep -q NOINIT "$1"; then seq 1 30000 | sed "s|^|usr/lib/m|"; exit; fi\n'
+                                'echo .\necho init\nseq 1 30000 | sed "s|^|usr/lib/modules/6.18.50/kernel/m|"\n')
+        _bin(fb, "apt-mark", f'case $1 in showauto) cat "{w}/auto" ;; manual) shift; echo "apt-mark manual $*" >> "{w}/calls" ;; esac\n')
+        # a real apt-get "removes" the planned packages from the fake dpkg database
+        _bin(fb, "apt-get", f'case " $* " in\n  *" -s "*) cat "{w}/plan" ;;\n'
+                            f'  *) echo "REAL apt-get $*" >> "{w}/calls"\n'
+                            f'     for p in $(awk \'{{print $2}}\' "{w}/plan"); do grep -v "^$p " "{w}/pkgs" > "{w}/p.new" || true; mv "{w}/p.new" "{w}/pkgs"; done\n'
+                            f'     : > "{w}/plan" ;;\nesac\n')
+        _bin(fb, "systemctl", f'u=$(echo "$*" | awk \'{{print $NF}}\')\n'
+                              f'case $1 in\n'
+                              f'  is-enabled) cat "{w}/units/$u" 2>/dev/null || {{ echo not-found; exit 1; }} ;;\n'
+                              f'  is-active) [ -e "{w}/active-$u" ] || exit 3 ;;\n'
+                              f'  show) cat "{w}/show/$u" 2>/dev/null ;;\n'
+                              f'  disable) echo "systemctl $*" >> "{w}/calls"; echo disabled > "{w}/units/$u" ;;\n'
+                              f'  list-dependencies) ;;\n'
+                              f'esac\n')
+        _bin(fb, "journalctl", f'cat "{w}/journal" 2>/dev/null\n')
+        env = {k: v for k, v in os.environ.items() if k != "INVOCATION_ID"}
+        self.env = dict(env, PATH=f"{fb}:/usr/bin:/bin", K1000_BOOT_DIR=str(self.boot),
+                        K1000_LEAN_STATE=str(self.state), K1000_LEAN_ETC=str(self.etc),
+                        K1000_LEAN_INITRD_DIR=str(self.initrd), K1000_LEAN_PROC_CMDLINE=str(w / "proc_cmdline"),
+                        K1000_LEAN_FOREGROUND="1")
+
+    def guard_ran(self, start_us: int, line: str, status: int = 0) -> None:
+        """k1000-console.service as `systemctl show` and the journal see it."""
+        (self.w / "show" / "k1000-console.service").write_text(
+            f"ActiveState=active\nExecMainStatus={status}\nExecMainStartTimestampMonotonic={start_us}\n")
+        (self.w / "journal").write_text(line + "\n")
+
+    def run(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["bash", str(LEAN), *args], capture_output=True, text=True, env=self.env)
+
+    def calls(self) -> list[str]:
+        f = self.w / "calls"
+        return f.read_text().splitlines() if f.exists() else []
+
+    def snapshot(self) -> dict[str, bytes]:
+        return {str(p.relative_to(self.tmp)): p.read_bytes() for p in sorted(self.tmp.rglob("*"))
+                if p.is_file() and "w" not in p.relative_to(self.tmp).parts[:1]}
+
+
+def test_lean_refused_plan_removes_nothing(tmp_path):
+    box = LeanBox(tmp_path, {"rpd-theme": "manual", "chromium": "auto", "openssh-server": "auto"},
+                  plan=["chromium", "openssh-server", "rpd-theme"], units={})
+    r = box.run("--only", "desktop")
+    assert r.returncode == 1
+    assert "REFUSED" in r.stderr and "openssh-server" in r.stderr
+    assert not [c for c in box.calls() if c.startswith("REAL apt-get")]
+    assert "apt-mark manual openssh-server" in box.calls()        # the keep marks come first
+    saved = list(box.state.glob("REFUSED-desktop-*.txt"))
+    assert len(saved) == 1 and "openssh-server" in saved[0].read_text()
+    assert sorted(p.name for p in box.boot.iterdir()) == ["cmdline.txt", "config.txt", "initramfs8",
+                                                          "initramfs_2712", "kernel8.img"]
+
+
+def test_lean_dry_run_changes_nothing(tmp_path):
+    box = LeanBox(tmp_path, {"rpd-theme": "manual", "chromium": "auto", "python3-numpy": "auto",
+                             "rpi-swap": "manual", "cloud-init": "manual"},
+                  plan=["chromium", "rpd-theme"],
+                  units={"NetworkManager-wait-online.service": "enabled", "apt-daily.timer": "enabled",
+                         "man-db.timer": "static", "k1000-console.service": "enabled"})
+    before = box.snapshot()
+    r = box.run("--dry-run")
+    assert r.returncode == 0, r.stderr
+    assert box.snapshot() == before and box.calls() == []
+    out = r.stdout
+    for want in ("would: marked manual: python3-numpy", "would: desktop: purge 2 packages",
+                 "would: cloud-init disabled", "would: disabled NetworkManager-wait-online.service",
+                 "would: disabled apt-daily.timer", "would: swap: zram only",
+                 "would: cmdline.txt: add logo.nologo", "would: cmdline.txt: drop splash",
+                 "would: config.txt: disable_splash=1"):
+        assert want in out, (want, out)
+    assert "man-db.timer" not in out                       # static: not plainly enabled, left alone
+    assert re.search(r"dry run: \d+ changes", out)
+
+
+def test_lean_full_run_then_rerun_is_0_changes(tmp_path):
+    box = LeanBox(tmp_path, {"rpd-theme": "manual", "chromium": "auto", "plymouth": "auto",
+                             "python3-numpy": "auto", "rpi-swap": "manual"},
+                  plan=["chromium", "plymouth", "rpd-theme"],
+                  units={"NetworkManager-wait-online.service": "enabled", "e2scrub_reap.service": "enabled",
+                         "apt-daily.timer": "enabled", "k1000-console.service": "enabled"})
+    r = box.run()
+    assert r.returncode == 0, r.stderr
+    real = [c for c in box.calls() if c.startswith("REAL apt-get")]
+    assert len(real) == 1 and "purge --autoremove rpd-theme chromium plymouth" in real[0], real
+    assert "SuggestsImportant=false" in real[0]          # the autoremove plan was empty: not run
+    plans = sorted(box.state.glob("desktop-*.txt"))
+    assert plans and plans[0].read_text().split() == ["chromium", "plymouth", "rpd-theme"]
+    assert (box.etc / "cloud" / "cloud-init.disabled").exists()
+    swap = (box.etc / "rpi" / "swap.conf.d" / "50-k1000.conf").read_text()
+    assert "[Main]\nMechanism=zram\n" in swap
+    cmd = (box.boot / "cmdline.txt").read_text()
+    assert "\n" not in cmd                                   # still ONE line, still no final newline
+    words = cmd.split()
+    assert "splash" not in words and "plymouth.ignore-serial-consoles" not in words
+    assert words.count("quiet") == 1 and words[-1] == "logo.nologo"
+    assert words[:6] == LeanBox.CMDLINE.split()[:6]          # root= and the rest untouched, in order
+    assert "\ndisable_splash=1\n" in (box.boot / "config.txt").read_text()
+    assert list(box.boot.glob("cmdline.txt.k1000-lean-boot-*")) and list(box.state.glob("boot-boot-*/cmdline.txt"))
+    assert list(box.boot.glob("cmdline.txt.k1000-lean-desktop-*"))     # before the purge, kept apart
+    assert re.search(r"k1000-lean: \d+ changes \(they take effect at the next boot", r.stdout)
+    # the box now answers "installed" for nothing that was purged, and its units say disabled
+    (box.w / "pkgs").write_text("".join(f"{p} ii \n" for p in LeanBox.ESSENTIAL + ["python3-numpy", "rpi-swap"]))
+    (box.w / "auto").write_text("")
+    (box.w / "plan").write_text("")
+    (box.w / "calls").unlink()
+    snap = box.snapshot()
+    r2 = box.run()
+    assert r2.returncode == 0, r2.stderr
+    assert "k1000-lean: 0 changes" in r2.stdout, r2.stdout
+    assert box.calls() == [] and box.snapshot() == snap
+
+
+def test_lean_desktop_puts_quiet_back_after_the_splash_package_takes_it(tmp_path):
+    """rpd-plym-splash's prerm strips ' quiet', ' splash', ' plymouth.ignore-serial-consoles'."""
+    box = LeanBox(tmp_path, {"rpd-plym-splash": "auto", "rpd-theme": "manual"}, plan=["rpd-plym-splash", "rpd-theme"],
+                  units={})
+    fake = tmp_path / "bin" / "apt-get"
+    fake.write_text(fake.read_text().replace(
+        '     : > ', f'     sed -i "s/ quiet//; s/ splash//; s/ plymouth.ignore-serial-consoles//" "{box.boot}/cmdline.txt"\n     : > '))
+    r = box.run("--only", "desktop")
+    assert r.returncode == 0, r.stderr
+    words = (box.boot / "cmdline.txt").read_text().split()
+    assert words.count("quiet") == 1 and "splash" not in words
+    assert "quiet put back" in r.stdout
+
+
+def test_lean_keeps_cloud_init_until_the_console_guard_is_enabled(tmp_path):
+    box = LeanBox(tmp_path, {"cloud-init": "manual"}, plan=[], units={"k1000-console.service": "disabled"})
+    r = box.run("--only", "services")
+    assert r.returncode == 0, r.stderr
+    assert not (box.etc / "cloud" / "cloud-init.disabled").exists()
+    assert "cloud-init left on: k1000-console.service is not enabled" in r.stdout
+    assert "k1000-lean: 0 changes" in r.stdout
+
+
+@pytest.mark.parametrize("case", ["never-ran", "restarted-later", "failed", "no-panel"])
+def test_lean_keeps_cloud_init_until_the_guard_has_run_at_a_boot(tmp_path, case):
+    """Enabled is not enough (BOOT-2): installed by the same run (bootstrap), it never ran at a boot;
+    re-run by install.sh --start an hour in, it proves nothing about the boot race."""
+    box = LeanBox(tmp_path, {"cloud-init": "manual"}, plan=[], units={"k1000-console.service": "enabled"},
+                  guard="none")
+    if case == "restarted-later":
+        box.guard_ran(3_600_000_000, "k1000-console: ZynScreen is fb0 (waited 0 s); console unbound 0 time(s)")
+    elif case == "failed":
+        box.guard_ran(9_000_000, "k1000-console: ZynScreen is fb0", status=1)
+    elif case == "no-panel":
+        box.guard_ran(9_000_000, "k1000-console: no ZynScreen framebuffer (fb_ili9486) after 60 s: console left as it is")
+    r = box.run("--only", "services")
+    assert r.returncode == 0, r.stderr
+    assert not (box.etc / "cloud" / "cloud-init.disabled").exists()
+    assert "cloud-init left on: k1000-console.service " in r.stdout, r.stdout
+    assert ("did not find the panel" in r.stdout) == (case == "no-panel")
+
+
+def test_lean_turns_cloud_init_off_once_the_guard_ran_at_this_boot(tmp_path):
+    box = LeanBox(tmp_path, {"cloud-init": "manual"}, plan=[], units={"k1000-console.service": "enabled"})
+    r = box.run("--only", "services")
+    assert r.returncode == 0, r.stderr
+    assert (box.etc / "cloud" / "cloud-init.disabled").exists() and "cloud-init disabled" in r.stdout
+
+
+def test_lean_cmdline_with_plymouth_installed_only_disables_it(tmp_path):
+    box = LeanBox(tmp_path, {"plymouth": "auto"}, plan=[], units={})
+    r = box.run("--only", "boot")
+    assert r.returncode == 0, r.stderr
+    words = (box.boot / "cmdline.txt").read_text().split()
+    assert "plymouth.enable=0" in words and "splash" in words and "logo.nologo" in words
+
+
+def test_lean_refuses_a_two_line_cmdline(tmp_path):
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    (box.boot / "cmdline.txt").write_text(LeanBox.CMDLINE + "\nquiet\n")
+    r = box.run("--only", "boot")
+    assert r.returncode == 1 and "more than one line" in r.stderr
+    assert (box.boot / "cmdline.txt").read_text() == LeanBox.CMDLINE + "\nquiet\n"
+
+
+def test_lean_list_and_unknown_step(tmp_path):
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    assert box.run("--list").stdout.split() == ["keep", "desktop", "services", "timers", "swap", "boot"]
+    r = box.run("--only", "network")
+    assert r.returncode == 1 and "unknown step 'network'" in r.stderr
+
+
+def test_lean_has_init_survives_pipefail_on_a_long_listing(tmp_path):
+    """F1: `lsinitramfs IMG | grep -qx init` under pipefail failed on every healthy initramfs."""
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    r = _lean_src(f'has_init "{box.boot}/initramfs8" && echo HAS-INIT', PATH=box.env["PATH"])
+    assert r.returncode == 0 and "HAS-INIT" in r.stdout, r.stderr
+    old = subprocess.run(["bash", "-c", f'set -o pipefail; lsinitramfs "{box.boot}/initramfs8" | grep -qx init'],
+                         env=dict(os.environ, PATH=box.env["PATH"]))
+    assert old.returncode != 0               # the fake reproduces the bug the old check had
+
+
+def test_lean_check_passes_a_healthy_card_and_changes_nothing(tmp_path):
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    snap = box.snapshot()
+    r = box.run("--check")
+    assert r.returncode == 0, r.stderr
+    assert "safe to power-cycle" in r.stdout and box.snapshot() == snap and box.calls() == []
+
+
+@pytest.mark.parametrize("breakage, want", [
+    ("audit", "dpkg --audit"),
+    ("truncated", "initramfs8 differs from"),
+    ("missing-2712", "initramfs_2712 is missing"),
+    ("noinit", "initramfs8 has no /init"),
+    ("root", "but this boot came up with root=PARTUUID=deadbeef-02"),
+    ("two-lines", "more than one line"),
+    ("no-rootwait", "has no rootwait"),
+    ("no-kernel", "kernel8.img is missing"),
+    ("no-i2c-dev", "i2c-dev is not loaded at boot"),
+    ("lost-package", "not installed: openssh-server"),
+])
+def test_lean_check_refuses_a_card_that_could_fail_to_boot(tmp_path, breakage, want):
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    cmdline = box.boot / "cmdline.txt"
+    if breakage == "audit":
+        (box.w / "audit").write_text("The following packages are only half configured:\n plymouth\n")
+    elif breakage == "truncated":
+        (box.boot / "initramfs8").write_bytes(LeanBox.INITRD[: len(LeanBox.INITRD) // 2])
+    elif breakage == "missing-2712":
+        (box.boot / "initramfs_2712").unlink()
+    elif breakage == "noinit":
+        for f in (box.boot / "initramfs8", box.initrd / "initrd.img-6.18.50+rpt-rpi-v8"):
+            f.write_bytes(b"NOINIT\n" * 100)
+    elif breakage == "root":
+        (box.w / "proc_cmdline").write_text("coherent_pool=1M root=PARTUUID=deadbeef-02 rootwait\n")
+    elif breakage == "two-lines":
+        cmdline.write_text(LeanBox.CMDLINE + "\nquiet\n")
+    elif breakage == "no-rootwait":
+        cmdline.write_text(LeanBox.CMDLINE.replace(" rootwait", ""))
+    elif breakage == "no-kernel":
+        (box.boot / "kernel8.img").unlink()
+    elif breakage == "no-i2c-dev":
+        (box.etc / "modules-load.d" / "k1000.conf").write_text("# nothing\n")
+    elif breakage == "lost-package":
+        (box.w / "pkgs").write_text((box.w / "pkgs").read_text().replace("openssh-server ii \n", ""))
+    r = box.run("--check")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "do NOT power-cycle" in r.stderr and want in r.stderr, r.stderr
+
+
+def test_lean_check_reads_i2c_dev_from_etc_modules_too(tmp_path):
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    (box.etc / "modules-load.d" / "k1000.conf").unlink()
+    (box.etc / "modules").write_text("# /etc/modules\ni2c-dev\n")
+    assert box.run("--check").returncode == 0
+
+
+def test_lean_desktop_with_nothing_to_remove_skips_the_removal_check(tmp_path):
+    """A no-op re-run (a converged card, bootstrap again) is not a removal: no false alarm, exit 0."""
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    (box.boot / "initramfs8").write_bytes(b"x")             # would fail the check, were it run
+    r = box.run("--only", "desktop")
+    assert r.returncode == 0, r.stderr
+    assert "k1000-lean: 0 changes" in r.stdout and box.calls() == []
+
+
+def test_lean_desktop_removal_that_breaks_the_initramfs_says_do_not_power_cycle(tmp_path):
+    box = LeanBox(tmp_path, {"plymouth": "auto", "rpd-theme": "manual"}, plan=["plymouth", "rpd-theme"], units={})
+    fake = tmp_path / "bin" / "apt-get"
+    # an interrupted raspi-firmware hook: the rebuilt initramfs only half copied onto /boot/firmware
+    fake.write_text(fake.read_text().replace(
+        '     : > ', f'     printf "NEW-INITRAMFS" > "{box.initrd}/initrd.img-6.18.50+rpt-rpi-v8"\n'
+                   f'     printf "NEW-" > "{box.boot}/initramfs8"\n     : > '))
+    r = box.run("--only", "desktop")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "initramfs8 differs from" in r.stderr and "BEFORE any power cycle" in r.stderr
+
+
+def test_lean_full_run_ends_with_the_power_cycle_check(tmp_path):
+    box = LeanBox(tmp_path, {"rpd-theme": "manual", "rpi-swap": "manual"}, plan=["rpd-theme"],
+                  units={"apt-daily.timer": "enabled"})
+    r = box.run()
+    assert r.returncode == 0, r.stderr
+    assert "safe to power-cycle" in r.stdout and re.search(r"\d+ changes \(they take effect", r.stdout)
+
+
+def _fake_systemd_run(fb: Path, w: Path, run: bool = True) -> None:
+    """Records its arguments; with `run`, runs the command at once (like the unit would), with the
+    --setenv variables, INVOCATION_ID set and stdout/stderr appended to the StandardOutput= file."""
+    _bin(fb, "systemd-run", f'echo "systemd-run $*" >> "{w}/calls"\n' + ('exit 0\n' if not run else
+         'log=\nwhile [ $# -gt 0 ]; do\n  case $1 in\n'
+         '    -p) case $2 in StandardOutput=append:*) log=${2#StandardOutput=append:} ;; esac; shift 2 ;;\n'
+         '    --setenv=*) export "${1#--setenv=}"; shift ;;\n    --*) shift ;;\n    *) break ;;\n  esac\ndone\n'
+         'INVOCATION_ID=fake "$@" >> "$log" 2>&1\nexit 0\n'))
+
+
+def test_lean_real_run_detaches_into_a_systemd_unit_and_returns_its_status(tmp_path):
+    """BOOT-1/F5: apt never runs in the SSH session's process tree."""
+    box = LeanBox(tmp_path, {"rpd-theme": "manual", "rpi-swap": "manual"}, plan=["rpd-theme"], units={})
+    del box.env["K1000_LEAN_FOREGROUND"]
+    _fake_systemd_run(tmp_path / "bin", box.w)
+    r = box.run("--only", "desktop")
+    assert r.returncode == 0, r.stdout + r.stderr
+    sr = [c for c in box.calls() if c.startswith("systemd-run ")]
+    assert len(sr) == 1 and "--collect" in sr[0] and "--unit=k1000-lean-" in sr[0]
+    assert f"StandardOutput=append:{box.state}/run-" in sr[0] and "--only desktop" in sr[0]
+    assert f"--setenv=K1000_BOOT_DIR={box.boot}" in sr[0]
+    assert "running as the systemd unit k1000-lean-" in r.stdout
+    assert "desktop: purged 1 packages" in r.stdout                  # the unit's log, followed
+    rcs = list(box.state.glob("run-*.rc"))
+    assert len(rcs) == 1 and rcs[0].read_text().strip() == "0"
+    assert len([c for c in box.calls() if c.startswith("REAL apt-get")]) == 1
+
+
+def test_lean_detached_failure_is_the_exit_status(tmp_path):
+    box = LeanBox(tmp_path, {"rpd-theme": "manual", "openssh-server": "manual"},
+                  plan=["rpd-theme", "openssh-server"], units={})
+    del box.env["K1000_LEAN_FOREGROUND"]
+    _fake_systemd_run(tmp_path / "bin", box.w)
+    r = box.run("--only", "desktop")
+    assert r.returncode == 1 and "REFUSED" in r.stdout
+
+
+def test_lean_detached_unit_gone_without_a_status_fails_loudly(tmp_path):
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    del box.env["K1000_LEAN_FOREGROUND"]
+    _fake_systemd_run(tmp_path / "bin", box.w, run=False)          # the unit dies at once
+    r = box.run("--only", "boot")
+    assert r.returncode == 1 and "ended without an exit status" in r.stderr and "--check" in r.stderr
+
+
+def test_lean_dry_run_and_check_never_detach(tmp_path):
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    del box.env["K1000_LEAN_FOREGROUND"]
+    _fake_systemd_run(tmp_path / "bin", box.w)
+    assert box.run("--dry-run").returncode == 0 and box.run("--check").returncode == 0
+    assert not [c for c in box.calls() if c.startswith("systemd-run")]
+
+
+# --------------------------------------------------------------------------- install.sh --deps, --boot I2C
+def test_install_deps_lists_what_bootstrap_must_check():
+    r = subprocess.run(["bash", str(INSTALL), "--deps"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    deps = r.stdout.split()
+    for p in ("python3-qrcode", "python3-smbus2", "python3-websockets", "alsa-utils", "device-tree-compiler"):
+        assert p in deps
+
+
+def _i2c_block(tmp: Path, config: str, loaded: bool) -> tuple[str, dict, Path]:
+    text = INSTALL.read_text()
+    start = text.index("  # The knob board (MCP23017 at 0x20) is on /dev/i2c-1")
+    end = text.index("  # No blinking console cursor on the ZynScreen")
+    conf = tmp / "modules-load.d" / "k1000.conf"
+    mod = tmp / "sys_module_i2c_dev"
+    if loaded:
+        mod.mkdir()
+    block = (text[start:end].replace("/etc/modules-load.d/k1000.conf", str(conf))
+             .replace("/sys/module/i2c_dev", str(mod)))
+    boot = tmp / "boot"
+    boot.mkdir(exist_ok=True)
+    (boot / "config.txt").write_text(config)
+    (tmp / "t").mkdir(exist_ok=True)
+    fb = tmp / "bin"
+    fb.mkdir(exist_ok=True)
+    _bin(fb, "modprobe", f'echo "modprobe $*" >> "{tmp}/calls"\n')
+    prog = ('set -euo pipefail\nCHANGES=0\nnote() { printf "%s\\n" "$*"; }\n'
+            'changed() { CHANGES=$((CHANGES + 1)); note "$*"; }\n'
+            'put() { PUT_CHANGED=0; if [ -f "$2" ] && cmp -s "$1" "$2"; then return 0; fi; '
+            'mkdir -p "$(dirname "$2")"; cp "$1" "$2"; changed "installed $2"; PUT_CHANGED=1; }\n'
+            f'BOOT_DIR="{boot}"\nTMP="{tmp}/t"\n' + block + 'echo "CHANGES=$CHANGES"\n')
+    return prog, dict(os.environ, PATH=f"{fb}:/usr/bin:/bin:/usr/sbin:/sbin"), boot
+
+
+@pytest.mark.parametrize("config, adds", [
+    ("[all]\n# K1000\ndtparam=i2c_arm=on\ndtparam=spi=on\n", False),          # the first box (hand-added)
+    ("dtparam=audio=on,i2c_arm=on\n[all]\n", False),                         # before any section, combined
+    ("#dtparam=i2c_arm=on\n[all]\ndtparam=audio=on\n", True),                 # Lite's commented default
+    ("[all]\n[cm4]\ndtparam=i2c_arm=on\n", True),                            # only for another board
+])
+def test_install_boot_turns_i2c_on_and_loads_i2c_dev_at_boot_once(tmp_path, config, adds):
+    """F2: a fresh Lite card had no /dev/i2c-1 (the knobs dead), the first box only by accident."""
+    prog, env, boot = _i2c_block(tmp_path, config, loaded=False)
+    r1 = subprocess.run(["bash", "-c", prog], capture_output=True, text=True, env=env)
+    assert r1.returncode == 0, r1.stderr
+    cfg = (boot / "config.txt").read_text()
+    assert cfg.startswith(config) and (cfg.endswith("[all]\n# K1000: I2C for the knob board (MCP23017 at 0x20 on i2c-1)\n"
+                                                  "dtparam=i2c_arm=on\n") == adds)
+    assert (tmp_path / "modules-load.d" / "k1000.conf").read_text().splitlines()[-1] == "i2c-dev"
+    assert (tmp_path / "calls").read_text() == "modprobe i2c-dev\n"
+    assert f"CHANGES={3 if adds else 2}" in r1.stdout, r1.stdout
+    (tmp_path / "sys_module_i2c_dev").mkdir()                       # now loaded
+    r2 = subprocess.run(["bash", "-c", prog], capture_output=True, text=True, env=env)
+    assert r2.returncode == 0 and "CHANGES=0" in r2.stdout, r2.stdout + r2.stderr
+    assert (boot / "config.txt").read_text() == cfg
+
+
+# --------------------------------------------------------------------------- bootstrap.sh
+def test_bootstrap_pins_camilladsp_by_tarball_and_binary_hash():
+    text = BOOTSTRAP.read_text()
+    assert "releases/download/v5.0.0-beta.1/camilladsp-linux-aarch64.tar.gz" in text
+    for var in ("CDSP_TGZ_SHA256", "CDSP_BIN_SHA256"):
+        assert re.search(rf"^{var}=[0-9a-f]{{64}}$", text, re.M), var
+    assert "upgrade" not in re.sub(r"#.*", "", text)        # never apt upgrade
+    assert not re.search(r"^\s*(sudo\s+)?(reboot|systemctl\s+reboot|shutdown)", text, re.M)
+
+
+def _bootstrap_box(tmp: Path, with_ap: bool = False, installed: str = "*") -> tuple[Path, Path, dict]:
+    """bootstrap.sh next to a fake install.sh/k1000-lean.sh; fake dpkg says `installed` (a case
+    pattern) is installed. Returns (box dir, fake bin dir, env)."""
+    box = tmp / "box"
+    (box / "tools").mkdir(parents=True)
+    shutil.copy(BOOTSTRAP, box / "bootstrap.sh")
+    helptext = "#   sudo ./install.sh --boot ...\n" + ("#   sudo ./install.sh --ap   access point\n" if with_ap else "")
+    (box / "install.sh").write_text(f'#!/bin/sh\ncase $1 in --help) printf "{helptext}" ;; '
+                                    '--deps) printf "python3-qrcode\\npython3-smbus2\\n" ;; *) echo RAN-INSTALL "$@" ;; esac\n')
+    (box / "tools" / "k1000-lean.sh").write_text('#!/bin/sh\necho "lean $*"\necho "k1000-lean: dry run: 3 changes"\n')
+    for f in (box / "install.sh", box / "tools" / "k1000-lean.sh"):
+        f.chmod(0o755)
+    fb = tmp / "bin"
+    fb.mkdir()
+    _bin(fb, "dpkg", f'case $1 in --print-architecture) echo arm64 ;; -s) case $2 in {installed}) exit 0 ;; esac; exit 1 ;; esac\n')
+    env = {k: v for k, v in os.environ.items() if k != "INVOCATION_ID"}
+    return box, fb, dict(env, PATH=f"{fb}:/usr/bin:/bin")
+
+
+@pytest.mark.parametrize("with_ap", [False, True])
+def test_bootstrap_dry_run_runs_install_then_lean_and_uses_ap_when_offered(tmp_path, with_ap):
+    box, fb, env = _bootstrap_box(tmp_path, with_ap)
+    r = subprocess.run(["bash", str(box / "bootstrap.sh"), "--dry-run"], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    out = r.stdout
+    assert "RAN-INSTALL" not in out                          # a dry run never runs install.sh
+    assert "no apt-get update" in out                        # nothing missing: no network needed
+    flags = "--boot --headless --ap" if with_ap else "--boot --headless"
+    assert f"would: run install.sh {flags} (" in out
+    assert "lean --dry-run" in out
+    m = re.search(r"k1000-bootstrap: dry run: (\d+) changes", out)
+    pinned = Path("/usr/local/bin/camilladsp").exists() and "pinned build, nothing to do" in out
+    assert m and int(m.group(1)) == (1 if pinned else 2) + 3, out
+
+
+def test_bootstrap_runs_apt_update_only_when_a_package_is_missing(tmp_path):
+    """F4: a re-run on a finished card at a gig (no internet) must not wait on apt."""
+    box, fb, env = _bootstrap_box(tmp_path, installed="i2c-tools|python3-smbus2")
+    r = subprocess.run(["bash", str(box / "bootstrap.sh"), "--dry-run"], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    assert "would run: apt-get update (missing: python3-qrcode)" in r.stdout
+    assert "would: apt-get install" not in r.stdout          # i2c-tools is there; install.sh installs qrcode
+    text = BOOTSTRAP.read_text()
+    upd = text.index("apt-get update -q")
+    assert text.rindex("if [ ${#missing[@]} = 0 ]; then", 0, upd) > 0  # the real run sits behind the same test
+
+
+def test_bootstrap_real_run_detaches_into_a_systemd_unit(tmp_path):
+    box, fb, env = _bootstrap_box(tmp_path)
+    _bin(fb, "id", 'echo 0\n')
+    logdir = tmp_path / "logs"
+    _bin(fb, "systemd-run", f'echo "systemd-run $*" >> "{tmp_path}/calls"\n'
+                            'for a in "$@"; do case $a in --setenv=K1000_BOOTSTRAP_RC=*) rc=${a#--setenv=K1000_BOOTSTRAP_RC=} ;; '
+                            'StandardOutput=append:*) log=${a#StandardOutput=append:} ;; esac; done\n'
+                            'echo "k1000-bootstrap: 0 changes: this card is already a K1000" >> "$log"\necho 0 > "$rc"\n')
+    env = dict(env, K1000_BOOTSTRAP_LOGDIR=str(logdir), K1000_REVISION="abc1234")
+    r = subprocess.run(["bash", str(box / "bootstrap.sh")], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    call = (tmp_path / "calls").read_text()
+    assert "--collect" in call and "--unit=k1000-bootstrap-" in call and "--setenv=K1000_REVISION=abc1234" in call
+    assert call.rstrip().endswith(f"{box.resolve()}/bootstrap.sh")
+    assert "running as the systemd unit k1000-bootstrap-" in r.stdout and "already a K1000" in r.stdout
+    assert "RAN-INSTALL" not in r.stdout                     # nothing ran in the SSH session itself
+
+
+def _ssh_block(tmp: Path, journal: str, sshd_ok: bool = True, keys: int = 1, dry: int = 0) -> tuple[subprocess.CompletedProcess, Path]:
+    text = BOOTSTRAP.read_text()
+    start = text.index("# --- 4. SSH: keys only")
+    end = text.index("# --- 5. the lean OS")
+    dropin = tmp / "sshd_config.d" / "10-k1000-keyonly.conf"
+    dropin.parent.mkdir(exist_ok=True)
+    fb = tmp / "bin"
+    fb.mkdir(exist_ok=True)
+    (tmp / "t").mkdir(exist_ok=True)
+    _bin(fb, "journalctl", f'echo "journalctl $*" >> "{tmp}/calls"\nprintf "%s" "{journal}"\n')
+    _bin(fb, "sshd", f'echo "sshd $*" >> "{tmp}/calls"\n' + ("exit 0\n" if sshd_ok else "echo bad >&2; exit 255\n"))
+    prog = (f'set -euo pipefail\nCHANGES=0 DRY={dry} KEYS_OK={keys} TMP="{tmp}/t" SSHD_KEYONLY="{dropin}"\n'
+            'note() { printf "%s\\n" "$*"; }\nwould() { CHANGES=$((CHANGES + 1)); note "would: $*"; }\n'
+            'die() { printf "ERROR: %s\\n" "$*" >&2; exit 1; }\n' + text[start:end] + 'echo "CHANGES=$CHANGES"\n')
+    r = subprocess.run(["bash", "-c", prog], capture_output=True, text=True, env=dict(os.environ, PATH=f"{fb}:/usr/bin:/bin"))
+    return r, dropin
+
+
+ACCEPTED = "Accepted publickey for k1000 from 192.168.8.174 port 48310 ssh2: RSA SHA256:x\\n"
+
+
+def test_bootstrap_ssh_keys_only_after_a_key_login(tmp_path):
+    """F6: the first box's hand-made drop-in, reproduced only when nobody can be locked out."""
+    r, dropin = _ssh_block(tmp_path, ACCEPTED)
+    assert r.returncode == 0, r.stderr
+    assert dropin.read_text().splitlines()[1:] == ["PasswordAuthentication no", "KbdInteractiveAuthentication no"]
+    assert "sshd -t" in (tmp_path / "calls").read_text() and "CHANGES=1" in r.stdout
+    assert "restart" not in BOOTSTRAP.read_text().split("# --- 4. SSH: keys only")[1].split("# --- 5.")[0].replace(
+        "is not restarted", "")                              # applies at the next boot, no sshd restart
+    r2, _ = _ssh_block(tmp_path, ACCEPTED)                  # there: never rewritten
+    assert "CHANGES=0" in r2.stdout
+
+
+@pytest.mark.parametrize("journal, keys", [("", 1), ("Accepted password for k1000 from 1.2.3.4 port 1 ssh2\\n", 1),
+                                           (ACCEPTED, 0)])
+def test_bootstrap_ssh_left_alone_without_proof_of_a_key_login(tmp_path, journal, keys):
+    r, dropin = _ssh_block(tmp_path, journal, keys=keys)
+    assert r.returncode == 0, r.stderr
+    assert not dropin.exists() and "WARNING" in r.stdout and "CHANGES=0" in r.stdout
+
+
+def test_bootstrap_ssh_drop_in_removed_again_when_sshd_refuses_it(tmp_path):
+    r, dropin = _ssh_block(tmp_path, ACCEPTED, sshd_ok=False)
+    assert r.returncode == 1 and "SSH is unchanged" in r.stderr
+    assert not dropin.exists() and not list(dropin.parent.iterdir())
+
+
+def test_bootstrap_ssh_dry_run_writes_nothing(tmp_path):
+    r, dropin = _ssh_block(tmp_path, ACCEPTED, dry=1)
+    assert r.returncode == 0 and "would: SSH: keys only" in r.stdout and not dropin.exists()

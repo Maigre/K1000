@@ -6,6 +6,9 @@
 # - The "+" prefix runs the ExecStartPre as root: unbinding the Linux framebuffer console from the
 #   ZynScreen (vtcon "frame buffer device") needs root, and without it the console's text and
 #   cursor draw over the UI. The loop matches by name so it survives vtcon renumbering.
+#   At boot the panel may register only AFTER k1000 started (then this unbind finds nothing):
+#   k1000-console.service (wanted below, never waited for) unbinds it once the panel exists.
+#   This ExecStartPre still covers every later k1000 restart.
 # - User k1000 with groups i2c (MCP23017 knobs), gpio (interrupt lines), video (/dev/fb0),
 #   audio (ALSA probing) instead of root.
 # - PYTHONUNBUFFERED: log lines reach the journal immediately (journalctl -u k1000 -f).
@@ -16,7 +19,7 @@
 [Unit]
 Description=K1000 control service (knobs, screen, state)
 Documentation=file:///opt/k1000/README.md
-Wants=camilladsp.service
+Wants=camilladsp.service k1000-console.service
 After=camilladsp.service
 StartLimitIntervalSec=0
 

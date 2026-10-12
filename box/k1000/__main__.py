@@ -77,11 +77,19 @@ def setup_logging(level: str) -> None:
 # =========================================================================== screen
 def open_screen(quiet: bool = False) -> Any:
     """The ZynScreen framebuffer, or None when there is none (yet). `quiet`: a retry, log at
-    debug level only."""
+    debug level only.
+
+    Only the framebuffer named fb_ili9486 is the panel; there is no /dev/fb0 fallback. Before the
+    panel registers (~7 s into the boot), fb0 is either absent or, with an HDMI monitor plugged
+    in, vc4's HDMI framebuffer: taking it would draw the UI there for the whole uptime (the
+    screen is never looked for again) and leave the panel dark."""
     lvl = logging.DEBUG if quiet else logging.WARNING
     try:
         from .ui.display import Framebuffer, find_fb_device
-        dev = find_fb_device() or "/dev/fb0"
+        dev = find_fb_device()
+        if dev is None:
+            log.log(lvl, "no ZynScreen framebuffer (fb_ili9486) yet: retrying every %g s", HW_RETRY_S)
+            return None
         if not Path(dev).exists():
             log.log(lvl, "no framebuffer (%s) yet: retrying every %g s", dev, HW_RETRY_S)
             return None

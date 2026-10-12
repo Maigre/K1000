@@ -1,0 +1,59 @@
+# K1000 panel guard: keeps the Linux text console off the ZynScreen. Installed by box/install.sh.
+#
+# Why it exists:
+# - The kernel's framebuffer console (fbcon) takes over a framebuffer the moment it registers, and
+#   fb_ili9486 (the ZynScreen) registers late, ~7 s into the boot. From then on the console's text
+#   (the tty1 login prompt, kernel messages) and its redraws paint over the K1000 UI.
+# - k1000.service unbinds the console in its ExecStartPre, but that only helps when k1000 starts
+#   AFTER the panel registered (ops-1). On a faster boot (cloud-init off: k1000 ~2.5 s earlier)
+#   k1000 starts first, its unbind finds nothing bound, and the console takes the panel a moment
+#   later, for good.
+#
+# Why it looks like this:
+# - It never delays k1000 (no Before=, k1000 only Wants= it): it waits on its own, up to 60 s, for
+#   the framebuffer whose name is fb_ili9486 (by name: an HDMI monitor can push the panel to fb1).
+# - fbcon binds inside the same kernel call that creates that framebuffer, so seeing the device
+#   is not proof the bind has happened yet: for 3 s after the panel appears it unbinds every
+#   "frame buffer" vtconsole it finds bound (0.1 s apart), then exits. RemainAfterExit keeps it
+#   "active" (done), so `systemctl status` says it ran.
+# - It starts with multi-user.target, like k1000: a boot that fails earlier (emergency mode)
+#   still shows its messages on the panel, the only screen the box has.
+# - Unbinding detaches the console from every framebuffer (HDMI too), exactly as k1000's
+#   ExecStartPre does; the console on an HDMI monitor is gone from then on (SSH is the way in).
+# - No panel after 60 s: nothing is touched (k1000 keeps retrying the screen by itself).
+# - The script has no backslash, no single quote and no `%` (systemd escapes); `$$` is a literal
+#   `$` for the shell (see camilladsp.service).
+
+[Unit]
+Description=K1000 panel guard (keeps the Linux console off the ZynScreen)
+Documentation=file:///opt/k1000/README.md
+
+[Service]
+Type=simple
+RemainAfterExit=yes
+ExecStart=/bin/sh -c '\
+  gfx=/sys/class/graphics; vtc=/sys/class/vtconsole; wmax=600; watch=30; \
+  fb=; w=0; \
+  while [ -z "$$fb" ] && [ "$$w" -lt "$$wmax" ]; do \
+    for n in "$$gfx"/fb*/name; do \
+      if [ -r "$$n" ] && [ "$$(cat "$$n")" = fb_ili9486 ]; then fb=$$(dirname "$$n"); fi; \
+    done; \
+    if [ -z "$$fb" ]; then w=$$((w + 1)); sleep 0.1; fi; \
+  done; \
+  if [ -z "$$fb" ]; then \
+    echo "k1000-console: no ZynScreen framebuffer (fb_ili9486) after $$((wmax / 10)) s: console left as it is" >&2; \
+    exit 0; \
+  fi; \
+  i=0; n=0; \
+  while [ "$$i" -lt "$$watch" ]; do \
+    for v in "$$vtc"/vtcon*; do \
+      if grep -q "frame buffer" "$$v/name" 2>/dev/null && [ "$$(cat "$$v/bind" 2>/dev/null)" = 1 ]; then \
+        echo 0 > "$$v/bind" && n=$$((n + 1)); \
+      fi; \
+    done; \
+    i=$$((i + 1)); sleep 0.1; \
+  done; \
+  echo "k1000-console: ZynScreen is $$(basename "$$fb") (waited $$((w / 10)) s); console unbound $$n time(s)"'
+
+[Install]
+WantedBy=multi-user.target

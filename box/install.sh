@@ -2,17 +2,22 @@
 # K1000 installer: deploys box/ onto the Raspberry Pi. Idempotent; a re-run with nothing new
 # changes nothing and ends with "0 changes". See README.md (same directory) for the full picture.
 #
-#   sudo ./install.sh             install/update files, enable the 3 units. Starts NOTHING.
-#   sudo ./install.sh --start     ... then (re)start camilladsp, k1000, camillagui (audio drops ~1 s;
-#                                 never during a show)
+#   sudo ./install.sh             install/update files, enable the 4 units. Starts NOTHING.
+#   sudo ./install.sh --start     ... then (re)start camilladsp, k1000, camillagui, k1000-console
+#                                 (audio drops ~1 s; never during a show)
 #   sudo ./install.sh --boot      ... and boot-level setup, applied at the next reboot:
 #                                 compile + install the ZynScreen overlay (dtc -@), make sure
-#                                 config.txt loads it, add vt.global_cursor_default=0 to cmdline.txt
+#                                 config.txt loads it, add vt.global_cursor_default=0 to cmdline.txt;
+#                                 I2C for the knob board (dtparam=i2c_arm=on, i2c-dev at boot)
 #   sudo ./install.sh --headless  ... and boot to the console instead of the desktop, with PipeWire/
 #                                 WirePlumber masked, so nothing but CamillaDSP opens the audio
 #                                 interfaces; the desktop image's unused services (Bluetooth,
 #                                 printing, NFS/rpcbind) disabled and the tty1 auto-login removed
-#                                 (applied at the next reboot)
+#                                 (applied at the next reboot). The rest of the lean OS (desktop
+#                                 purge, cloud-init, timers, swap, boot arguments) is
+#                                 tools/k1000-lean.sh (D-006)
+#   ./install.sh --deps           print the apt packages it may install, one per line (bootstrap.sh
+#                                 runs apt-get update only when one is missing)
 #
 # Run it from a checkout of box/ or an rsync'd copy (e.g. /opt/k1000-src), never from /opt/k1000.prev.
 # K1000_REVISION=<text> records what is deployed in /opt/k1000/REVISION (default: git describe,
@@ -30,9 +35,12 @@ BOOT_DIR=${K1000_BOOT_DIR:-/boot/firmware}
 APP=/opt/k1000
 PREV=/opt/k1000.prev
 GUI=/opt/camillagui
-UNITS=(camilladsp k1000 camillagui)
-APT_DEPS=(python3-websockets python3-smbus python3-libgpiod python3-yaml python3-pil python3-numpy
-          python3-pytest rsync)
+UNITS=(camilladsp k1000 camillagui k1000-console)
+# smbus2 replaces smbus (D-008) and qrcode draws the phone's join codes (D-007); alsa-utils (aplay/
+# arecord probe the cards), fonts-dejavu-core (the UI's fonts) and usbutils (lsusb, M4 bring-up)
+# are not in Raspberry Pi OS Lite.
+APT_DEPS=(python3-websockets python3-smbus python3-smbus2 python3-libgpiod python3-yaml python3-pil
+          python3-numpy python3-qrcode python3-pytest rsync alsa-utils fonts-dejavu-core usbutils)
 # CamillaGUI v5.0.0-beta.2, linux aarch64. Pinned by hash: its binary reports "5.0.0-beta.1" in
 # --version, so the version string cannot tell an upgrade from a no-op.
 GUI_URL=https://github.com/HEnquist/camillagui-backend/releases/download/v5.0.0-beta.2/camillagui_linux_aarch64.tar.gz
@@ -45,6 +53,7 @@ for arg in "$@"; do
     --start) DO_START=1 ;;
     --boot) DO_BOOT=1 ;;
     --headless) DO_HEADLESS=1 ;;
+    --deps) printf '%s\n' "${APT_DEPS[@]}" device-tree-compiler; exit 0 ;;   # dtc: --boot
     -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
     *) echo "install.sh: unknown option '$arg' (try --help)" >&2; exit 2 ;;
   esac
@@ -257,6 +266,23 @@ if [ $DO_BOOT = 1 ]; then
     printf '\n[all]\n# K1000: ZynScreen 3.5" (ILI9486 + ADS7846 touch), box/overlays/k1000-zynscreen.dts\ndtoverlay=k1000-zynscreen,rotate=270\n' >> "$BOOT_DIR/config.txt"
     changed "config.txt: added dtoverlay=k1000-zynscreen,rotate=270"
   fi
+  # The knob board (MCP23017 at 0x20) is on /dev/i2c-1: the I2C controller must be on and i2c-dev
+  # loaded at boot (nothing loads it on demand). Raspberry Pi OS Lite does neither. The first box
+  # only had them because config.txt was edited by hand and the desktop's sense-hat package
+  # appends i2c-dev to /etc/modules. dtparam: only an [all]/[pi4] line counts (or none before the
+  # first section).
+  if ! awk 'BEGIN { s = "all" }
+            /^[[:space:]]*\[/ { s = $0; gsub(/[][[:space:]]/, "", s); next }
+            (s == "all" || s == "pi4") && /^[[:space:]]*dtparam=([^#]*,)?i2c(_arm)?=on([,[:space:]]|$)/ { f = 1 }
+            END { exit !f }' "$BOOT_DIR/config.txt"; then
+    printf '\n[all]\n# K1000: I2C for the knob board (MCP23017 at 0x20 on i2c-1)\ndtparam=i2c_arm=on\n' >> "$BOOT_DIR/config.txt"
+    changed "config.txt: added dtparam=i2c_arm=on (knob board)"
+  fi
+  printf '# K1000 (box/install.sh --boot): /dev/i2c-1 for the knob board (MCP23017 at 0x20).\ni2c-dev\n' > "$TMP/k1000-modules.conf"
+  put "$TMP/k1000-modules.conf" /etc/modules-load.d/k1000.conf 644
+  if [ ! -d /sys/module/i2c_dev ]; then
+    if modprobe i2c-dev; then changed "loaded i2c-dev now (it was not loaded)"; else note "WARNING: modprobe i2c-dev failed"; fi
+  fi
   # No blinking console cursor on the ZynScreen between boot and the UI taking over.
   if ! grep -qE '(^|[[:space:]])vt\.global_cursor_default=0([[:space:]]|$)' "$BOOT_DIR/cmdline.txt"; then
     [ -e "$BOOT_DIR/cmdline.txt.k1000-orig" ] || cp -p "$BOOT_DIR/cmdline.txt" "$BOOT_DIR/cmdline.txt.k1000-orig"
@@ -297,9 +323,10 @@ if [ $DO_HEADLESS = 1 ]; then
     mv "$autologin" "$autologin.k1000-off"
     changed "tty1 auto-login removed (undo: mv $autologin.k1000-off $autologin)"
   fi
-  # Not done here on purpose: disabling cloud-init (touch /etc/cloud/cloud-init.disabled) would
-  # start k1000 ~2.3 s earlier, right where fbcon binds the ZynScreen (~7 s): k1000's root
-  # ExecStartPre could unbind the console before it exists. Decide it together with that race.
+  # Not done here: cloud-init. Turning it off starts k1000 ~2.5 s earlier, before the ZynScreen
+  # registers (~7 s), so k1000's ExecStartPre would unbind the console before it exists.
+  # k1000-console.service (installed above) closes that race; tools/k1000-lean.sh then turns
+  # cloud-init off, and only once that unit is enabled.
   note "headless changes take effect at the next reboot"
 fi
 
@@ -312,7 +339,7 @@ elif [ $GUI_CHANGED = 1 ] && systemctl is-active --quiet camillagui.service; the
 fi
 
 for u in "${UNITS[@]}"; do
-  note "$(printf '%-11s enabled=%-8s active=%s' "$u" "$(systemctl is-enabled "$u.service" 2>/dev/null || true)" "$(systemctl is-active "$u.service" 2>/dev/null || true)")"
+  note "$(printf '%-13s enabled=%-8s active=%s' "$u" "$(systemctl is-enabled "$u.service" 2>/dev/null || true)" "$(systemctl is-active "$u.service" 2>/dev/null || true)")"
 done
 note "deployed $(cat "$APP/REVISION" 2>/dev/null || echo '?'): $CHANGES changes"
 if [ $GUI_FAILED = 1 ]; then

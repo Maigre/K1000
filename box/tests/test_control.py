@@ -2523,6 +2523,18 @@ def test_screen_is_retried_until_the_panel_appears(tmp_path: Path, monkeypatch: 
     run(body())
 
 
+def test_open_screen_takes_only_the_panel_never_an_hdmi_fb0(monkeypatch) -> None:
+    """Before the panel registers, fb0 may be vc4's HDMI framebuffer: never take it (BOOT-3)."""
+    from k1000 import __main__ as main_mod
+    from k1000.ui import display
+
+    opened: list[str] = []
+    monkeypatch.setattr(display, "find_fb_device", lambda *a, **k: None)
+    monkeypatch.setattr(display, "Framebuffer", lambda dev, *a, **k: opened.append(dev))
+    assert main_mod.open_screen() is None and main_mod.open_screen(quiet=True) is None
+    assert opened == []
+
+
 def test_render_loop_sleeps_while_nothing_changes_and_wakes_for_expiry(tmp_path: Path) -> None:
     from k1000 import __main__ as main_mod
 
