@@ -27,8 +27,7 @@ Thomas chose `off`, on the box since 13:39 (sticker the shell).
 ALIGN (hold), B3 is the notch helper; a B1 tap flips SHOW ↔ ALIGN, a B1 hold opens SETUP. SETUP
 is grouped by speaker floor (TOPS, SUBS, INPUT, LIVE EQ, PHONE, BOX; E3 jumps a group), and every
 ON/off or choice is **turn E2 to choose, push to set** (the row shows `now → chosen`). The steps
-below name the D-013 build; until it is deployed the box keeps the old roles (B2 mute, B3
-band/unlock, B4 notch, B1 tap = next page) and the old SETUP list.
+below name the D-013 build, on the box since 14:31 (`dd740ce`). Re-label the shell buttons.
 
 | SHOW | after B3 | ALIGN, locked | SETUP, a choice | Knob test |
 |---|---|---|---|---|

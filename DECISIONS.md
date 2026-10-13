@@ -311,7 +311,7 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   - **The Knob test must confirm B1..B4's physical positions** before the shell is labelled, so
     the labels match what the code calls B1..B4.
 - **Decided** (Thomas asked for each change; the unlock on B2 is Claude's call): built as below;
-  the deploy waits for Thomas's go.
+  on the box since 14:31 (`dd740ce`, after Thomas's "push the timing … integrate the maximum").
   - **Buttons: B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE.**
     - **B1** tap (on release) = SHOW ↔ ALIGN; from SETUP a tap goes to SHOW, from PHONE back to
       SETUP. **B1 hold** (0.8 s) = SETUP from SHOW or ALIGN; from SETUP or PHONE it goes to SHOW.

@@ -12,9 +12,10 @@ The box runs Raspberry Pi OS Lite (D-006, cloud-init off). Power-cut drill done 
 state files came back byte-identical, boot 10.4 s; the clock came back 3.5 min behind (no battery
 clock, no time server at a gig). The user manual is written (`docs/manual`). An overnight soak
 runs until the morning. The MOTU M4 is picked up today; the rig test is Fri 16 and the gig Sun 18.
-*Afternoon:* D-011 is on the box (`24cba65`, knob tags off since 13:39). D-013 is built (buttons
-B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE, SETUP grouped by speaker floor, choose-then-set);
-its deploy waits for Thomas's go, before the Wednesday freeze.
+*Afternoon:* D-011 is on the box (`24cba65`, knob tags off since 13:39). D-013 is on the box
+since 14:31 (`dd740ce`): buttons B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE, SETUP grouped by
+speaker floor, choose-then-set. Thomas, 14:2x: "push the timing": Sunday is also a field test for
+the phone v2 (APK, one merged page, SETUP and RTA on the phone); the knobs are the fallback.
 *(Mon 2026-10-12, evening: v0 ran on the box after the integration round, `ca742e7`, 502 tests.)*
 
 ## At a glance
@@ -83,7 +84,7 @@ gantt
 | Integration round | done: drills, five-lens review, 42 fixes, re-accepted; power-cut drill done Tue 13 (no sync: state files byte-identical, boot 10.4 s) | Friday: Thomas pulls the plug once at show level (item 11) |
 | Lite OS (D-006) | done: the box converged to Lite (`k1000-lean.sh`, 972 desktop packages out), console guard, cloud-init off; `bootstrap.sh` checked on a fresh-card container | the spare card (Thu) |
 | Phone (D-007) | wired into main (`f7aa58b`); AP up on the box on **hostapd** with PMF off (NetworkManager's AP on the Pi's chip drops older Android clients), captive DNS off, 5 GHz | Thomas: CA, join by QR, PWA install (`docs/06-phone.md`); go/no-go Friday |
-| Live UI v1 (Thomas, 12/10) | accepted on the box Tue 13 (D-009) and deployed: `167776b` + polish `8e86ddb`; D-011 on the box (`24cba65`); **D-013 built** (buttons B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE, SETUP by speaker floor, choose-then-set), deploy pending Thomas's go | Thomas at the bench today; D-013 on the box before the freeze, Wed evening; spectrum ON for Sunday (D-010), checked Friday |
+| Live UI v1 (Thomas, 12/10) | accepted on the box Tue 13 (D-009) and deployed: `167776b` + polish `8e86ddb`; D-011 on the box (`24cba65`); **D-013 on the box** since 14:31 (`dd740ce`: buttons B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE, SETUP by speaker floor, choose-then-set) | Thomas at the bench today; D-013 on the box before the freeze, Wed evening; spectrum ON for Sunday (D-010), checked Friday |
 | Knobs | corners confirmed; a click counts exactly one step (10 clicks = +10); fast-turn fix in UI v1 | the buttons: Knob test → `controls:` (the box still holds the defaults), which also confirms where B1–B4 sit for D-013's labels |
 | Licence (D-008) | GPL-3.0-or-later, `LICENSE` in the repo; smbus2 and SPDX headers done | — |
 | User documentation (Thomas, 12/10) | written: `docs/manual` 00–09, quick start, operator card; claim-checked against the code | Thomas fills in the card's Where line and the bypass patch, then prints |
@@ -141,7 +142,7 @@ Progress:
 | Area | State |
 |---|---|
 | Pipeline | input trim, 8 system PEQ, 4 live PEQ + 2 shelves, split (mono-subs option), sub/top polarity, delay (whole samples), top Lo-Cut, sub low-pass, Aux group faders (balance), 4 output trims, Main master + mute |
-| Knobs and screen | SHOW / ALIGN / SETUP pages, plus Knob test and PHONE; the live-EQ curve over the program spectrum with a PEAK pointer; B4 notch helper; ALIGN's delay (subs or tops, D-011) and Lo-Cut locked (B3 hold); reset and undo in SETUP; B2 mute on every page; meters with CLIP / IN CLIP; MUTED band with alerts; NO DEVICE / ENGINE DOWN. Built, not yet deployed (D-013): B2 band and unlock, B3 notch, B4 mute, a B1 hold for SETUP, SETUP by speaker floor with choose-then-set |
+| Knobs and screen | SHOW / ALIGN / SETUP pages, plus Knob test and PHONE; the live-EQ curve over the program spectrum with a PEAK pointer; B3 notch helper; ALIGN's delay (subs or tops, D-011) and Lo-Cut locked (B2 hold); reset and undo in SETUP; B4 mute on every page; B1 tap SHOW ↔ ALIGN, hold SETUP; SETUP by speaker floor with choose-then-set (D-013, `dd740ce`); meters with CLIP / IN CLIP; MUTED band with alerts; NO DEVICE / ENGINE DOWN |
 | Audio safety | boots muted; ramp gated on Running; Aux4 marker; outside cuts kept, raises pulled down; pipeline restore and device repair; mute saved at once; torn state recovered muted |
 | Ops | restart-forever units, device wait, watchdog, persistent journal, soak tool with `--summary`, M4 bring-up tool, rollback |
 | Phone | The own-AP PWA, wired (master, balance, Lo-Cut, live EQ, mute); laptop access (2 h) for CamillaGUI, SSH and the `/tune` REW import over the K1000 Wi-Fi; CamillaGUI on the LAN |
@@ -185,8 +186,8 @@ parametric bands + the spectrum serve live notching better on 4 knobs).
   - SETUP keeps the rest; one B1 gesture returns to SHOW (D-013: a tap from ALIGN or SETUP).
   - Thomas's bench asks, Tue 13 afternoon (D-013): SETUP grouped by speaker floor (TOPS, SUBS,
     INPUT, LIVE EQ, PHONE, BOX), every ON/off or choice chosen with E2 and set by a push; buttons
-    B1 PAGE (tap SHOW ↔ ALIGN, hold SETUP) · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE. Built; deploy
-    pending Thomas's go, before the Wednesday freeze.
+    B1 PAGE (tap SHOW ↔ ALIGN, hold SETUP) · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE. On the box
+    since 14:31 (`dd740ce`).
   - Knob fast-turn fix.
   - Design: `docs/07-live-ui-v1.md` + `docs/ui/v1/`. Knob analysis: `docs/08-knob-precision.md`.
 - **Phone PWA on the box's own AP** (D-007): live EQ curve with draggable bands, "notch here",
