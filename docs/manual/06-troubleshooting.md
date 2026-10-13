@@ -106,8 +106,8 @@ On SHOW the strip covers the band chips, on ALIGN the middle, on SETUP the foote
 | `RESET LIVE EQ: IN SETUP` | B4 held on SHOW: resetting is SETUP › Reset live EQ |
 | `B3: NEXT BAND ON SHOW`, `B4: NOTCH HELPER ON SHOW` | B3 or B4 on a page where it does nothing |
 | `LOCKED · HOLD B3 TO EDIT` | ALIGN: E3/E4 turned (or B3 tapped) while locked. Nothing changed |
-| `SUB DELAY + LO-CUT UNLOCKED` / `SUB DELAY + LO-CUT LOCKED` | ALIGN: a B3 hold unlocked them for 30 s of idle; a B3 tap locked them |
-| `SUB DELAY · TURN AGAIN TO CHANGE` | Sub delay was at rest for 2.5 s: the first click only wakes it |
+| `DELAY + LO-CUT UNLOCKED` / `DELAY + LO-CUT LOCKED` | ALIGN: a B3 hold unlocked them for 30 s of idle; a B3 tap locked them |
+| `DELAY · TURN AGAIN TO CHANGE` | ALIGN's DELAY was at rest for 2.5 s: the first click only wakes it |
 | `PUSH TO CHANGE` | SETUP: E2 on an item that is not a number |
 | `PUSH AGAIN TO APPLY (MAY CLICK)` | SETUP: a pipeline item (mono subs, audition, profile) needs a second push within 5 s |
 | `PUSH AGAIN TO RESET ALL LIVE EQ`, `PUSH AGAIN TO SWITCH THE LO-CUT`, `PUSH AGAIN: LAPTOP ACCESS FOR 2 H` | SETUP: the other confirms, a second push within 5 s |
@@ -289,7 +289,7 @@ and subs. **Bypass = the source straight into the speakers, as it was cabled bef
 minute:
 
 1. **Source down.** Hold B2 if K1000 still answers.
-2. Unplug OUT1 TOP L, OUT2 TOP R, OUT3 SUB L, OUT4 SUB R at the speakers.
+2. Unplug OUT1 TOP L, OUT2 TOP R and OUT3 SUBS (OUT4 too if it is patched) at the speakers.
 3. Patch the bypass kit, as cabled before K1000 (write your own patch on the operator card).
 4. **Source up slowly.** The bypass is louder than K1000 at a low master: about (2 − master) dB, so
    +12 dB at master −10, with input trim and output trims at 0 (research, from the level figures

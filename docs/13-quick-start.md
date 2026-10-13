@@ -8,7 +8,7 @@ the tops, aligns them and holds the EQ. **Any doubt about the sound: bypass** (b
 | From | To | Cable |
 |---|---|---|
 | Source L, R | M4 rear **LINE IN 3 (L)**, **LINE IN 4 (R)** | XLR-F → TRS. Never the front inputs 1–2 |
-| M4 **OUT 1 · 2 · 3 · 4** | **Top L · Top R · Sub L · Sub R** | TRS → XLR-M, balanced. No TS, no RCA |
+| M4 **OUT 1 · 2 · 3** | **Top L · Top R · both subs** (Loop or XLR Y) | TRS → XLR-M, balanced. No TS, no RCA |
 | M4 USB-C | K1000 (the Pi), a black USB port | Short USB-C → USB-A |
 
 **Leave the M4 front panel as taped**: MONITOR and INPUT MONITOR MIX fully right, MON buttons
@@ -26,9 +26,9 @@ with the source down, **no B2** (it would mute).
 
 ## The 5 gestures
 
-Knobs at the screen's corners, each value drawn next to its knob: **E1** top-left, **E2**
-bottom-left, **E3** top-right, **E4** bottom-right. Buttons: **B1 PAGE · B2 MUTE · B3 BAND ·
-B4 NOTCH**.
+Knobs at the screen's corners (E1–E4: the small grey tag by each label, or a sticker on the
+shell), each value next to its knob: **E1** top-left, **E2** bottom-left, **E3** top-right, **E4**
+bottom-right. Buttons: **B1 PAGE · B2 MUTE · B3 BAND · B4 NOTCH**.
 
 | Gesture | Does |
 |---|---|
@@ -57,7 +57,7 @@ During the show leave ALIGN and SETUP alone; they go back to SHOW by themselves 
 ## Bypass (about a minute)
 
 1. Source **down**. Hold B2 if K1000 still answers.
-2. At the speakers, unplug the four cables coming from the M4.
+2. At the speakers, unplug the cables coming from the M4.
 3. Plug in the bypass cables, as before K1000: source L → ____________ · source R → ____________
 4. Source up **slowly**: the bypass is louder (about 12 dB at master −10).
 

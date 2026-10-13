@@ -148,7 +148,7 @@ for n in ("GetCaptureSignalPeakSince","GetPlaybackSignalPeakSince"):
 | Program path | tone in LINE IN 3 | Capture: only index 2 live. Playback: index 0 (out1 Top L) and index 2 (out3 Sub L) at about the input level −20 dB; 1 and 3 at the floor. M4 LCD: In 3, Out 1, Out 3 move |
 | Right side | tone in LINE IN 4 | Capture index 3; outs 2 and 4 |
 | Tops vs subs | ALIGN (B1 tap), E2 BALANCE up to +12 (fully to subs) | out3/4 +6 dB, out1/2 −6 dB (against balance 0) |
-| Lo-Cut | 60 Hz tone; ALIGN, hold B3 (`EDIT 0:30`), E4 LO-CUT up to 300 Hz. E4 reads `OFF`: SETUP › Lo-Cut ON first (two pushes) | out1/2 far below out3/4 |
+| Lo-Cut | 60 Hz tone; ALIGN, hold B3 (`EDIT 0:30`), E4 LO-CUT up to 300 Hz (2 Hz a click, 8 Hz on fast spins: spin it). E4 reads `OFF`: SETUP › Lo-Cut ON first (two pushes) | out1/2 far below out3/4 |
 | Mute | hold B2 (Knob test not done: Main mute in CamillaGUI instead) | all four outputs at the floor. Then restore balance (0), the Lo-Cut frequency, unmute |
 | Loop (MONITOR = unity) | TRS cable from out N into front INPUT 1 (GAIN 1 fully counter-clockwise, 48V off, MON 1 unlit) | Capture index 0 within about ±0.5 dB of playback index N−1, for N = 1…4; out1 equal to out3 (Mono subs OFF) |
 | MONITOR knob | loop on out1, turn MONITOR down | only outs 1-2 fall. Back fully clockwise |
@@ -239,7 +239,7 @@ then print both (`tools/make-print.sh`). Knob labels drawn at the wrong screen c
 
 ## Decisions for Thomas
 
-Answered 2026-10-13 (D-010): mapping kept (out1/2 tops, out3/4 subs), `target_level` 512, the
+Answered 2026-10-13 (D-010, D-012): out1/2 tops, out3 both subs (Loop or XLR Y; out4 spare), `target_level` 512, the
 source and cables are Thomas's, Mono subs ON. Firmware and power remain as below.
 
 | Question | Recommendation (M4 review) |

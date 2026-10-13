@@ -3419,3 +3419,167 @@ def test_sigterm_keeps_the_screen_live_until_the_controller_stopped(
     during = [t for t, _ in frames if window["start"] < t < window["end"]]
     assert during, "no frame drawn while stop() ran"
     assert frames[-1][0] >= window["end"]        # the stop frame comes last
+
+
+# ======================================================================= D-011
+SUB_DELAY_PTR = "/filters/sub_delay/parameters/delay"
+TOP_DELAY_PTR = "/filters/top_delay/parameters/delay"
+LOWCUT_PTR = "/filters/top_lowcut/parameters/freq"
+
+
+def _config_writes(log: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
+    return [e for e in log if e[0] in ("set", "patch", "config")]
+
+
+def _engine_delays(cl: FakeClient) -> tuple[float, float]:
+    f = cl.cfg["filters"]
+    return f["sub_delay"]["parameters"]["delay"], f["top_delay"]["parameters"]["delay"]
+
+
+def test_signed_delay_one_engine_update_per_click_and_the_late_side_dips(tmp_path: Path) -> None:
+    """ALIGN E3 (D-011): every click is ONE config write, under a dip of the group whose delay
+    changes (subs = Aux1, tops = Aux2); crossing zero stops on ALIGNED; the engine never holds
+    both delays after a move."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(sub_delay_ms=0.2), playing=True)
+        await boot(ctl)
+
+        async def click(d: int, fine: bool = False) -> list[tuple[Any, ...]]:
+            n = len(cl.log)
+            ctl.nudge("align_delay_ms", d, fine)
+            assert await ctl.settle(3.0)
+            ops = nomark(cl.log[n:])
+            assert len(_config_writes(ops)) == 1, ops
+            sub, top = _engine_delays(cl)
+            assert sub == 0.0 or top == 0.0, (sub, top)
+            return ops
+
+        assert await click(-1) == [("mute", 1, True), ("set", SUB_DELAY_PTR, dc.delay_on_grid(0.1)),
+                                   ("mute", 1, False)]
+        assert await click(-1) == [("mute", 1, True), ("set", SUB_DELAY_PTR, 0.0), ("mute", 1, False)]
+        assert ctl.state.get("align_delay_ms") == 0.0                    # ALIGNED: one click
+        assert await click(-1) == [("mute", 2, True), ("set", TOP_DELAY_PTR, dc.delay_on_grid(0.1)),
+                                   ("mute", 2, False)]                   # now the TOPS dip
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (0.0, 0.1)
+        ops = await click(1, fine=True)                                  # fine: one sample
+        assert sets_for(ops, TOP_DELAY_PTR) == [dc.delay_on_grid(0.1 - 1 / 48)]
+        assert delay_samples(_engine_delays(cl)[1]) == delay_samples(0.1) - 1
+        # a move that does not change the sample count writes nothing and dips nothing
+        n = len(cl.log)
+        ctl.set_value("align_delay_ms", ctl.state.get("align_delay_ms") - 0.004)
+        assert await ctl.settle(3.0)
+        assert nomark(cl.log[n:]) == []
+        assert cl.faders[1]["mute"] is False and cl.faders[2]["mute"] is False
+        await ctl.stop()
+
+    run(body())
+
+
+def test_signed_delay_crossing_in_one_update_dips_both_groups(tmp_path: Path) -> None:
+    """Two clicks the worker sends as one plan (tops 0.1 -> ALIGNED -> subs 0.1): both delays
+    change in ONE PatchConfig, and both groups are muted before it and released after it."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(top_delay_ms=0.1), playing=True)
+        await boot(ctl)
+        n = len(cl.log)
+        ctl.nudge("align_delay_ms", 1)
+        ctl.nudge("align_delay_ms", 1)
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (0.1, 0.0)
+        assert await ctl.settle(3.0)
+        ops = nomark(cl.log[n:])
+        writes = _config_writes(ops)
+        assert len(writes) == 1 and writes[0][0] == "patch", ops
+        i = ops.index(writes[0])
+        assert sorted(ops[:i]) == [("mute", 1, True), ("mute", 2, True)]
+        assert sorted(ops[i + 1:]) == [("mute", 1, False), ("mute", 2, False)]
+        assert sets_for(ops, SUB_DELAY_PTR) == [dc.delay_on_grid(0.1)]
+        assert sets_for(ops, TOP_DELAY_PTR) == [0.0]
+        assert _engine_delays(cl) == (dc.delay_on_grid(0.1), 0.0)
+        await ctl.stop()
+
+    run(body())
+
+
+def test_signed_delay_normalises_a_saved_pair_on_its_first_move_never_at_boot(tmp_path: Path) -> None:
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(sub_delay_ms=1.0, top_delay_ms=0.5), playing=True)
+        await boot(ctl)
+        assert _config_writes(cl.log) == []                              # boot changes nothing
+        assert ctl.state.get("align_delay_ms") == 0.5
+        assert pages_align_value(ctl) == ("0.50", "SUBS LATER · 0.17 m")
+        n = len(cl.log)
+        ctl.nudge("align_delay_ms", 1)
+        assert await ctl.settle(3.0)
+        ops = nomark(cl.log[n:])
+        assert len(_config_writes(ops)) == 1                             # both values, one patch
+        assert sorted(op for op in ops if op[0] == "mute") == [
+            ("mute", 1, False), ("mute", 1, True), ("mute", 2, False), ("mute", 2, True)]
+        assert _engine_delays(cl) == (dc.delay_on_grid(0.6), 0.0)
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (0.6, 0.0)
+        await ctl.stop()
+
+    run(body())
+
+
+def pages_align_value(ctl: Controller) -> tuple[str, str]:
+    from k1000.ui import pages
+    return pages.fmt_align_delay(pages.align_delay(ctl.snapshot()[1]))
+
+
+def test_signed_delay_through_the_knobs_lock_and_wake_unchanged(tmp_path: Path) -> None:
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(sub_delay_ms=0.1), playing=True)
+        await boot(ctl)
+        ctl.goto_page("ALIGN")
+        ctl.handle_event(_enc_ev(2, -1))                                 # locked: hint only
+        assert ctl.state.sub_delay_ms == 0.1 and ctl.focus.hint_now() == "LOCKED · HOLD B3 TO EDIT"
+        ctl.handle_event(_sw_ev(6, "long"))                              # B3 hold: unlock
+        assert ctl.focus.hint_now() == "DELAY + LO-CUT UNLOCKED"
+        ctl.handle_event(_enc_ev(2, -1))                                 # the wake-up detent
+        assert ctl.state.sub_delay_ms == 0.1 and ctl.focus.hint_now() == "DELAY · TURN AGAIN TO CHANGE"
+        assert ctl.focus.editing_now() == "align_delay_ms"
+        for want in ((0.0, 0.0), (0.0, 0.1), (0.0, 0.2)):              # ALIGNED, then the tops
+            n = len(cl.log)
+            ctl.handle_event(_enc_ev(2, -1))
+            assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == want
+            assert await ctl.settle(3.0)
+            assert len(_config_writes(cl.log[n:])) == 1
+        assert _engine_delays(cl) == (0.0, dc.delay_on_grid(0.2))
+        ctl.handle_event(_sw_ev(6, "short"))                             # B3 tap: locked again
+        ctl.handle_event(_enc_ev(2, 1))
+        assert ctl.state.top_delay_ms == 0.2
+        await ctl.stop()
+
+    run(body())
+
+
+def test_lowcut_click_is_2_hz_and_an_off_grid_value_snaps_on_its_first_move(tmp_path: Path) -> None:
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(lowcut_hz=112.25), playing=True)
+        await boot(ctl)
+        assert _config_writes(cl.log) == []                              # nothing rewritten at boot
+        assert cl.cfg["filters"]["top_lowcut"]["parameters"]["freq"] == 112.25
+        for d, fine, want in ((1, False, 114.0), (-1, False, 112.0), (1, True, 113.0),
+                              (4, False, 120.0), (-1, False, 118.0)):
+            n = len(cl.log)
+            assert ctl.nudge("lowcut_hz", d, fine) == want
+            assert await ctl.settle(3.0)
+            ops = cl.log[n:]
+            assert sets_for(ops, LOWCUT_PTR)[-1] == want
+            assert not any(e[0] == "mute" for e in ops)                  # a Lo-Cut move never dips
+        await ctl.stop()
+
+    run(body())
+
+
+def test_knob_tags_reach_the_screen_status(tmp_path: Path, caplog: Any) -> None:
+    async def body() -> None:
+        for settings, want in (({}, "dim"), ({"ui": {"knob_tags": "off"}}, "off"),
+                               ({"ui": {"knob_tags": False}}, "off"),
+                               ({"ui": {"knob_tags": "bright"}}, "bright"),
+                               ({"ui": {"knob_tags": "neon"}}, "dim")):
+            ctl, _ = make(tmp_path, State(), settings=settings)
+            assert ctl.snapshot()[2].knob_tags == want, settings
+    with caplog.at_level("WARNING"):
+        run(body())
+    assert "knob_tags 'neon'" in caplog.text

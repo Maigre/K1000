@@ -96,7 +96,7 @@ time), `phone_connected.png` (muted box, one phone connected), `phone_off.png`, 
 
 | Page | Controls |
 |---|---|
-| **MAIN** | Master: −6 / −1 / −½ / +½ / +1 dB steps (never an absolute jump). Balance subs↔tops ±½/±1. Lo-Cut on/off + frequency (±1/12 oct, ±⅓ oct) |
+| **MAIN** | Master: −6 / −1 / −½ / +½ / +1 dB steps (never an absolute jump). Balance subs↔tops ±½/±1. Lo-Cut on/off + frequency (−10 / −2 / +2 / +10 Hz since D-011; it was ±1/12, ±⅓ oct) |
 | **LIVE EQ** | The 6 live bands (PEQ 1–4, low shelf, high shelf) on a 20 Hz–20 kHz log graph with the summed curve. **Drag a dot** = frequency + gain. **Long-press empty space = "notch here"**: the first flat PEQ band goes there at −6 dB, Q 8, and **stays under the finger**: keep it down and slide to tune it. Per band: FREQ ±1/12, ±⅓ oct · GAIN ±½, ±3 dB · Q ½× (wide) / − / + / 2× (narrow) · hold = band flat. **Reset live EQ** with a confirm (the box's own reset: SETUP › Undo reset brings it back until the next EQ cut or 5 minutes) |
 | Always | **Hold to mute** (0.6 s; unmute needs 1.2 s), the 4 output meters (~10 Hz, clip boxes), engine state, NO DEVICE / ENGINE DOWN / the box's messages, external changes (drift) |
 

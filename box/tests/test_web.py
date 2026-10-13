@@ -226,7 +226,8 @@ def test_bridge_nudge_master_and_allowlist(tmp_path: Path) -> None:
             ok, _, why = b.apply({"t": "nudge", "f": "master_db", "d": d})
             assert not ok and why, d
         before = ctl.state.to_dict()
-        for f in ("sub_delay_ms", "top_delay_ms", "mono_subs", "profile", "dev_audition", "out_trim_db.0",
+        for f in ("sub_delay_ms", "top_delay_ms", "align_delay_ms", "mono_subs", "profile", "dev_audition",
+                  "out_trim_db.0",
                   "sys_peq.0.gain", "input_trim_db", "sub_inverted", "muted", "__class__", "", None, 3):
             ok, _, why = b.apply({"t": "nudge", "f": f, "d": 1})
             assert not ok and "not a phone control" in why, f
@@ -236,7 +237,9 @@ def test_bridge_nudge_master_and_allowlist(tmp_path: Path) -> None:
         assert not ok
         assert ctl.state.to_dict() == before
         assert b.apply({"t": "nudge", "f": "balance_db", "d": 2})[:2] == (True, 1.0)
-        assert b.apply({"t": "nudge", "f": "lowcut_hz", "d": -12})[1] == pytest.approx(50.0, abs=0.1)
+        # the Lo-Cut moves 2 Hz per step since D-011 (the phone's -10 / -2 / +2 / +10 buttons)
+        assert b.apply({"t": "nudge", "f": "lowcut_hz", "d": -12})[1] == 76.0
+        assert b.apply({"t": "nudge", "f": "lowcut_hz", "d": 5})[1] == 86.0
         assert b.apply({"t": "nudge", "f": "live_peq.2.q", "d": 6})[1] == pytest.approx(8.0, abs=0.01)
         assert b.apply({"t": "nudge", "f": "live_peq.0.freq", "d": 12, "fine": True})[1] == pytest.approx(
             250.0 * 2 ** (12 / 48), rel=1e-3)
@@ -430,8 +433,8 @@ def test_state_and_meter_messages_are_strict_json(tmp_path: Path) -> None:
 
 def test_allowlist_is_the_phone_scope() -> None:
     """The phone reaches MAIN (steps) and the live EQ only: no setup-class field, ever."""
-    setup = {"sub_delay_ms", "top_delay_ms", "mono_subs", "profile", "dev_audition", "input_trim_db",
-             "sub_inverted", "top_inverted", "sub_lowpass_on", "sub_lowpass_hz"}
+    setup = {"sub_delay_ms", "top_delay_ms", "align_delay_ms", "mono_subs", "profile", "dev_audition",
+             "input_trim_db", "sub_inverted", "top_inverted", "sub_lowpass_on", "sub_lowpass_hz"}
     reach = set(NUDGE_CAPS) | set(SET_NUMERIC) | set(SET_BOOL)
     assert not reach & setup
     assert not any(f.startswith(("sys_peq", "out_trim")) for f in reach)

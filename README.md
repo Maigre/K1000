@@ -29,8 +29,9 @@ and a phone on the box's own Wi-Fi.
   ramped fader, never a pipeline rebuild.
 - **Knobs and screen** on a Zynthian V4 case (live UI v1, D-009): **SHOW**, the front page, with
   the master and the live EQ drawn over the program spectrum, and a 3-gesture notch helper on the
-  spectrum's peak; **ALIGN** (balance, and sub delay and Lo-Cut behind a lock); **SETUP** (the
-  rest, live-EQ reset with undo, Lo-Cut on/off, the spectrum switch, laptop access for the tune).
+  spectrum's peak; **ALIGN** (balance, and one signed sub/top delay and the Lo-Cut behind a
+  lock); **SETUP** (the rest, live-EQ reset with undo, Lo-Cut on/off, the spectrum switch, laptop
+  access for the tune).
   Meters with clip warnings, alerts in the status bar, a master-up guard (+6 dB per 2 s at most).
 - **Audio safety**: boots muted, ramps in only once audio flows, comes back muted if it was switched
   off muted, saves a mute at once, never raises a cut or releases a mute made elsewhere, recovers a

@@ -17,9 +17,10 @@ Pages (D-009): SHOW (front) -> ALIGN -> SETUP on B1, plus PHONE and HWTEST reach
 - SHOW: E1 MASTER, E2/E3/E4 = FREQ/GAIN/Q of the selected live band. B3 tap = next band in
   LS 1 2 3 4 HS order (wraps). B4 tap = the notch helper (Controller.notch_helper). An encoder
   push is FINE while held, never a select.
-- ALIGN: E1 MASTER and E2 BALANCE live; E3 SUB DELAY and E4 LO-CUT are LOCKED: a turn shows
-  HINT_LOCKED and changes nothing. A B3 hold unlocks them for UNLOCK_S, renewed by every input
-  on ALIGN (so any UNLOCK_S of idle relocks); a B3 tap relocks at once; leaving ALIGN relocks.
+- ALIGN: E1 MASTER and E2 BALANCE live; E3 DELAY (the signed sub/top alignment, D-011) and E4
+  LO-CUT are LOCKED: a turn shows HINT_LOCKED and changes nothing. A B3 hold unlocks them for
+  UNLOCK_S, renewed by every input on ALIGN (so any UNLOCK_S of idle relocks); a B3 tap relocks
+  at once; leaving ALIGN relocks.
 - SETUP: E1 selects the item, E2 turns its value, an E1/E2 push selects it. Reset live EQ,
   Lo-Cut on/off and the pipeline rebuilds need a second push within CONFIRM_WINDOW_S.
 - B1: press = next page (instant), hold = SHOW from anywhere. The Controller brings ALIGN and
@@ -32,8 +33,8 @@ Safety rules carried here:
   they see, never for a state the controller has not adopted yet.
 - Resetting the live EQ is a SETUP item with a confirm (and a one-step undo in the Controller):
   B4 on SHOW only ever selects a band and sets an inaudible one up (gain is never touched).
-- SUB DELAY (every settled change dips the subs under the delay guard) keeps v0's wake-up
-  detent on top of the lock: the first detent after ARM_WINDOW_S at rest only wakes it.
+- DELAY (every settled change dips the subs or the tops under the delay guard) keeps v0's
+  wake-up detent on top of the lock: the first detent after ARM_WINDOW_S at rest only wakes it.
 - Pipeline-rebuilding settings (mono subs, audition, profile) need two pushes on SETUP.
 - Acceleration makes master go DOWN faster; it never accelerates master UP (and the Controller
   caps master rises per window: the master-up guard).
@@ -147,7 +148,7 @@ class NotchHelper:
 
 @dataclass(frozen=True)
 class Unlock:
-    """ALIGN, B3 hold: E3/E4 (sub delay, Lo-Cut) editable until `seconds` without input on
+    """ALIGN, B3 hold: E3/E4 (delay, Lo-Cut) editable until `seconds` without input on
     ALIGN. UI-local (Focus.unlock_until)."""
     seconds: float = 30.0          # UNLOCK_S
 
@@ -187,6 +188,9 @@ Action = (Nudge | Toggle | SelectSlot | SelectBand | SelectItem | NextPage | Got
 F_MASTER = "master_db"         # Main fader
 F_BALANCE = "balance_db"       # macro: Aux1 = +b/2, Aux2 = -b/2
 F_SUB_DELAY = "sub_delay_ms"
+# E3 on ALIGN (D-011): one signed delay, sub - top (> 0 = subs later, < 0 = tops later), computed
+# by k1000.state over the two stored delays.
+F_ALIGN_DELAY = "align_delay_ms"
 F_LOWCUT_FREQ = "lowcut_hz"    # E4 on ALIGN
 F_LOWCUT_ON = "lowcut_on"      # SETUP > Lo-Cut (confirmed)
 F_SPECTRUM_ON = "spectrum_on"  # SETUP > Spectrum
@@ -248,15 +252,14 @@ A_RESET_LIVE = "reset_live"     # SETUP action items (`SetupItem.field`)
 A_UNDO_RESET = "undo_reset"
 A_LAPTOP = "laptop_access"      # the Friday tune's laptop over the K1000 Wi-Fi (docs/06 §11)
 
-# v0's list (Top delay stays here), then the v1 items (D-009), Laptop access (opened with a
-# double push, closed with one: the Controller waives its confirm while it is open), then Phone
-# and the Knob test.
+# v0's list (without Top delay since D-011: ALIGN E3 sets either delay), then the v1 items
+# (D-009), Laptop access (opened with a double push, closed with one: the Controller waives its
+# confirm while it is open), then Phone and the Knob test.
 # Rebuild items (state.REBUILD_FIELDS) change the pipeline: possible click -> two pushes.
 SETUP_ITEMS: tuple[SetupItem, ...] = (
     SetupItem("Input trim", "input_trim_db", "num"),
     SetupItem("Sub polarity", "sub_inverted", "bool"),
     SetupItem("Top polarity", "top_inverted", "bool"),
-    SetupItem("Top delay", "top_delay_ms", "num"),
     SetupItem("Sub low-pass", "sub_lowpass_on", "bool"),
     SetupItem("Sub LP freq", "sub_lowpass_hz", "num"),
     SetupItem("Trim Sub L", "out_trim_db.0", "num"),
@@ -285,7 +288,7 @@ class Knob:
     accel_down: int = 1
     kind: Literal["nudge", "slot", "item", "setup_value", "phone_qr"] = "nudge"
     # The first detent after ARM_WINDOW_S of rest only wakes the knob (highlight + hint); the
-    # next ones edit. For a value whose every change is audible as a dip (sub delay).
+    # next ones edit. For a value whose every change is audible as a dip (the delay).
     arm: bool = False
     # ALIGN alignment knobs: a turn does nothing (HINT_LOCKED) until a B3 hold unlocks them.
     locked: bool = False
@@ -302,7 +305,7 @@ KNOBS: dict[str, tuple[Knob, Knob, Knob, Knob]] = {
     "ALIGN": (
         Knob("MASTER", F_MASTER, accel_up=1, accel_down=4),
         Knob("BALANCE", F_BALANCE),
-        Knob("SUB DELAY", F_SUB_DELAY, arm=True, locked=True),
+        Knob("DELAY", F_ALIGN_DELAY, arm=True, locked=True),
         Knob("LO-CUT", F_LOWCUT_FREQ, accel_up=4, accel_down=4, locked=True),
     ),
     "SETUP": (
@@ -319,6 +322,32 @@ KNOBS: dict[str, tuple[Knob, Knob, Knob, Knob]] = {
 # bottom-right. Confirmed by Thomas on the box on 2026-10-12 (each knob sits at its label's
 # corner; 10 clicks = +10). Another shell with the knobs elsewhere: correct this table only.
 KNOB_CORNERS: tuple[str, str, str, str] = ("tl", "bl", "tr", "br")
+
+# The "E1".."E4" tag drawn next to each knob's label (k1000.yaml `ui.knob_tags`, D-011):
+# dim = small and dark grey, secondary to the label (default); off = no tag, the label takes
+# the corner (a sticker on the shell names the knobs); bright = the v1 cyan tag.
+KNOB_TAG_STYLES: tuple[str, ...] = ("dim", "off", "bright")
+KNOB_TAGS_DEFAULT = "dim"
+
+
+def parse_knob_tags(value: Any) -> str | None:
+    """One `knob_tags` value -> 'dim' | 'off' | 'bright', or None when it is not one of them.
+    YAML reads a bare `off` as False (and `on` as True): False = off, True = the default."""
+    if value is False:
+        return "off"
+    if value is True:
+        return KNOB_TAGS_DEFAULT
+    if isinstance(value, str) and value.strip().lower() in KNOB_TAG_STYLES:
+        return value.strip().lower()
+    return None
+
+
+def knob_tag_style(cfg: Any) -> str:
+    """k1000.yaml `ui.knob_tags`; missing or invalid -> KNOB_TAGS_DEFAULT (never an error: a
+    typo here must not cost the screen)."""
+    sec = cfg.get("ui") if isinstance(cfg, dict) else None
+    v = sec.get("knob_tags") if isinstance(sec, dict) else None
+    return parse_knob_tags(v) or KNOB_TAGS_DEFAULT
 
 # Acceleration: turn rate (detents/s) -> multiplier, the knob driver's curve (accel_multiplier)
 # with its onset raised here: x1 up to 20 det/s, the knob's cap from 40 det/s. The rate is the
@@ -345,8 +374,8 @@ except Exception:  # pragma: no cover - keeps the UI usable if the driver module
 
 HINT_MUTE = "HOLD B2 TO MUTE / UNMUTE"
 HINT_LOCKED = "LOCKED · HOLD B3 TO EDIT"
-HINT_UNLOCKED = "SUB DELAY + LO-CUT UNLOCKED"
-HINT_RELOCKED = "SUB DELAY + LO-CUT LOCKED"
+HINT_UNLOCKED = "DELAY + LO-CUT UNLOCKED"
+HINT_RELOCKED = "DELAY + LO-CUT LOCKED"
 HINT_B3_OFF_SHOW = "B3: NEXT BAND ON SHOW"
 HINT_B4_OFF_SHOW = "B4: NOTCH HELPER ON SHOW"
 HINT_RESET_IN_SETUP = "RESET LIVE EQ: IN SETUP"
@@ -483,7 +512,7 @@ class Focus:
     # B2 press: (the mute B2 acts against, its generation) as the operator saw them when the
     # press STARTED. B2 long fires 0.8 s later, while still held: it acts on that intent.
     b2_seen: tuple[Any, Any] | None = None
-    # ALIGN: E3/E4 editable until this deadline (time.monotonic()); 0 = locked.
+    # ALIGN: E3/E4 (delay, Lo-Cut) editable until this deadline (time.monotonic()); 0 = locked.
     unlock_until: float = 0.0
     # SETUP items whose confirm is waived right now (set by the Controller): Laptop access
     # while it is open, so that closing it, the safe direction, is a single push.
@@ -502,7 +531,7 @@ class Focus:
         return self.confirm if self.confirm and now < self.confirm_until else None
 
     def unlocked(self, now: float | None = None) -> bool:
-        """ALIGN's E3/E4 (sub delay, Lo-Cut) are editable now."""
+        """ALIGN's E3/E4 (delay, Lo-Cut) are editable now."""
         now = time.monotonic() if now is None else now
         return now < self.unlock_until
 

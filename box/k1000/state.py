@@ -59,6 +59,10 @@ class Range:
     `step` is the per-detent increment: in the field's unit for linear fields, in octaves for
     `log` fields (frequency, Q), so 1/12 means one semitone per detent. `fine` is the step while
     the encoder push is held. `digits` rounds stored values so JSON and comparisons stay stable.
+    `snap` (linear fields only): a move lands on the grid of the step in use (multiples of
+    `step`, or of `fine` while the push is held). From an off-grid value the first detent goes
+    to the next grid line in the turn's direction, so a click never moves more than one step.
+    Clamping never snaps: a stored off-grid value stays as it is until it is moved.
     """
 
     min: float
@@ -69,6 +73,7 @@ class Range:
     default: float = 0.0
     digits: int = 2
     unit: str = ""
+    snap: bool = False
 
     def clamp(self, value: Any, fallback: float | None = None) -> float:
         """Coerce to float inside [min, max]; non-numbers/NaN/huge ints fall back (then to `default`)."""
@@ -89,6 +94,11 @@ class Range:
         v = self.clamp(value)
         if self.log:
             v = v * (2.0 ** (step * detents))
+        elif self.snap and detents:
+            # 112.25 Hz on a 2 Hz grid: one click up -> 114, one click down -> 112.
+            q = v / step
+            base = math.floor(q + 1e-9) if detents > 0 else math.ceil(q - 1e-9)
+            v = (base + detents) * step
         else:
             v = v + step * detents
         return self.clamp(v)
@@ -111,7 +121,10 @@ RANGES: dict[str, Range] = {
     # engine whole samples (`delay_samples`); 6 digits keep 1/48 ms steps from drifting.
     "sub_delay_ms": Range(0.0, 50.0, 0.1, fine=SAMPLE_MS, default=0.0, digits=6, unit="ms"),
     "top_delay_ms": Range(0.0, 50.0, 0.1, fine=SAMPLE_MS, default=0.0, digits=6, unit="ms"),
-    "lowcut_hz": Range(20.0, 300.0, _FREQ_STEP, log=True, fine=_FREQ_FINE, default=100.0, unit="Hz"),
+    # The Lo-Cut moves in Hz, not octaves (D-011, Thomas: "2 Hz per click"): 2 Hz per detent,
+    # 1 Hz with the push held, on that grid (a value saved off it, e.g. 112.25, snaps on its first
+    # move). Every other frequency stays logarithmic.
+    "lowcut_hz": Range(20.0, 300.0, 2.0, fine=1.0, snap=True, default=100.0, unit="Hz"),
     "sub_lowpass_hz": Range(40.0, 250.0, _FREQ_STEP, log=True, fine=_FREQ_FINE, default=120.0, unit="Hz"),
     "sys_peq.freq": Range(20.0, 20000.0, _FREQ_STEP, log=True, fine=_FREQ_FINE, default=1000.0, unit="Hz"),
     "sys_peq.gain": Range(-20.0, 10.0, 0.5, default=0.0, unit="dB"),
@@ -127,6 +140,18 @@ RANGES: dict[str, Range] = {
     "live_highshelf.gain": Range(-12.0, 6.0, 0.5, default=0.0, unit="dB"),
     "live_highshelf.q": Range(0.4, 1.5, _Q_STEP, log=True, fine=_Q_FINE, default=0.707, digits=3),
     "out_trim_db": Range(-24.0, 6.0, 0.5, default=0.0, unit="dB"),
+}
+
+# ALIGN E3 (D-011): ONE signed alignment delay over the two stored ones, value = sub - top.
+# > 0: the subs are delayed (subs in front of the tops); < 0: the tops are delayed. Not a stored
+# field (state.json, dspconfig, CamillaGUI keep sub_delay_ms and top_delay_ms): `State.get`
+# computes it, and `State.set`/`State.nudge` write sub = max(v, 0), top = max(-v, 0), so after
+# any move at most one of them is non-zero (a saved state with both set shows the net value and
+# is normalised by its first move, never at load). A move never jumps across zero: it stops at
+# exactly 0 (ALIGNED), and the next detent goes to the other side.
+ALIGN_DELAY = "align_delay_ms"
+VIRTUAL_RANGES: dict[str, Range] = {
+    ALIGN_DELAY: Range(-50.0, 50.0, 0.1, fine=SAMPLE_MS, default=0.0, digits=6, unit="ms"),
 }
 
 BOOL_FIELDS: tuple[str, ...] = (
@@ -268,7 +293,10 @@ class State:
 
     # ----------------------------------------------------------------- path access
     def get(self, path: str) -> Any:
-        """Read a field by path, e.g. "master_db", "live_peq.2.gain", "out_trim_db.1"."""
+        """Read a field by path, e.g. "master_db", "live_peq.2.gain", "out_trim_db.1"
+        ("align_delay_ms" = sub_delay_ms - top_delay_ms, computed)."""
+        if path == ALIGN_DELAY:
+            return align_delay_ms(self)
         obj: Any = self
         try:
             for part in path.split("."):
@@ -281,8 +309,12 @@ class State:
         """Write a field by path, clamped/validated; returns the value actually stored.
 
         Raises KeyError/ValueError for an unknown path or an illegal choice, so a UI bug is loud
-        instead of silently writing garbage.
+        instead of silently writing garbage. "align_delay_ms" writes both stored delays.
         """
+        if path == ALIGN_DELAY:
+            v = VIRTUAL_RANGES[ALIGN_DELAY].clamp(value, align_delay_ms(self))
+            self.sub_delay_ms, self.top_delay_ms = split_align_delay(v)
+            return align_delay_ms(self)
         parts = path.split(".")
         parent: Any = self.get(".".join(parts[:-1])) if len(parts) > 1 else self
         last = parts[-1]
@@ -309,7 +341,33 @@ class State:
         rng = range_for(path)
         if rng is None:
             raise KeyError(f"{path} is not numeric")
+        if path == ALIGN_DELAY:
+            return self.set(path, nudge_align_delay(self.get(path), detents, fine))
         return self.set(path, rng.nudge(self.get(path), detents, fine))
+
+
+def align_delay_ms(s: Any) -> float:
+    """ALIGN's signed delay: sub_delay_ms - top_delay_ms (> 0 = subs later, < 0 = tops later)."""
+    sub = RANGES["sub_delay_ms"].clamp(getattr(s, "sub_delay_ms", 0.0))
+    top = RANGES["top_delay_ms"].clamp(getattr(s, "top_delay_ms", 0.0))
+    return round(sub - top, 6) + 0.0          # + 0.0: never a "-0.0" on screen or in JSON
+
+
+def split_align_delay(v: Any) -> tuple[float, float]:
+    """(sub_delay_ms, top_delay_ms) for a signed delay: only the delayed side is non-zero."""
+    v = VIRTUAL_RANGES[ALIGN_DELAY].clamp(v)
+    return (v if v > 0 else 0.0), (-v if v < 0 else 0.0)
+
+
+def nudge_align_delay(value: Any, detents: int | float, fine: bool = False) -> float:
+    """The signed delay moved by `detents` (0.1 ms, fine = one sample), stopping at exactly 0
+    when the move would cross it: the operator feels the zero (ALIGNED) before the other side."""
+    rng = VIRTUAL_RANGES[ALIGN_DELAY]
+    v = rng.clamp(value)
+    new = rng.nudge(v, detents, fine)
+    if (v > 0 > new) or (v < 0 < new):
+        return 0.0
+    return new + 0.0
 
 
 def delay_samples(ms: Any) -> int:
@@ -324,7 +382,10 @@ def delay_samples(ms: Any) -> int:
 
 
 def range_for(path: str) -> Range | None:
-    """RANGES entry for a field path ("live_peq.2.gain" -> RANGES["live_peq.gain"])."""
+    """RANGES entry for a field path ("live_peq.2.gain" -> RANGES["live_peq.gain"]); the
+    computed "align_delay_ms" has its own (VIRTUAL_RANGES)."""
+    if path in VIRTUAL_RANGES:
+        return VIRTUAL_RANGES[path]
     key = ".".join(p for p in path.split(".") if not p.isdigit())
     return RANGES.get(key)
 

@@ -16,6 +16,12 @@ your hands decide). The K1000 Wi-Fi and the phone page are up, unproven with a r
 power-cut drill passed (boot 10.4 s; the clock came back 3.5 min behind: no battery clock). The
 soak ran 1 h 34 min, clean (06:28-08:02), and is stopped. The PEAK now survives a B1 hold on SHOW.
 
+**Your asks of this morning (D-011), from Claude's next deploy:** the Lo-Cut moves 2 Hz a click
+(1 Hz with the push); ALIGN E3 is one signed **DELAY** (clockwise `SUBS LATER`, anticlockwise
+`TOPS LATER`, a stop on `ALIGNED` between them), so SETUP › Top delay is gone; the E1–E4 tags are
+small and grey (`ui: {knob_tags: off}` in k1000.yaml removes them, for a sticker). Steps 8, 9 and 31
+describe that build; before the deploy the box still shows SUB DELAY and 1/12-octave Lo-Cut steps.
+
 | SHOW | after B4 | ALIGN, locked | SETUP, undo | Knob test |
 |---|---|---|---|---|
 | ![K1000 screenshot](ui/show.png) | ![K1000 screenshot](ui/show_notch.png) | ![K1000 screenshot](ui/align_locked_turn.png) | ![K1000 screenshot](ui/setup_undo.png) | ![K1000 screenshot](ui/hwtest.png) |
@@ -47,12 +53,15 @@ soak ran 1 h 34 min, clean (06:28-08:02), and is stopped. The PEAK now survives 
 - [ ] **7.** ALIGN (B1 tap). E2 10 clicks up, then back → `+5.0 dB`, `subs +2.5 · tops -2.5`,
   0.0. Turn E3 or E4 → `LOCKED · HOLD B3 TO EDIT`, nothing moves.
 - [ ] **8.** Hold B3 → `EDIT 0:30`. After a 3 s rest, one E3 click only wakes it
-  (`SUB DELAY · TURN AGAIN TO CHANGE`); 10 more → 1.00 ms (the subs dip at each change); back to
-  0.00. E3 with its push held → `FINE`, one sample (0.02 ms). E4 12 clicks slowly → one octave
-  (≈ 224 Hz); then to 100 Hz, the Sunday default (D-010; from 112, two clicks down). *Claude:* the
-  values.
+  (`DELAY · TURN AGAIN TO CHANGE`); 10 more clockwise → `1.00 ms`, `SUBS LATER · 0.34 m` (the
+  subs dip at each change); back anticlockwise → it stops one click on `0.00 · ALIGNED`; one more
+  → `0.10`, `TOPS LATER` (now the tops dip); back to `ALIGNED` (a quick turn through it dips subs
+  and tops together). E3 with its push held → `FINE`, one sample (0.02 ms). E4 down to 100 Hz,
+  the Sunday default (D-010): six clicks from 112, seven from a saved 112.25 (its first click only
+  puts it on the 2 Hz grid: the screen stays at `112`). Then 10 clicks up slowly → `120` (2 Hz a
+  click; push held: 1 Hz; a fast spin: up to 8 Hz), 10 back → `100`. *Claude:* the values.
 - [ ] **9.** ALIGN untouched 30 s, turn E4 → locked again. Hold B3, then tap B3 →
-  `SUB DELAY + LO-CUT LOCKED` at once.
+  `DELAY + LO-CUT LOCKED` at once.
 
 ## C. Pages and buttons
 
@@ -139,8 +148,8 @@ sudo systemctl start k1000
 
 ## I. End of the day
 
-- [ ] **31.** Live EQ flat (SETUP › Reset live EQ). ALIGN as found: balance 0.0, sub delay 0.00,
-  Lo-Cut ON at 100 Hz. Mono subs ON, Spectrum ON, Laptop access closed, Phone control as
+- [ ] **31.** Live EQ flat (SETUP › Reset live EQ). ALIGN as found: balance 0.0, DELAY 0.00
+  `ALIGNED`, Lo-Cut ON at 100 Hz. Mono subs ON, Spectrum ON, Laptop access closed, Phone control as
   decided → SHOW: a flat curve, no orange pill.
 - [ ] **32.** **Hold B2** → `READY · hold B2 to unmute`. Leave it on, on `eth0`, the M4 plugged
   and taped: Claude needs it Wednesday (freeze) and Thursday (soak). To switch off instead: hold

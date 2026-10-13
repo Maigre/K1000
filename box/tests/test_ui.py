@@ -895,17 +895,18 @@ def test_risky_pills_are_orange_and_fold_into_plus_n_last():
     assert _count(calm, region, pages.PILL_BG) > 100
 
 
-@pytest.mark.parametrize("field, xs, ys", [
-    (im.F_SUB_DELAY, (pages.METER_X1 + 20, pages.W - 20), (124, 137)),      # E3, sub-line under
-    (im.F_BALANCE, (20, pages.METER_X0 - 20), (203, 217)),                  # E2, sub-line above
+@pytest.mark.parametrize("field, xs, ys, colour", [
+    (im.F_ALIGN_DELAY, (pages.METER_X1 + 20, pages.W - 20), (124, 137), pages.FG),  # E3, under
+    (im.F_BALANCE, (20, pages.METER_X0 - 20), (203, 217), pages.DIM),              # E2, above
 ])
-def test_align_edit_box_stops_short_of_the_sub_line(field, xs, ys):
-    """UX-9: '≈ 0.81 m' was drawn half over the amber edit box (grey on amber, cut in two)."""
+def test_align_edit_box_stops_short_of_the_sub_line(field, xs, ys, colour):
+    """UX-9: '≈ 0.81 m' was drawn half over the amber edit box (grey on amber, cut in two).
+    The delay's sub-line ('SUBS LATER · 0.81 m') is white while unlocked: it says the side."""
     s = st.State(sub_delay_ms=2.35, balance_db=3.0)
     img = pages.render("ALIGN", s, pages.ScreenStatus(align_locked=False, align_unlock_s=20.0, **RUN),
                        Focus(editing=field, edit_until=INF), now=0.0)
     assert _count(img, (xs[0], ys[0], xs[1], ys[1]), pages.AMBER) == 0
-    assert _count(img, (xs[0], ys[0], xs[1], ys[1]), pages.DIM) > 20        # the sub-line is there
+    assert _count(img, (xs[0], ys[0], xs[1], ys[1]), colour) > 20        # the sub-line is there
 
 
 def test_the_notch_pictures_are_what_the_real_notch_helper_does():
@@ -1112,12 +1113,15 @@ def test_field_names_exist_in_state():
 
 
 def test_setup_list_is_d009s():
-    """v0's list (Top delay included) + Reset live EQ, Undo reset, Lo-Cut, Spectrum, then Phone
-    and the Knob test last; what touches the sound in one push needs a confirm."""
+    """v0's list + Reset live EQ, Undo reset, Lo-Cut, Spectrum, then Phone and the Knob test
+    last; what touches the sound in one push needs a confirm. No Top delay since D-011: ALIGN's
+    signed E3 is the one place to set the alignment."""
     labels = [i.label for i in im.SETUP_ITEMS]
-    for want in ("Input trim", "Top delay", "Mono subs", "Reset live EQ", "Undo reset", "Lo-Cut",
+    for want in ("Input trim", "Mono subs", "Reset live EQ", "Undo reset", "Lo-Cut",
                  "Spectrum", "Laptop access", "Phone", "Knob test"):
         assert want in labels, want
+    assert "Top delay" not in labels and len(im.SETUP_ITEMS) == 19
+    assert not any(i.field.endswith("_delay_ms") for i in im.SETUP_ITEMS)
     assert im.SETUP_ITEMS[-1].field == "HWTEST" and im.SETUP_ITEMS[0].field == "input_trim_db"
     assert [i.field for i in im.SETUP_ITEMS[-3:]] == [im.A_LAPTOP, "PHONE", "HWTEST"]
     by = {i.field: i for i in im.SETUP_ITEMS}
@@ -1135,7 +1139,7 @@ def test_pages_and_v0_aliases():
     assert map_event("MAIN", Focus(), Enc(1, 1)) == [Nudge("balance_db", 1, False)]
     assert map_event("LIVE", Focus(), Enc(2, 1)) == [Nudge("live_peq.0.gain", 1, False)]
     assert im.knob_labels("LIVE") == im.knob_labels("SHOW") == ["MASTER", "FREQ", "GAIN", "Q"]
-    assert im.knob_labels("ALIGN") == ["MASTER", "BALANCE", "SUB DELAY", "LO-CUT"]
+    assert im.knob_labels("ALIGN") == ["MASTER", "BALANCE", "DELAY", "LO-CUT"]
 
 
 def test_show_knobs_follow_the_selected_band():
@@ -1207,9 +1211,9 @@ def test_b3_hold_unlocks_align_until_30_s_of_idle():
     assert apply_focus(f, acts[0], now=100.0) is True
     assert f.unlocked(100.0) and f.hint_now(100.1) == im.HINT_UNLOCKED
     assert f.unlock_left(110.0) == pytest.approx(20.0)
-    # sub delay keeps v0's wake-up detent, then edits; Lo-Cut edits at once
-    assert map_event("ALIGN", f, Enc(2, 1, ts=101.0)) == [ShowHint(im.HINT_ARM.format("SUB DELAY"))]
-    assert map_event("ALIGN", f, Enc(2, 1, ts=101.5)) == [Nudge("sub_delay_ms", 1, False)]
+    # the delay keeps v0's wake-up detent, then edits; Lo-Cut edits at once
+    assert map_event("ALIGN", f, Enc(2, 1, ts=101.0)) == [ShowHint(im.HINT_ARM.format("DELAY"))]
+    assert map_event("ALIGN", f, Enc(2, 1, ts=101.5)) == [Nudge("align_delay_ms", 1, False)]
     assert map_event("ALIGN", f, Enc(3, -1, ts=102.0)) == [Nudge("lowcut_hz", -1, False)]
     # every input on ALIGN renews the 30 s; any 30 s of idle relocks
     map_event("ALIGN", f, Enc(0, -1, ts=125.0))                   # master: renewed to 155
@@ -1233,20 +1237,20 @@ def test_align_knobs_when_unlocked():
     f = Focus(unlock_until=UNLOCKED)
     assert map_event("ALIGN", f, Enc(0, 1, ts=10.0)) == [Nudge("master_db", 1, False)]
     assert map_event("ALIGN", f, Enc(1, -1, ts=11.0)) == [Nudge("balance_db", -1, False)]
-    arm = map_event("ALIGN", f, Enc(2, 2, ts=12.0))               # sub delay: wakes up first
-    assert arm == [ShowHint(im.HINT_ARM.format("SUB DELAY"))] and f.editing_now(12.1) == "sub_delay_ms"
-    assert map_event("ALIGN", f, Enc(2, 2, ts=12.5)) == [Nudge("sub_delay_ms", 2, False)]
+    arm = map_event("ALIGN", f, Enc(2, 2, ts=12.0))               # the delay: wakes up first
+    assert arm == [ShowHint(im.HINT_ARM.format("DELAY"))] and f.editing_now(12.1) == "align_delay_ms"
+    assert map_event("ALIGN", f, Enc(2, 2, ts=12.5)) == [Nudge("align_delay_ms", 2, False)]
     assert map_event("ALIGN", f, Enc(3, -1, ts=13.0)) == [Nudge("lowcut_hz", -1, False)]
     assert map_event("ALIGN", f, Enc(0, 0, ts=14.0)) == []
 
 
 def test_sub_delay_brushed_once_does_not_change_it():
-    """Every settled sub-delay change dips the subs (delay guard): even unlocked, one brushed
-    detent must not. A detent after ARM_WINDOW_S of rest only wakes the knob again."""
+    """Every settled delay change dips the subs or the tops (delay guard): even unlocked, one
+    brushed detent must not. A detent after ARM_WINDOW_S of rest only wakes the knob again."""
     f = Focus(unlock_until=UNLOCKED)
     assert not any(isinstance(a, Nudge) for a in map_event("ALIGN", f, Enc(2, 1, ts=100.0)))
-    assert map_event("ALIGN", f, Enc(2, 1, ts=101.0)) == [Nudge("sub_delay_ms", 1, False)]
-    assert map_event("ALIGN", f, Enc(2, -1, ts=103.0)) == [Nudge("sub_delay_ms", -1, False)]
+    assert map_event("ALIGN", f, Enc(2, 1, ts=101.0)) == [Nudge("align_delay_ms", 1, False)]
+    assert map_event("ALIGN", f, Enc(2, -1, ts=103.0)) == [Nudge("align_delay_ms", -1, False)]
     later = 103.0 + im.ARM_WINDOW_S + 0.1                         # at rest again: wake first
     assert not any(isinstance(a, Nudge) for a in map_event("ALIGN", f, Enc(2, 1, ts=later)))
     # the other knobs act on their first detent
@@ -1257,12 +1261,12 @@ def test_sub_delay_brushed_once_does_not_change_it():
 def test_fine_while_push_held():
     f = Focus(unlock_until=UNLOCKED)
     assert map_event("ALIGN", f, Sw(2, "press")) == []            # sw2 = E3 push
-    assert map_event("ALIGN", f, Enc(2, 1, ts=1.0)) == [Nudge("sub_delay_ms", 1, True)]  # deliberate
+    assert map_event("ALIGN", f, Enc(2, 1, ts=1.0)) == [Nudge("align_delay_ms", 1, True)]  # deliberate
     assert map_event("ALIGN", f, Sw(2, "long")) == []             # still held
-    assert map_event("ALIGN", f, Enc(2, 1, ts=1.01)) == [Nudge("sub_delay_ms", 1, True)]  # no accel
+    assert map_event("ALIGN", f, Enc(2, 1, ts=1.01)) == [Nudge("align_delay_ms", 1, True)]  # no accel
     map_event("ALIGN", f, Sw(2, "release"))
-    assert map_event("ALIGN", f, Enc(2, 1, ts=2.0)) == [Nudge("sub_delay_ms", 1, False)]
-    assert map_event("ALIGN", f, Enc(2, 1, ts=5.0)) == [ShowHint(im.HINT_ARM.format("SUB DELAY"))]
+    assert map_event("ALIGN", f, Enc(2, 1, ts=2.0)) == [Nudge("align_delay_ms", 1, False)]
+    assert map_event("ALIGN", f, Enc(2, 1, ts=5.0)) == [ShowHint(im.HINT_ARM.format("DELAY"))]
 
 
 def test_acceleration_master_down_only_and_frequency():
@@ -1279,8 +1283,8 @@ def test_acceleration_master_down_only_and_frequency():
     assert map_event("ALIGN", f, Enc(3, 1, ts=2.01)) == [Nudge("lowcut_hz", 1, False)]
     assert map_event("ALIGN", f, Enc(3, 1, ts=2.02)) == [Nudge("lowcut_hz", 4, False)]
     assert map_event("ALIGN", f, Enc(3, 3, ts=2.07)) == [Nudge("lowcut_hz", 12, False)]  # coalesced
-    map_event("ALIGN", f, Enc(2, 1, ts=3.0))                      # sub delay: never accelerated
-    assert map_event("ALIGN", f, Enc(2, 1, ts=3.01)) == [Nudge("sub_delay_ms", 1, False)]
+    map_event("ALIGN", f, Enc(2, 1, ts=3.0))                      # the delay: never accelerated
+    assert map_event("ALIGN", f, Enc(2, 1, ts=3.01)) == [Nudge("align_delay_ms", 1, False)]
     map_event("ALIGN", f, Enc(1, 1, ts=4.0))                      # balance: never accelerated
     assert map_event("ALIGN", f, Enc(1, 1, ts=4.005)) == [Nudge("balance_db", 1, False)]
     g = Focus()                                                   # SHOW: FREQ accelerates, GAIN/Q never
@@ -1559,3 +1563,159 @@ def test_knob_corner_table_is_a_permutation():
     assert sorted(im.KNOB_CORNERS) == ["bl", "br", "tl", "tr"]
     for page in im.ALL_PAGES:
         assert len(im.KNOBS[page]) == 4
+
+
+# --- D-011: the signed ALIGN delay, the knob tags --------------------------------------------
+@pytest.mark.parametrize("v,want", [
+    (1.25, ("1.25", "SUBS LATER · 0.43 m")),
+    (-1.25, ("1.25", "TOPS LATER · 0.43 m")),
+    (2.35, ("2.35", "SUBS LATER · 0.81 m")),
+    (-50.0, ("50.00", "TOPS LATER · 17.15 m")),
+    (st.SAMPLE_MS, ("0.02", "SUBS LATER · 0.01 m")),
+    (0.0, ("0.00", "ALIGNED")),
+    (-0.0, ("0.00", "ALIGNED")),
+    (None, ("--", "")),
+])
+def test_align_delay_display_says_the_side_in_words(v, want):
+    assert pages.fmt_align_delay(v) == want
+    if v is not None:                                          # never a bare minus sign
+        assert "-" not in want[0] and "−" not in want[0]
+
+
+def test_align_delay_reads_the_two_stored_delays_tolerantly():
+    assert pages.align_delay(st.State(sub_delay_ms=1.25)) == 1.25
+    assert pages.align_delay(st.State(top_delay_ms=1.25)) == -1.25
+    assert pages.align_delay(st.State(sub_delay_ms=1.0, top_delay_ms=0.25)) == 0.75   # net value
+    assert pages.align_delay(None) is None and pages.align_delay(object()) is None
+    assert pages.align_delay({"sub_delay_ms": 2.0}) == 2.0
+    assert pages.align_delay({"sub_delay_ms": "x", "top_delay_ms": 0.5}) == -0.5
+
+
+def test_align_e3_shows_size_big_and_side_in_words():
+    """Subs 1.25 ms later and tops 1.25 ms later draw the same big value; only the sub-line
+    (white while unlocked, grey while locked) tells them apart."""
+    on = pages.ScreenStatus(align_locked=False, align_unlock_s=20.0, **RUN)
+    value = (pages.METER_X1 + 4, 60, pages.W - 4, 122)
+    subline = (pages.METER_X1 + 4, 123, pages.W - 4, 138)
+    subs = pages.render("ALIGN", st.State(sub_delay_ms=1.25), on, Focus(), now=0.0)
+    tops = pages.render("ALIGN", st.State(top_delay_ms=1.25), on, Focus(), now=0.0)
+    zero = pages.render("ALIGN", st.State(), on, Focus(), now=0.0)
+    assert (_crop(subs, value) == _crop(tops, value)).all()
+    assert not (_crop(subs, subline) == _crop(tops, subline)).all()
+    assert not (_crop(zero, subline) == _crop(subs, subline)).all()
+    assert _count(subs, subline, pages.FG) > 20 and _count(tops, subline, pages.FG) > 20
+    locked = pages.render("ALIGN", st.State(top_delay_ms=1.25), pages.ScreenStatus(**RUN), Focus(),
+                          now=0.0)
+    assert _count(locked, subline, pages.FG) == 0 and _count(locked, subline, pages.DIM) > 20
+
+
+def test_align_e3_is_the_signed_delay_knob():
+    k = im.KNOBS["ALIGN"][2]
+    assert (k.label, k.field, k.arm, k.locked, k.accel_up, k.accel_down) == \
+        ("DELAY", im.F_ALIGN_DELAY, True, True, 1, 1)
+    assert im.F_ALIGN_DELAY == st.ALIGN_DELAY
+    lc = im.KNOBS["ALIGN"][3]
+    assert (lc.field, lc.locked, lc.accel_up, lc.accel_down) == (im.F_LOWCUT_FREQ, True, 4, 4)
+    assert im.HINT_UNLOCKED == "DELAY + LO-CUT UNLOCKED" and im.HINT_RELOCKED == "DELAY + LO-CUT LOCKED"
+    f = Focus()                                                   # locked: nothing, as before
+    assert map_event("ALIGN", f, Enc(2, -1, ts=1.0)) == [ShowHint(im.HINT_LOCKED)]
+    f = Focus(unlock_until=UNLOCKED)
+    assert map_event("ALIGN", f, Enc(2, -1, ts=1.0)) == [ShowHint(im.HINT_ARM.format("DELAY"))]
+    assert map_event("ALIGN", f, Enc(2, -1, ts=1.2)) == [Nudge("align_delay_ms", -1, False)]
+    assert map_event("ALIGN", f, Enc(2, -1, ts=1.21)) == [Nudge("align_delay_ms", -1, False)]
+    assert map_event("ALIGN", f, Enc(2, -1, ts=1.22)) == [Nudge("align_delay_ms", -1, False)]  # x1
+    s = st.State(sub_delay_ms=0.1)                                # what the controller then does
+    s.nudge("align_delay_ms", -1)
+    s.nudge("align_delay_ms", -1)
+    assert (s.sub_delay_ms, s.top_delay_ms) == (0.0, 0.1)
+
+
+def test_lowcut_shows_whole_hz():
+    assert pages.fmt_hz(112.25) == "112" and pages.fmt_hz(113.0) == "113"
+    assert pages.fmt_hz(300.0) == "300" and pages.fmt_hz(20.0) == "20"
+
+
+@pytest.mark.parametrize("raw,want", [
+    ("dim", "dim"), ("off", "off"), ("bright", "bright"), (" Off ", "off"), ("BRIGHT", "bright"),
+    (False, "off"), (True, "dim"),              # YAML: a bare off / on
+    ("cyan", None), ("", None), (0, None), (1, None), (None, None), (["off"], None),
+])
+def test_parse_knob_tags(raw, want):
+    assert im.parse_knob_tags(raw) == want
+
+
+@pytest.mark.parametrize("cfg,want", [
+    (None, "dim"), ({}, "dim"), ({"ui": None}, "dim"), ({"ui": "off"}, "dim"),
+    ({"ui": {}}, "dim"), ({"ui": {"knob_tags": "off"}}, "off"),
+    ({"ui": {"knob_tags": False}}, "off"), ({"ui": {"knob_tags": "bright"}}, "bright"),
+    ({"ui": {"knob_tags": "neon"}}, "dim"),
+])
+def test_knob_tag_style_from_k1000_yaml(cfg, want):
+    assert im.knob_tag_style(cfg) == want
+
+
+def test_shipped_k1000_yaml_says_dim():
+    from k1000.profiles import load_settings
+    settings = load_settings(Path(__file__).resolve().parents[1] / "etc" / "k1000.yaml")
+    assert settings["ui"]["knob_tags"] == "dim" and im.knob_tag_style(settings) == "dim"
+
+
+def test_knob_corners_are_the_sticker_layout():
+    """The operator card's sticker line: E1 top-left, E2 bottom-left, E3 top-right, E4
+    bottom-right (confirmed on the box 2026-10-12)."""
+    assert im.KNOB_CORNERS == ("tl", "bl", "tr", "br")
+
+
+_TAG_X = {"l": (6, 38), "r": (pages.W - 38, pages.W - 6)}
+_TAG_Y = {"t": (30, 56), "b": (290, 318)}
+
+
+def _tag_box(e: int) -> tuple[int, int, int, int]:
+    v, h = im.KNOB_CORNERS[e]
+    return (_TAG_X[h][0], _TAG_Y[v][0], _TAG_X[h][1], _TAG_Y[v][1])
+
+
+@pytest.mark.parametrize("page", ["SHOW", "ALIGN", "SETUP"])
+def test_knob_tags_dim_off_bright(page):
+    """dim (default): a small dark-grey tag, no cyan; off: no tag, the label in the tag's
+    corner; bright: v1's cyan tag. Every page that names its knobs follows the style."""
+    s = st.State(sub_delay_ms=2.35)
+    imgs = {t: pages.render(page, s, pages.ScreenStatus(knob_tags=t, **RUN), Focus(slot=1), now=0.0)
+            for t in ("dim", "off", "bright", "neon")}
+    default = pages.render(page, s, pages.ScreenStatus(**RUN), Focus(slot=1), now=0.0)
+    assert (np.asarray(default) == np.asarray(imgs["dim"])).all()          # dim is the default
+    assert (np.asarray(imgs["neon"]) == np.asarray(imgs["dim"])).all()     # unknown = dim
+    knobs = [e for e, lab in enumerate(im.knob_labels(page)) if lab]
+    assert knobs
+    for e in knobs:
+        box = _tag_box(e)
+        assert _count(imgs["bright"], box, pages.CYAN) > 20, (page, e)
+        assert _count(imgs["bright"], box, pages.AMBER) == 0, (page, e)
+        assert _count(imgs["dim"], box, pages.TAG_DIM) > 10, (page, e)
+        assert _count(imgs["dim"], box, pages.CYAN) == 0, (page, e)
+        assert _count(imgs["dim"], box, pages.AMBER) == 0, (page, e)
+        assert _count(imgs["off"], box, pages.TAG_DIM) == 0, (page, e)
+        assert _count(imgs["off"], box, pages.CYAN) == 0, (page, e)
+        assert _count(imgs["off"], box, pages.AMBER) > 20, (page, e)      # the label moved in
+        # dim: smaller than bright, and it leaves the label where v1 had it
+        assert _count(imgs["dim"], box, pages.TAG_DIM) < _count(imgs["bright"], box, pages.CYAN)
+    for y0, y1 in (_TAG_Y["t"], _TAG_Y["b"]):                              # the label rows
+        row = (0, y0, pages.W, y1)
+        assert _count(imgs["dim"], row, pages.CYAN) == 0
+        assert _count(imgs["dim"], row, pages.AMBER) == _count(imgs["bright"], row, pages.AMBER)
+
+
+def test_knob_tags_off_gives_the_show_pills_more_room():
+    s = st.State()
+    c_dim = pages._Ctx(Focus(slot=1), 0.0, "dim")
+    c_off = pages._Ctx(Focus(slot=1), 0.0, "off")
+    for c in (c_dim, c_off):
+        pages._page_show(c, s, pages.ScreenStatus(**RUN))
+    assert c_off.bottom_label_end["l"] == c_dim.bottom_label_end["l"] - pages.TAG_W
+    assert c_off.bottom_label_end["r"] == c_dim.bottom_label_end["r"] + pages.TAG_W
+
+
+def test_demo_cases_include_the_d011_pictures():
+    names = {c[0] for c in pages.demo_cases()}
+    assert {"show_tags_off", "show_tags_bright", "align_tags_off", "align_tops_later",
+            "align_aligned"} <= names

@@ -32,6 +32,15 @@
 > noise bin near 7.3 kHz was shown and B4 aimed at it: now the level floor and the program gate
 > above, so B4 says `NO PEAK` on silence and between tracks). `03-v0-architecture.md` §8 has the
 > details and the measured scales.
+>
+> **Changed after the acceptance by D-011** (2026-10-13, Thomas's asks at the bench): ALIGN E3 is
+> **DELAY**, one signed setting, −50 … +50 ms (+ = the subs later, − = the tops later), shown as the
+> size plus the side in words (`SUBS LATER · 0.43 m`, `TOPS LATER · 0.43 m`, `ALIGNED`), with a stop
+> on 0 before crossing; it writes `sub_delay_ms` or `top_delay_ms` and zeroes the other. So §3's
+> "Top delay stays in SETUP" no longer holds: SETUP has no Top delay (19 items). The Lo-Cut moves
+> **2 Hz a click** (1 Hz fine, on that grid) instead of 1/12 octave (§3's table). The E1–E4 tags
+> are **dim grey** by default (k1000.yaml `ui.knob_tags`: dim, off, bright); this spec's cyan tags
+> are the `bright` style. Hints: `DELAY + LO-CUT UNLOCKED` / `LOCKED`, `DELAY · TURN AGAIN TO CHANGE`.
 
 2026-10-12 evening, answering Thomas's notes on the v0 panel. Status: **design and prototype,
 nothing wired** (superseded by the note above). The engine and panel figures were measured on the

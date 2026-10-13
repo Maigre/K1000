@@ -17,7 +17,9 @@ message means is in [chapter 6](06-troubleshooting.md).
 knob's value at its corner: **E1 top-left, E2 bottom-left, E3 top-right, E4 bottom-right**. Which
 physical knob and button is which is set once with SETUP › Knob test ([§5.4](#54-knob-test)) and
 the `controls:` map ([chapter 3](03-configuration.md#5-controls)). Label the buttons on the
-shell: **B1 PAGE · B2 MUTE · B3 BAND/UNLOCK · B4 NOTCH**.
+shell: **B1 PAGE · B2 MUTE · B3 BAND/UNLOCK · B4 NOTCH**. Each knob's label carries a small grey
+`E1`…`E4` tag; with a sticker on the shell, `knob_tags: off` in k1000.yaml's `ui:` section removes
+them (or `bright` makes them cyan, [chapter 3 §5](03-configuration.md#5-controls)).
 
 | Gesture | Means |
 |---|---|
@@ -38,7 +40,8 @@ shell: **B1 PAGE · B2 MUTE · B3 BAND/UNLOCK · B4 NOTCH**.
 - **The pills** (SHOW only): states that last, on the bottom row.
 
 **Colours.** Amber = being edited, and hints. Red = mute, clip, a critical alert. Orange = a
-warning. Blue = a passing state (`RAMPING IN`). Cyan = the knob tags and the spectrum PEAK.
+warning. Blue = a passing state (`RAMPING IN`). Cyan = the spectrum PEAK (and the knob tags when
+`ui.knob_tags` is `bright`).
 
 **Pages.** A B1 tap steps **SHOW → ALIGN → SETUP** and back to SHOW. **B1 hold = SHOW** from
 any page (on the Knob test, any hold but B2 goes back to SETUP first). ALIGN and SETUP go back to
@@ -191,7 +194,7 @@ The Meyers start limiting around −14 dBFS at the M4 outputs (research,
 
 ## 4. ALIGN
 
-The system settings you set before the doors and leave alone: balance, sub delay, Lo-Cut.
+The system settings you set before the doors and leave alone: balance, the sub/top delay, Lo-Cut.
 
 ![ALIGN, locked](../ui/align.png)
 
@@ -199,20 +202,30 @@ The system settings you set before the doors and leave alone: balance, sub delay
 |---|---|---|---|
 | E1 **MASTER** | As on SHOW | 0.5 dB | — |
 | E2 **BALANCE** | Subs against tops, −12 … +12 dB; + = subs up. Subs get +b/2, tops −b/2 (`subs +1.5 · tops -1.5`) | 0.5 dB | — |
-| E3 **SUB DELAY** | 0 … 50 ms, with the distance (`≈ 0.81 m`) | 0.1 ms | 1 sample (1/48 ms) |
-| E4 **LO-CUT** | The tops' high-pass, 12 dB/oct, 20 … 300 Hz | 1/12 octave, speeds up | 1/48 octave |
+| E3 **DELAY** | Which side is late, and by how much: clockwise from 0 the **subs**, anticlockwise the **tops**, up to 50 ms either way. The size big, the side and the distance under it (`SUBS LATER · 0.81 m`, `TOPS LATER · 0.43 m`, `ALIGNED`) | 0.1 ms | 1 sample (1/48 ms) |
+| E4 **LO-CUT** | The tops' high-pass, 12 dB/oct, 20 … 300 Hz | 2 Hz, speeds up (8 Hz on a fast spin) | 1 Hz |
 
 **E3 and E4 are locked.** A turn shows `LOCKED · HOLD B3 TO EDIT` and changes nothing.
 
-- **Hold B3**: unlocked (`SUB DELAY + LO-CUT UNLOCKED`). An amber `EDIT 0:30` badge counts down.
+- **Hold B3**: unlocked (`DELAY + LO-CUT UNLOCKED`). An amber `EDIT 0:30` badge counts down.
 - Any knob or button on ALIGN renews it, so **30 s without input locks again**.
-- **A B3 tap** locks at once (`SUB DELAY + LO-CUT LOCKED`). Leaving ALIGN locks too.
+- **A B3 tap** locks at once (`DELAY + LO-CUT LOCKED`). Leaving ALIGN locks too.
 
 ![A locked turn](../ui/align_locked_turn.png) ![Unlocked: EDIT 0:28](../ui/align_unlocked.png)
 
-**Sub delay** also keeps a wake-up click: after 2.5 s at rest, the first click only wakes it
-(`SUB DELAY · TURN AGAIN TO CHANGE`). Each change dips the subs briefly: K1000 mutes the group
-around the write so it does not click. Do alignment before the show.
+![The tops delayed](../ui/align_tops_later.png) ![Turning through zero](../ui/align_aligned.png)
+
+**DELAY is one setting for both sides** (D-011). Subs in front of the tops: turn clockwise, the
+subs wait (`SUBS LATER`). Tops in front: turn anticlockwise past 0, the tops wait (`TOPS LATER`).
+Only the late side is ever delayed. Turning through zero stops one click on `0.00 · ALIGNED`; the
+next click goes to the other side. It also keeps a wake-up click: after 2.5 s at rest, the first
+click only wakes it (`DELAY · TURN AGAIN TO CHANGE`). Each change dips the group whose delay
+changes (the subs or the tops; both when one write changes both, e.g. a quick turn through
+zero): K1000 mutes the group around the write so it does not click. Do alignment before the show.
+
+**Lo-Cut** frequencies sit on a 2 Hz grid; odd values only with the push held. A value saved
+between two steps (112.25 Hz) stays until the first click, which lands on the next step in that
+direction (114 up, 112 down).
 
 **Lo-Cut off**: E4 reads `OFF` with `on/off in SETUP`. Switching it is SETUP › Lo-Cut.
 
@@ -223,7 +236,7 @@ than no turn at all. The lock makes it a deliberate act. How to set these: [chap
 
 ![SETUP](../ui/setup.png)
 
-**E1 turn** picks the item (the counter says `14/20`). **E2 turn** changes a number. **E1 or E2
+**E1 turn** picks the item (the counter says `13/19`). **E2 turn** changes a number. **E1 or E2
 push** selects: it flips a switch, runs an action or opens a page. Items marked **×2** need a
 second push within 5 s; the first push puts `PUSH AGAIN` on the row and a hint in the footer.
 Moving to another item, or leaving the page, drops it. E2 turned on an item that is not a number
@@ -233,11 +246,10 @@ says `PUSH TO CHANGE`.
 |---|---|---|
 | Input trim | E2 | −24 … +12 dB, 0.5 dB. Acts after the converter: it cannot fix `IN CLIP` |
 | Sub polarity, Top polarity | push | `normal` / `INVERTED`. The group dips briefly. Pill `POL INV …` |
-| Top delay | E2 | 0 … 50 ms, 0.1 ms (fine: 1 sample) |
 | Sub low-pass | push | On/off: a 12 dB/oct low-pass on the subs |
 | Sub LP freq | E2 | 40 … 250 Hz, 1/12 octave |
 | Trim Sub L, Trim Sub R, Trim Top L, Trim Top R | E2 | −24 … +6 dB: to match boxes or sides, not to set the level |
-| Mono subs | push ×2 | Both subs get L+R. Rebuilds the pipeline: `PUSH AGAIN TO APPLY (MAY CLICK)`, then the blue `APPLYING SETUP…` with Main muted around it |
+| Mono subs | push ×2 | Both subs get L+R. **Keep it ON with one cable to both subs** (OUT3, D-012): OFF puts the left channel alone on them. Rebuilds the pipeline: `PUSH AGAIN TO APPLY (MAY CLICK)`, then the blue `APPLYING SETUP…` with Main muted around it |
 | Audition (dev) | push ×2 | Bench profile only: `SUM`, `TOPS`, `SUBS` on the two bench outputs. Rebuilds the pipeline |
 | Profile | push ×2 | `DEV` / `M4`. Refused while `k1000.yaml` pins it (`PROFILE PINNED IN k1000.yaml`). About 1 s of silence, then the ramp |
 | **Reset live EQ** | push ×2 | `PUSH AGAIN TO RESET ALL LIVE EQ`, then the four bells and both shelves go flat, smoothly: `LIVE EQ RESET · UNDO IN SETUP` (`LIVE EQ ALREADY FLAT` if there was nothing to reset) |
@@ -412,7 +424,7 @@ Step by step, other Android menus and the fixes: [`docs/06-phone.md`](../06-phon
 
 | Tab | Controls |
 |---|---|
-| **MAIN** | Master −6 / −1 / −½ / +½ / +1 dB. Balance ±½ / ±1 dB. Lo-Cut on/off (with a confirm) and its frequency (±1/12, ±⅓ octave) |
+| **MAIN** | Master −6 / −1 / −½ / +½ / +1 dB. Balance ±½ / ±1 dB. Lo-Cut on/off (with a confirm) and its frequency (−10 / −2 / +2 / +10 Hz) |
 | **LIVE EQ** | The six live bands on a graph. **Drag a dot** = frequency and gain. **Long-press empty space = notch here**: the first flat bell goes there at **−6 dB, Q 8, at once** (audible, unlike B4) and stays under the finger: slide to tune it. Per band: FREQ, GAIN, Q steps; hold = band flat. *RESET LIVE EQ…* with a confirm (the undo is on the box) |
 | Always | **Hold to mute** (0.6 s; unmute 1.2 s), the four meters, the engine state, the box's alerts, changes made outside K1000 |
 
@@ -469,7 +481,7 @@ the normal way to switch K1000 off ([chapter 7](07-maintenance.md#power-cuts)).
 **Bypass = the source straight into the speakers, as it was cabled before K1000.** About a minute:
 
 1. **Source down.** Hold B2 if K1000 still answers.
-2. Unplug OUT1 TOP L, OUT2 TOP R, OUT3 SUB L, OUT4 SUB R at the speakers.
+2. Unplug OUT1 TOP L, OUT2 TOP R and OUT3 SUBS (OUT4 too if it is patched) at the speakers.
 3. Patch the bypass kit as written on the operator card.
 4. **Source up slowly.** The bypass is about (2 − master) dB louder: +12 dB at master −10, with
    the trims at 0.

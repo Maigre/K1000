@@ -2,17 +2,19 @@
 """Screen pages for the 480x320 ZynScreen (UI v1, D-009): render(page, state, status, focus).
 
 Pages: SHOW (the front page: master, FREQ/GAIN/Q of the selected live band, the EQ curve over
-the program spectrum), ALIGN (master, balance, sub delay, Lo-Cut; E3/E4 locked until a B3
-hold), SETUP (the list), PHONE (drawn by ui/qr.py) and HWTEST (the knob test). The v0 names
-MAIN and LIVE are aliases of ALIGN and SHOW.
+the program spectrum), ALIGN (master, balance, the signed sub/top delay, Lo-Cut; E3/E4 locked
+until a B3 hold), SETUP (the list), PHONE (drawn by ui/qr.py) and HWTEST (the knob test). The v0
+names MAIN and LIVE are aliases of ALIGN and SHOW.
 
 Design rules (why it looks like this):
 - Read at arm's length, outdoors, by someone mixing: black background, white digits, amber
   labels, one colour per meaning. Amber = what is being edited, and hints (brief). Red = mute,
-  clip, a critical system alert. Orange = a system warning. Cyan = the knob tags and the
-  spectrum PEAK.
+  clip, a critical system alert. Orange = a system warning. Cyan = the spectrum PEAK (and the
+  knob tags in their `bright` style).
 - The screen mirrors the knobs: each encoder's value sits next to its corner (KNOB_CORNERS in
-  input_map, an assumption until the physical positions are confirmed).
+  input_map, confirmed on the box). The "E1".."E4" tag next to each label follows k1000.yaml
+  `ui.knob_tags` (status.knob_tags): dim (default, small dark grey), off (the label takes the
+  corner; a sticker on the shell names the knobs), bright (cyan, as v1 shipped).
 - System alerts (KNOBS OFFLINE, NO DEVICE, ENGINE DOWN, CANNOT SAVE, pipeline/device fixes)
   take the STATUS BAR in their own colour, never amber: KNOBS OFFLINE red across the whole bar,
   other critical alerts red, warnings orange, passing states (APPLYING SETUP…, RAMPING IN)
@@ -50,10 +52,10 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from . import eqgraph as eg
-from .input_map import (A_LAPTOP, A_RESET_LIVE, A_UNDO_RESET, BAND_CYCLE, F_BALANCE, F_LOWCUT_FREQ,
-                        F_LOWCUT_ON, F_MASTER, F_SLOT, F_SPECTRUM_ON, F_SUB_DELAY, HINT_LOCKED,
-                        KNOB_CORNERS, LIVE_SLOT_LABELS, LIVE_SLOTS, SETUP_ITEMS, Focus,
-                        knob_labels, page_name)
+from .input_map import (A_LAPTOP, A_RESET_LIVE, A_UNDO_RESET, BAND_CYCLE, F_ALIGN_DELAY, F_BALANCE,
+                        F_LOWCUT_FREQ, F_LOWCUT_ON, F_MASTER, F_SLOT, F_SPECTRUM_ON, HINT_LOCKED,
+                        KNOB_CORNERS, KNOB_TAGS_DEFAULT, LIVE_SLOT_LABELS, LIVE_SLOTS,
+                        SETUP_ITEMS, Focus, knob_labels, page_name, parse_knob_tags)
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +84,9 @@ STATUS_BG = (28, 28, 28)
 INFO_BLUE = (30, 90, 180)
 PILL_BG = (60, 60, 60)
 PILL_EDGE = (190, 190, 190)
+TAG_DIM = (105, 105, 105)              # ui.knob_tags: dim (the default): secondary to the label
+TAG_W = 30                             # room a knob tag takes before its label (dim, bright)
+SOUND_M_PER_MS = 0.343                 # ALIGN's delay as a distance (343 m/s)
 
 # System alert levels (control.Status.alerts): fill and text colour in the status bar.
 ALERT_CRITICAL, ALERT_WARNING, ALERT_INFO = "critical", "warning", "info"
@@ -157,6 +162,7 @@ class ScreenStatus:
             eqgraph.RtaFrame to draw behind the curve (None = none).
     laptop_s / laptop_state: SETUP > Laptop access, seconds left (0 = closed) and the state
             root reports (off = no such surface, closed, opening, open, closing, unavailable).
+    knob_tags: the E1..E4 tags' style, k1000.yaml `ui.knob_tags` (dim | off | bright).
     The controller must set engine and device_present explicitly: the defaults are "unknown".
     """
     profile: str = ""
@@ -183,6 +189,7 @@ class ScreenStatus:
     spectrum: Any = None
     laptop_s: float = 0.0
     laptop_state: str = "off"
+    knob_tags: str = KNOB_TAGS_DEFAULT
 
 
 # ------------------------------------------------------------------------------------------
@@ -351,6 +358,11 @@ def screen_pills(state: Any, status: Any) -> list[str]:
     return out
 
 
+def knob_tags(status: Any) -> str:
+    """The E1..E4 tag style the status asks for (dim | off | bright); anything else = dim."""
+    return parse_knob_tags(_get(status, "knob_tags", None)) or KNOB_TAGS_DEFAULT
+
+
 def spectrum_frame(status: Any) -> eg.RtaFrame | None:
     """The spectrum to draw behind the curve, validated (None = draw none): SETUP > Spectrum
     on, a frame whose freqs/level are 1-D, the same length, increasing, finite and positive.
@@ -505,6 +517,27 @@ def fmt_ms(v: float | None) -> str:
     return "--" if v is None else f"{v:.2f}"
 
 
+def fmt_align_delay(v: float | None) -> tuple[str, str]:
+    """ALIGN E3, the signed delay (sub - top, ms): (big value, sub-line). The direction is in
+    words, never a bare minus sign: 1.25 -> ('1.25', 'SUBS LATER · 0.43 m'), -1.25 -> ('1.25',
+    'TOPS LATER · 0.43 m'), 0 -> ('0.00', 'ALIGNED')."""
+    if v is None:
+        return "--", ""
+    if abs(v) < 0.005:
+        return "0.00", "ALIGNED"
+    side = "SUBS" if v > 0 else "TOPS"
+    return f"{abs(v):.2f}", f"{side} LATER · {abs(v) * SOUND_M_PER_MS:.2f} m"
+
+
+def align_delay(state: Any) -> float | None:
+    """sub_delay_ms - top_delay_ms read tolerantly (one unreadable side counts as 0; both
+    unreadable = None)."""
+    sub, top = _num(state, "sub_delay_ms"), _num(state, "top_delay_ms")
+    if sub is None and top is None:
+        return None
+    return round((sub or 0.0) - (top or 0.0), 6) + 0.0
+
+
 def fmt_q(v: float | None) -> str:
     if v is None:
         return "--"
@@ -535,11 +568,12 @@ def fmt_hmm(seconds: float | None) -> str:
 class _Ctx:
     """Per-frame drawing context: image, draw, time, focus snapshot."""
 
-    def __init__(self, focus: Any, now: float):
+    def __init__(self, focus: Any, now: float, tags: str = KNOB_TAGS_DEFAULT):
         self.img = Image.new("RGB", SIZE, BG)
         self.d = _Draw(self.img)
         self.now = now
         self.focus = focus
+        self.tags = tags                               # E1..E4 tags: dim | off | bright
         ed = getattr(focus, "editing_now", None)
         self.editing = ed(now) if callable(ed) else None
         held = getattr(focus, "held", ())
@@ -563,6 +597,33 @@ def _focus_slot(focus: Any) -> int:
         return 0
 
 
+def _knob_label(c: _Ctx, e: int, label: str, x_edge: float, y: float, right: bool,
+                fill=AMBER) -> float:
+    """A knob's label at its screen corner, after its "E1".."E4" tag in the `c.tags` style;
+    returns the x where the label ends on the inner side.
+
+    `x_edge` is the corner side (padding included), `y` the tag's top as v1 drew it. bright: the
+    v1 cyan tag (font 16) and the label TAG_W further in. dim: a small dark-grey tag on the
+    label's baseline, the label where it was. off: no tag, the label at the corner."""
+    d = c.d
+    flab = font(20)
+    anchor = "ra" if right else "la"
+    lx = x_edge
+    if c.tags != "off":
+        tag = f"E{e + 1}"
+        if c.tags == "bright":
+            d.text((x_edge, y), tag, font=font(16), fill=CYAN, anchor=anchor)
+        else:
+            asc = flab.getmetrics()[0] if hasattr(flab, "getmetrics") else 19
+            base = y - 2 + asc                          # the label's baseline
+            d.text((x_edge, base), tag, font=font(13), fill=TAG_DIM,
+                   anchor="rs" if right else "ls")
+        lx = x_edge - TAG_W if right else x_edge + TAG_W
+    d.text((lx, y - 2), label, font=flab, fill=fill, anchor=anchor)
+    lw = d.textlength(label, font=flab)
+    return lx - lw if right else lx + lw
+
+
 # ---- v0 quadrant layout (ALIGN) ------------------------------------------------------------
 # Quadrant geometry: x range and the vertical anchors for label / value / sub-line.
 _QX = {"l": (0, METER_X0), "r": (METER_X1, W)}
@@ -574,11 +635,12 @@ _QY = {  # (label_y, value_center_y, sub_y) ; label sits at the outer (screen) e
 
 def _quadrant(c: _Ctx, e: int, label: str, value: str, unit: str, sub: str,
               field_key: str | None, *, dim: bool = False, value_size: int = 60,
-              shift: int = 0, box_half: int = 38) -> None:
+              shift: int = 0, box_half: int = 38, sub_strong: bool = False) -> None:
     """Draw one knob's quadrant: 'E1 MASTER' at the corner, big value, unit + sub-line.
 
     `shift` moves the value towards the screen edge; `box_half` is the half-height of the edit
-    highlight.
+    highlight. `sub_strong`: the sub-line carries meaning the value does not (the delay's side):
+    white, grey only while the quadrant is dimmed (regular weight: bold would shrink it to 14 px).
     """
     corner = KNOB_CORNERS[e]
     vpos, hpos = corner[0], corner[1]
@@ -587,15 +649,8 @@ def _quadrant(c: _Ctx, e: int, label: str, value: str, unit: str, sub: str,
     val_cy += -shift if vpos == "t" else shift
     d = c.d
     pad = 10
-    # label at the outer corner
-    tag = f"E{e + 1}"
-    ftag, flab = font(16), font(20)
-    if hpos == "l":
-        d.text((x0 + pad, label_y), tag, font=ftag, fill=CYAN, anchor="la")
-        d.text((x0 + pad + 30, label_y - 2), label, font=flab, fill=AMBER, anchor="la")
-    else:
-        d.text((x1 - pad, label_y), tag, font=ftag, fill=CYAN, anchor="ra")
-        d.text((x1 - pad - 30, label_y - 2), label, font=flab, fill=AMBER, anchor="ra")
+    # label at the outer corner (after its E1..E4 tag, per ui.knob_tags)
+    _knob_label(c, e, label, x0 + pad if hpos == "l" else x1 - pad, label_y, hpos == "r")
     # value (highlighted while being edited; switching the Lo-Cut highlights its frequency)
     edited = field_key is not None and (c.editing == field_key or (
         field_key == F_LOWCUT_FREQ and c.editing == F_LOWCUT_ON))
@@ -633,7 +688,8 @@ def _quadrant(c: _Ctx, e: int, label: str, value: str, unit: str, sub: str,
         fy, fa = (box[1] + 4, "ra") if vpos == "t" else (box[3] - 4, "rd")
         d.text((box[2] - 6, fy), "FINE", font=font(14), fill=BG if edited else CYAN, anchor=fa)
     if sub and fs is not None:
-        d.text(((x0 + x1) / 2, sub_y), sub, font=fs, fill=DIM, anchor="mm")
+        d.text(((x0 + x1) / 2, sub_y), sub, font=fs, fill=FG if sub_strong and not dim else DIM,
+               anchor="mm")
 
 
 # ---- status bar ----------------------------------------------------------------------------
@@ -857,13 +913,10 @@ def _block(c: _Ctx, e: int, label: str, value: str, unit: str, field_key: str | 
         label_y, (by0, by1) = H - 23, BOT_BOX
     d = c.d
     pad = 10
-    ftag, flab, fx = font(16), font(20), font(16)
+    fx = font(16)
     lab_col = DIM if dim else AMBER
-    lw = d.textlength(label, font=flab)
     if left:
-        d.text((x0 + pad, label_y), f"E{e + 1}", font=ftag, fill=CYAN, anchor="la")
-        d.text((x0 + pad + 30, label_y - 2), label, font=flab, fill=lab_col, anchor="la")
-        end = x0 + pad + 30 + lw
+        end = _knob_label(c, e, label, x0 + pad, label_y, False, lab_col)
         if tag:
             tx = end + 8
             tw = d.textlength(tag, font=fx)
@@ -875,9 +928,7 @@ def _block(c: _Ctx, e: int, label: str, value: str, unit: str, field_key: str | 
         if not top:
             c.bottom_label_end["l"] = end
     else:
-        d.text((x1 - pad, label_y), f"E{e + 1}", font=ftag, fill=CYAN, anchor="ra")
-        d.text((x1 - pad - 30, label_y - 2), label, font=flab, fill=lab_col, anchor="ra")
-        end = x1 - pad - 30 - lw
+        end = _knob_label(c, e, label, x1 - pad, label_y, True, lab_col)
         if tag:
             tw = d.textlength(tag, font=fx)
             tx = end - 8
@@ -1082,7 +1133,7 @@ def align_unlock_left(c: _Ctx, status: Any) -> float:
 
 
 def _lock_badge(c: _Ctx, left_s: float) -> None:
-    """Between E3 (SUB DELAY) and E4 (LO-CUT), in their column: LOCKED (grey, how to unlock)
+    """Between E3 (DELAY) and E4 (LO-CUT), in their column: LOCKED (grey, how to unlock)
     or EDIT m:ss (amber, the unlock's countdown)."""
     d = c.d
     corner3, corner4 = KNOB_CORNERS[2][1], KNOB_CORNERS[3][1]
@@ -1104,12 +1155,13 @@ def _lock_badge(c: _Ctx, left_s: float) -> None:
 
 
 def _page_align(c: _Ctx, state: Any, status: Any) -> None:
-    """ALIGN: E1 MASTER and E2 BALANCE live; E3 SUB DELAY and E4 LO-CUT dimmed while locked
+    """ALIGN: E1 MASTER and E2 BALANCE live; E3 DELAY and E4 LO-CUT dimmed while locked
     (a B3 hold unlocks them for 30 s of idle: the EDIT badge counts it down). Lo-Cut on/off
-    is a SETUP item now: said here, not offered."""
+    is a SETUP item now: said here, not offered. E3 is the signed sub/top delay (D-011): its
+    size big, which side is late in words under it (SUBS LATER / TOPS LATER / ALIGNED)."""
     master = _num(state, F_MASTER)
     bal = _num(state, F_BALANCE)
-    sd = _num(state, F_SUB_DELAY)
+    ad_val, ad_sub = fmt_align_delay(align_delay(state))
     lc_on = _truth(_get(state, "lowcut_on", True)) is not False
     lc = _num(state, F_LOWCUT_FREQ)
     left = align_unlock_left(c, status)
@@ -1119,8 +1171,7 @@ def _page_align(c: _Ctx, state: Any, status: Any) -> None:
     bsub = "subs = tops" if bal is None or abs(bal) < 0.05 else \
         f"subs {bal / 2:+.1f} · tops {-bal / 2:+.1f}"
     _quadrant(c, 1, labels[1], fmt_db(bal), "dB", bsub, F_BALANCE)
-    _quadrant(c, 2, labels[2], fmt_ms(sd), "ms", f"≈ {sd * 0.343:.2f} m" if sd is not None else "",
-              F_SUB_DELAY, dim=locked)
+    _quadrant(c, 2, labels[2], ad_val, "ms", ad_sub, F_ALIGN_DELAY, dim=locked, sub_strong=True)
     if lc_on:
         _quadrant(c, 3, labels[3], fmt_hz(lc), "Hz", "tops · 12 dB/oct", F_LOWCUT_FREQ, dim=locked)
     else:
@@ -1200,12 +1251,8 @@ def _page_setup(c: _Ctx, state: Any, status: Any) -> None:
             continue
         corner = KNOB_CORNERS[e]
         y = STATUS_H + 4 if corner[0] == "t" else H - 24
-        if corner[1] == "l":
-            d.text((10, y), f"E{e + 1}", font=font(16), fill=CYAN, anchor="la")
-            d.text((40, y - 2), lab, font=font(20), fill=AMBER, anchor="la")
-        else:
-            d.text((W - 10, y), f"E{e + 1}", font=font(16), fill=CYAN, anchor="ra")
-            d.text((W - 40, y - 2), lab, font=font(20), fill=AMBER, anchor="ra")
+        right = corner[1] == "r"
+        _knob_label(c, e, lab, W - 10 if right else 10, y, right)
     d.text((W - 10, H - 22), "push = select", font=font(16, FONT_REG), fill=DIM, anchor="ra")
     try:
         sel = max(0, min(len(SETUP_ITEMS) - 1, int(getattr(c.focus, "item", 0) or 0)))
@@ -1442,7 +1489,7 @@ def _render(page: Any, state: Any, status: Any, focus: Any, now: float | None) -
     _check_status_shape(status)
     focus = Focus() if focus is None else focus
     now = time.monotonic() if now is None else now
-    c = _Ctx(focus, now)
+    c = _Ctx(focus, now, knob_tags(status))
     ov = overlays_for(state, status)
     _status_bar(c, page, state, status, "MUTED" in ov)
     if "NO DEVICE" in ov:
@@ -1625,9 +1672,16 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
     dev_open = with_(dev, laptop_state="open", laptop_s=7140.0,
                      pills=["MONO SUB", "LAPTOP OPEN 1:59"])
     mono_i = _setup_index("mono_subs")
+    tops_later = State.from_dict({**s.to_dict(), "sub_delay_ms": 0.0, "top_delay_ms": 1.25})
+    aligned = State.from_dict({**s.to_dict(), "sub_delay_ms": 0.0, "top_delay_ms": 0.0})
     return [
         # SHOW: the front page
         ("show", "SHOW", s, run, Focus(slot=1)),
+        # ui.knob_tags (D-011): `dim` is the default every other picture shows; `off` (a
+        # sticker on the shell names the knobs) and v1's `bright`, to compare
+        ("show_tags_off", "SHOW", s, with_(run, knob_tags="off"), Focus(slot=1)),
+        ("show_tags_bright", "SHOW", s, with_(run, knob_tags="bright"), Focus(slot=1)),
+        ("align_tags_off", "ALIGN", s, with_(run, knob_tags="off"), Focus()),
         ("show_edit_fine", "SHOW", s, run_clip, Focus(slot=1, editing="live_peq.1.freq",
                                                       edit_until=inf, held={1})),
         ("show_notch", "SHOW", notch, run, notch_focus),
@@ -1678,7 +1732,14 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
         ("align", "ALIGN", s, run, Focus()),
         ("align_locked_turn", "ALIGN", s, run, Focus(hint=HINT_LOCKED, hint_until=inf)),
         ("align_unlocked", "ALIGN", s, with_(run, align_locked=False, align_unlock_s=27.4),
-         Focus(editing=F_SUB_DELAY, edit_until=inf)),
+         Focus(editing=F_ALIGN_DELAY, edit_until=inf)),
+        # the signed delay (D-011): the tops delayed (the tops stand in front of the subs), and
+        # exactly aligned (where a turn stops for one click before crossing to the other side)
+        ("align_tops_later", "ALIGN", tops_later, with_(run, align_locked=False,
+                                                         align_unlock_s=27.4),
+         Focus(editing=F_ALIGN_DELAY, edit_until=inf)),
+        ("align_aligned", "ALIGN", aligned, with_(run, align_locked=False, align_unlock_s=12.0),
+         Focus(editing=F_ALIGN_DELAY, edit_until=inf)),
         ("align_lowcut_off", "ALIGN", lc_off, run, Focus()),
         ("align_muted", "ALIGN", muted, run_muted, Focus()),
         # SETUP

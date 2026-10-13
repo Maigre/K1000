@@ -361,8 +361,8 @@ the Friday rig test; on a no-go the AP goes fully off and the knobs carry the sh
 - Phone (compact view): `http://<box-ip>:5005/gui/index.html?compactview`
   - **Levels only**: Main volume, mute and the meters. These are runtime commands, so they never
     send a config. k1000 follows the Main fader.
-  - Live EQ, Lo-Cut, sub delay and the sub/top balance are on the knobs (balance = E2 on the
-    ALIGN page). The phone has no sliders for them on purpose: in CamillaGUI v5 beta.2 every
+  - Live EQ, Lo-Cut, the sub/top delay and the sub/top balance are on the knobs (balance = E2,
+    delay = E3 on the ALIGN page). The phone has no sliders for them on purpose: in CamillaGUI v5 beta.2 every
     slider move sends the whole config as the page loaded it, which would put back old knob
     values (a feedback notch), the pre-tune system EQ, or even the old audio device.
 - **Phone rule.** The compact view has two small icons at the top, "Change to normal view" and
@@ -372,7 +372,7 @@ the Friday rig test; on a no-go the AP goes fully off and the knobs carry the sh
   - Never press **Apply to DSP** or **Stop processing** from the phone, and never tick
     **Apply automatically**:
     - Apply to DSP sends the config the page loaded. Every knob move since then (feedback
-      notches, Lo-Cut, sub delay) is undone, and k1000 adopts and saves the undo.
+      notches, Lo-Cut, delay) is undone, and k1000 adopts and saves the undo.
     - Stop processing stops the engine. systemd starts it again about a second later, muted,
       and k1000 ramps Main back in over 3 s: about 2 s of silence, then the ramp.
     - Apply automatically turns every later edit into a whole-config Apply.
@@ -440,15 +440,32 @@ speakers. `k1000-m4-bringup.sh` warns while the defaults are in place.
 
 What each button and knob does per page (SHOW · ALIGN · SETUP) is the operator card,
 `docs/04-operator-card.md`. In short: B1 tap = next page, hold = SHOW · B2 hold = mute/unmute
-(every page) · B3 = next band on SHOW, a hold unlocks sub delay and Lo-Cut on ALIGN · B4 = the
-notch helper on SHOW.
+(every page) · B3 = next band on SHOW, a hold unlocks the delay and Lo-Cut on ALIGN · B4 = the
+notch helper on SHOW. ALIGN's E3 DELAY (D-011) is one setting for both sides: clockwise from 0
+delays the subs (`SUBS LATER`), anticlockwise the tops (`TOPS LATER`); it writes `sub_delay_ms`
+or `top_delay_ms` and zeroes the other (SETUP has no Top delay any more). The Lo-Cut moves 2 Hz a
+click (1 Hz with the push).
 
 1. SETUP → "Knob test" (HWTEST). Press every button and turn every knob. Note, by physical
    position, the `sw`/`enc` index each one shows.
 2. Write `controls:` in `/etc/k1000/k1000.yaml` (encoders, pushes, buttons, reverse), then
    `sudo systemctl restart k1000`. If the on-screen labels ever sit at the wrong corners (another
    shell), that is `KNOB_CORNERS` in `k1000/ui/input_map.py`: a code change, deployed like any other.
-3. Label the buttons on the shell: PAGE · MUTE (hold) · BAND / UNLOCK (hold) · NOTCH.
+3. Label the buttons on the shell: PAGE · MUTE (hold) · BAND / UNLOCK (hold) · NOTCH. The knobs
+   can carry a sticker too (E1 top-left, E2 bottom-left, E3 top-right, E4 bottom-right): the
+   screen's own E1–E4 tags are then redundant. The key `ui.knob_tags` in
+   `/etc/k1000/k1000.yaml` sets them: `dim` (small grey, the default), `off` (none; the labels
+   take the corners) or `bright` (cyan, v1 as first deployed). A box whose k1000.yaml predates the
+   key has no `ui:` section and shows `dim`. To change it, add the section at the end of the file,
+   two lines, the second indented by two spaces, and restart k1000:
+
+   ```yaml
+   ui:
+     knob_tags: off
+   ```
+
+   On one line it is `ui: {knob_tags: off}`; `ui: knob_tags: off` does not parse, and a k1000.yaml
+   that does not parse loses every setting but `profile:` (the screen says `SETTINGS: …`).
 4. At the rig test, with program playing: hold B2, and all four Meyers mute.
 
 In a terminal, the monitor needs the MCP23017 and GPIO lines, which the service holds, so stop

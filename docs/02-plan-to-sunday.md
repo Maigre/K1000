@@ -50,12 +50,13 @@ in L/R ─ trim ─ System PEQ (8 bands) ─ Live EQ (4 peaking/notch @0 dB + lo
 **Knobs (Zynthian):**
 
 UI v1 (D-009, accepted on the box 2026-10-13; it replaced the v0 MAIN / LIVE EQ pages, which are in
-git history). The gig card is `docs/04-operator-card.md`.
+git history), with D-011's changes (same day: Lo-Cut 2 Hz a click, one signed DELAY, dim knob
+tags). The gig card is `docs/04-operator-card.md`.
 
 | Page | E1 | E2 | E3 | E4 |
 |---|---|---|---|---|
 | SHOW (front) | master | frequency of the selected band (push = fine) | gain of the selected band | Q |
-| ALIGN | master | sub↔top balance | sub delay: **locked** (after the unlock, the first detent after 2.5 s at rest only wakes it) | top Lo-Cut freq: **locked** |
+| ALIGN | master | sub↔top balance | DELAY, subs (clockwise) or tops (anticlockwise) later: **locked** (after the unlock, the first detent after 2.5 s at rest only wakes it) | top Lo-Cut freq, 2 Hz a click: **locked** |
 | SETUP | item | value | — | — |
 
 - Master up is never accelerated and rises at most +6 dB per 2 s (`MASTER: SLOW DOWN`; k1000.yaml
@@ -149,10 +150,12 @@ label K1000's outputs. Any doubt during the gig means re-patching in a minute.
    listen. Note the result in `ROADMAP.md`.
 3. **Gain structure**: noise at −20 dBFS. Check the M4 meters, and that the Meyer limit LEDs stay
    dark at the expected show level.
-4. **Sub alignment** (ALIGN, hold B3 to unlock E3 = sub delay; the polarity flips and top delay are
-   in SETUP):
-   - Stacked under the tops: 0 ms, same polarity (Meyer's design).
-   - Off-plane by ≥ 1.5 m: delay the nearer element by distance ÷ 343 m/s.
+4. **Sub alignment** (ALIGN, hold B3 to unlock E3 = DELAY, one setting for both sides; the
+   polarity flips are in SETUP):
+   - Stacked under the tops: 0 ms (`ALIGNED`), same polarity (Meyer's design).
+   - Off-plane by ≥ 1.5 m: delay the nearer element by distance ÷ 343 m/s: subs nearer → E3
+     clockwise (`SUBS LATER`), tops nearer → E3 anticlockwise past 0 (`TOPS LATER`). The screen
+     shows the distance, so read it against the tape measure.
    - Check with the mic for the fullest sum around 80–100 Hz, and try the polarity flip.
 5. **Lo-Cut**: A/B on program with SETUP › Lo-Cut (two pushes each way; SHOW shows a `LO-CUT OFF`
    pill while it is off); the frequency is E4 on ALIGN after a B3 hold. Default on when the subs are

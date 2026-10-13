@@ -8,8 +8,8 @@ Sources. The Meyer facts come from Meyer Sound's UPA-P operating instructions an
 line driver's feature set, as summarised in [`docs/01-approaches-review.md`](../01-approaches-review.md)
 §1. The M4 level figures are research from [`docs/05-m4-day.md`](../05-m4-day.md) §7, marked
 **(research)** below until they are measured on a unit. Where this chapter says which knob to
-turn, it is the panel described in [chapter 4](04-usage.md): balance, sub delay and Lo-Cut on
-ALIGN (sub delay and Lo-Cut unlocked with a B3 hold), the rest in SETUP.
+turn, it is the panel described in [chapter 4](04-usage.md): balance, the sub/top delay and Lo-Cut
+on ALIGN (the delay and Lo-Cut unlocked with a B3 hold), the rest in SETUP.
 
 ## 1. What you need
 
@@ -90,10 +90,13 @@ says polarity reversal and/or delay may be needed.
 | Subs stacked under the tops, fronts in one plane | **0 ms** | same (both normal) |
 | Off-plane by 1.5 m or more | Delay the element **nearer** to the audience by distance ÷ 343 m/s: **2.9 ms per metre** | check (below) |
 
-Where the delays are: **sub delay** = ALIGN E3, locked until a **B3 hold** unlocks it (30 s of
-idle locks it again); 0.1 ms per click, push held = one sample (1/48 ms); after 2.5 s at rest the
-first click only wakes it. The screen shows the distance too (`≈ 0.81 m`). **Top delay** =
-SETUP › Top delay. Both 0–50 ms. Delays are whole samples at 48 kHz.
+Where the delay is: **ALIGN E3, DELAY**, one setting for either side (D-011), locked until a
+**B3 hold** unlocks it (30 s of idle locks it again). Clockwise from 0 delays the **subs** (subs
+nearer the audience: `SUBS LATER`), anticlockwise from 0 delays the **tops** (tops nearer:
+`TOPS LATER`); up to 50 ms either way, and only the late side is delayed. 0.1 ms per click, push
+held = one sample (1/48 ms); after 2.5 s at rest the first click only wakes it. The screen shows
+the distance too (`SUBS LATER · 0.81 m`). Turning through zero stops one click on `ALIGNED`.
+Delays are whole samples at 48 kHz.
 
 **Check with the mic:**
 
@@ -107,8 +110,9 @@ SETUP › Top delay. Both 0–50 ms. Delays are whole samples at 48 kHz.
 5. Fine-tune the delay with the push held, in single samples, for the fullest sum.
 
 A delay or polarity change dips that group briefly: K1000 mutes the group, writes the value, and
-unmutes it, so the write does not click. That dip is expected. Do the alignment before the show,
-not during it.
+unmutes it, so the write does not click. A quick turn through `ALIGNED` changes both delays in
+one write, so subs and tops dip together (about 0.3 s). That dip is expected. Do the alignment
+before the show, not during it.
 
 Re-check the alignment after changing the Lo-Cut frequency: a high-pass shifts the tops' phase in
 the overlap.
@@ -125,8 +129,9 @@ UPA-1P's 12″ so the tops limit later, and leaves the low end to the subs.
 
 A/B it on program with the subs running: SETUP › Lo-Cut switches it on and off (two pushes; the
 phone's Lo-Cut switch, with a confirm, is handier while walking the room). ALIGN E4, unlocked with
-a B3 hold, moves the frequency (20–300 Hz, 1/12 octave per click, push held = 1/48). "Off" parks
-it at 10 Hz, and SHOW shows the pill `LO-CUT OFF` until it is back on.
+a B3 hold, moves the frequency (20–300 Hz, 2 Hz per click, push held = 1 Hz; a fast spin goes 8 Hz
+a click: 100 → 160 Hz is 30 clicks, or a few fast turns). "Off" parks it at 10 Hz, and SHOW shows
+the pill `LO-CUT OFF` until it is back on.
 
 - Higher (toward 160 Hz): cleaner, louder tops before limiting; more of the 100–160 Hz region on the
   subs. Check the sum in the overlap again (§4).

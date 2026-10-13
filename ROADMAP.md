@@ -138,7 +138,7 @@ Progress:
 | Area | State |
 |---|---|
 | Pipeline | input trim, 8 system PEQ, 4 live PEQ + 2 shelves, split (mono-subs option), sub/top polarity, delay (whole samples), top Lo-Cut, sub low-pass, Aux group faders (balance), 4 output trims, Main master + mute |
-| Knobs and screen | SHOW / ALIGN / SETUP pages, plus Knob test and PHONE; the live-EQ curve over the program spectrum with a PEAK pointer; B4 notch helper; ALIGN's sub delay and Lo-Cut locked (B3 hold); reset and undo in SETUP; B2 mute on every page; meters with CLIP / IN CLIP; MUTED band with alerts; NO DEVICE / ENGINE DOWN |
+| Knobs and screen | SHOW / ALIGN / SETUP pages, plus Knob test and PHONE; the live-EQ curve over the program spectrum with a PEAK pointer; B4 notch helper; ALIGN's delay (subs or tops, D-011) and Lo-Cut locked (B3 hold); reset and undo in SETUP; B2 mute on every page; meters with CLIP / IN CLIP; MUTED band with alerts; NO DEVICE / ENGINE DOWN |
 | Audio safety | boots muted; ramp gated on Running; Aux4 marker; outside cuts kept, raises pulled down; pipeline restore and device repair; mute saved at once; torn state recovered muted |
 | Ops | restart-forever units, device wait, watchdog, persistent journal, soak tool with `--summary`, M4 bring-up tool, rollback |
 | Phone | The own-AP PWA, wired (master, balance, Lo-Cut, live EQ, mute); laptop access (2 h) for CamillaGUI, SSH and the `/tune` REW import over the K1000 Wi-Fi; CamillaGUI on the LAN |
@@ -176,6 +176,9 @@ parametric bands + the spectrum serve live notching better on 4 knobs).
     button; the curve over the spectrum; the sub/top balance placed as the design decides.
   - ALIGN page: master, balance, sub delay, Lo-Cut (sub delay and Lo-Cut locked; top delay went to
     SETUP). Built and accepted on the box Tue 13 (D-009).
+  - Thomas's bench asks, Tue 13 (D-011): Lo-Cut 2 Hz a click; E3 = one signed DELAY for subs or
+    tops (SETUP › Top delay gone); E1–E4 tags dim grey (`ui.knob_tags`, `off` for a sticker).
+    Built and tested; on the box with the next deploy, before the freeze.
   - SETUP keeps the rest; B1 hold returns to SHOW.
   - Knob fast-turn fix.
   - Design: `docs/07-live-ui-v1.md` + `docs/ui/v1/`. Knob analysis: `docs/08-knob-precision.md`.

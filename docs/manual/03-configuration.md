@@ -13,8 +13,8 @@ work ([§10](#10-the-state-files)).
   by `install.sh`.
 - **Missing** = built-in defaults, the same values as the template.
 - **Lenient.** A bad value never stops the box: it falls back to its default (or is clamped into
-  its range). For `profile`, `profiles`, `phone`, `spectrum` and the knob keys `steps_per_detent`
-  and `detent_ab` the journal says so (`journalctl -u k1000`). The rest of `controls`, `engine`
+  its range). For `profile`, `profiles`, `phone`, `spectrum`, `ui` and the knob keys
+  `steps_per_detent` and `detent_ab` the journal says so (`journalctl -u k1000`). The rest of `controls`, `engine`
   and `paths` fall back **silently**: check the knobs on SETUP › Knob test.
   A file that does not parse at all raises the alert `SETTINGS: …` on the screen; every key then
   takes its default, except the `profile:` line, which is still read on its own, so a typo
@@ -62,6 +62,9 @@ spectrum:
   peak_floor_db: -80.0
   program_floor_db: -60.0
 
+ui:
+  knob_tags: dim                 # dim | off | bright: the E1-E4 tags on the screen
+
 engine:
   url: ws://127.0.0.1:1234
   boot_gain_db: -40.0
@@ -107,7 +110,7 @@ One section per profile. Every key is optional: a missing key keeps the built-in
 | `capture_channels`, `playback_channels` | A whole number, or `null` | 2, 2 | `null` = probe the device (assumed 4 when it cannot be probed) |
 | `capture_format`, `playback_format` | `S16_LE`, `S24_3_LE`, `S24_4_LE`, `S32_LE`, `F32_LE`, `F64_LE`, or `null` | `S32_LE` | `null` = CamillaDSP picks (S32_LE first) |
 | `input_map` | `[L, R]`: the capture channels (0-based) that carry the program | `[0, 1]` | `[2, 3]` = LINE IN 3 and 4 |
-| `output_map` | One entry per physical output, in order: which logical channel it carries. `SubL`, `SubR`, `TopL`, `TopR` (or 0–3) | (not used: `dev` has an audition mixer) | `[TopL, TopR, SubL, SubR]` = out1 Top L, out2 Top R, out3 Sub L, out4 Sub R |
+| `output_map` | One entry per physical output, in order: which logical channel it carries. `SubL`, `SubR`, `TopL`, `TopR` (or 0–3) | (not used: `dev` has an audition mixer) | `[TopL, TopR, SubL, SubR]` = out1 Top L, out2 Top R, out3 Sub L, out4 Sub R. The Sunday patch (D-012) feeds both subs from out3 (Mono subs ON makes out3 = out4 = the L+R sum); out4 is spare |
 | `probe` | `true` / `false` | `false` (the HiFiBerry is never opened by the probe) | `true` |
 | `target_level` | Frames, 64–1536 | 256 | 512 (D-010; the code default is 256) |
 
@@ -175,6 +178,31 @@ switches 0–7 (0–3 are the encoder pushes, 4–7 the buttons on the V4).
   `box/k1000/ui/input_map.py`, a code change.
 - Acceleration is fixed in the code: only FREQ, the Lo-Cut frequency and master **down** speed up
   on a fast turn (up to ×4); master **up** never does.
+
+### The knob tags: `ui.knob_tags`
+
+Next to each knob's label (`MASTER`, `DELAY`, `ITEM`…) the screen can draw the knob's name, `E1`
+to `E4` (D-011). One key, in its own `ui:` section:
+
+| `ui.knob_tags` | Looks like | For |
+|---|---|---|
+| `dim` (default) | A small dark-grey `E1` before the label: secondary to it, legible up close | Most boxes |
+| `off` | No tag; the label moves into the corner where the tag was | A sticker on the shell names the knobs: E1 top-left, E2 bottom-left, E3 top-right, E4 bottom-right. Put the sticker on first: the hints still name the knobs (`E3 TO CUT`, the PHONE page's `E1 turn`) |
+| `bright` | The cyan `E1` of UI v1 as first shipped | A new operator learning the knobs |
+
+```yaml
+ui:
+  knob_tags: off
+```
+
+- Two lines, the second indented. On one line it is `ui: {knob_tags: off}`: `ui: knob_tags: off`
+  does not parse, and a file that does not parse loses every key but `profile:` (§1).
+- Every page that names its knobs follows it: SHOW, ALIGN, SETUP. The Knob test keeps its own
+  `E1`…`E4` roles (it is there to identify them), and so do the PHONE page's hints.
+- A bare `off` works (YAML reads it as false); `on` or `true` means `dim`. Anything else is `dim`,
+  with one line in the journal. Read at k1000's start: restart k1000 after a change.
+- Pictures: [`show.png`](../ui/show.png) (dim), [`show_tags_off.png`](../ui/show_tags_off.png),
+  [`show_tags_bright.png`](../ui/show_tags_bright.png), [`align_tags_off.png`](../ui/align_tags_off.png).
 
 ## 6. `engine` and `paths`
 
@@ -252,7 +280,7 @@ touch the engine:
 
 | Change | Do | What you hear |
 |---|---|---|
-| `controls`, `engine.*`, `spectrum.*`, `phone.*` | `sudo systemctl restart k1000` | Nothing. `boot_gain_db`/`boot_ramp_s` apply at the next fresh engine start. The screen and knobs pause for a few seconds; an open Laptop access closes |
+| `controls`, `engine.*`, `spectrum.*`, `ui.*`, `phone.*` | `sudo systemctl restart k1000` | Nothing. `boot_gain_db`/`boot_ramp_s` apply at the next fresh engine start. The screen and knobs pause for a few seconds; an open Laptop access closes |
 | `profile`, or a profile's device or channel counts | Restart k1000 | K1000 switches the engine to the new device: about 1 s of silence, then the 3 s ramp. **Bench only** |
 | `input_map`, `output_map` | Restart k1000 | K1000 rebuilds the engine's pipeline with Main muted around it. Possible click. **Bench only** |
 | `target_level`, a format | Restart k1000, then `sudo systemctl restart camilladsp` | k1000 rewrites `active.yml`; the screen may say `DEVICES CHANGED (GUI)` until the engine restarts. The engine restart is about 1 s of silence, then the ramp |
@@ -307,10 +335,10 @@ Logical outputs, wherever four values appear: 0 Sub L, 1 Sub R, 2 Top L, 3 Top R
 | `input_trim_db` | −24 … +12 dB | 0 | SETUP |
 | `mono_subs` | bool | false | SETUP (rebuilds the pipeline: two pushes). Both subs get (L+R) at −6 dB each |
 | `sub_inverted`, `top_inverted` | bool | false | SETUP |
-| `sub_delay_ms` | 0 … 50 ms, 0.1 ms steps, push = 1 sample (1/48 ms) | 0 | ALIGN E3 (unlocked) |
-| `top_delay_ms` | same | 0 | SETUP |
+| `sub_delay_ms` | 0 … 50 ms | 0 | ALIGN E3 (unlocked): DELAY clockwise of 0, `SUBS LATER` |
+| `top_delay_ms` | 0 … 50 ms | 0 | ALIGN E3 (unlocked): DELAY anticlockwise of 0, `TOPS LATER` |
 | `lowcut_on` | bool | **true** | SETUP › Lo-Cut (two pushes), phone (with a confirm) |
-| `lowcut_hz` | 20 … 300 Hz, 1/12-octave steps | 100 | ALIGN E4 (unlocked), phone. Tops only, 12 dB/oct |
+| `lowcut_hz` | 20 … 300 Hz, 2 Hz steps (push: 1 Hz) | 100 | ALIGN E4 (unlocked), phone. Tops only, 12 dB/oct |
 | `sub_lowpass_on` | bool | false | SETUP |
 | `sub_lowpass_hz` | 40 … 250 Hz | 120 | SETUP. Subs only, 12 dB/oct |
 | `sys_peq` | 8 bands: freq 20 Hz–20 kHz, gain −20 … +10 dB, Q 0.3–16 | flat at 63, 125, 250, 500, 1k, 2k, 4k, 8k Hz, Q 1 | The laptop: the `/tune` page or CamillaGUI ([chapter 5](05-tuning.md#7-system-eq)) |
@@ -323,8 +351,17 @@ Logical outputs, wherever four values appear: 0 Sub L, 1 Sub R, 2 Top L, 3 Top R
 | `spectrum_on` | bool | true | SETUP › Spectrum. The screen only: it never touches the engine config |
 
 "Off" for the Lo-Cut and the sub low-pass is a frequency move (10 Hz and 20 kHz), never a pipeline
-change. Delays are applied in whole samples at 48 kHz. Reset live EQ puts the four bells and both
-shelves back to the defaults above.
+change. Delays are applied in whole samples at 48 kHz.
+
+**The two delays are one knob** (D-011). ALIGN E3 shows `sub_delay_ms − top_delay_ms`: 0.1 ms a
+click, one sample (1/48 ms) with the push, stopping one click on `ALIGNED` (0) before crossing to
+the other side. A knob move sets the late side and zeroes the other. A file with both set (written
+by hand, by CamillaGUI or by a build before D-011) keeps both until the first E3 change (the
+wake-up click aside), which moves the net value one step, writes it to the late side and zeroes
+the other: sub 2.0 / top 0.5 shows `1.50 ms`, `SUBS LATER · 0.51 m`, and one click clockwise
+stores sub 1.6, top 0. A `lowcut_hz` between the 2 Hz steps (e.g. 112.25) also stays as it is until its first
+click, which lands on the next step in the turn's direction (114 up, 112 down). Reset live EQ puts
+the four bells and both shelves back to the defaults above.
 
 ## 12. Other files in `/etc/k1000`
 

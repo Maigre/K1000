@@ -224,3 +224,62 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   box's `/etc/k1000/k1000.yaml`; it takes effect at the first engine start on the M4. Thursday's
   overnight soak runs at 512. Go to 768 if the M4-day soak shows an underrun. Go back to 256 only if
   live mics with stage monitors ever join.
+
+## D-011 — Lo-Cut in 2 Hz steps, one signed sub/top delay, quieter knob tags · decided 2026-10-13
+
+- **Ask** (Thomas at the bench, 2026-10-13): "LO-CUT is moving 6 Hz per click, I'd like 2 Hz
+  instead"; "SUB DELAY is only positive value: I can only compensate for front subs, but I'd like to
+  be able to go 'negative' which would do tops delay… can you think of something clever to use the
+  same setting for either sub or top delay?"; "E1/E2/E3/E4 could be a bit more discreet or maybe
+  removed (I could add a sticker on the box)".
+- **Proposed by Claude from those words; decided** (Thomas asked for each change). It changes
+  D-009's ALIGN E3 and SETUP list; D-010's Lo-Cut default (100 Hz) stays.
+  - **Lo-Cut: 2 Hz per click**, 1 Hz with the push held, 20–300 Hz. It was 1/12 octave (6.6 Hz at
+    112 Hz). The values live on that grid: a value saved off it (the box holds 112.25 Hz) is not
+    rewritten at boot (no engine change), and its first click goes to the next grid line in the
+    turn's direction (112.25 → 114 up, → 112 down). Whole Hz on screen; odd values only with the
+    push. Fast spins still accelerate, up to ×4 = 8 Hz a click, and only above 20 clicks/s. The
+    phone's Lo-Cut buttons become −10 / −2 / +2 / +10 Hz. Every other frequency (live EQ, sub
+    low-pass) stays logarithmic.
+  - **ALIGN E3 = DELAY: one signed setting for either side**, −50 … +50 ms. **+ = the subs are
+    delayed** (subs in front of the tops), **− = the tops are delayed** (tops in front). The screen
+    never shows a minus sign: the size big (`1.25 ms`), the side in words under it (`SUBS LATER ·
+    0.43 m`, `TOPS LATER · 0.43 m`, `ALIGNED` at 0). Turning through zero stops one click on
+    `ALIGNED` before the other side, so the crossing is felt. 0.1 ms a click, one sample with the
+    push, no acceleration, the B3-hold lock and the wake-up click as before. Under the hood the two
+    stored delays stay (`sub_delay_ms`, `top_delay_ms`: state.json, the engine config, CamillaGUI
+    and saved states are unchanged); a move writes the late side and zeroes the other. A state
+    with both set (an old SETUP › Top delay, a CamillaGUI edit) shows the net value and is
+    normalised by its first move, never at load. Each change dips the group whose delay changes
+    (the subs, the tops, or both when one engine write changes both), as the sub delay did.
+  - **SETUP › Top delay removed**: one place to set the alignment, one fewer way to get it wrong.
+    SETUP has 19 items.
+  - **Knob tags dim by default**: k1000.yaml `ui.knob_tags` = `dim` (small, dark grey,
+    secondary to the label; the default), `off` (no tag, the label takes the corner: for a sticker
+    on the shell) or `bright` (v1's cyan). The knobs stay E1 top-left, E2 bottom-left, E3 top-right, E4
+    bottom-right, and the docs keep their names.
+- **Why this delay design**: one knob already guarded (lock, wake-up click, dip) covers both
+  layouts, and "which side is late" is the question the operator asks, so the screen answers it in
+  words. Two independent delays could both be non-zero, which only adds latency to the whole rig.
+- **Pictures**: `docs/ui/align_unlocked.png`, `align_tops_later.png`, `align_aligned.png`;
+  `show.png` (dim tags), `show_tags_off.png`, `show_tags_bright.png`, `align_tags_off.png`.
+- **Gate**: the Wednesday 14 freeze, like D-009: on the box after the next deploy.
+- **Merge note** (`night/snapshots`, venue snapshots, after the gig): it draws its own cyan
+  `E1`/`E2` tags (its `_corner` helper and SETUP header), which merge without a conflict and would
+  ignore `ui.knob_tags`: route both through `pages._knob_label`. Keep D-011's SETUP list (no Top
+  delay). Its venue change lines can word the delay with `fmt_align_delay`.
+
+## D-012 — Output patch: out3 feeds both subs, out4 spare · decided 2026-10-13
+
+- **Decision** (Thomas, 2026-10-13): stay on the M4. Outs 1-2 = tops, **out3 = both subs** (they
+  are summed anyway), **out4 reserved** for a later, different summed bass voice (to define after
+  the gig). Supersedes D-010's output-mapping line.
+- **How**: out3 → sub 1's input, then sub 1's Loop output (XLR, in parallel with its input) → sub 2;
+  or a plain pin-to-pin XLR Y. Two Meyer inputs in parallel (about 10 kΩ each) are an easy load
+  for the M4's line output, and each sub gets the level it had on its own output.
+- **Condition**: **Mono subs stays ON.** Out3 carries the L+R sum only then; OFF would put the left
+  channel alone on both subs.
+- **No processing change**: `output_map` stays `[TopL, TopR, SubL, SubR]`. With Mono subs ON, out4
+  carries the same sub sum as out3: a spare sub feed until its own voice exists. The per-sub trims
+  and the meter's two sub bars still show, but only out3's matter.
+- **Lost**: a separate level, delay or polarity per sub. Fine while they stand together.

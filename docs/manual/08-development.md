@@ -165,7 +165,9 @@ PYTHONPATH=/opt/k1000 python3 -m k1000 --settings ~/bench/k1000.yaml \
 | `help`, `quit` | — |
 
 Field names are the `state.json` paths: `master_db`, `balance_db`, `live_peq.2.gain`,
-`out_trim_db.1`, `live_lowshelf.freq` ([chapter 3](03-configuration.md#11-statejson-fields)).
+`out_trim_db.1`, `live_lowshelf.freq` ([chapter 3](03-configuration.md#11-statejson-fields)),
+plus `align_delay_ms`, ALIGN E3's signed delay (`sub_delay_ms − top_delay_ms`, D-011): `nudge
+align_delay_ms -1`, `set align_delay_ms -1.25` (the tops 1.25 ms later).
 
 Other flags: `--headless` (no screen), `--no-hw` (no knobs), `--no-phone`, `--url`, `--state`,
 `--active-config`, `--test-level <dBFS>` (the test sine, default −20), `--log-level`.

@@ -80,7 +80,8 @@ from .ui.input_map import (
     A_LAPTOP, ALL_PAGES, AUTO_HOME_PAGES, BELL_SLOTS, EDIT_HIGHLIGHT_S, F_LOWCUT_ON, F_SPECTRUM_ON,
     HINT_S, HOME_AFTER_S, HOME_PAGE, LIVE_SLOT_LABELS, LIVE_SLOT_SHORT, LIVE_SLOTS, MUTE_TOGGLE,
     PAGES, ControlMap, Focus, GotoPage, Mute, NextPage, NotchHelper, Nudge, PhoneQr, PhoneToggle,
-    ResetLive, SetupAction, Toggle, UndoReset, apply_focus, map_event, page_name,
+    ResetLive, SetupAction, Toggle, UndoReset, apply_focus, knob_tag_style, map_event, page_name,
+    parse_knob_tags,
 )
 
 log = logging.getLogger(__name__)
@@ -314,7 +315,7 @@ class Status:
     band: int = 0                    # selected live band, LIVE_SLOTS index (0-3 P1-P4, 4 LS, 5 HS)
     band_label: str = LIVE_SLOT_LABELS[0]
     band_short: str = LIVE_SLOT_SHORT[0]
-    align_locked: bool = True        # ALIGN E3/E4 (sub delay, Lo-Cut) locked
+    align_locked: bool = True        # ALIGN E3/E4 (delay, Lo-Cut) locked
     align_unlock_s: float = 0.0      # seconds left of the unlock (0 = locked): the EDIT pill
     pills: list[str] = field(default_factory=list)       # persistent non-default states, in order
     alerts: list[tuple[str, str]] = field(default_factory=list)   # (level, text), urgent first
@@ -328,6 +329,7 @@ class Status:
     master_up_guard_db: float = MASTER_UP_GUARD_DB   # 0 = off
     laptop_s: float = 0.0            # SETUP > Laptop access: seconds left (0 = closed)
     laptop_state: str = "off"        # off (no such surface) | closed | opening | open | closing | unavailable
+    knob_tags: str = "dim"           # the E1..E4 tags: k1000.yaml ui.knob_tags (dim | off | bright)
 
     def copy(self) -> "Status":
         return dataclasses.replace(self, levels=list(self.levels), clip=list(self.clip),
@@ -694,6 +696,12 @@ class Controller:
         self.laptop: Any = None
         self._laptop_seen: str | None = None
         self.status = Status(profile=profile.name, device=DEVICE_NAMES.get(profile.name, profile.name))
+        self.status.knob_tags = knob_tag_style(self.settings)
+        ui_sec = self.settings.get("ui")
+        raw_tags = ui_sec.get("knob_tags") if isinstance(ui_sec, dict) else None
+        if raw_tags is not None and parse_knob_tags(raw_tags) is None:
+            log.warning("k1000.yaml ui.knob_tags %r is not dim | off | bright: using %s",
+                        raw_tags, self.status.knob_tags)
         self.changed = asyncio.Event()
         self.version = 0
         self.phone: Any = None            # web.PhoneServer, set by __main__ (D-007); None = no phone
@@ -992,11 +1000,14 @@ class Controller:
                 return None
         try:
             old = self.state.get(field)
+            # ALIGN's signed delay writes BOTH stored delays (D-011): a move that normalises a
+            # sub+top pair is an edit even where the net value would read the same.
+            pair = (self.state.sub_delay_ms, self.state.top_delay_ms)
             new = self.state.nudge(field, n, fine)
         except (KeyError, ValueError, TypeError, ArithmeticError) as e:
             log.warning("nudge %r refused: %s", field, e)
             return None
-        if new != old:
+        if new != old or pair != (self.state.sub_delay_ms, self.state.top_delay_ms):
             if field == "master_db":
                 if new > old:
                     self._master_ups.append((self._ui_clock(), float(new) - float(old)))
@@ -1039,11 +1050,12 @@ class Controller:
             return None
         try:
             old = self.state.get(field)
+            pair = (self.state.sub_delay_ms, self.state.top_delay_ms)   # see nudge
             new = self.state.set(field, value)
         except (KeyError, ValueError, TypeError) as e:
             log.warning("set %r=%r refused: %s", field, value, e)
             return None
-        if new != old:
+        if new != old or pair != (self.state.sub_delay_ms, self.state.top_delay_ms):
             if field == "master_db":
                 _log_master(old, new, source)
             self._local_edit(urgent=field == "master_db" and _lower(new, old))
