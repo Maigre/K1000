@@ -84,13 +84,13 @@ Nothing is vendored: everything is installed from apt or from the projects' own 
 |---|---|
 | Install and updates | Ethernet with internet: apt, and GitHub for CamillaDSP and CamillaGUI. Offline, give the tarballs with `CAMILLADSP_TARBALL` / `CAMILLAGUI_TARBALL` ([chapter 2](02-installation.md)); apt packages still need a mirror |
 | At the gig | **None.** The box makes its own Wi-Fi for the phone ("K1000", WPA2, 10.42.0.1/24). Ethernet is never touched by it |
-| The tune | A laptop on the **wired** network with the box, for CamillaGUI on port 5005. CamillaGUI is fenced off from the box's own Wi-Fi |
+| The tune | A laptop for the system EQ. **The `/tune` page**: only over the **box's own Wi-Fi**, while SETUP › Laptop access is open (2 h at most, [chapter 4 §5.1](04-usage.md#51-laptop-access-and-the-tune-page)) and with the phone servers on (`phone: enabled: true`). **CamillaGUI** (port 5005): over that Wi-Fi the same way, or on a **wired** network with the box. A laptop sharing its connection on the Ethernet cable must not use 10.42.0.0/24, the Wi-Fi's subnet (e.g. 10.43.0.1/24 instead) |
 
 Ports on the box:
 
 | Port | What | Reachable from |
 |---|---|---|
 | 1234 | CamillaDSP websocket | the box only (127.0.0.1) |
-| 5005 | CamillaGUI | the wired network. **No password**: anyone on that network can change or stop the engine |
-| 80, 443, 8080 | The phone page | the box's own Wi-Fi only (10.42.0.1) |
-| 22 | SSH, keys only after `bootstrap.sh` | the wired network; from the box's Wi-Fi only with `setup-ap.sh --ssh on` |
+| 5005 | CamillaGUI | the wired network; from the box's Wi-Fi only while SETUP › Laptop access is open. **No password**: anyone who reaches it can change or stop the engine |
+| 80, 443, 8080 | The phone page (443 also serves `/tune`, closed unless Laptop access is open) | the box's own Wi-Fi only (10.42.0.1) |
+| 22 | SSH, keys only after `bootstrap.sh` | the wired network; from the box's Wi-Fi only while SETUP › Laptop access is open, or with `setup-ap.sh --ssh on` |

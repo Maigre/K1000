@@ -339,7 +339,9 @@ items: the B1 page cycle, and sub delay off the front page.
   of not being wanted.
 - **When.** At 10 Hz, only while `Controller.spectrum_wanted()`: SHOW displayed, SETUP › Spectrum ON,
   engine Running or Paused, device present. With `spectrum: enabled: false` in k1000.yaml there is no
-  task and no second connection.
+  task and no second connection. Not wanted for less than `rta.KEEP_S` (1.5 s): no poll, but the
+  last frame and the PEAK are kept, so a B1 hold on SHOW (ALIGN for 0.8 s, then SHOW) followed by
+  B4 still finds the PEAK; not wanted longer, the frame is cleared (no stale picture later).
 - **What.** `{"command":"GetSpectrum","value":{"side":"capture","channel":N,"min_freq":10,"max_freq":20000,"n_bins":264}}`
   (1/24 oct) for each of the profile's `input_map` channels (m4 2, 3; dev 0, 1), combined as a power
   average. Never `channel: null`: on the M4 it would average the mic and the spare input into the

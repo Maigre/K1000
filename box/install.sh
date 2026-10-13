@@ -34,7 +34,7 @@
 # CAMILLAGUI_TARBALL=<path> installs CamillaGUI from a local tarball instead of downloading it.
 # K1000_TLS_DIR=<dir> installs the phone page's HTTPS certificate from <dir> (k1000.crt, k1000.key,
 #   k1000-ca.crt) into /etc/k1000/tls, root:k1000 0640. Never the CA's private key (ca.key): it
-#   never leaves mgr-ran. Restart k1000 (between shows) to load a new certificate.
+#   never leaves the laptop that holds it. Restart k1000 (between shows) to load a new certificate.
 #
 # Why each step exists is said where it happens. What it never does: touch /etc/k1000/k1000.yaml
 # once it exists (Thomas's settings), touch /var/lib/k1000 contents (live state; the one exception
@@ -54,9 +54,10 @@ AP_UNITS=(k1000-ap-fence k1000-ap-hostapd k1000-ap-dnsmasq)   # net/: set up by 
 # smbus2 for the knob board (D-008: python3-smbus is GPL-2.0-only), qrcode for the PHONE page's
 # join codes and hostapd for the phone's access point (D-007, net/setup-ap.sh; installed even
 # without --ap, because a venue has no internet. Inert until then: Debian's own hostapd.service
-# needs /etc/hostapd/hostapd.conf, never created; K1000 runs k1000-ap-hostapd.service). alsa-utils
-# (aplay/arecord probe the cards), fonts-dejavu-core (the UI's fonts) and usbutils (lsusb, M4
-# bring-up) are not in Raspberry Pi OS Lite.
+# needs /etc/hostapd/hostapd.conf, never created; K1000 runs k1000-ap-hostapd.service).
+# fonts-dejavu-core (the UI's fonts) is not in Raspberry Pi OS Lite either; rsync, alsa-utils
+# (aplay/arecord probe the cards) and usbutils (lsusb, M4 bring-up) are (the 2026-10-06 image),
+# and stay listed so nothing depends on that.
 APT_DEPS=(python3-websockets python3-smbus2 python3-libgpiod python3-yaml python3-pil python3-numpy
           python3-qrcode python3-pytest rsync alsa-utils fonts-dejavu-core usbutils hostapd)
 # CamillaGUI v5.0.0-beta.2, linux aarch64. Pinned by hash: its binary reports "5.0.0-beta.1" in
@@ -171,7 +172,7 @@ done
 missing=()
 for p in "${APT_DEPS[@]}"; do dpkg -s "$p" >/dev/null 2>&1 || missing+=("$p"); done
 if [ ${#missing[@]} -gt 0 ]; then
-  apt-get install -y --no-install-recommends "${missing[@]}"
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"
   changed "apt installed ${missing[*]}"
 fi
 if [ -x /usr/local/bin/camilladsp ]; then
@@ -200,8 +201,15 @@ if [ "$SRC" != "$APP" ]; then
     changed "synced $SRC -> $APP ($n entries)"
   fi
   rev=${K1000_REVISION:-$(revision_of "$SRC")}
-  printf '%s\n' "$rev" > "$TMP/REVISION"
-  put "$TMP/REVISION" "$APP/REVISION" 644
+  # Nothing synced and nothing better to record (no K1000_REVISION, no git, no REVISION file in an
+  # rsync'd /opt/k1000-src): the REVISION already there still names what is deployed; keep it
+  # rather than turn it into "unknown".
+  if [ -z "${K1000_REVISION:-}" ] && [ -z "$pending" ] && [[ $rev == "unknown "* ]] && [ -s "$APP/REVISION" ]; then
+    :
+  else
+    printf '%s\n' "$rev" > "$TMP/REVISION"
+    put "$TMP/REVISION" "$APP/REVISION" 644
+  fi
 fi
 
 # --- 4. settings, state and log directories ------------------------------------------------------
@@ -345,7 +353,7 @@ done
 # --- 7. optional: boot-level setup (--boot) ------------------------------------------------------
 if [ $DO_BOOT = 1 ]; then
   [ -f "$BOOT_DIR/config.txt" ] && [ -f "$BOOT_DIR/cmdline.txt" ] || die "$BOOT_DIR has no config.txt/cmdline.txt"
-  command -v dtc >/dev/null || { apt-get install -y --no-install-recommends device-tree-compiler; changed "apt installed device-tree-compiler"; }
+  command -v dtc >/dev/null || { DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends device-tree-compiler; changed "apt installed device-tree-compiler"; }
   dtc -@ -q -I dts -O dtb -o "$TMP/k1000-zynscreen.dtbo" "$SRC/overlays/k1000-zynscreen.dts"
   put "$TMP/k1000-zynscreen.dtbo" "$BOOT_DIR/overlays/k1000-zynscreen.dtbo" -
   if ! grep -qE '^[[:space:]]*dtoverlay=k1000-zynscreen([,[:space:]]|$)' "$BOOT_DIR/config.txt"; then
@@ -424,9 +432,16 @@ fi
 # k1000-ap NetworkManager connection), its DNS file, its fence and guard, /etc/k1000/ap.*, the
 # Wi-Fi country and radio; never eth0. A Friday no-go (`net/setup-ap.sh --down`) stays down: --ap
 # then only keeps the files current; `net/setup-ap.sh --up` brings the AP back.
+# Its changes count in this script's total (its last "k1000-ap: N changes" line; pipefail keeps
+# its exit status), so an update that only touches net/ is not "0 changes".
 AP_FAILED=0
 if [ $DO_AP = 1 ]; then
-  bash "$SRC/net/setup-ap.sh" || { note "ERROR: net/setup-ap.sh failed (see above); everything else is installed"; AP_FAILED=1; }
+  if bash "$SRC/net/setup-ap.sh" 2>&1 | tee "$TMP/ap.log"; then :; else
+    note "ERROR: net/setup-ap.sh failed (see above); everything else is installed"
+    AP_FAILED=1
+  fi
+  n=$(sed -n 's/^k1000-ap: \([0-9][0-9]*\) changes$/\1/p' "$TMP/ap.log" | tail -n 1)
+  CHANGES=$((CHANGES + ${n:-0}))
 elif [ ${#AP_UNITS_STALE[@]} -gt 0 ]; then
   note "the phone AP's units changed (${AP_UNITS_STALE[*]}): not applied; between shows: sudo $0 --ap"
 fi

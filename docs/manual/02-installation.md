@@ -40,7 +40,7 @@ Raspberry Pi Imager (the wording and the order of these settings vary between Im
 | Hostname | `k1000` |
 | User | `k1000`, with a password of your choice |
 | SSH | On, **"Allow public-key authentication only"**, with your public key |
-| Wi-Fi | Not needed. Set the Wi-Fi country if asked |
+| Wi-Fi | **Leave it empty** (set only the Wi-Fi country if asked). The box makes its own Wi-Fi for the phone, and `setup-ap.sh` refuses to take over `wlan0` while it is a client of another network |
 
 Boot the box on Ethernet. Log in once with your key:
 
@@ -59,8 +59,9 @@ ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/b
 ```
 
 Raspberry Pi OS Lite already has `rsync` on the box side (checked on the 2026-10-06 image).
-Always give `K1000_REVISION` as above: without it, a run from `/opt/k1000-src` (no git there)
-records `unknown (from /opt/k1000-src)` in `/opt/k1000/REVISION`.
+Always give `K1000_REVISION` as above: without it, a run that brings new code from
+`/opt/k1000-src` (no git there) records `unknown (from /opt/k1000-src)` in `/opt/k1000/REVISION`.
+A run that syncs nothing keeps the `REVISION` already there.
 
 What it does, each step skipped when already done:
 
@@ -68,7 +69,7 @@ What it does, each step skipped when already done:
 |---|---|
 | 1. apt | `apt-get update` **only when** a package K1000 needs is missing, then the operator tools (`i2c-tools`) |
 | 2. CamillaDSP | 5.0.0-beta.1 into `/usr/local/bin/camilladsp`. The tarball and the binary are both checked against pinned sha256 sums |
-| 3. K1000 | `install.sh --boot --headless --ap`: the services, the screen overlay, I²C for the knobs, CamillaGUI, boot to the console, the phone's Wi-Fi access point and its firewall ([§6](#6-installsh-reference)) |
+| 3. K1000 | `install.sh --boot --headless --ap`: the services, the screen overlay, I²C for the knobs, CamillaGUI, boot to the console, the phone's Wi-Fi access point and its firewall ([§6](#6-installsh-reference)). An access point kept down by `setup-ap.sh --down` (or `--no-ap`) stays down |
 | 4. SSH | Keys only (`/etc/ssh/sshd_config.d/10-k1000-keyonly.conf`), checked with `sshd -t`, applied at the next boot. Skipped with a warning when no key login was seen |
 | 5. Lean OS | `tools/k1000-lean.sh`: no desktop leftovers, no apt timers, swap in RAM only, a quiet boot ([§7](#7-converting-a-desktop-card)) |
 
@@ -87,18 +88,19 @@ ssh k1000 'tail -f /var/log/k1000-bootstrap/run-<time>.log'
 
 | Option / variable | Effect |
 |---|---|
-| `--dry-run` | Says what it would do, changes nothing |
+| `--dry-run` | Says what it would do, changes nothing. `install.sh` has no dry run, so its changes are not counted: a finished card dry-runs to `0 changes` |
+| `--no-ap` | Everything but the phone's access point, which is marked down (`setup-ap.sh --down`): a spare card after a phone no-go. Later runs, with or without `--no-ap`, keep it down; `sudo /opt/k1000/net/setup-ap.sh --up` lifts it |
 | `--help` | Prints its header |
 | `CAMILLADSP_TARBALL=<path>` | Installs CamillaDSP from a local copy of the release tarball (offline) |
 | `CAMILLAGUI_TARBALL=<path>` | The same for CamillaGUI (passed on to `install.sh`) |
 | `K1000_REVISION=<text>` | What `/opt/k1000/REVISION` records (passed on to `install.sh`) |
-| `K1000_BOOTSTRAP_FOREGROUND=1` | Runs in place instead of as a unit (for a console on the box) |
+| `K1000_BOOTSTRAP_FOREGROUND=1` | Runs in place instead of as a unit (for a console on the box), `k1000-lean.sh` included |
 
 Put the variables after `sudo`, as in the command above.
 
 | Exit | Meaning |
 |---|---|
-| 0 | Done. The last lines say `N changes. Now power-cycle the box`, or `0 changes: this card is already a K1000` |
+| 0 | Done. The last lines say `N changes. Now power-cycle the box`, `0 changes: this card is already a K1000`, or `0 changes; still to do: cloud-init off (below)` (after the first power cycle, §4) |
 | 1 | An error, printed. Nothing after it ran |
 | 2 | Unknown option |
 | 3 | CamillaGUI is not installed (offline, or a hash mismatch). The access point may also have failed: read the `ERROR` lines at the end. Run again with internet or `CAMILLAGUI_TARBALL` |
@@ -142,11 +144,15 @@ it. It starts on profile `dev` with the default knob map. Then:
    ```sh
    ssh k1000 'install -d -m 0700 /tmp/k1000-tls'
    scp k1000.crt k1000.key k1000-ca.crt k1000:/tmp/k1000-tls/     # never the CA's private key
-   ssh k1000 'sudo K1000_TLS_DIR=/tmp/k1000-tls /opt/k1000-src/install.sh && rm -rf /tmp/k1000-tls'
+   ssh k1000 "sudo K1000_TLS_DIR=/tmp/k1000-tls K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/install.sh --ap; rm -rf /tmp/k1000-tls"
    ```
 
-   K1000 loads it at its next start: `ssh k1000 'sudo systemctl restart k1000'` (between shows;
-   the audio keeps playing). Without a certificate the phone page runs on plain HTTP
+   Double quotes, so `git describe` runs on the laptop and `/opt/k1000/REVISION` stays right
+   (without it, a run from `/opt/k1000-src`, which has no git, can record `unknown`); `;`, so the key copy is removed
+   whatever `install.sh` says. `install.sh` checks the three files, and the key against the
+   certificate, before it changes anything. `--ap` (re)applies the access point; drop it if the
+   access point is already set up. K1000 loads the certificate at its next start:
+   `ssh k1000 'sudo systemctl restart k1000'` (between shows; the audio keeps playing). Without a certificate the phone page runs on plain HTTP
    (`http://10.42.0.1:8080/`) and cannot be installed. How the certificate is made: [chapter
    7](07-maintenance.md#the-phone-certificate). The phone side: [`docs/06-phone.md`](../06-phone.md).
 
@@ -160,11 +166,11 @@ After any edit of `k1000.yaml`: `sudo systemctl restart k1000`.
 
 | Flag | What it adds |
 |---|---|
-| *(none)* | Installs and updates the files, enables the four units (`camilladsp`, `k1000`, `camillagui`, `k1000-console`). **Starts nothing** |
+| *(none)* | Installs and updates the files, enables the four units (`camilladsp`, `k1000`, `camillagui`, `k1000-console`), and installs the two Laptop access units (`k1000-laptop.path`, `k1000-laptop.service`), never enabled: k1000 brings the watcher. **Starts nothing.** A changed access-point unit is only reported (`not applied; between shows: … --ap`), never copied |
 | `--start` | Then (re)starts those four units. **The audio drops for about a second**, then ramps back in. Never during a show |
 | `--boot` | Boot-level setup, applied at the next reboot: compiles the screen overlay into `/boot/firmware/overlays/`, adds `dtoverlay=k1000-zynscreen,rotate=270` to `config.txt`, adds `vt.global_cursor_default=0` to `cmdline.txt` (original kept as `cmdline.txt.k1000-orig`), turns I²C on for the knobs (`dtparam=i2c_arm=on`, `i2c-dev` loaded at boot) |
 | `--headless` | Boots to the console instead of a desktop (`multi-user.target`), masks PipeWire/WirePlumber for all users, disables Bluetooth, printing and the NFS client/rpcbind, removes the tty1 auto-login. Applied at the next reboot. It leaves cloud-init alone (see §4) |
-| `--ap` | Runs `net/setup-ap.sh`: the phone's Wi-Fi "K1000" on `wlan0` and its firewall. Takes effect at once. **Do not run it after a phone no-go** (`setup-ap.sh --down`): it would bring the access point back |
+| `--ap` | Runs `net/setup-ap.sh`: the phone's Wi-Fi "K1000" on `wlan0` and its firewall, and installs or updates the access point's units (the only way they are). Takes effect at once. Later runs keep every earlier choice, a no-go included: after `setup-ap.sh --down` the access point stays down until `setup-ap.sh --up`. It refuses (exit 4, nothing changed) while another interface holds a 10.42.0.x address or `wlan0` is a client of another Wi-Fi |
 | `--deps` | Prints the apt packages it may install, one per line, and exits |
 | `-h`, `--help` | Prints its header |
 
@@ -187,11 +193,6 @@ After any edit of `k1000.yaml`: `sudo systemctl restart k1000`.
 What it never does: overwrite `/etc/k1000/k1000.yaml` once it exists, touch the live state in
 `/var/lib/k1000` (except removing an empty `coeffs/` folder left there by an older version), or
 reboot.
-
-<!-- TODO(after UI v1): re-check §5 (template profile and knob map) and this §6 (flags, variables,
-exit codes) against box/etc/k1000.yaml and box/install.sh once the phone wiring and UI v1 are
-committed. -->
-
 
 It also keeps the previous version in `/opt/k1000.prev` before changing anything (rollback, §9),
 installs a hardware watchdog setting (`RuntimeWatchdogSec=15`) and makes the journal persistent
@@ -255,7 +256,7 @@ copy these from the main card (they are not in the repository):
 | `/etc/k1000/k1000.yaml` | The profile pin and the confirmed knob map |
 | `/var/lib/k1000/state.json` | The tune (system EQ, trims, delays) and the levels. Copy it with **both** services stopped (below) |
 | The phone certificate | `K1000_TLS_DIR`, as in §5 |
-| `/etc/k1000/ap.psk` | The Wi-Fi password. Without it the spare generates its own and every phone must scan the QR again. After copying it: `sudo /opt/k1000/net/setup-ap.sh` (it keeps an existing password) |
+| `/etc/k1000/ap.psk` | The Wi-Fi password. Without it the spare generates its own and every phone must scan the QR again. Back it up with the other files ([chapter 7](07-maintenance.md#the-spare-card)); on the spare: `scp ~/k1000-backup/ap.psk k1000:/tmp/ && ssh k1000 'sudo install -o root -g k1000 -m 0640 /tmp/ap.psk /etc/k1000/ap.psk && rm /tmp/ap.psk && sudo /opt/k1000/net/setup-ap.sh'` (it keeps an existing password). A secret: never in the repository |
 
 **Copying `state.json`.** Stopping k1000 alone is not enough. If the engine is still playing when
 k1000 starts again, k1000 keeps the engine's values and saves them over the file you copied. Only

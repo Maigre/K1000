@@ -9,7 +9,7 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
 
 - **Context**: new project, no code yet; reviews, decisions and progress need a home.
 - **Choice**: `Maigre/K1000` (public) holds requirements, reviews (`docs/NN-*.md`), this log and the
-  roadmap, then the code. The 37Projects hub keeps only the project card, tasks and log.
+  roadmap, then the code. The author's private notes keep only the project card, tasks and log.
 - **By**: Thomas, at the project's creation.
 
 ## D-002 — Architecture: D1, CamillaDSP on the Zynthian V4 · decided 2026-10-12
@@ -121,14 +121,14 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   signed by a **local CA**:
   - The CA is *name-constrained* (critical): it can vouch only for IP 10.42.0.0/24 and
     `k1000.home.arpa`, so even a leaked key cannot impersonate another site to the phone.
-  - Its private key stays off the box, in the hub's gitignored `secrets/` on mgr-ran.
+  - Its private key stays off the box, on the laptop that made it, outside any repository.
   - Thomas installs the CA certificate **once** on his phone (Settings → Security → Encryption &
     credentials → Install a certificate → CA certificate). The portal serves it at
     `http://10.42.0.1/k1000-ca.crt`.
   - The leaf is valid until 2029-01-14.
 - **Update 2026-10-12 (evening), implementation defaults after the phone review:**
-  - **The AP runs on hostapd, PMF unset, not on NetworkManager's AP.** Verified hub knowledge
-    (rpi-internal-wifi-ap-hostapd, 2026-09-03): on the Pi 4's own Broadcom chip, NetworkManager's
+  - **The AP runs on hostapd, PMF unset, not on NetworkManager's AP.** Verified in the author's
+    notes (2026-09-03): on the Pi 4's own Broadcom chip, NetworkManager's
     wpa_supplicant AP completes the handshake and then drops Apple and older-Android clients about
     6 s later, before DHCP. NetworkManager leaves wlan0 alone; eth0 is untouched.
   - **Captive DNS off by default.** With it on, Android never offers "stay connected" and pauses

@@ -9,8 +9,8 @@ carry the show.
 **Defaults** (2026-10-12, refining D-007; each one is a single `setup-ap.sh` option to change):
 
 - **AP backend: hostapd, PMF off** (`ieee80211w` left unset), `wlan0` unmanaged by NetworkManager.
-  Why: the hub's verified knowledge drawer `rpi-internal-wifi-ap-hostapd` ("RPi internal Wi-Fi as
-  an AP — hostapd, not wpa_supplicant, and PMF off (BCM4345/43455)"): NetworkManager's
+  Why: the author's verified notes on the Pi's own Wi-Fi as an AP ("hostapd, not wpa_supplicant,
+  and PMF off (BCM4345/43455)"): NetworkManager's
   wpa_supplicant AP on the Pi's chip drops Apple/older-Android clients ~6 s after the handshake.
   `--backend nm` stays available.
 - **Captive portal off** (the AP's DNS answers `k1000.home.arpa` only): Android then offers *Stay
@@ -83,7 +83,7 @@ carry the show.
 - **HTTPS, so Android can install it.** A certificate for `10.42.0.1` / `k1000.home.arpa`, signed
   by a small local CA that Thomas installs once on his phone. The CA is **name-constrained**: it
   can only vouch for 10.42.0.0/24 and `k1000.home.arpa`, never for another site. Its private key
-  never leaves mgr-ran; the box only holds the leaf certificate and key (`/etc/k1000/tls`).
+  never leaves the laptop that made it; the box only holds the leaf certificate and key (`/etc/k1000/tls`).
 - **Installed, it opens instantly.** A service worker keeps the page itself on the phone. With no
   link to the box the page still opens and says *Not connected to K1000 — join the K1000 Wi-Fi*.
   After a box update the first launch shows the old page for a second, then reloads itself once.
@@ -148,8 +148,8 @@ system EQ, trims, input trim, sub low-pass.
    `K1000_REVISION`, removes the folder), then restart the k1000 service between shows so it
    loads the certificate. On the box: SETUP › **Phone**.
 2. **Put the CA on the phone first (simplest):** the CA certificate is public. Copy
-   `secrets/k1000-ca/k1000-ca.crt` (or `.der`) to the phone over USB, Seafile or a mail to
-   yourself, into *Downloads*. (Or later from the box's first-time page, step 4.)
+   `k1000-ca.crt` (or `.der`, from the CA's folder on the laptop that made it) to the phone over
+   USB, a file share or a mail to yourself, into *Downloads*. (Or later from the box's first-time page, step 4.)
 3. **Join the Wi-Fi from Settings:** Settings › Network & internet › Internet › the **⊞ QR icon**
    next to *Add network*, scan the **first QR** on the box screen → *Join*. (Joining from
    Settings matters: Android then asks the "no internet" question below. The password is printed
@@ -218,8 +218,8 @@ PHONE page's third QR (**FIRST TIME**, `http://10.42.0.1/`). Back to the portal,
   through a case and bodies (the fallback), and 5 GHz ch 36 is **indoor-only** in the EU.
 - **Plan B, range:** a USB Wi-Fi dongle with an external antenna:
   `sudo /opt/k1000/net/setup-ap.sh --iface wlan1` (the box screen, the fence and the page follow
-  `ap.info`). Hub knowledge: `realtek-usb-wifi-dongles`.
-- **Why hostapd** (the default backend): the hub's knowledge drawer `rpi-internal-wifi-ap-hostapd`
+  `ap.info`). Test the dongle on the box before relying on it.
+- **Why hostapd** (the default backend): the author's earlier tests on this chip
   saw NetworkManager's AP mode (wpa_supplicant) on this Broadcom chip complete the WPA2 handshake,
   then drop every Apple / older-Android client before DHCP, ~6 s later; hostapd with PMF **not
   advertised at all** is what worked. install.sh installs `hostapd` (a venue has no internet).
@@ -259,7 +259,7 @@ PHONE page's third QR (**FIRST TIME**, `http://10.42.0.1/`). Back to the portal,
 | Box screen: password unreadable | `/etc/k1000/ap.psk` must be `root:k1000 0640` (setup-ap.sh fixes it) |
 | New Wi-Fi password wanted | `sudo /opt/k1000/net/setup-ap.sh --new-password` (every phone scans the QR again) |
 | SSH to the box over K1000 | Fenced off by default: `sudo /opt/k1000/net/setup-ap.sh --ssh on` (or use `eth0`, not with a laptop sharing on 10.42.0.x: §1) |
-| Certificate expiry | The leaf is valid until **2029-01-14**; the box logs a warning 60 days before. Re-sign it on mgr-ran (`secrets/k1000-ca/README.txt`) |
+| Certificate expiry | The leaf is valid until **2029-01-14**; the box logs a warning 60 days before. Re-sign it on the laptop that holds the CA key (the README next to that key) |
 | Laptop on K1000 cannot open CamillaGUI or `/tune` | SETUP › Laptop access must say `OPEN h:mm` (§11). Closed: push twice. It closes by itself after 2 h and when k1000 restarts: open it again |
 | SETUP › Laptop access says `NO ANSWER` | The root watcher is not running: `systemctl status k1000-laptop.path` (k1000 brings it; after a deploy, k1000 must have restarted once). `journalctl -t k1000-laptop` |
 | SETUP › Laptop access says `NO WI-FI FENCE` | The AP and its fence are not set up (`setup-ap.sh`): there is no K1000 Wi-Fi to open. Use the wired LAN |
@@ -378,7 +378,7 @@ With the phone off, the box's KNOBS OFFLINE alert says `SOURCE DOWN / BYPASS` in
   disabled and stopped; `--portal on`, `--band bg`, `--ssh on`, `--backend nm` with `pmf 1`;
   install.sh's certificate step, `--ap`, `--deps`; bootstrap's exit codes).
 - Wiring round (2026-10-12, main 43f66b3 + the phone files): `pytest -m "not engine and not hw"`
-  on mgr-ran 690 passed, 1 skipped (a Pi-only timing budget); on the box, in a scratch copy with
+  on the dev laptop 690 passed, 1 skipped (a Pi-only timing budget); on the box, in a scratch copy with
   the engine tests on a private port, 716 passed, 4 skipped (no QR decoder, no shellcheck there).
   The ZynScreen overlay with its SPDX line compiles to the same `.dtbo` as the installed one.
 - Fix round (2026-10-12, after the net-safety and wiring reviews): the subnet guard (setup-ap.sh,
@@ -390,7 +390,7 @@ With the phone off, the box's KNOBS OFFLINE alert says `SOURCE DOWN / BYPASS` in
   with its `ct count` caps loads in the kernel; both `ExecStartPre` refusals and the pass case
   ran in a throwaway unit (`eth0 holds 192.0.2.54/24, inside the AP subnet ...` with a test
   subnet); the guard script runs under `dash`; `systemd-analyze verify` passes the three units.
-  `pytest -m "not engine and not hw"` on mgr-ran: 720 passed, 1 skipped (the Pi-only budget); on
+  `pytest -m "not engine and not hw"` on the dev laptop: 720 passed, 1 skipped (the Pi-only budget); on
   the box, scratch copy, engine tests on private ports: 745 passed, 5 skipped (no QR decoder, no
   shellcheck there). shellcheck clean on all seven shell scripts.
 - **Not yet proven on hardware:** the AP itself on the Pi's wlan0 (5 GHz AP mode on brcmfmac), a

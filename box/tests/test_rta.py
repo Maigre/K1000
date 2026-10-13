@@ -9,8 +9,9 @@
   wanted, its own client, channels and power combining, the warm-up answers ("No audio data
   available", "Insufficient data in buffer": quiet, fast retry, a refusal only after
   WARMUP_GRACE_S), a link down, a refusal, the program gate (GetCaptureSignalRmsSince), the
-  pause after knob events, the idle close; `peak_floors` (k1000.yaml);
-- B4 on a silent input is the NO PEAK case;
+  pause after knob events, a short trip off SHOW (under KEEP_S: the frame and PEAK kept), the
+  idle close; `peak_floors` (k1000.yaml);
+- B4 on a silent input is the NO PEAK case; B4 right after a B1 hold on SHOW still finds the PEAK;
 - the controller's mute never waits for a stuck spectrum link;
 - `engine`: a real camilladsp (SignalGenerator sine) on the private port
   $K1000_CONTROL_TEST_PORT gives a live frame with its PEAK at the sine.
@@ -663,6 +664,11 @@ def test_leaving_show_clears_then_closes_the_connection():
         await task.step()
         want[0] = False
         clk.t += 0.1
+        n, polls = len(published), made[0].calls[:]
+        await task.step()
+        assert task.frame is not None and len(published) == n     # under KEEP_S: kept, not redrawn
+        assert made[0].calls == polls                             # and not polled
+        clk.t += rta.KEEP_S
         await task.step()
         assert published[-1] == (None, rta.OFF) and task.frame is None
         assert task.client is not None                  # kept a while (SHOW comes back often)
@@ -755,6 +761,59 @@ def test_b4_on_a_silent_input_is_the_no_peak_case(tmp_path: Path):
         p1 = ctl.state.live_peq[0]
         assert p1.q == pytest.approx(NOTCH_Q, abs=1e-3) and p1.freq == freq and p1.gain == 0.0
         assert "NO PEAK" in ctl.focus.hint_now()
+        await ctl.stop()
+    run(go())
+
+
+def test_b4_right_after_a_b1_hold_on_show_still_finds_the_peak(tmp_path: Path):
+    """The operator card's reflex 'hold B1, then B4' on SHOW: B1's press shows ALIGN at once and
+    its long fires 0.8 s later back on SHOW. The spectrum is not wanted on ALIGN, but for less
+    than KEEP_S: the PEAK is kept, and B4 right after the hold moves a bell onto it (before
+    KEEP_S it was cleared, and B4 said NO PEAK until the PEAK had built again, ~2 s)."""
+    from types import SimpleNamespace
+    from test_control import boot, make
+    from k1000.control import NOTCH_Q
+    from k1000.state import State
+
+    async def go() -> None:
+        ctl, eng = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        await ctl.poll_once()
+        client = FakeSpecClient()
+        client.mags = with_peak(2440.0, 20.0)
+        clk = Clock()
+        task = SpectrumTask("ws://x", wanted=ctl.spectrum_wanted, channels=lambda: [0, 1],
+                            publish=ctl.set_spectrum, client_factory=lambda url: client, clock=clk)
+        ctl.rta = task                                     # events hold its frames, as on the box
+
+        async def steps(seconds: float) -> None:
+            for _ in range(int(round(seconds / 0.1))):
+                await task.step()
+                clk.t = round(clk.t + 0.1, 3)
+
+        def button(n: int, kind: str) -> None:
+            ctl.handle_event(SimpleNamespace(index=4 + n, kind=kind, ts=clk.t))
+
+        assert ctl.page == "SHOW" and ctl.spectrum_wanted()
+        await steps(3.0)
+        peak = FREQS[bin_of(2440.0)]
+        assert ctl.status.peak_hz == pytest.approx(peak)
+        button(0, "press")                                 # B1 down: ALIGN at once
+        assert ctl.page == "ALIGN" and not ctl.spectrum_wanted()
+        await steps(0.8)
+        assert ctl.status.peak_hz == pytest.approx(peak)   # kept through ALIGN
+        button(0, "long")                                  # still held at 0.8 s: SHOW
+        button(0, "release")
+        assert ctl.page == "SHOW"
+        await steps(0.3)                                   # the finger moves to B4
+        button(3, "press")
+        button(3, "short")
+        p1 = ctl.state.live_peq[0]
+        assert p1.freq == pytest.approx(peak, rel=1e-3) and p1.q == pytest.approx(NOTCH_Q, abs=1e-3)
+        assert p1.gain == 0.0 and "NO PEAK" not in ctl.focus.hint_now()
+        button(0, "press")                                 # a real page change: ALIGN for good
+        await steps(rta.KEEP_S + 0.2)
+        assert ctl.status.spectrum is None and ctl.status.peak_hz is None
         await ctl.stop()
     run(go())
 

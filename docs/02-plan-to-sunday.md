@@ -135,10 +135,12 @@ label K1000's outputs. Any doubt during the gig means re-patching in a minute.
 0. **Before the speakers**: the Knob test is done and `controls:` confirmed (SETUP › Knob test,
    `box/README.md`), the buttons labelled PAGE · MUTE · BAND/UNLOCK · NOTCH; hold B2 mutes all four
    Meyers (a B4 press in its place is harmless since UI v1, but it does not mute). The M4 front
-   panel is taped (MONITOR and INPUT MONITOR MIX fully clockwise, MON buttons unlit). Phone: go/no-go
-   on the own-AP PWA (D-007); if no-go, the AP fully off (`setup-ap.sh --down` + `phone: enabled:
-   false`, `docs/06-phone.md` §9; SETUP › Phone alone leaves the Wi-Fi on the air) and the knobs
-   carry the show.
+   panel is taped (MONITOR and INPUT MONITOR MIX fully clockwise, MON buttons unlit). Phone: decide
+   the go/no-go on the own-AP PWA (D-007) now, but if it is a no-go, switch phone control off only
+   (SETUP › Phone, `PHONE OFF · KNOBS ONLY`) and take the AP fully off **after step 6**: the system
+   EQ uses the K1000 Wi-Fi. Fully off = `setup-ap.sh --down` + `phone: enabled: false`
+   (`docs/06-phone.md` §9; SETUP › Phone alone leaves the Wi-Fi on the air); the knobs then carry
+   the show.
 1. **Power order**: K1000 on → screen shows MUTED → speakers on. The box powers up the way it was
    powered down: `READY · MUTED` only if it was muted (hold B2) before power-off; otherwise it ramps
    back to the saved level by itself ("RAMPS IN BY ITSELF"). So the end-of-night routine is: hold B2
@@ -159,12 +161,16 @@ label K1000's outputs. Any doubt during the gig means re-patching in a minute.
    for 2 h (two pushes; the PHONE page prints the Wi-Fi password meanwhile). Measure with the mic (REW
    or Open Sound Meter), then paste the filter list at `https://10.42.0.1/tune` (preview on the 8
    system bands, Apply = saved, Undo), or use CamillaGUI at `http://10.42.0.1:5005` (Fetch from DSP
-   first). Keep to a few broad cuts. One push closes Laptop access when done.
+   first). Keep to a few broad cuts. One push closes Laptop access when done. Without the K1000
+   Wi-Fi (already off after a no-go, or not working): CamillaGUI over a direct `eth0` cable, the
+   laptop sharing its connection on 10.43.0.1/24 (never 10.42.0.x, the AP's subnet), at
+   `http://k1000.local:5005`; no `/tune` page that way (it answers on the K1000 Wi-Fi only).
 7. **Notch drill with B4** (SHOW): make a steady peak in the program at low level (a sine from the
    source, e.g. 1–3 kHz, or a held note) and wait for the cyan PEAK pointer. Then B4 (a free bell
    lands on it at Q 8.65, nothing audible), E3 down 12 clicks (−6 dB: the tone drops), E4 up to
    narrow: under 10 s. B4 again must re-select that bell and write nothing. Also try B4 with no peak
-   (`NO PEAK`, sweep with E2). Then SETUP › Reset live EQ (two pushes) and Undo reset (it must come
+   (`NO PEAK`: E3 down first, about −6 dB, then sweep E2 until the tone drops; at 0 dB the sweep is
+   silent). Then SETUP › Reset live EQ (two pushes) and Undo reset (it must come
    back exactly), and reset again for the show.
 8. **Spectrum ON/OFF** (D-009 leaves it to this test; SETUP › Spectrum, saved). Keep it ON only if,
    with real program at the rig: the graph reads well in that light and at that angle; the PEAK
@@ -177,12 +183,13 @@ label K1000's outputs. Any doubt during the gig means re-patching in a minute.
    OFF (a fast E2 sweep, E1 master); Thursday's soak with it ON was clean. Otherwise OFF. If
    anything at all is odd, take it out entirely: `spectrum: enabled: false` in `/etc/k1000/k1000.yaml`, then
    `sudo systemctl restart k1000` between shows (no second engine connection; SETUP › Spectrum then
-   reads DISABLED). B4 still works without it (`NO PEAK`: sweep with E2). Note the decision in
+   reads DISABLED). B4 still works without it (`NO PEAK`: E3 down first, then sweep E2). Note the decision in
    `ROADMAP.md`.
 9. **Two-hour program run**, then read the xrun log (`k1000-soak.sh --summary`: only dropouts
-   inside the run count; older ones are printed as a `note:`). Give the run its own log
-   (`-E K1000_SOAK_LOG=/var/log/k1000/soak-2h.log`, then `--summary` on that file): appended to
-   Thursday's `soak.log`, its window would span both runs (`box/README.md` § Soak test).
+   inside the run count; older ones are printed as a `note:`). Give the run its own unit and log
+   (`--unit=k1000-soak-2h -E K1000_SOAK_LOG=/var/log/k1000/soak-2h.log`, then `--summary` on that
+   file): appended to Thursday's `soak-thu.log`, its window would span both runs (`box/README.md`
+   § Soak test).
 
 ## 7. Blocking on Thomas (today)
 

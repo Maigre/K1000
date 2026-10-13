@@ -181,7 +181,7 @@ of `box/tests` plus `tools/tests/test_knobtrace.py`, Python 3.13). The tool's 21
 on the box.
 
 ```sh
-cd /home/mgr/Bakery/K1000
+# from the repo checkout:
 # save the two diff blocks below as /tmp/knob-A.patch and /tmp/knob-B.patch, then:
 git apply /tmp/knob-A.patch && git apply /tmp/knob-B.patch
 cd box && python3 -m pytest -q -p no:cacheprovider tests tools/tests/test_knobtrace.py

@@ -11,8 +11,11 @@ Why it is shaped like this:
   (mute, faders, adoption) does not notice.
 - **Polled only when it is looked at.** At ~10 Hz, only while the controller says so
   (`wanted()`: SHOW displayed, SETUP > Spectrum ON, engine Running/Paused, device present).
-  Not wanted for IDLE_CLOSE_S: the connection is closed too. Not wanted at all: no frame is
-  kept, so a stale spectrum is never drawn when SHOW comes back.
+  Not wanted for IDLE_CLOSE_S: the connection is closed too. Not wanted for KEEP_S or more:
+  no frame is kept, so a stale spectrum is never drawn when SHOW comes back. Shorter than
+  KEEP_S (a B1 hold on SHOW passes through ALIGN for 0.8 s): nothing is polled, but the frame,
+  the ballistics and the PEAK stay, so B4 right after the hold still finds the PEAK instead of
+  waiting ~2 s for it to build again.
 - **The program, not the room.** Capture side, the profile's `input_map` channels (program L
   and R: m4 2,3; dev 0,1), one call per channel, combined as a POWER average
   (`eqgraph.combine_power`). Never `channel: null`: on the M4 it averages the waveforms of the
@@ -79,6 +82,9 @@ WARMUP_CAP_S = 3 * WARMUP_GRACE_S   # no data this long through warm-up answers,
                                     # the grace: a refusal (only data, a link drop or not wanted
                                     # reset it; a "No audio data" answer does not)
 IDLE_CLOSE_S = 30.0          # not wanted this long: the second connection is closed
+KEEP_S = 1.5                 # not wanted for less than this: the picture and the PEAK are kept
+                             # (a B1 hold on SHOW: its press shows ALIGN, its long fires 0.8 s
+                             # later and shows SHOW again; B4 right after must still see the PEAK)
 # The engine's answers while its analyser warms up (any case; CamillaDSP 5.0.0-beta.1
 # spectrum.rs): before the first call set the sticky "requested" flag, and until the ring
 # buffer holds one FFT length (8192 frames at 48 kHz, 171 ms) after it.
@@ -402,7 +408,7 @@ class SpectrumTask:
             want = False
         if not want:
             self._warm_since = self._warm_first = None
-            if self.state != OFF or self.frame is not None:
+            if (self.state != OFF or self.frame is not None) and now - self._last_wanted >= KEEP_S:
                 self._clear(OFF)
             if self.client is not None and now - self._last_wanted >= IDLE_CLOSE_S:
                 await self._close_client()

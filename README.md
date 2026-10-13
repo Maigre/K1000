@@ -20,16 +20,18 @@ and a phone on the box's own Wi-Fi.
                       4 knobs + 4 buttons + screen   ·   phone (own Wi-Fi)
 ```
 
-## What it does today (v0, as built)
+## What it does today (as built)
 
 - **A fixed-slot DSP pipeline**: input trim, 8-band system EQ, a live EQ layer (4 bells + low and
   high shelves) on top of it, the sub/top split (optional mono subs), polarity and delay per group
   (whole samples at 48 kHz), a 12 dB/oct Lo-Cut on the tops, an optional sub low-pass, sub/top
   balance, four output trims, master and mute. Every show-time move is a parameter write or a
   ramped fader, never a pipeline rebuild.
-- **Knobs and screen** on a Zynthian V4 case: MAIN, LIVE EQ, SETUP and a Knob test page; meters
-  with clip warnings for the outputs and the input. A new live UI (one SHOW page with the EQ curve
-  over the program spectrum) is designed and being built: [`docs/07`](docs/07-live-ui-v1.md).
+- **Knobs and screen** on a Zynthian V4 case (live UI v1, D-009): **SHOW**, the front page, with
+  the master and the live EQ drawn over the program spectrum, and a 3-gesture notch helper on the
+  spectrum's peak; **ALIGN** (balance, and sub delay and Lo-Cut behind a lock); **SETUP** (the
+  rest, live-EQ reset with undo, Lo-Cut on/off, the spectrum switch, laptop access for the tune).
+  Meters with clip warnings, alerts in the status bar, a master-up guard (+6 dB per 2 s at most).
 - **Audio safety**: boots muted, ramps in only once audio flows, comes back muted if it was switched
   off muted, saves a mute at once, never raises a cut or releases a mute made elsewhere, recovers a
   torn state file muted. Services restart on any crash; a hardware watchdog covers a hung system.
@@ -39,23 +41,27 @@ and a phone on the box's own Wi-Fi.
   name-constrained local CA, driving the show controls: master, balance, Lo-Cut, the live EQ and
   mute (setup stays on the box). Built and tested in software; not yet proven with a real phone on
   the box ([`docs/06`](docs/06-phone.md)).
-- **CamillaGUI** for the laptop (system EQ at the tune), on the wired network only.
+- **The tune from a laptop**: a `/tune` page over the box's Wi-Fi (SETUP › Laptop access, 2 hours)
+  that imports a REW filter export into the system EQ, and CamillaGUI there or on the wired
+  network.
 - **Ops tools**: a bootstrap from a fresh Raspberry Pi OS Lite card, a lean-OS converter, a soak
   test with a summary, an M4 bring-up check, a knob trace. About 12 s from power-on to the saved
   level on the author's box.
 
 ## Status
 
-**v0, on a beta engine** (CamillaDSP 5.0.0-beta.1). It runs on the author's box and has not yet
-played a show. The MOTU M4 profile, the phone and the live UI v1 are being proven now; the
-[roadmap](ROADMAP.md) has the details. Use it with the bypass cables in the case.
+**v0, on a beta engine** (CamillaDSP 5.0.0-beta.1). It runs on the author's box, where the live
+UI v1 was accepted; it has not yet played a show. The MOTU M4 profile and the phone are being proven
+on the rig; the [roadmap](ROADMAP.md) has the details. Use it with the bypass cables in the case.
 
 ## Documentation
 
 | | |
 |---|---|
-| [**User manual**](docs/manual/00-index.md) | Requirements, installation, configuration, tuning, troubleshooting, maintenance, development |
-| [Operator card](docs/04-operator-card.md) | One printed page for the gig case |
+| [**User manual**](docs/manual/00-index.md) | Requirements, installation, configuration, usage, tuning, troubleshooting, maintenance, development |
+| [Quick start](docs/13-quick-start.md) | One printed page for someone who has never seen the box |
+| [Operator card](docs/04-operator-card.md) | One printed page for the operator |
+| [`tools/make-print.sh`](tools/make-print.sh) | Renders those two pages to PDF (`tools/make-print.sh [outdir]`, default `print/`) |
 | [Box ops reference](box/README.md) | Deploy, everyday commands, rollback, tests |
 | [Architecture](docs/03-v0-architecture.md) | The build contract |
 | [Decisions](DECISIONS.md) | Why it is built this way |
@@ -65,7 +71,7 @@ played a show. The MOTU M4 profile, the phone and the live UI v1 are being prove
 ## Install
 
 On a Raspberry Pi OS Lite (64-bit) card made with Raspberry Pi Imager (hostname `k1000`, user
-`k1000`, SSH with your key only), the box on Ethernet with internet and in the laptop's SSH config
+`k1000`, SSH with your key only, Wi-Fi left empty), the box on Ethernet with internet and in the laptop's SSH config
 as `k1000`, from the laptop:
 
 ```sh

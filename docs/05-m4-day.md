@@ -11,6 +11,8 @@ Sources: the M4 readiness review (MOTU M Series manual, alsa-ucm-conf `M4-HiFi.c
 `sound/usb/quirks.c`, mdsimon2's Pi 4 + M4 CamillaDSP config), `box/README.md` "MOTU M4 bring-up",
 `box/tools/k1000-m4-bringup.sh`. Anything marked UNVERIFIED is research, not yet seen on this unit.
 
+**Order:** §0–5, then the Knob test (§10), then §6–9 and §11–12. §6 needs the buttons mapped.
+
 ## 0. Before plugging anything
 
 | Check | |
@@ -120,6 +122,15 @@ the ramp). It applies at the next engine start only, never at show time.
 
 ## 6. Prove the path and the front panel (speakers off)
 
+**Before this step:**
+
+- **The Knob test (§10) first.** The balance, Lo-Cut and Mute rows need B1, B3 and B2 on the right
+  buttons, and the box still holds the default `controls:` map.
+- **SETUP › Mono subs OFF** (two pushes) for this step; the box has it ON. With Mono subs ON, both
+  subs get L+R at −6 dB each, so a tone in LINE IN 3 alone lights out3 **and** out4, 6 dB under
+  out1: that is mono, not a fault. Note the Lo-Cut frequency (ALIGN, E4) too. Set both back after
+  the step.
+
 Phone tone generator, moderate level, into **LINE IN 3 only**. K1000 master at −20 dB (E1 on SHOW).
 Peak reader (2 s window per call):
 
@@ -134,10 +145,10 @@ for n in ("GetCaptureSignalPeakSince","GetPlaybackSignalPeakSince"):
 |---|---|---|
 | Program path | tone in LINE IN 3 | Capture: only index 2 live. Playback: index 0 (out1 Top L) and index 2 (out3 Sub L) at about the input level −20 dB; 1 and 3 at the floor. M4 LCD: In 3, Out 1, Out 3 move |
 | Right side | tone in LINE IN 4 | Capture index 3; outs 2 and 4 |
-| Tops vs subs | E2 balance fully to subs | out3/4 +6 dB, out1/2 −6 dB |
-| Lo-Cut | 60 Hz tone, Lo-Cut at 300 Hz | out1/2 far below out3/4 |
-| Mute | hold B2 (map unconfirmed before step 10: else Main mute in CamillaGUI) | all four outputs at the floor. Then restore balance, Lo-Cut, unmute |
-| Loop (MONITOR = unity) | TRS cable from out N into front INPUT 1 (GAIN 1 fully counter-clockwise, 48V off, MON 1 unlit) | Capture index 0 within about ±0.5 dB of playback index N−1, for N = 1…4; out1 equal to out3 |
+| Tops vs subs | ALIGN (B1 tap), E2 BALANCE up to +12 (fully to subs) | out3/4 +6 dB, out1/2 −6 dB (against balance 0) |
+| Lo-Cut | 60 Hz tone; ALIGN, hold B3 (`EDIT 0:30`), E4 LO-CUT up to 300 Hz. E4 reads `OFF`: SETUP › Lo-Cut ON first (two pushes) | out1/2 far below out3/4 |
+| Mute | hold B2 (Knob test not done: Main mute in CamillaGUI instead) | all four outputs at the floor. Then restore balance (0), the Lo-Cut frequency, unmute |
+| Loop (MONITOR = unity) | TRS cable from out N into front INPUT 1 (GAIN 1 fully counter-clockwise, 48V off, MON 1 unlit) | Capture index 0 within about ±0.5 dB of playback index N−1, for N = 1…4; out1 equal to out3 (Mono subs OFF) |
 | MONITOR knob | loop on out1, turn MONITOR down | only outs 1-2 fall. Back fully clockwise |
 | Leak (MON MIX blocks inputs) | K1000 muted, tone in LINE IN 3, loop on out1, press 3-4 | capture index 0 stays at the floor. Turning MON MIX counter-clockwise makes it rise: the raw program past K1000 and its mute. Back fully clockwise, 3-4 off, unmute |
 | Optional: emergency feed | `sudo systemctl stop camilladsp`, press 3-4, MON MIX fully counter-clockwise | Is the raw program on outs 1-2 with the engine stopped? If yes, that is a two-gesture emergency feed to the tops. Restore the panel, `sudo systemctl start camilladsp` |
@@ -145,6 +156,8 @@ for n in ("GetCaptureSignalPeakSince","GetPlaybackSignalPeakSince"):
 
 If out1/2 read lower than out3/4 with MONITOR fully clockwise, write the difference down; do not
 trim yet (Friday's mic tune sets the output trims).
+
+End of the step: SETUP › Mono subs back ON if that is the choice for Sunday (two pushes).
 
 ## 7. Levels
 
@@ -174,22 +187,30 @@ then set the phone ceiling (`volume_max` = show level + 6 dB, README).
 
 ## 9. Soak (1 hour, real program into LINE IN 3/4)
 
+Its own unit and its own log (the night soak's `soak-night.log` and the default `soak.log` stay out
+of it: `--summary` judges a log from its first sample to its last):
+
 ```sh
-sudo systemd-run --unit=k1000-soak --uid=k1000 /opt/k1000/tools/k1000-soak.sh
-/opt/k1000/tools/k1000-soak.sh --summary       # after the hour: "clean", or what needs a look
-sudo systemctl stop k1000-soak
+sudo systemd-run --unit=k1000-soak-m4 --uid=k1000 -E K1000_SOAK_LOG=/var/log/k1000/soak-m4.log \
+  /opt/k1000/tools/k1000-soak.sh
+/opt/k1000/tools/k1000-soak.sh --summary /var/log/k1000/soak-m4.log   # after the hour: "clean", or what needs a look
+sudo systemctl stop k1000-soak-m4
 ```
 
 Expect `xruns=0`, `rate` about 48000, `restarts` flat, `throttled=0x0`. Thursday night: the overnight
-soak at the gig `target_level`.
+soak at the gig `target_level`, again with its own unit and log (`k1000-soak-thu`, `soak-thu.log`).
 
-## 10. Knob test (if there is time; required before Friday)
+## 10. Knob test (required; do it before §6)
 
 SETUP → Knob test. Press every button and turn every knob, and note for each physical position the
-`sw`/`enc` index shown. Write `controls:` in `/etc/k1000/k1000.yaml`, `sudo systemctl restart k1000`,
-then check: hold B2 mutes, B4 is not next to it by feel. Label the shell: PAGE · MUTE (hold) · LO-CUT
-· RESET (hold). Fill in the "Where" column of `docs/04-operator-card.md`. Knob labels drawn at the
-wrong screen corners = `KNOB_CORNERS` in `box/k1000/ui/input_map.py` (a code change).
+`sw`/`enc` index shown (the k1000 restart below brings SHOW back; later, a Knob test is left with
+two B1 holds: SETUP, then SHOW). Write `controls:` in `/etc/k1000/k1000.yaml`, `sudo systemctl restart k1000`, then check: hold B2
+mutes and unmutes on every page, a B1 tap steps SHOW → ALIGN → SETUP, a B3 tap on SHOW moves the
+selected band, a B4 tap on SHOW shows the notch hint (`P1 · … · E3 TO CUT`, nothing audible). Label
+the shell: PAGE · MUTE · BAND/UNLOCK · NOTCH (the operator card's labels). Fill in the "Where" line
+and the bypass patch of `docs/04-operator-card.md` and the bypass patch of `docs/13-quick-start.md`,
+then print both (`tools/make-print.sh`). Knob labels drawn at the wrong screen corners =
+`KNOB_CORNERS` in `box/k1000/ui/input_map.py` (a code change).
 
 ## 11. Tape and label
 

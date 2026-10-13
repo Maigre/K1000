@@ -8,8 +8,8 @@ Sources. The Meyer facts come from Meyer Sound's UPA-P operating instructions an
 line driver's feature set, as summarised in [`docs/01-approaches-review.md`](../01-approaches-review.md)
 §1. The M4 level figures are research from [`docs/05-m4-day.md`](../05-m4-day.md) §7, marked
 **(research)** below until they are measured on a unit. Where this chapter says which knob to
-turn, it describes the v0 panel ([operator card](../04-operator-card.md)); UI v1 moves sub delay
-and Lo-Cut to the ALIGN page ([`docs/07-live-ui-v1.md`](../07-live-ui-v1.md)).
+turn, it is the panel described in [chapter 4](04-usage.md): balance, sub delay and Lo-Cut on
+ALIGN (sub delay and Lo-Cut unlocked with a B3 hold), the rest in SETUP.
 
 ## 1. What you need
 
@@ -19,8 +19,10 @@ and Lo-Cut to the ALIGN page ([`docs/07-live-ui-v1.md`](../07-live-ui-v1.md)).
   stop sends the raw program to the tops, past K1000 and past its mute.** Details:
   [`docs/05-m4-day.md`](../05-m4-day.md).
 - For the system EQ: a measurement mic, a laptop with REW or Open Sound Meter, and a way to get the
-  mic into the laptop (a USB measurement mic, or the laptop's own interface). The laptop on the
-  **wired** network with the box, for CamillaGUI.
+  mic into the laptop (a USB measurement mic, or the laptop's own interface). The laptop reaches
+  the box over the **K1000 Wi-Fi** with SETUP › Laptop access open (2 h,
+  [chapter 4 §5.1](04-usage.md#51-laptop-access-and-the-tune-page)), or on a wired network
+  (CamillaGUI only: the `/tune` page answers on the K1000 Wi-Fi alone).
 - The bypass kit, and ear protection for the noise.
 
 ## 2. Power order and the thump check
@@ -65,16 +67,16 @@ the M4 cannot overdrive a Meyer input. Check it with your rig.
 **The ceiling for remote controls.**
 
 - K1000's master never goes above 0 dB (`volume_limit`).
-- CamillaGUI on the wired network: after this step, set `volume_max` in
+- CamillaGUI (wired, or over the K1000 Wi-Fi while Laptop access is open): after this step, set `volume_max` in
   `box/camillagui/gui-config.yml` to the show level + 6 dB and `volume_range` to 80 + `volume_max`,
   then deploy. One swipe on its slider otherwise reaches 0 dB in about half a second.
-- The K1000 phone page has no absolute ceiling in the current code. It moves the master in steps
-  (at most +1 dB per message) and rate-limits rises to +6 dB/s for all phones together, with a
-  3 dB burst (`phone.master_up_db_per_s`).
-- On the knobs, D-009 plans a master-up guard: UI v1 turns off acceleration on master up
-  ([`docs/07`](../07-live-ui-v1.md) §2.2).
-  <!-- TODO(after UI v1): re-check both points against box/k1000/web/server.py and the master
-  knob's acceleration in box/k1000/ui/input_map.py. -->
+- **The master-up guard**, on every surface (knobs, phone, console): master rises at most 6 dB
+  within any 2 s; further up-clicks are refused with `MASTER: SLOW DOWN`. Down is never limited
+  (`controls.master_up_guard_db`, [chapter 3 §5](03-configuration.md#5-controls)). On the knobs,
+  master up is also never accelerated: one click, 0.5 dB.
+- The K1000 phone page has no absolute ceiling below 0 dB. It moves the master in steps (at most
+  +1 dB per message) and rate-limits rises to +6 dB/s for all phones together, with a 3 dB burst
+  (`phone.master_up_db_per_s`), on top of the guard.
 
 
 ## 4. Sub alignment
@@ -88,9 +90,10 @@ says polarity reversal and/or delay may be needed.
 | Subs stacked under the tops, fronts in one plane | **0 ms** | same (both normal) |
 | Off-plane by 1.5 m or more | Delay the element **nearer** to the audience by distance ÷ 343 m/s: **2.9 ms per metre** | check (below) |
 
-Where the delays are: **sub delay** = MAIN E3 (v0), 0.1 ms per detent, push held = one sample
-(1/48 ms); after 2.5 s at rest the first detent only wakes it. **Top delay** = SETUP › Top delay.
-Both 0–50 ms. Delays are whole samples at 48 kHz.
+Where the delays are: **sub delay** = ALIGN E3, locked until a **B3 hold** unlocks it (30 s of
+idle locks it again); 0.1 ms per click, push held = one sample (1/48 ms); after 2.5 s at rest the
+first click only wakes it. The screen shows the distance too (`≈ 0.81 m`). **Top delay** =
+SETUP › Top delay. Both 0–50 ms. Delays are whole samples at 48 kHz.
 
 **Check with the mic:**
 
@@ -120,8 +123,10 @@ UPA-1P's 12″ so the tops limit later, and leaves the low end to the subs.
 | **160 Hz, 12 dB/oct** | Meyer's LD-2 line driver had a Mid-Hi Lo-Cut at exactly this: the historical practice for this pair |
 | **100 Hz** | K1000's default (on) |
 
-A/B it on program with the subs running: MAIN B3 switches it on and off (v0), MAIN E4 moves the
-frequency (20–300 Hz, 1/12 octave per detent). "Off" parks it at 10 Hz.
+A/B it on program with the subs running: SETUP › Lo-Cut switches it on and off (two pushes; the
+phone's Lo-Cut switch, with a confirm, is handier while walking the room). ALIGN E4, unlocked with
+a B3 hold, moves the frequency (20–300 Hz, 1/12 octave per click, push held = 1/48). "Off" parks
+it at 10 Hz, and SHOW shows the pill `LO-CUT OFF` until it is back on.
 
 - Higher (toward 160 Hz): cleaner, louder tops before limiting; more of the 100–160 Hz region on the
   subs. Check the sum in the overlap again (§4).
@@ -131,7 +136,7 @@ frequency (20–300 Hz, 1/12 octave per detent). "Off" parks it at 10 Hz.
 ## 6. Before the EQ: what not to fix with it
 
 - A level difference between sides or boxes: output trims.
-- Sub/top balance: E2 (balance), not EQ.
+- Sub/top balance: ALIGN E2 (balance), not EQ.
 - A cancellation (a deep, narrow dip that moves when the mic moves): position and alignment, not a
   boost.
 
@@ -139,19 +144,22 @@ frequency (20–300 Hz, 1/12 octave per detent). "Off" parks it at 10 Hz.
 
 The system EQ is eight parametric bands (`sys_peq_1` … `sys_peq_8`) applied before the split, so to
 subs and tops alike. Gain −20 … +10 dB, Q 0.3–16. It is set once at the tune and is **not on the
-knobs**: you enter it from CamillaGUI on a laptop. The live EQ sits on top of it and never changes
-it.
+knobs**: it comes from a laptop, either imported on the `/tune` page or typed into CamillaGUI.
+The live EQ sits on top of it and never changes it.
 
 ### Measure
 
-1. The laptop on the wired network with the box. Find the box's address (`k1000.local`, or your
-   router's list, or `ssh k1000 'hostname -I'`).
+1. The laptop and the box: SETUP › Laptop access, two pushes, then the laptop joins the **K1000**
+   Wi-Fi (the PHONE page prints the password while access is open). The box is `10.42.0.1`. On a
+   wired network instead (CamillaGUI only, no `/tune`): `k1000.local`, your router's list, or
+   `ssh k1000 'hostname -I'`.
 2. The laptop's audio output into K1000's program input (M4 LINE IN 3/4), at a level that peaks
    around −12 dBFS on the capture side.
 3. The measurement mic into the laptop. Load its calibration file in REW or Open Sound Meter.
 4. Pink noise (Open Sound Meter, REW's RTA) or log sweeps (REW). Measure a few positions across the
    listening area and average them.
-5. Live EQ flat while you measure (LIVE page: hold B4, then hold it again within 5 s).
+5. Live EQ flat while you measure: SETUP › Reset live EQ, two pushes. (SETUP › Undo reset brings
+   it back within 5 minutes, unless a live-EQ gain has moved since.)
 
 ### Decide
 
@@ -161,19 +169,48 @@ it.
 - Leave the extreme low end to the alignment and the balance.
 - Write the bands down on paper as you go.
 
-If your REW version exports filters in CamillaDSP's format, still **do not load an exported
-file**: K1000's pipeline has fixed slots. Copy the values by hand into the eight `sys_peq_N` bands.
+Never load a CamillaDSP config file exported by REW or anything else into the engine: K1000's
+pipeline has fixed slots. Use the `/tune` page, or type the values into the eight `sys_peq_N`
+bands.
 
-### Enter it in CamillaGUI (the rules)
+### Import it on the tune page
 
-CamillaGUI: `http://<box>:5005/` on the laptop.
+`https://10.42.0.1/tune` on the laptop, while Laptop access is open (the laptop needs the K1000 CA,
+like a phone, or accept the browser's warning once). It answers `403` while access is closed.
+
+1. **Paste the filter list.** REW: *File › Export › Export filter settings as text*, then the
+   file's whole text (the header is ignored). EqualizerAPO / AutoEQ: the `Filter` lines. Open
+   Sound Meter has no filter export we know of: type the filters as
+   `Filter 1: ON PK Fc 125 Hz Gain -4.0 dB Q 5.00` or `125 Hz -4 dB Q 5`, one per line.
+2. **Preview.** The eight system bands now (grey) and after the import (amber), computed like the
+   engine, and a band table. The filters go on bands 1…n in the list's order; the other bands
+   become flat.
+   - **Peaking filters only.** Shelves, pass filters, notches and the rest are listed as skipped,
+     never approximated; a 0 dB filter (REW's `-0.00`) is skipped too.
+   - **More than 8 peaking filters: refused whole.** Re-run the EQ with 8 at most.
+   - Values are clamped to the system ranges (20 Hz–20 kHz, −20 … +10 dB, Q 0.3–16), and each clamp
+     is listed. `Preamp` is ignored: set the level with the master.
+3. **Apply to the system EQ** (with a confirm). The box re-reads the text itself and sets the
+   eight bands like a knob would: clamped, click-safe steps (about a second), saved at once.
+4. **Undo** puts back the system EQ the last Apply replaced (one level; it survives a k1000
+   restart).
+5. Close Laptop access: one push on SETUP › Laptop access.
+
+More: [`docs/06-phone.md`](../06-phone.md) §11.
+
+![The tune page](../ui/tune_preview.png)
+
+### Or enter it in CamillaGUI (the rules)
+
+CamillaGUI: `http://10.42.0.1:5005/gui/index.html` over the K1000 Wi-Fi with Laptop access open,
+or `http://<box>:5005/` on a wired network.
 
 1. **Press "Fetch from DSP" (or reload the page) right before editing.** "Apply" sends the whole
    config the page holds. A page opened before knob moves, or before a profile change, would put
    the old values (or the old audio device) back.
 2. In Filters, edit only the `sys_peq_1` … `sys_peq_8` bands: frequency, gain, Q. They are Peaking
    biquads. **Do not change a filter's type, add or remove filters, or touch the mixers or the
-   pipeline**: K1000 restores its own pipeline (`PIPELINE CHANGED OUTSIDE K1000`).
+   pipeline**: K1000 restores its own pipeline (`PIPELINE CHANGED (GUI)`).
 3. **"Apply to DSP".** K1000 adopts the new values and saves them in `state.json` within a few
    seconds.
 4. "Save to file" fails on purpose (`Read-only file system`): K1000 owns the files.
@@ -182,7 +219,7 @@ CamillaGUI: `http://<box>:5005/` on the laptop.
 6. Check: `ssh k1000 'python3 -c "import json; print(json.load(open(\"/var/lib/k1000/state.json\"))[\"sys_peq\"])"'`
 
 If you lower or mute a group or a filter in CamillaGUI (to measure the tops alone, for example),
-K1000 **keeps** that cut and shows it on the screen (`TOPS GROUP MUTED`, `… OUTSIDE K1000`). Undo it
+K1000 **keeps** that cut and shows it on the screen (`TOPS GROUP MUTED (GUI)`, `… (GUI)`). Undo it
 in CamillaGUI when you are done. K1000 never raises or unmutes it by itself. A raise it cannot
 adopt (a group fader, a fixed gain, a value out of range) is pulled back down in small steps.
 
@@ -191,21 +228,31 @@ adopt (a group fader, a fixed gain, a value out of range) is pulled back down in
 The live EQ: four bells (cut down to −20 dB, boost at most +6 dB) and two shelves, on top of the
 system EQ. A band at 0 dB is free and inaudible.
 
-**v0 panel, LIVE page** (the operator card's "Feedback" line):
+**On SHOW, in 3 gestures: B4, E3 down, E4 up** (on another page: B1 hold first, then wait for the
+cyan PEAK, about 2 s, since the spectrum runs only while SHOW is on screen):
 
-1. E1: pick a free slot (gain 0 dB).
-2. E2: frequency onto the ring (push held = 1/48 octave steps).
-3. E3: cut.
-4. E4: Q up (narrower) until the ring goes without dulling the program.
+1. **B4**: the notch helper sets a free bell to Q 8.65 (1/6 octave) and, if the cyan PEAK pointer
+   is up, to its frequency. The gain stays at 0 dB, so nothing is audible yet; the strip says
+   `P3 · 2.44k · E3 TO CUT`. A PEAK within 1/6 octave of a bell already in use selects that bell
+   instead.
+2. **E3 down**: the cut (12 clicks = −6 dB).
+3. **E4 up**: narrower, until the ring goes without dulling the program (6 clicks = Q 16, the
+   maximum). Centre it with E2, push held (1/48 octave per click).
 
-**Phone:** long-press "notch here" on the graph, and slide onto the ring without lifting
+With no PEAK (`NO PEAK` in the hint: the program is silent, the ring is not in the program, or
+Spectrum is OFF) the bell stays at its own frequency. **Cut first, then sweep**: E3 down (about
+−6 dB; at 0 dB the bell is inaudible wherever it sits), then E2 until the ring drops (250 Hz →
+2.5 kHz is about 40 clicks), then E4 up to narrow it. The spectrum is the program input, before the EQ: it shows a ring
+that feeds back through a microphone in the program, not a room resonance, and it does not drop
+when you cut. Details and pictures: [chapter 4 §3.2](04-usage.md#32-notching-a-ring-in-3-gestures).
+
+**Phone:** long-press "notch here" on the graph, and slide onto the ring without lifting. Unlike
+B4, the phone's notch cuts at once (−6 dB, Q 8: `phone.notch_gain_db`, `phone.notch_q`)
 ([`docs/06-phone.md`](../06-phone.md) §2).
 
-**UI v1:** a B4 tap grabs a free band at the spectrum peak (gain untouched, so inaudible until E3
-cuts). See [`docs/07-live-ui-v1.md`](../07-live-ui-v1.md) §2.4.
-
-**Reset all live EQ:** LIVE page, hold B4, then hold it again within 5 s. No undo in v0. The phone
-has its own reset with a confirm.
+**Reset all live EQ:** SETUP › Reset live EQ, two pushes. **SETUP › Undo reset** puts it back
+exactly, for 5 minutes or until the next audible live-EQ edit. The phone's reset (with a confirm)
+is the same reset: the box can undo it.
 
 Good practice:
 

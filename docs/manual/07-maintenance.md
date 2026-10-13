@@ -17,6 +17,11 @@ ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/i
   code until they restart. To switch over at once, add `--start`: the audio drops for about a
   second, then ramps back in.
 - Re-running is always safe; with nothing new it ends with `0 changes`.
+- Read its last lines: it says when a service must start again to use what changed (for example
+  k1000, once, for SETUP › Laptop access), and when access-point units changed, which only
+  `install.sh --ap` applies. A new engine device setting (a fader ramp, a buffer size) reaches the
+  engine at its next start; until then the screen says `DEVICES CHANGED (GUI)`. With `--start`
+  both services start again at once.
 - `/opt/k1000/REVISION` says what is deployed (`git describe` of the laptop's checkout, `-dirty` if
   it had uncommitted changes).
 - Before changing anything, `install.sh` copies the running version to `/opt/k1000.prev`.
@@ -68,11 +73,12 @@ Keep it current:
 **Back up off the box** after every tune or settings change:
 
 ```sh
-mkdir -p ~/k1000-backup && scp k1000:/etc/k1000/k1000.yaml k1000:/var/lib/k1000/state.json ~/k1000-backup/
+mkdir -p ~/k1000-backup && scp k1000:/etc/k1000/k1000.yaml k1000:/var/lib/k1000/state.json k1000:/etc/k1000/ap.psk ~/k1000-backup/
 ```
 
-The Wi-Fi password (`/etc/k1000/ap.psk`) and the phone certificate (`/etc/k1000/tls/`) are secrets:
-keep them out of the repository.
+The Wi-Fi password (`ap.psk`, readable by the `k1000` user) lets a spare card keep the same Wi-Fi,
+so the phones need no new QR ([chapter 2 §8](02-installation.md#8-the-spare-card)). It and the phone
+certificate (`/etc/k1000/tls/`) are secrets: keep them out of the repository.
 
 ## The phone certificate
 
@@ -98,10 +104,14 @@ than 60 days are left. Once it has expired, SETUP › Phone shows `phone certifi
    ```sh
    ssh k1000 'install -d -m 0700 /tmp/k1000-tls'
    scp k1000.crt k1000.key k1000-ca.crt k1000:/tmp/k1000-tls/
-   ssh k1000 'sudo K1000_TLS_DIR=/tmp/k1000-tls /opt/k1000-src/install.sh && rm -rf /tmp/k1000-tls && sudo systemctl restart k1000'
+   ssh k1000 "sudo K1000_TLS_DIR=/tmp/k1000-tls K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/install.sh; rm -rf /tmp/k1000-tls"
+   ssh k1000 'sudo systemctl restart k1000'
    ```
 
-   `install.sh` refuses a key that does not match its certificate and never copies a `ca.key`.
+   Run it from the repository checkout that was deployed (double quotes: `git describe` runs on
+   the laptop and keeps `/opt/k1000/REVISION` right; `;` so the key copy is removed whatever
+   `install.sh` says). `install.sh` refuses a key that does not match its certificate and never
+   copies a `ca.key`.
 3. Do the same on the spare card.
 
 **A new CA** (lost key, or a new box family) means installing the new CA certificate on every
@@ -163,14 +173,20 @@ moment.
 | Next power-on | The engine starts muted at −40 dB. Saved muted → stays muted (`READY`). Saved unmuted → ramps back to the saved master over about 3 s (`RAMPS IN BY ITSELF`) |
 | A torn `state.json` | Rebuilt from `active.yml`, **muted** (`STATE REBUILT · CHECK MASTER`) |
 | A hung system | The hardware watchdog reboots the box if systemd stops responding for 15 s |
-| The journal | Kept; up to the last 30 s before the cut may be missing (critical messages are written at once) |
+| The journal | Kept; up to the last 30 s before the cut may be missing (critical messages are written at once). A journal file may be set aside as corrupt (its name ends in `~`): normal |
+| The filesystem | ext4 replays its journal and cleans up orphaned files at boot: normal, nothing to do |
+| The clock | **No battery clock.** The box boots with the time last saved to the card, minutes behind, and only an internet time server over `eth0` corrects it (about 45 s after boot on the bench). At a gig there is none: the clock stays behind all night. Audio, the saved state and Laptop access's 2 h (counted from boot) do not depend on it; journal and soak times do |
 
 **End of a night: hold B2 (muted), speakers off, then K1000 off.** The next power-on stays silent
 until you unmute.
 
-The author's power-cut drill (pull the plug at show level, power on again, check the state file
-survived and the box came back as it should) is tracked in [`ROADMAP.md`](../../ROADMAP.md),
-Phase 1. Do the same drill once with your own box and supply.
+The author's power-cut drill (2026-10-13: an instant reset with no disk sync, the box playing):
+`state.json`, `active.yml` and `k1000.yaml` came back byte-identical; power-on to the screen took
+about 10 s (kernel 3.3 s, userspace 7.1 s); the engine started fresh and ramped to the saved
+master, the Wi-Fi access point came back and the panel showed SHOW. The only side effects were the
+last three rows above (a journal file set aside, the ext4 cleanup, the clock 3.5 min behind until
+the time server corrected it). Do the same drill once with your own box and supply: pull the plug
+at show level, power on again, check the box comes back as it should.
 
 ## Soak test
 
@@ -178,11 +194,18 @@ Before the first show and after any significant update: hours of real program th
 then a summary.
 
 ```sh
-sudo systemd-run --unit=k1000-soak --uid=k1000 /opt/k1000/tools/k1000-soak.sh
-tail -f /var/log/k1000/soak.log                   # one line every 10 s
-/opt/k1000/tools/k1000-soak.sh --summary          # afterwards: "clean", or what needs a look (exit 1)
+sudo systemd-run --unit=k1000-soak --uid=k1000 -E K1000_SOAK_LOG=/var/log/k1000/soak-night.log \
+  /opt/k1000/tools/k1000-soak.sh
+tail -f /var/log/k1000/soak-night.log                                 # one line every 10 s
+/opt/k1000/tools/k1000-soak.sh --summary /var/log/k1000/soak-night.log   # afterwards: "clean", or what needs a look (exit 1)
 sudo systemctl stop k1000-soak                    # "not loaded" = it had already ended (a reboot?)
 ```
+
+**Give each run its own log** (`K1000_SOAK_LOG`, as above; without it the tool appends to
+`/var/log/k1000/soak.log`). A log is only ever appended to and `--summary` judges it from its
+first sample to its last, so two runs in one log are judged as one window, the gap between them
+included. A second overnight soak: another unit and log name (e.g. `k1000-soak-thu` and
+`soak-thu.log`). For a two-hour program run: `--unit=k1000-soak-2h` and `soak-2h.log`.
 
 Each line:
 
@@ -194,8 +217,11 @@ Each line:
 
 - the soak stopped (a gap, or the last sample long before now: a reboot ends it);
 - a reboot (a new `boot=` id, or `up` going down);
-- `xruns` above 0: dropout lines in the engine log (underruns, overruns, a stalled device, device
-  errors);
+- dropouts **during the soak**: engine log lines (underruns, overruns, a stalled device, device
+  errors) dated from the first sample to the last one (plus 3 intervals, at least 60 s), and any
+  rise of `xruns` or `xruns_all` between samples. A dropout from before the soak (an older engine
+  run's rotated log, an `xruns_all` already above 0 at the first sample) is printed as a `note:`
+  with its time, never as a failure;
 - restarts of camilladsp or of k1000;
 - `state` other than `Running`, k1000 not active, Main muted, clipped samples;
 - `throttled` not `0x0` (under-voltage or heat: the M4 is powered by the Pi), or the SoC at 75 °C

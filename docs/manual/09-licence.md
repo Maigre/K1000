@@ -5,13 +5,8 @@
 K1000 is free software: you can redistribute it and/or modify it under the terms of the **GNU
 General Public License as published by the Free Software Foundation, version 3 or (at your option)
 any later version** (SPDX: `GPL-3.0-or-later`). The full text is in [`LICENSE`](../../LICENSE).
-Every source file is meant to carry an SPDX line saying so. Decision: D-008 in
-[`DECISIONS.md`](../../DECISIONS.md).
-<!-- TODO(after UI v1): once these five carry "# SPDX-License-Identifier: GPL-3.0-or-later",
-write "Every source file carries an SPDX line": box/k1000/ui/eqgraph.py,
-box/k1000/ui/mock_v1.py, box/tools/k1000-knobtrace.py, box/tests/test_eqgraph.py,
-box/tools/tests/test_knobtrace.py. -->
-
+Every source file carries an SPDX line saying so (the PWA manifest, plain JSON, cannot carry
+one). Decision: D-008 in [`DECISIONS.md`](../../DECISIONS.md).
 
 **One exception.** `box/overlays/k1000-zynscreen.dts` is derived from the Linux kernel's
 `piscreen2r` device-tree overlay and stays under **GPL-2.0**. It compiles to a separate firmware

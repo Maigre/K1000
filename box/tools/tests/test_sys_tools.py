@@ -1471,11 +1471,11 @@ def test_bootstrap_dry_run_runs_install_then_lean_and_uses_ap_when_offered(tmp_p
     assert "RAN-INSTALL" not in out                          # a dry run never runs install.sh
     assert "no apt-get update" in out                        # nothing missing: no network needed
     flags = "--boot --headless --ap" if with_ap else "--boot --headless"
-    assert f"would: run install.sh {flags} (" in out
+    assert f"would run: install.sh {flags} (" in out          # said, not counted (it has no dry run)
     assert "lean --dry-run" in out
     m = re.search(r"k1000-bootstrap: dry run: (\d+) changes", out)
     pinned = Path("/usr/local/bin/camilladsp").exists() and "pinned build, nothing to do" in out
-    assert m and int(m.group(1)) == (1 if pinned else 2) + 3, out
+    assert m and int(m.group(1)) == (0 if pinned else 1) + 3, out
 
 
 def test_bootstrap_runs_apt_update_only_when_a_package_is_missing(tmp_path):
@@ -1558,3 +1558,212 @@ def test_bootstrap_ssh_drop_in_removed_again_when_sshd_refuses_it(tmp_path):
 def test_bootstrap_ssh_dry_run_writes_nothing(tmp_path):
     r, dropin = _ssh_block(tmp_path, ACCEPTED, dry=1)
     assert r.returncode == 0 and "would: SSH: keys only" in r.stdout and not dropin.exists()
+
+
+# --------------------------------------------------------------------------- bootstrap container test (F1-F6)
+# Findings of the bootstrap run on a fresh Raspberry Pi OS Lite card in an emulated container.
+CDSP_PIN = re.search(r"^CDSP_BIN_SHA256=([0-9a-f]{64})$", BOOTSTRAP.read_text(), re.M).group(1)
+INSTALL_DONE = "k1000-install: deployed abc1234: 0 changes\n"
+CLOUD_INIT_ON = ("k1000-lean: cloud-init left on: k1000-console.service has not run at this boot. "
+                 "Without the guard, a faster boot starts k1000 before the panel registers\n")
+
+
+def _bootstrap_run(tmp: Path, *args: str, install_out: str = INSTALL_DONE, install_rc: int = 0,
+                   lean_out: str = "k1000-lean: 0 changes\n", installed: str = "*", with_ap: bool = True,
+                   **env_extra: str) -> tuple[subprocess.CompletedProcess, str]:
+    """bootstrap.sh as root, in the foreground (K1000_BOOTSTRAP_FOREGROUND=1), on fakes only:
+    install.sh and k1000-lean.sh print what they are given (lean also its environment), CamillaDSP
+    is the pinned build, k1000 has no SSH key (step 4 only warns), apt-get and systemd-run only
+    record their calls. Returns (the run, the recorded calls)."""
+    box, fb, env = _bootstrap_box(tmp, with_ap, installed)
+    calls = tmp / "calls"
+    calls.write_text("")
+    (tmp / "install.out").write_text(install_out)
+    (tmp / "lean.out").write_text(lean_out)
+    helptext = "#   sudo ./install.sh --boot ...\n" + ("#   sudo ./install.sh --ap   access point\n" if with_ap else "")
+    (box / "install.sh").write_text(
+        f'#!/bin/sh\ncase $1 in --help) printf "{helptext}" ;; --deps) printf "python3-qrcode\\npython3-smbus2\\n" ;; '
+        f'*) echo "install $*" >> "{calls}"; cat "{tmp}/install.out"; exit {install_rc} ;; esac\n')
+    (box / "tools" / "k1000-lean.sh").write_text(
+        '#!/bin/sh\necho "lean K1000_LEAN_FOREGROUND=${K1000_LEAN_FOREGROUND:-unset} '
+        f'INVOCATION_ID=${{INVOCATION_ID:-unset}} $*" >> "{calls}"\ncat "{tmp}/lean.out"\n')
+    _bin(fb, "id", '[ "$1" = -u ] && { echo 0; exit 0; }\nexit 1\n')
+    _bin(fb, "sha256sum", f'echo "{CDSP_PIN}  $1"\n')
+    _bin(fb, "apt-get", f'echo "DEBIAN_FRONTEND=${{DEBIAN_FRONTEND:-unset}} apt-get $*" >> "{calls}"\n')
+    _bin(fb, "systemd-run", f'echo "systemd-run $*" >> "{calls}"\nexit 1\n')
+    _bin(fb, "journalctl", "exit 0\n")
+    for k in ("K1000_LEAN_FOREGROUND", "K1000_BOOTSTRAP_RC", "CAMILLADSP_TARBALL", "K1000_AP_ETC", "DEBIAN_FRONTEND"):
+        env.pop(k, None)
+    env = dict(env, K1000_BOOTSTRAP_FOREGROUND="1", K1000_AP_ETC=str(tmp / "apetc"), **env_extra)
+    r = subprocess.run(["bash", str(box / "bootstrap.sh"), *args], capture_output=True, text=True, env=env)
+    return r, calls.read_text()
+
+
+def test_bootstrap_in_the_foreground_runs_lean_in_place(tmp_path):
+    """F1: K1000_BOOTSTRAP_FOREGROUND=1 (no INVOCATION_ID) used to let k1000-lean.sh start its own
+    k1000-lean-<time> unit, and die where systemd-run is missing: lean now runs in place."""
+    r, calls = _bootstrap_run(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "lean K1000_LEAN_FOREGROUND=1 INVOCATION_ID=unset \n" in calls
+    assert "systemd-run" not in calls and "running as the systemd unit" not in r.stdout
+    assert "install --boot --headless --ap" in calls                   # really ran in place
+    r, calls = _bootstrap_run(tmp_path / "dry", "--dry-run")
+    assert "lean K1000_LEAN_FOREGROUND=1 INVOCATION_ID=unset --dry-run" in calls
+    assert "install " not in calls
+
+
+def test_install_counts_the_changes_setup_ap_makes(tmp_path):
+    """F2: install.sh --ap now adds setup-ap.sh's "k1000-ap: N changes" to its own total, also
+    when the AP failed after changing things, and keeps setup-ap.sh's exit status."""
+    text = INSTALL.read_text()
+    block = text[text.index("AP_FAILED=0\nif [ $DO_AP = 1 ]; then"):text.index("# --- 9. optional: (re)start")]
+    src = tmp_path / "src"
+    (src / "net").mkdir(parents=True)
+    (tmp_path / "t").mkdir()
+    prog = (f'set -euo pipefail\nCHANGES=4 DO_AP=1 SRC="{src}" TMP="{tmp_path}/t"\nAP_UNITS_STALE=()\n'
+            'note() { printf "k1000-install: %s\\n" "$*"; }\n' + block + 'echo "CHANGES=$CHANGES AP_FAILED=$AP_FAILED"\n')
+
+    def run(setup_ap: str) -> str:
+        (src / "net" / "setup-ap.sh").write_text(setup_ap)
+        r = subprocess.run(["bash", "-c", prog], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        return r.stdout
+
+    out = run('echo "k1000-ap: installed k1000-ap-hostapd.service"\necho "k1000-ap: 3 changes"\n')
+    assert out.endswith("CHANGES=7 AP_FAILED=0\n") and "k1000-ap: 3 changes" in out
+    out = run('echo "k1000-ap: ERROR: the AP did not stay up" >&2\necho "k1000-ap: 2 changes"\nexit 4\n')
+    assert out.endswith("CHANGES=6 AP_FAILED=1\n") and "did not stay up" in out
+    out = run('echo "k1000-ap: ERROR: NetworkManager is not running" >&2\nexit 1\n')
+    assert out.endswith("CHANGES=4 AP_FAILED=1\n") and "net/setup-ap.sh failed" in out
+    out = run('echo "k1000-ap: 0 changes"\n')
+    assert out.endswith("CHANGES=4 AP_FAILED=0\n")
+
+
+def test_bootstrap_counts_install_total_once_setup_ap_included(tmp_path):
+    """F2: bootstrap takes install.sh's own total line (which holds setup-ap.sh's changes), never a
+    setup-ap.sh count line on top of it."""
+    out = ("k1000-ap: installed k1000-ap-hostapd.service\nk1000-ap: 3 changes\n"
+           "k1000-install: deployed abc1234: 3 changes\n")
+    r, _ = _bootstrap_run(tmp_path, install_out=out)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "k1000-bootstrap: 3 changes. Now power-cycle the box" in r.stdout
+    assert "already a K1000" not in r.stdout
+
+
+def _revision_block(tmp: Path, revision: str | None, pending: str, k1000_revision: str | None = None):
+    """install.sh step 3 (box/ -> /opt/k1000 + REVISION) with a fake rsync whose dry run lists
+    `pending`, on a source copy without git and without a REVISION file (an rsync'd /opt/k1000-src)."""
+    text = INSTALL.read_text()
+    block = text[text.index('if [ "$SRC" != "$APP" ]; then'):text.index("# --- 4. settings, state and log")]
+    rev_fn = re.search(r"^revision_of\(\) \{\n.*?^\}\n", text, re.S | re.M).group(0)
+    src, app = tmp / "k1000-src", tmp / "opt-k1000"
+    for d in (src, app, tmp / "t", tmp / "bin"):
+        d.mkdir(parents=True, exist_ok=True)
+    if revision is not None:
+        (app / "REVISION").write_text(revision)
+    (tmp / "pending").write_text(pending)
+    _bin(tmp / "bin", "rsync", f'case " $* " in *" --itemize-changes "*) cat "{tmp}/pending" ;; esac\n')
+    prog = ('set -euo pipefail\nCHANGES=0\nnote() { printf "%s\\n" "$*"; }\n'
+            'changed() { CHANGES=$((CHANGES + 1)); note "$*"; }\n'
+            'put() { PUT_CHANGED=0; if [ -f "$2" ] && cmp -s "$1" "$2"; then return 0; fi; '
+            'cp "$1" "$2"; changed "installed $2"; PUT_CHANGED=1; }\n' + rev_fn +
+            f'SRC="{src}" APP="{app}" PREV="{tmp}/prev" TMP="{tmp}/t"\n' + block + 'echo "CHANGES=$CHANGES"\n')
+    env = {k: v for k, v in os.environ.items() if k != "K1000_REVISION"}
+    env.update(PATH=f"{tmp / 'bin'}:/usr/bin:/bin", GIT_CEILING_DIRECTORIES=str(tmp))
+    if k1000_revision is not None:
+        env["K1000_REVISION"] = k1000_revision
+    r = subprocess.run(["bash", "-c", prog], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    return r.stdout, (app / "REVISION").read_text(), src
+
+
+def test_install_keeps_revision_when_nothing_changed_and_nothing_names_it(tmp_path):
+    """F3: a re-run from /opt/k1000-src without K1000_REVISION wrote "unknown (from ...)" over the
+    REVISION a real deploy recorded (1 change, and bootstrap then asked for a power cycle)."""
+    out, rev, _ = _revision_block(tmp_path, "abc1234\n", "")
+    assert rev == "abc1234\n" and "CHANGES=0" in out, out
+
+
+def test_install_revision_still_follows_a_real_change_or_a_given_revision(tmp_path):
+    out, rev, _ = _revision_block(tmp_path / "a", "abc1234\n", "", k1000_revision="def5678")
+    assert rev == "def5678\n" and "CHANGES=1" in out, out              # K1000_REVISION always wins
+    out, rev, src = _revision_block(tmp_path / "b", "abc1234\n", ">f.st...... k1000/app.py\n")
+    assert rev == f"unknown (from {src})\n" and "CHANGES=2" in out, out  # new code: the old one would lie
+    out, rev, src = _revision_block(tmp_path / "c", None, "")
+    assert rev == f"unknown (from {src})\n" and "CHANGES=1" in out, out  # nothing recorded yet
+
+
+@pytest.mark.parametrize("install_rc, lean_out, rc, todo", [
+    (0, "k1000-lean: 0 changes\n", 0, None),
+    (4, CLOUD_INIT_ON + "k1000-lean: 0 changes\n", 4, "cloud-init off, the phone's access point"),
+    (3, "k1000-lean: 0 changes\n", 3, "CamillaGUI"),
+    (5, "k1000-lean: 0 changes\n", 3, "the phone's access point, CamillaGUI"),
+], ids=["finished", "cloud-init-and-ap", "gui", "ap-and-gui"])
+def test_bootstrap_says_already_a_k1000_only_when_nothing_is_left(tmp_path, install_rc, lean_out, rc, todo):
+    """F4: "0 changes: this card is already a K1000" was printed in the same run as "cloud-init is
+    still on" and "the phone's access point is NOT set up"."""
+    r, _ = _bootstrap_run(tmp_path, install_rc=install_rc, lean_out=lean_out)
+    assert r.returncode == rc, r.stdout + r.stderr
+    if todo is None:
+        assert "k1000-bootstrap: 0 changes: this card is already a K1000\n" in r.stdout
+    else:
+        assert f"k1000-bootstrap: 0 changes; still to do: {todo} (below)\n" in r.stdout
+        assert "already a K1000" not in r.stdout
+    assert ("cloud-init is still on" in r.stdout) == ("cloud-init" in (todo or ""))
+    assert ("access point is NOT set up" in r.stdout) == ("access point" in (todo or ""))
+
+
+def test_bootstrap_dry_run_on_a_finished_card_is_0_changes(tmp_path):
+    """F5: install.sh has no dry run, and "would run install.sh" was counted on every dry run, so a
+    finished card dry-ran to "1 changes". With --no-ap, an AP already marked down is not counted."""
+    lean = "k1000-lean: dry run: 0 changes\n"
+    r, calls = _bootstrap_run(tmp_path, "--dry-run", lean_out=lean)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "would run: install.sh --boot --headless --ap (" in r.stdout and "install " not in calls
+    assert "k1000-bootstrap: dry run: 0 changes (install.sh's not included: it has no dry run)" in r.stdout
+    r, _ = _bootstrap_run(tmp_path / "noap", "--dry-run", "--no-ap", lean_out=lean)
+    assert "would: mark the phone's access point down" in r.stdout and "dry run: 1 changes" in r.stdout
+    (tmp_path / "noap2").mkdir()
+    (tmp_path / "noap2" / "apetc").mkdir()
+    (tmp_path / "noap2" / "apetc" / "ap.info").write_text("ssid=K1000\nband=a\nstate=down\n")
+    r, _ = _bootstrap_run(tmp_path / "noap2", "--dry-run", "--no-ap", lean_out=lean)
+    assert "already marked down" in r.stdout and "dry run: 0 changes" in r.stdout, r.stdout
+
+
+def test_bootstrap_installs_its_tools_without_debconf_prompts(tmp_path):
+    """F6: apt-get install without DEBIAN_FRONTEND=noninteractive logged debconf fallbacks, and on a
+    terminal (foreground mode) debconf could prompt."""
+    r, calls = _bootstrap_run(tmp_path, installed="python3-qrcode|python3-smbus2")    # i2c-tools missing
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends i2c-tools" in calls
+
+
+def test_install_dependencies_without_debconf_prompts(tmp_path):
+    """F6: install.sh step 2 (APT_DEPS) with a fake dpkg (nothing installed) and a fake apt-get."""
+    text = INSTALL.read_text()
+    block = text[text.index("missing=()\nfor p in \"${APT_DEPS[@]}\""):text.index("if [ -x /usr/local/bin/camilladsp ]")]
+    fb = tmp_path / "bin"
+    fb.mkdir()
+    _bin(fb, "dpkg", "exit 1\n")
+    _bin(fb, "apt-get", f'echo "DEBIAN_FRONTEND=${{DEBIAN_FRONTEND:-unset}} apt-get $*" >> "{tmp_path}/calls"\n')
+    prog = ('set -euo pipefail\nCHANGES=0\nnote() { printf "%s\\n" "$*"; }\n'
+            'changed() { CHANGES=$((CHANGES + 1)); note "$*"; }\nAPT_DEPS=(python3-qrcode hostapd)\n' + block)
+    env = {k: v for k, v in os.environ.items() if k != "DEBIAN_FRONTEND"}
+    r = subprocess.run(["bash", "-c", prog], capture_output=True, text=True, env=dict(env, PATH=f"{fb}:/usr/bin:/bin"))
+    assert r.returncode == 0, r.stderr
+    assert (tmp_path / "calls").read_text() == \
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3-qrcode hostapd\n"
+
+
+def test_every_apt_install_is_noninteractive():
+    """F6, for every script: each apt-get call that installs or removes carries the prefix (a dry
+    `apt-get -s` and apt-get named inside a message do not count)."""
+    found = 0
+    for script in (BOOTSTRAP, INSTALL, LEAN, BOX / "net" / "setup-ap.sh"):
+        for n, line in enumerate(script.read_text().splitlines(), 1):
+            code = re.sub(r'"[^"]*"', '""', line)
+            code = re.sub(r"(^|\s)#.*$", "", code)
+            for m in re.finditer(r"(\S*\s)?apt-get\s+(install|-y|purge|remove|autoremove)\b", code):
+                found += 1
+                assert (m.group(1) or "").strip() == "DEBIAN_FRONTEND=noninteractive", f"{script.name}:{n}: {line}"
+    assert found >= 4                                     # bootstrap 1, install.sh 2, lean 1

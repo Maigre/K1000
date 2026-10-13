@@ -22,7 +22,7 @@
 #   sudo ./setup-ap.sh --ssh on       also allow SSH (22) from the K1000 Wi-Fi (default: off)
 #   sudo ./setup-ap.sh --backend nm   NetworkManager's own AP (wpa_supplicant) instead of hostapd.
 #                                     NOT recommended on the Pi's onboard chip: it drops many phones
-#                                     ~6 s after they join (hub knowledge rpi-internal-wifi-ap-hostapd)
+#                                     ~6 s after they join (verified on this chip: docs/06-phone.md §6)
 #   sudo ./setup-ap.sh --backend hostapd   back to hostapd + its own dnsmasq (the default; needs the
 #                                     hostapd package, which install.sh installs)
 #   sudo ./setup-ap.sh --iface wlan1  the AP on another Wi-Fi interface (a USB dongle + antenna)
@@ -40,9 +40,9 @@
 #
 # What it sets up:
 #   - The AP on wlan0 only: SSID K1000, WPA2-PSK (CCMP), PMF OFF (the Pi's Broadcom AP drops
-#     clients when PMF is advertised: hub knowledge rpi-internal-wifi-ap-hostapd), band a / ch 36
+#     clients when PMF is advertised: docs/06-phone.md §6), band a / ch 36
 #     by default, 10.42.0.1/24, DHCP + DNS for the phones, no IPv6, on at boot.
-#     Backend hostapd (the default; same hub knowledge: NetworkManager's wpa_supplicant AP on this
+#     Backend hostapd (the default; same source: NetworkManager's wpa_supplicant AP on this
 #     chip completes the handshake, then drops the client before DHCP): k1000-ap-hostapd.service
 #     (ieee80211w left unset) + k1000-ap-dnsmasq.service, wlan0 unmanaged by NetworkManager
 #     (/etc/NetworkManager/conf.d/k1000-ap-unmanaged.conf), /etc/k1000/{hostapd.conf,ap.env,
@@ -702,11 +702,13 @@ if [ "$STATE" = down ]; then
 elif [ $DO_UP = 1 ]; then
   if [ "$BACKEND" = nm ]; then
     if ! con_active || [ $RESTART_AP = 1 ]; then
-      fence_loaded || { note "ERROR: the fence is not loaded: the AP is never up without it (journalctl -u $FENCE_UNIT)"; exit 4; }
+      # (exit 4 from here on: steps 1-7 may have changed things; the count line says how many)
+      fence_loaded || { note "ERROR: the fence is not loaded: the AP is never up without it (journalctl -u $FENCE_UNIT)"; note "$CHANGES changes"; exit 4; }
       note "bringing $CON up on $IFACE (phones on it reconnect in a few seconds)"
       if ! nmcli --wait 30 connection up "$CON" >/dev/null; then
         note "ERROR: $CON did not come up. Look at: journalctl -u NetworkManager -n 60 --no-pager"
         band_hint
+        note "$CHANGES changes"
         exit 4
       fi
       changed "$CON is up"
@@ -726,11 +728,13 @@ elif [ $DO_UP = 1 ]; then
     if ! systemctl restart "$HOSTAPD_UNIT" "$APDNS_UNIT"; then
       note "ERROR: hostapd did not start. Look at: journalctl -u $HOSTAPD_UNIT -n 60 --no-pager"
       band_hint
+      note "$CHANGES changes"
       exit 4
     fi
     if ! why=$(hostapd_check); then
       note "ERROR: the AP did not stay up: $why. Look at: journalctl -u $HOSTAPD_UNIT -n 60 --no-pager"
       band_hint
+      note "$CHANGES changes"
       exit 4
     fi
     changed "$HOSTAPD_UNIT and $APDNS_UNIT are up"

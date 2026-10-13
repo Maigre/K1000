@@ -23,7 +23,7 @@ phone (D-007) is `docs/06-phone.md`.
 The order at power-on:
 
 1. The engine starts **muted at −40 dB** from `/var/lib/k1000/active.yml`.
-2. k1000 connects to the engine, checks the config, unmutes and ramps Main up to the saved level over about 3 s.
+2. k1000 connects to the engine, checks the config and, unless the state was saved muted, unmutes and ramps Main up to the saved level over about 3 s (saved muted: it stays muted, `READY · hold B2 to unmute`).
 3. The phone/laptop GUI comes up next to them.
 
 - If `active.yml` is missing or broken, the engine waits for a valid one, with no websocket
@@ -49,7 +49,7 @@ The order at power-on:
 | `/opt/k1000.prev/` | the version before the last update (rollback) |
 | `/etc/k1000/k1000.yaml` | Thomas's settings: profile pin, knob mapping. Copied once from `box/etc/`, **never overwritten** by install.sh |
 | `/var/lib/k1000/state.json`, `active.yml` | live state and the generated engine config (written by k1000, atomically) |
-| `/var/log/k1000/` | `camilladsp_rCURRENT.log` + up to 50 rotated ones (every engine start rotates, and every 256 kB), `soak.log` |
+| `/var/log/k1000/` | `camilladsp_rCURRENT.log` + up to 50 rotated ones (every engine start rotates, and every 256 kB), the soak logs (`soak*.log`, one per run) |
 | `/opt/camillagui/` | the GUI binary; `config/` comes from `box/camillagui/`; `files/` is the GUI's empty, read-only config folder |
 | `/etc/systemd/system/{camilladsp,k1000,camillagui,k1000-console}.service` | from `box/systemd/` |
 | `/etc/systemd/system/k1000-laptop.{path,service}` | from `box/systemd/`, installed, never enabled: SETUP › Laptop access (k1000.service `Wants=` the watcher; the root unit runs `/opt/k1000/net/k1000-laptop-access.sh`) |
@@ -71,7 +71,7 @@ The order at power-on:
 
 ## Deploy
 
-From the repo on the laptop (`~/Bakery/K1000`), with the `k1000` host in your SSH config:
+From the repo checkout on the laptop, with the `k1000` host in your SSH config:
 
 ```sh
 rsync -a --delete --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
@@ -104,8 +104,9 @@ the certificate before it changes anything.)
 
 - `--ap` runs `net/setup-ap.sh`: the Wi-Fi "K1000" on `wlan0` (hostapd, PMF off, 5 GHz ch 36,
   country FR, captive portal off, SSH fenced off), its DNS and its fence. `eth0` is never touched.
-  It keeps its earlier choices on a re-run (`/etc/k1000/ap.info`); change one with
-  `sudo /opt/k1000/net/setup-ap.sh --band bg|--portal on|--ssh on|--backend nm|--iface wlan1`.
+  It keeps its earlier choices on a re-run (`/etc/k1000/ap.info`); change one with, e.g.,
+  `sudo /opt/k1000/net/setup-ap.sh --band bg` (the others: `--portal on`, `--ssh on`,
+  `--backend nm`, `--iface wlan1`).
 - k1000 loads a new certificate at its next start (between shows: `sudo systemctl restart k1000`).
 - **No-go** (the Friday checklist fails): `sudo /opt/k1000/net/setup-ap.sh --down` (off the air,
   across reboots, and kept down by later `install.sh --ap` and `bootstrap.sh` runs) and
@@ -427,10 +428,12 @@ systemctl status k1000-laptop.path                   # the watcher (k1000 brings
 After the deploy that brings it, k1000 must restart once (between shows) before SETUP › Laptop
 access answers: install.sh says so.
 
-## Knobs and buttons: confirm them before the rig test (OPEN)
+## Knobs and buttons: confirm them before the rig test (buttons OPEN)
 
-Nobody has confirmed yet which physical button is B1–B4 or which knob is E1–E4.
-`/etc/k1000/k1000.yaml` still holds the defaults, and the on-screen knob corners are assumed.
+The knobs are confirmed: on 2026-10-12 Thomas checked on the box that each knob sits at its
+on-screen corner (E1 top-left, E2 bottom-left, E3 top-right, E4 bottom-right) and that 10 clicks
+read +10. Nobody has confirmed yet which physical button is B1–B4, and `/etc/k1000/k1000.yaml`
+still holds the defaults.
 Since UI v1 a B4 hold only shows a hint (the live-EQ reset is a SETUP item), so a B2/B4 swap can no
 longer reset the EQ, but the emergency mute would then do nothing: confirm the map before the
 speakers. `k1000-m4-bringup.sh` warns while the defaults are in place.
@@ -443,8 +446,8 @@ notch helper on SHOW.
 1. SETUP → "Knob test" (HWTEST). Press every button and turn every knob. Note, by physical
    position, the `sw`/`enc` index each one shows.
 2. Write `controls:` in `/etc/k1000/k1000.yaml` (encoders, pushes, buttons, reverse), then
-   `sudo systemctl restart k1000`. If the on-screen labels sit at the wrong corners, that is
-   `KNOB_CORNERS` in `k1000/ui/input_map.py`: a code change, deployed like any other.
+   `sudo systemctl restart k1000`. If the on-screen labels ever sit at the wrong corners (another
+   shell), that is `KNOB_CORNERS` in `k1000/ui/input_map.py`: a code change, deployed like any other.
 3. Label the buttons on the shell: PAGE · MUTE (hold) · BAND / UNLOCK (hold) · NOTCH.
 4. At the rig test, with program playing: hold B2, and all four Meyers mute.
 
@@ -463,7 +466,8 @@ The program spectrum behind SHOW's EQ curve (D-009) polls the engine on a second
 while SHOW is displayed and SETUP › Spectrum is ON (`docs/03-v0-architecture.md` §8).
 
 - **SETUP › Spectrum** switches it at run time (saved in `state.json`). Off, SHOW draws the curve
-  alone and B4 still sets a notch up (`NO PEAK`: sweep with E2).
+  alone and B4 still sets a notch up (`NO PEAK`: E3 down first, about −6 dB, then sweep E2 until
+  the ring drops; at 0 dB the sweep is silent).
 - **Out entirely** (Friday's no-go, or anything odd): `spectrum: enabled: false` in
   `/etc/k1000/k1000.yaml`, then `sudo systemctl restart k1000` between shows. No task and no second
   connection; SETUP › Spectrum then reads `DISABLED`.
@@ -481,16 +485,24 @@ while SHOW is displayed and SETUP › Spectrum is ON (`docs/03-v0-architecture.m
 
 ## Soak test (overnight, and the 2-hour program run)
 
+**One unit and one log per run.** A log is only ever appended to, and `--summary` judges
+everything from its first sample to its last: two runs in one log are judged as one window, the
+gap between them included. The names used this week: `soak-night.log` (the night to Tue 13, done),
+`k1000-soak-m4` / `soak-m4.log` (the M4 day's hour), `k1000-soak-thu` / `soak-thu.log`
+(Thursday's overnight soak), `k1000-soak-2h` / `soak-2h.log` (the 2-hour program run). Without
+`K1000_SOAK_LOG` the tool appends to `/var/log/k1000/soak.log`.
+
+Thursday's overnight soak:
+
 ```sh
-sudo systemd-run --unit=k1000-soak --uid=k1000 /opt/k1000/tools/k1000-soak.sh
-tail -f /var/log/k1000/soak.log
-/opt/k1000/tools/k1000-soak.sh --summary      # in the morning: "clean", or what needs a look (exit 1)
-sudo systemctl stop k1000-soak                # "not loaded" = it had already ended: a reboot?
+sudo systemd-run --unit=k1000-soak-thu --uid=k1000 -E K1000_SOAK_LOG=/var/log/k1000/soak-thu.log \
+  /opt/k1000/tools/k1000-soak.sh
+tail -f /var/log/k1000/soak-thu.log
+/opt/k1000/tools/k1000-soak.sh --summary /var/log/k1000/soak-thu.log   # in the morning: "clean", or what needs a look (exit 1)
+sudo systemctl stop k1000-soak-thu            # "not loaded" = it had already ended: a reboot?
 ```
 
-`soak.log` is only ever appended to, and `--summary` judges everything from its first sample to
-its last. Give each run its own log, or the window spans both runs (the night between them
-included). For the 2-hour program run:
+For the 2-hour program run:
 
 ```sh
 sudo systemd-run --unit=k1000-soak-2h --uid=k1000 -E K1000_SOAK_LOG=/var/log/k1000/soak-2h.log \
@@ -517,7 +529,8 @@ The tool writes one line every 10 s:
   printed as a `note:` with its time, never as a failure (fixed after the 2026-10-13 acceptance,
   whose summary exited 1 on an underrun from the night before);
 - restarts of camilladsp (`restarts`: a crash, or a lost device) or of k1000 (`k1000_restarts`);
-- `state` other than `Running` (`Paused` = silent input, `DOWN` = no engine websocket), k1000
+- `state` other than `Running` (`Paused` = CamillaDSP's silence pause, which K1000 leaves off, so
+  a silent input still reads `Running`; `DOWN` = no engine websocket), k1000
   not active, Main muted, clipped samples;
 - `throttled` not `0x0` (under-voltage or heat: the M4 is bus-powered from the Pi), or the SoC
   at 75 °C or more.

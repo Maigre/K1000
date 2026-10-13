@@ -32,7 +32,8 @@
 # A real run detaches from the terminal, like k1000-lean.sh: it re-runs itself as the transient
 # systemd unit k1000-bootstrap-<time> and follows its log (/var/log/k1000-bootstrap/run-<time>.log,
 # exit status in run-<time>.rc), so a dropped SSH session cannot kill apt halfway.
-# K1000_BOOTSTRAP_FOREGROUND=1 runs in place.
+# K1000_BOOTSTRAP_FOREGROUND=1 runs in place, k1000-lean.sh included (it never detaches when
+# bootstrap.sh runs it).
 #
 # CAMILLADSP_TARBALL=<path> installs CamillaDSP from a local copy of the release tarball (offline);
 # CAMILLAGUI_TARBALL=<path> does the same for CamillaGUI (passed on to install.sh);
@@ -134,7 +135,7 @@ else
   # install.sh installs its APT_DEPS from these package lists (step 3).
   apt-get update -q || note "WARNING: apt-get update failed (offline?): using the package lists already there"
   if [ ${#missing_tools[@]} -gt 0 ]; then
-    apt-get install -y --no-install-recommends "${missing_tools[@]}"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing_tools[@]}"
     CHANGES=$((CHANGES + 1)); note "apt installed ${missing_tools[*]}"
   fi
 fi
@@ -168,8 +169,15 @@ flags=(--boot --headless)
 install_help=$("$SRC/install.sh" --help 2>/dev/null || true)
 if [ $NO_AP = 0 ] && grep -Eq '(^|[[:space:]])--ap([[:space:]]|$)' <<<"$install_help"; then flags+=(--ap); fi
 if [ $DRY = 1 ]; then
-  would "run install.sh ${flags[*]} (units, overlay, CamillaGUI, headless boot; install.sh has no dry run)"
-  [ $NO_AP = 0 ] || would "mark the phone's access point down (net/setup-ap.sh --down)"
+  # Not counted: install.sh has no dry run, so a finished card can still dry-run to 0 changes.
+  note "would run: install.sh ${flags[*]} (units, overlay, CamillaGUI, headless boot; it has no dry run: its changes are not counted here)"
+  if [ $NO_AP = 1 ]; then
+    if grep -qx 'state=down' "${K1000_AP_ETC:-/etc/k1000}/ap.info" 2>/dev/null; then
+      note "the phone's access point is already marked down"
+    else
+      would "mark the phone's access point down (net/setup-ap.sh --down)"
+    fi
+  fi
 else
   rc=0
   "$SRC/install.sh" "${flags[@]}" 2>&1 | tee "$TMP/install.log" || rc=$?
@@ -180,7 +188,8 @@ else
     5) GUI_FAILED=1 AP_FAILED=1; note "WARNING: neither CamillaGUI nor the phone's access point is set up (see above); going on: the engine, the knobs and the screen do not need them" ;;
     *) die "install.sh ${flags[*]} failed (exit $rc, its output is above)" ;;
   esac
-  n=$(sed -n 's/.*: \([0-9][0-9]*\) changes$/\1/p' "$TMP/install.log" | tail -n 1)
+  # install.sh's own last line ("deployed ...: N changes") holds its total, setup-ap.sh's included
+  n=$(sed -n 's/^k1000-install: .*: \([0-9][0-9]*\) changes$/\1/p' "$TMP/install.log" | tail -n 1)
   CHANGES=$((CHANGES + ${n:-0}))
   # --no-ap: the access point marked down, so no later install.sh --ap puts it on the air
   if [ $NO_AP = 1 ] && [ -x "$SRC/net/setup-ap.sh" ]; then
@@ -219,17 +228,26 @@ else
 fi
 
 # --- 5. the lean OS -------------------------------------------------------------------------------
-lean=("$SRC/tools/k1000-lean.sh")
+# In place, never as its own unit: this run is already a unit, or deliberately in the foreground
+# (K1000_BOOTSTRAP_FOREGROUND=1, maybe because systemd-run is missing, which lean would need).
+lean=(env K1000_LEAN_FOREGROUND=1 "$SRC/tools/k1000-lean.sh")
 [ $DRY = 0 ] || lean+=(--dry-run)
 "${lean[@]}" 2>&1 | tee "$TMP/lean.log" || die "k1000-lean.sh failed (its output is above); nothing else to do until that is fixed"
 n=$(sed -n 's/.*[: ]\([0-9][0-9]*\) changes.*$/\1/p' "$TMP/lean.log" | tail -n 1)
 CHANGES=$((CHANGES + ${n:-0}))
 
 # --- summary ----------------------------------------------------------------------------------------
+# "already a K1000" only when nothing is left to do: a step that is still open is said instead.
+todo=()
+if [ $DRY = 0 ] && grep -q 'cloud-init left on' "$TMP/lean.log"; then todo+=("cloud-init off"); fi
+[ $AP_FAILED = 0 ] || todo+=("the phone's access point")
+[ $GUI_FAILED = 0 ] || todo+=("CamillaGUI")
 if [ $DRY = 1 ]; then
-  note "dry run: $CHANGES changes"
-elif [ $CHANGES = 0 ]; then
+  note "dry run: $CHANGES changes (install.sh's not included: it has no dry run)"
+elif [ $CHANGES = 0 ] && [ ${#todo[@]} = 0 ]; then
   note "0 changes: this card is already a K1000"
+elif [ $CHANGES = 0 ]; then
+  note "0 changes; still to do: $(printf '%s, ' "${todo[@]}" | sed 's/, $//') (below)"
 else
   note "$CHANGES changes. Now power-cycle the box (unplug, 5 s, plug back in): the boot-level changes"
   note "apply then. ~20 s later: ssh k1000 'systemctl is-active camilladsp k1000 camillagui' says active x3,"

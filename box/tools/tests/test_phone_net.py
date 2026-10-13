@@ -400,6 +400,7 @@ def test_setup_ap_fails_when_hostapd_dies_after_its_start(tmp_path):
     (box.fake / "state/hostapd-dies").touch()
     out = box.run(rc=4)
     assert "did not stay up" in out and "--band bg" in out
+    assert box.changes and box.changes > 10            # counted (install.sh --ap adds it to its total)
     assert "sleep 3" in box.starts()                                      # it settled first
     (box.fake / "state/hostapd-dies").unlink()
     (box.fake / "state/units/k1000-ap-hostapd.service.nrestarts").write_text("0\n")
@@ -795,7 +796,7 @@ def test_install_leaves_the_ap_units_to_setup_ap(tmp_path):
     for word in ("put ", "install ", "cp ", "enable", "start"):
         assert word not in code, word
     ap = text[text.index("# --- 8b."):text.index("# --- 9.")]
-    assert 'bash "$SRC/net/setup-ap.sh" ||' in ap                          # no arguments: its defaults
+    assert 'if bash "$SRC/net/setup-ap.sh" 2>&1 | tee ' in ap              # no arguments: its defaults
     # run the report against a fake /etc/systemd/system
     etc = tmp_path / "system"
     etc.mkdir()

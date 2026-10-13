@@ -315,8 +315,9 @@ KNOBS: dict[str, tuple[Knob, Knob, Knob, Knob]] = {
     "PHONE": (Knob("QR", None, kind="phone_qr"), Knob("", None), Knob("", None), Knob("", None)),
 }
 
-# Screen corner of each logical encoder. Assumed (E1 top-left, E2 bottom-left, E3 top-right,
-# E4 bottom-right) until Thomas confirms on the box — then correct this table only.
+# Screen corner of each logical encoder: E1 top-left, E2 bottom-left, E3 top-right, E4
+# bottom-right. Confirmed by Thomas on the box on 2026-10-12 (each knob sits at its label's
+# corner; 10 clicks = +10). Another shell with the knobs elsewhere: correct this table only.
 KNOB_CORNERS: tuple[str, str, str, str] = ("tl", "bl", "tr", "br")
 
 # Acceleration: turn rate (detents/s) -> multiplier, the knob driver's curve (accel_multiplier)

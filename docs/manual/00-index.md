@@ -27,9 +27,10 @@ how far it generalises.
 ## Status
 
 **v0, on a beta engine** (CamillaDSP 5.0.0-beta.1, decision D-004 in
-[`DECISIONS.md`](../../DECISIONS.md)). It runs on the author's box. The live UI v1, the knob fix and
-the phone are being finished. Where this manual says "see docs/0X", that part is still moving and
-the numbered doc is the reference until this manual catches up.
+[`DECISIONS.md`](../../DECISIONS.md)), with the live UI v1 (D-009), the knob fixes and the phone
+page built and accepted on the author's box. It has not yet played a show; the MOTU M4 and the phone
+are being proven on the real rig. Where this manual points to a numbered doc (`docs/0X`), that doc
+holds the design detail and the history; this manual says how the box works today.
 
 ## Chapters
 
@@ -37,17 +38,19 @@ the numbered doc is the reference until this manual catches up.
 |---|---|---|
 | 1 | [Requirements](01-requirements.md) | Hardware, cables, speakers, software versions, network |
 | 2 | [Installation](02-installation.md) | A fresh card with `bootstrap.sh`, `install.sh` flags, converting a desktop card, the spare card, rollback |
-| 3 | [Configuration](03-configuration.md) | Every key of `/etc/k1000/k1000.yaml`, what needs a restart, the state files |
-| 4 | [Usage](04-usage.md) | Stub until UI v1 lands. Until then: the [operator card](../04-operator-card.md) |
+| 3 | [Configuration](03-configuration.md) | Every key of `/etc/k1000/k1000.yaml` (profiles, knobs, spectrum, phone), what needs a restart, the state files |
+| 4 | [Usage](04-usage.md) | Power on to sound, SHOW (master, live EQ, notching, spectrum), ALIGN, SETUP (incl. Laptop access and `/tune`), mute, alerts, the phone, end of night, bypass |
 | 5 | [Tuning a Meyer rig](05-tuning.md) | Power order, gain structure, sub alignment, Lo-Cut, system EQ with a mic, live notching |
 | 6 | [Troubleshooting](06-troubleshooting.md) | Every screen message, common faults, the bypass, logs |
 | 7 | [Maintenance](07-maintenance.md) | Updates, rollback, the spare card, the certificate, SD cards, power cuts, soak test |
-| 8 | [Development](08-development.md) | Repo layout, architecture, tests, the bench console, the knob trace, coding rules |
+| 8 | [Development](08-development.md) | Repo layout, architecture, tests, the bench console, the knob trace, printing the cards, coding rules |
 | 9 | [Licence](09-licence.md) | GPL-3.0-or-later, third-party licences, no warranty, PA safety |
 
 Other references in the repository:
 
-- [`docs/04-operator-card.md`](../04-operator-card.md): the one-page card for the gig case.
+- [`docs/13-quick-start.md`](../13-quick-start.md): one page for someone who has never seen the box.
+- [`docs/04-operator-card.md`](../04-operator-card.md): the one-page card for the operator.
+- Both print to PDF with `tools/make-print.sh` ([chapter 8](08-development.md#printing-the-cards)).
 - [`box/README.md`](../../box/README.md): the ops reference on the box (`/opt/k1000/README.md`).
 - [`docs/03-v0-architecture.md`](../03-v0-architecture.md): the build contract.
 - [`DECISIONS.md`](../../DECISIONS.md) and [`ROADMAP.md`](../../ROADMAP.md).
