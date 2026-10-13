@@ -20,10 +20,12 @@ CamillaGUI and SSH on the K1000 Wi-Fi for 2 h; `laptop.LaptopAccess` follows wha
 (the countdown pill, the PHONE page's password text, the /tune page's gate). This process never
 changes the firewall itself.
 
-Spectrum (D-009): with a screen (not `--headless`) and `spectrum.enabled` in k1000.yaml, the
-SHOW page's spectrum task (`rta.SpectrumTask`) runs on its OWN engine connection; it polls only
-while the controller wants it (SHOW, SETUP > Spectrum ON, engine processing). It is stopped
-after the controller, like the engine link: it never holds anything the audio needs.
+Spectrum (D-009): with `spectrum.enabled` in k1000.yaml, the spectrum task (`rta.SpectrumTask`)
+runs on its OWN engine connection, with or without a screen (`--headless`: the v2 phones show
+it, docs/14 §4.8); it polls only while the controller wants it (someone looks: the screen on
+SHOW, or a v2 phone subscribed; SETUP > Spectrum ON, engine processing), so a run where nobody
+looks never opens that second connection. It is stopped after the controller, like the engine
+link: it never holds anything the audio needs.
 
 Test/bench flags: `--headless` (no framebuffer), `--no-hw` (no MCP23017 knobs), `--stdin` (one
 command per line on stdin, replies on stdout prefixed with '@'; see `COMMANDS`), and
@@ -373,7 +375,8 @@ async def run_command(ctl: Controller, line: str, stop: asyncio.Event) -> None:
             _reply("ok" if ok else "err", {"cmd": cmd, "field": args[0], "value": ctl.state.get(args[0])})
         elif cmd == "mute":
             arg = args[0] if args else "toggle"
-            on = ctl.set_mute(True if arg == "on" else False if arg == "off" else "toggle")
+            on = ctl.set_mute(True if arg == "on" else False if arg == "off" else "toggle",
+                              source="console")
             _reply("ok", {"cmd": cmd, "muted": on})
         elif cmd == "reset_live":
             ctl.reset_live()
@@ -525,6 +528,13 @@ def open_spectrum(ctl: Controller, url: str) -> Any:
         return None
 
 
+def wire_surfaces(ctl: Controller, args: argparse.Namespace) -> None:
+    """What this run has: a screen (not --headless: the spectrum's SHOW rule) and knobs (not
+    --no-hw); the v2 phones read both (hello.surface, the mute fallback, docs/14 §3)."""
+    ctl.has_screen = not args.headless
+    ctl.has_knobs = not args.no_hw
+
+
 # =========================================================================== main
 async def run(args: argparse.Namespace) -> int:
     settings = load_settings(args.settings)
@@ -567,6 +577,7 @@ async def run(args: argparse.Namespace) -> int:
         loop.add_signal_handler(sig, stop.set)
 
     hw: dict[str, Any] = {"fb": None, "controls": None}
+    wire_surfaces(ctl, args)
     await ctl.start()
     laptop = open_laptop(ctl)
     lap_task = loop.create_task(laptop.run(), name="k1000-laptop") if laptop is not None else None
@@ -574,8 +585,9 @@ async def run(args: argparse.Namespace) -> int:
         ctl, settings, tune_undo_file=paths.state.with_name("tune-undo.json"))
     ctl.phone = phone
     ctl.phone_changed()          # the knobs-offline alert names the phone mute only when it exists
-    # The spectrum is for the screen: none without one (bench/engine runs stay single-link).
-    ctl.rta = None if args.headless else open_spectrum(ctl, eng.url)
+    # The spectrum, screen or not (a headless box shows it on the v2 phones). It connects only
+    # while someone looks (spectrum_wanted), so bench/engine runs stay single-link.
+    ctl.rta = open_spectrum(ctl, eng.url)
     ui: list[asyncio.Task[Any]] = []          # screen + knobs: kept until the controller stopped
     if not args.headless:
         ui.append(loop.create_task(screen_task(ctl, hw), name="k1000-screen"))

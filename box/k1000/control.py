@@ -339,11 +339,15 @@ class Status:
     laptop_s: float = 0.0            # SETUP > Laptop access: seconds left (0 = closed)
     laptop_state: str = "off"        # off (no such surface) | closed | opening | open | closing | unavailable
     knob_tags: str = "dim"           # the E1..E4 tags: k1000.yaml ui.knob_tags (dim | off | bright)
+    # ---- phone protocol 2 (docs/14): who made the operator mute, and the input meter
+    mute_src: str = ""               # B4 | phone N | console | boot | GUI | local; "" = not muted
+    in_peak_db: list[float] = field(default_factory=lambda: [METER_FLOOR_DB] * 2)   # capture peaks
+                                     # of the program inputs (input_map order), before any gain
 
     def copy(self) -> "Status":
         return dataclasses.replace(self, levels=list(self.levels), clip=list(self.clip),
                                    drift=list(self.drift), pills=list(self.pills),
-                                   alerts=list(self.alerts))
+                                   alerts=list(self.alerts), in_peak_db=list(self.in_peak_db))
 
 
 # =========================================================================== helpers
@@ -711,6 +715,19 @@ class Controller:
         # k1000.yaml allows it at all (`spectrum: enabled: false` = no task, no second link).
         self.rta: Any = None
         self.spectrum_enabled = spectrum_enabled(self.settings)
+        # Who looks at the spectrum (spectrum_wanted): the box screen on SHOW (`has_screen`:
+        # False with --headless, set by __main__) and the v2 phones subscribed to its frames
+        # (`set_spectrum_phones`, web.PhoneServer). `spectrum_hooks`: called (no argument)
+        # whenever set_spectrum publishes a new picture or state (docs/14 §3.4).
+        self.has_screen = True
+        self.has_knobs = True             # False with --no-hw (the phone's hello.surface)
+        self.spectrum_phones = 0
+        self.spectrum_hooks: list[Callable[[], None]] = []
+        # The meters' own counter (docs/14 §3.3): moves when the output meters as the screen
+        # shows them, or the program inputs' capture peaks, move. `version` moves only for the
+        # former: an input meter moving under a muted output never wakes the screen.
+        self.meter_seq = 0
+        self._in_key: Any = None
         # Extra persistent pills (e.g. the laptop access countdown): callables returning a
         # short text or None, read at every snapshot. Never allowed to break the screen.
         self.pill_sources: list[Callable[[], str | None]] = []
@@ -735,6 +752,9 @@ class Controller:
         # the operator sees, so an unmute decided on an older view is refused (set_mute(seen=)).
         self.mute_seq = 0
         self._mute_seen: tuple[bool, bool] | None = None
+        # Who made the operator's mute (set_mute's `source`, docs/14 §3.2): a state saved muted
+        # comes back muted by "boot"; "" while the operator has not muted.
+        self.mute_src = "boot" if s.muted else ""
 
         self._engine_ready = False        # connect sync done on the current link
         self._syncing = False
@@ -917,7 +937,8 @@ class Controller:
         - undo_reset_s: SETUP > Undo reset availability;
         - spectrum_on / spectrum_state / spectrum / peak_hz: the SHOW spectrum (set by the
           spectrum task through set_spectrum; None when off, stale or not on SHOW);
-        - laptop_s / laptop_state: SETUP > Laptop access (seconds left, what root reports).
+        - laptop_s / laptop_state: SETUP > Laptop access (seconds left, what root reports);
+        - mute_src: who made the operator's mute (set_mute's source; "" while not muted).
         """
         now = self._ui_clock()
         st = self.status
@@ -938,6 +959,7 @@ class Controller:
             st.spectrum, st.peak_hz = None, None
         st.master_up_guard_db = self.master_up_guard_db
         st.laptop_s, st.laptop_state = self._laptop_view()
+        st.mute_src = self.mute_src if self.state.muted else ""
         self.focus.readonly = self.setup_readonly()
         return self.page, self.state.copy(), st.copy(), copy.deepcopy(self.focus)
 
@@ -1227,20 +1249,36 @@ class Controller:
         self._local_edit()
         return True
 
-    def notch_helper(self, now: float | None = None) -> int | None:
-        """B3 on SHOW (D-009). Returns the slot it selected (None: no free band).
+    def notch_helper(self, now: float | None = None, *, target: Any = None, select: bool = True,
+                     prefer: Any = None, source: str = "B3") -> int | None:
+        """B3 on SHOW (D-009), and the phone's grab (docs/14 §4.3). Returns the slot it took or
+        selected (None: no free band, or a `target` that is not a frequency).
 
-        1. A spectrum PEAK within NOTCH_NEAR_OCT of a bell in use (its EFFECTIVE gain != 0: a
-           bell switched OUT is not in use, D-014): select that bell, write nothing.
-        2. Else a free bell (stored gain exactly 0, IN or OUT; the selected band if it is one,
-           else the first of P1..P4, never a shelf): Q = NOTCH_Q (1/6 octave), freq = the PEAK
-           if there is one, and IN if it was OUT. The gain is never touched: a 0 dB peaking
-           biquad is exactly unity, so this is inaudible until E3 cuts. A bell OUT with a stored
-           cut or boost is NOT free: it keeps its settings for its way back IN.
-        3. Else: hint NO FREE BAND, nothing changes.
-        The selected band moves there, its GAIN gets the edit highlight, the hint says
-        "P3 · 2.44k · E3 TO CUT"."""
-        target = self._peak_target()
+        1. The target (the spectrum PEAK, or `target` Hz when given) within NOTCH_NEAR_OCT of a
+           bell in use (its EFFECTIVE gain != 0: a bell switched OUT is not in use, D-014):
+           that bell, write nothing.
+        2. Else a free bell (stored gain exactly 0, IN or OUT; never a shelf): Q = NOTCH_Q (1/6
+           octave), freq = the target if there is one, and IN if it was OUT. The gain is never
+           touched: a 0 dB peaking biquad is exactly unity, so this is inaudible until E3 cuts.
+           A bell OUT with a stored cut or boost is NOT free: it keeps its settings for its way
+           back IN. Which free bell: with `select` (B3) the selected band if it is one, else the
+           first of P1..P4; without (the phone) `prefer` if it is one, else the free bell
+           nearest the target, else the first.
+        3. Else: NO FREE BAND, nothing changes.
+        With `select` (B3) the selected band moves there, its GAIN gets the edit highlight and
+        the hint says "P3 · 2.44k · E3 TO CUT" (or NO FREE BAND). `select=False` (a phone): the
+        box's own band selection, highlight and hint stay as they are; the phone says it."""
+        if target is None:
+            target = self._peak_target()
+        else:
+            try:
+                t = float(target)
+            except (TypeError, ValueError, OverflowError):
+                t = math.nan
+            if isinstance(target, bool) or not math.isfinite(t) or t <= 0:
+                log.warning("notch helper (%s): target %r refused (not a frequency)", source, target)
+                return None
+            target = RANGES["live_peq.freq"].clamp(t)
         peq = self.state.live_peq
         used = [i for i in BELL_SLOTS if i < len(peq) and effective_gain(peq[i]) != 0.0]
         if target is not None:
@@ -1249,16 +1287,31 @@ class Controller:
             near = [x for x in near if x[0] <= NOTCH_NEAR_OCT + 1e-9]
             if near:
                 i = min(near)[1]
-                log.info("notch helper: peak %.0f Hz is band P%d's (%.0f Hz): selected", target,
-                         i + 1, peq[i].freq)
-                self._notch_select(i, HINT_NOTCH, now)
+                log.info("notch helper (%s): %.0f Hz is band P%d's (%.0f Hz): selected", source,
+                         target, i + 1, peq[i].freq)
+                if select:
+                    self._notch_select(i, HINT_NOTCH, now)
                 return i
-        sel = self.focus.band
         free = [i for i in BELL_SLOTS if i < len(peq) and float(peq[i].gain) == 0.0]
         if not free:
-            self.show_hint(HINT_NO_FREE_BAND, NOTCH_HINT_S)
+            if select:
+                self.show_hint(HINT_NO_FREE_BAND, NOTCH_HINT_S)
+            log.info("notch helper (%s): no free band", source)
             return None
-        i = sel if sel in free else free[0]
+        if select:
+            sel = self.focus.band
+            i = sel if sel in free else free[0]
+        elif isinstance(prefer, int) and not isinstance(prefer, bool) and prefer in free:
+            i = prefer
+        elif target is not None:
+            t0 = target
+
+            def dist(k: int) -> tuple[float, int]:
+                f = float(peq[k].freq)
+                return (abs(math.log2(f / t0)) if f > 0 else math.inf, k)
+            i = min(free, key=dist)
+        else:
+            i = free[0]
         base = LIVE_SLOTS[i]
 
         def setup() -> tuple[Any, Any, Any]:
@@ -1272,11 +1325,12 @@ class Controller:
         self.state.set(f"{base}.on", True)        # at 0 dB: IN is inaudible, and E3 then cuts
         if setup() != old:
             self._local_edit()
-        log.info("notch helper: P%d at %.0f Hz, Q %.2f%s%s (gain untouched)", i + 1,
+        log.info("notch helper (%s): P%d at %.0f Hz, Q %.2f%s%s (gain untouched)", source, i + 1,
                  self.state.get(f"{base}.freq"), self.state.get(f"{base}.q"),
                  "" if target is not None else ", no peak",
                  ", was OUT: now IN" if old[2] is False else "")
-        self._notch_select(i, HINT_NOTCH if target is not None else HINT_NOTCH_NO_PEAK, now)
+        if select:
+            self._notch_select(i, HINT_NOTCH if target is not None else HINT_NOTCH_NO_PEAK, now)
         return i
 
     def _peak_target(self) -> float | None:
@@ -1342,18 +1396,31 @@ class Controller:
 
     # ------------------------------------------------------------------ spectrum (SHOW)
     def spectrum_wanted(self) -> bool:
-        """The spectrum task polls only while this holds: SHOW displayed, SETUP > Spectrum ON,
-        the engine reachable and processing (Running, or Paused on silence), device present."""
+        """The spectrum task polls only while this holds: someone looks at it (the box screen
+        on SHOW, or at least one v2 phone subscribed to its frames: docs/14 §4.8), SETUP >
+        Spectrum ON, the engine reachable and processing (Running, or Paused on silence),
+        device present."""
         st = self.status
-        return (self.spectrum_enabled and self.page == "SHOW" and bool(self.state.spectrum_on)
+        looked_at = (self.has_screen and self.page == "SHOW") or self.spectrum_phones > 0
+        return (self.spectrum_enabled and looked_at and bool(self.state.spectrum_on)
                 and bool(st.connected) and st.engine in ("Running", "Paused")
                 and st.device_present is not False)
 
+    def set_spectrum_phones(self, n: int) -> None:
+        """How many phones are subscribed to the spectrum frames now (web.PhoneServer)."""
+        n = max(0, int(n))
+        if (n > 0) != (self.spectrum_phones > 0):
+            log.info("spectrum: %s", f"{n} phone(s) subscribed" if n else "no phone subscribed")
+        self.spectrum_phones = n
+
     def set_spectrum(self, frame: Any, state: str) -> None:
         """From the spectrum task: the frame to draw (None = no picture) and its state. Wakes
-        the screen only: `version` is not bumped (phones do not show the spectrum). A frame
-        identical to the one shown (silence: every bin at the floor, the scale settled) wakes
-        nothing, so a quiet SHOW page keeps the idle render rate."""
+        the screen, only while it shows the spectrum (a screen, on SHOW: a phone subscribed
+        while the box is on ALIGN, SETUP or PHONE must not re-render those at the frame rate),
+        and the `spectrum_hooks` (the phones' frames): `version` is not bumped (the phones'
+        state does not carry the picture). A frame identical to the one shown (silence: every
+        bin at the floor, the scale settled) wakes nothing, so a quiet SHOW page keeps the
+        idle render rate."""
         same = (str(state) == self.status.spectrum_state
                 and _same_spectrum(frame, self.status.spectrum))
         self.status.spectrum = frame
@@ -1361,7 +1428,14 @@ class Controller:
         self.status.peak_hz = float(hz) if isinstance(hz, (int, float)) and hz else None
         self.status.spectrum_state = str(state)
         if not same:
-            self.changed.set()
+            if self.has_screen and self.page == "SHOW":
+                self.changed.set()
+            for fn in list(self.spectrum_hooks):
+                try:
+                    fn()
+                except Exception as e:   # noqa: BLE001 - a phone must never break the spectrum
+                    self._log_once(("spectrum hook", type(e).__name__), logging.ERROR,
+                                   "spectrum hook %r failed: %s", fn, e)
 
     @property
     def last_input(self) -> float:
@@ -1369,12 +1443,14 @@ class Controller:
         loop draws the frame after an input at the knob rate, other frames at the stream rate."""
         return self._last_input
 
-    def set_mute(self, on: bool | str | None = MUTE_TOGGLE, seen: int | None = None) -> bool:
+    def set_mute(self, on: bool | str | None = MUTE_TOGGLE, seen: int | None = None,
+                 source: str = "") -> bool:
         """Main mute, sent at once (never queued behind other engine work). 'toggle' = the
         opposite of what the screen shows. `seen` (an unmute from a surface that LOOKED first:
         B4's press, a phone's hold): the mute_view() generation it saw; if the mute changed
         since, the unmute is refused (someone muted meanwhile) and the mute shown is returned.
-        A mute is never refused."""
+        A mute is never refused. `source` (B4, phone N, console) is recorded as `mute_src`
+        when it mutes (the phones say who muted, docs/14 §3.2); nothing else depends on it."""
         if on is None or on == MUTE_TOGGLE:
             on = not self.displayed_muted()
         on = bool(on)
@@ -1386,7 +1462,8 @@ class Controller:
         self.mute_seq += 1
         self.state.muted = on
         self._mute_want = on
-        log.info("mute %s (operator)", "ON" if on else "OFF")
+        self.mute_src = (str(source) or "local") if on else ""
+        log.info("mute %s (operator%s)", "ON" if on else "OFF", f", {source}" if source else "")
         self._mark_dirty(urgent=on)
         self._changed()
         if self._mute_task is None or self._mute_task.done():
@@ -1506,7 +1583,7 @@ class Controller:
                 self.show_hint(HINT_SPECTRUM_DISABLED if on and not self.spectrum_enabled
                                else ("SPECTRUM ON" if on else "SPECTRUM OFF"))
         elif isinstance(action, Mute):
-            self.set_mute(action.on, seen=action.seen)
+            self.set_mute(action.on, seen=action.seen, source="B4")
         elif isinstance(action, ResetLive):
             self.reset_live()
         elif isinstance(action, UndoReset):
@@ -2434,6 +2511,8 @@ class Controller:
                      ", ".join(f"{k} {a!r}->{b!r}" for k, (a, b) in list(diff.items())[:12]))
             if new.master_db != self.state.master_db:
                 _log_master(self.state.master_db, new.master_db, "adoption")
+            if bool(new.muted) != bool(self.state.muted):     # who muted (docs/14 §3.2)
+                self.mute_src = ("boot" if connect else "GUI") if new.muted else ""
             self.state = new
             self._mark_dirty()
             self._changed()
@@ -2891,6 +2970,7 @@ class Controller:
             self._peak_hold[i] = max(self._peak_hold[i], lv)
             if lv >= CLIP_DBFS:
                 self._clip_until[i] = now + CLIP_HOLD_S
+        in_peak: list[float] = []
         if isinstance(cap, (list, tuple)):
             for ch in set(self.profile.input_map):
                 v = cap[ch] if 0 <= ch < len(cap) else None
@@ -2899,6 +2979,12 @@ class Controller:
                         log.warning("input clipping (capture channel %d at %.2f dBFS): the "
                                     "source must come down", ch, v)
                     self._in_clip_until = now + CLIP_HOLD_S
+            for ch in self.profile.input_map:     # the phone's input meter (docs/14 §3.3)
+                v = cap[ch] if isinstance(ch, int) and 0 <= ch < len(cap) else None
+                ok = isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+                in_peak.append(max(METER_FLOOR_DB, min(0.0, float(v))) if ok else METER_FLOOR_DB)
+        else:
+            in_peak = [METER_FLOOR_DB] * max(1, len(tuple(self.profile.input_map)))
         clip = [now < t for t in self._clip_until]
         in_clip = now < self._in_clip_until
         # What the screen can show: -60..0 dBFS in METER_STEP_DB steps. Store every value, wake
@@ -2906,8 +2992,14 @@ class Controller:
         key = (tuple(round(max(METER_SHOWN_FLOOR_DB, min(0.0, lv)) / METER_STEP_DB)
                      for lv in levels), tuple(clip), in_clip)
         self.status.levels, self.status.clip, self.status.in_clip = levels, clip, in_clip
+        self.status.in_peak_db = in_peak
+        in_key = tuple(round(max(METER_SHOWN_FLOOR_DB, lv) / METER_STEP_DB) for lv in in_peak)
+        if in_key != self._in_key:
+            self._in_key = in_key
+            self.meter_seq += 1
         if key != self._meter_key:
             self._meter_key = key
+            self.meter_seq += 1
             self._changed()
 
     # ------------------------------------------------------------------ persistence

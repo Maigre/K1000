@@ -28,7 +28,9 @@ self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
-  if (url.origin !== self.location.origin || url.pathname === "/ws") return;
+  // /v2/ (the phone v2 page) has its own worker: never answer it with v1's cached "/".
+  if (url.origin !== self.location.origin || url.pathname === "/ws" || url.pathname === "/v2" ||
+      url.pathname.startsWith("/v2/")) return;
   const key = req.mode === "navigate" ? "/" : url.pathname;
   if (SHELL.includes(key)) {
     event.respondWith(

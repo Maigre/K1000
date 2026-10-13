@@ -33,15 +33,27 @@ Why it is shaped like this:
   screen's render loop waits on; a second waiter would steal its wake-ups. The pump reads
   `Controller.version` (falling back to comparing snapshots) every `tick_s` instead, and only
   while a phone is connected.
+- **Protocol 2 beside protocol 1, never instead** (docs/14-phone-v2-protocol.md, DESIGN §10).
+  The v1 page refuses any `hello.v` but 1, so `/ws` stays exactly v1 and the v2 page gets
+  `/v2/ws` and `/v2/` (its own build id and service-worker scope). Both sockets share this
+  bridge and server: the phone count, the mute generation, the master bucket, the message
+  buckets, phone on/off. v2 reaches more (ALIGN, SETUP numbers and choices, the SETUP actions,
+  the silent notch helper, the box spectrum), and every rule stays here: DELAY and LO-CUT
+  move only inside the connection's own 30 s unlock (`err LOCKED`), every ON/off and choice is
+  `Controller.set_choice` with the value the phone saw (`err STALE`), master and trims rise
+  through shared buckets, and the spectrum frames are dropped first, never ahead of a reply.
 """
 from __future__ import annotations
 
 import asyncio
+import base64
 import collections
 import contextlib
+import fcntl
 import hashlib
 import html
 import http
+import inspect
 import ipaddress
 import json
 import logging
@@ -49,6 +61,7 @@ import math
 import socket
 import ssl
 import struct
+import termios
 import time
 import urllib.parse
 from dataclasses import dataclass, field, replace
@@ -61,9 +74,12 @@ from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
 from .. import __version__
-from ..state import N_LIVE_PEQ, RANGES, atomic_write
+from ..control import MASTER_UP_WINDOW_S, NOTCH_NEAR_OCT, NOTCH_Q, UNDO_RESET_S
+from ..state import N_LIVE_PEQ, N_OUT, RANGES, SAMPLERATE, atomic_write, effective_gain, range_for
 from ..tune import MAX_TEXT, TuneDesk
-from ..ui.input_map import LIVE_SLOT_LABELS, LIVE_SLOT_SHORT, LIVE_SLOTS
+from ..ui.input_map import (A_LAPTOP, A_RESET_LIVE, A_UNDO_RESET, BAND_CYCLE, BELL_SLOTS,
+                            LIVE_SLOT_LABELS, LIVE_SLOT_SHORT, LIVE_SLOTS, PICK_WINDOW_S,
+                            SETUP_ITEMS, UNLOCK_S, knob_accel, setup_schema)
 
 log = logging.getLogger("k1000.web")
 
@@ -117,6 +133,7 @@ TUNE_CLOSED_PAGE = (
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",     # the v2 page's ES modules may use it
     ".css": "text/css; charset=utf-8",
     ".webmanifest": "application/manifest+json",
     ".json": "application/json",
@@ -129,6 +146,62 @@ BUILD_MARK = b"__K1000_BUILD__"
 BUILD_STAMPED = frozenset({"/sw.js", "/app.js"})
 PORTAL_ONLY = frozenset({"/portal.html"})
 QR_CYCLE = ("wifi", "url", "setup")   # E1 on the PHONE page steps through these
+
+# ----------------------------------------------------------------------------- protocol 2
+# docs/14-phone-v2-protocol.md is the contract; keep the two in step.
+PROTOCOL_VERSION_V2 = 2
+V2_PREFIX = "/v2/"                    # the v2 page's files (static/v2/), its own build id
+V2_WS = "/v2/ws"
+WS_PATHS = ("/ws", V2_WS, "/tune/ws")
+MESSAGE_TYPES_V2 = ("ping", "hi", "nudge", "band", "mute", "reset_live", "grab", "choose", "act",
+                    "unlock", "lock", "sub")
+# The v2 allowlist (steps only): v1's, plus ALIGN's delay and the SETUP numbers.
+NUDGE_CAPS_V2: dict[str, tuple[int, int]] = dict(NUDGE_CAPS)
+NUDGE_CAPS_V2["align_delay_ms"] = (-10, 10)        # 0.1 ms per detent: 1 ms per message
+for _i in range(N_OUT):
+    NUDGE_CAPS_V2[f"out_trim_db.{_i}"] = (-4, 4)
+NUDGE_CAPS_V2["input_trim_db"] = (-4, 4)
+NUDGE_CAPS_V2["sub_lowpass_hz"] = (-24, 24)
+# ALIGN E3/E4 on the box: locked unless THIS connection holds the unlock (UNLOCK_S of idle).
+LOCKED_V2: frozenset[str] = frozenset({"align_delay_ms", "lowcut_hz"})
+# Raising one of these raises the PA like master: it rises through master's own bucket (one
+# bucket for everything that raises the PA, every phone, v1 and v2: docs/14 §6).
+TRIM_FIELDS_V2: frozenset[str] = frozenset({"input_trim_db", *(f"out_trim_db.{i}" for i in range(N_OUT))})
+ACTS_V2 = ("reset_live", "undo_reset", "laptop_open", "laptop_close")
+SETUP_PICKS_V2 = {it.field: it for it in SETUP_ITEMS if it.picks}
+HINT_LOCKED_V2 = "LOCKED · HOLD 0.8 s TO EDIT"
+HINT_CHANGED_V2 = "CHANGED MEANWHILE"
+MUTE_FALLBACK_KNOBS = "use B4 on the box"
+MUTE_FALLBACK_NONE = "turn the source down · bypass"
+RTA_MIN_INTERVAL_S = 0.1              # <= 10 frames a second per phone
+RTA_MAX_BUFFERED = 4096               # bytes still on their way to a phone (asyncio, TLS and the
+                                      # kernel's send queue): above this an rta frame is dropped
+RTA_SUB_IDLE_S = 10.0                 # a subscription lapses after this long without a message
+                                      # from the phone (its pings stop when the page is frozen)
+RTA_STEP_DB = 0.5
+HI_MAX_CAPS, HI_CAP_LEN = 16, 24
+# fields{} (docs/14 §3.1.1): what a value tile needs. Stepper keys in normal detents (DESIGN
+# §5.4); accel caps from the knob that edits the field (input_map.KNOBS), else these.
+_V2_LABEL = {"master_db": "MASTER", "balance_db": "BAL", "align_delay_ms": "DELAY",
+             "lowcut_hz": "LO-CUT", "out_trim_db": "TRIM", "input_trim_db": "TRIM",
+             "sub_lowpass_hz": "LOW-PASS", "live_peq.q": "Q", "live_lowshelf.q": "SLOPE",
+             "live_highshelf.q": "SLOPE"}
+_V2_STEPPER = {"master_db": (-12, -2, -1, 1, 2), "balance_db": (-2, -1, 1, 2),
+               "align_delay_ms": (-10, -1, 1, 10), "lowcut_hz": (-5, -1, 1, 5),
+               "out_trim_db": (-2, -1, 1, 2), "input_trim_db": (-2, -1, 1, 2),
+               "sub_lowpass_hz": (-4, -1, 1, 4), ".freq": (-4, -1, 1, 4), ".gain": (-6, -1, 1, 6),
+               ".q": (-2, -1, 1, 2)}
+_V2_ACCEL = {"out_trim_db": (1, 1), "input_trim_db": (1, 1), "sub_lowpass_hz": (4, 4)}
+_V2_STICKY = {"balance_db": (0.0,), "align_delay_ms": (0.0,), "out_trim_db": (0.0,),
+              "input_trim_db": (0.0,), ".gain": (0.0,)}
+_V2_LANDMARKS = {".freq": (100.0, 1000.0, 10000.0), "sub_lowpass_hz": (100.0,)}
+SLIDE_V2: dict[str, Any] = {
+    "px_per_detent": 14, "hysteresis_px": 4, "lockin_px": 10, "axis_ratio": 2, "vertical_px": 14,
+    "tap_px": 10, "tap_ms": 450, "edge_px": 24, "speed_window_ms": 100, "fine_below_px_s": 100,
+    "accel_from_px_s": 168, "accel_full_px_s": 560, "reverse_fine_ms": 150, "send_ms": 50,
+    "max_per_s": 20, "echo_ms": 450, "master_up_px_per_detent": 20, "unlock_hold_ms": 800,
+    "stepper_idle_s": PICK_WINDOW_S,
+}
 
 
 # =========================================================================== settings
@@ -166,6 +239,7 @@ class PhoneSettings:
     notch_gain_db: float = -6.0
     notch_q: float = 8.0
     extra_origins: tuple[str, ...] = ()
+    min_app: int = 0                                 # v2: lowest APK versionCode wanted (0 = any)
     state_file: Path = Path("/var/lib/k1000/phone.json")
     lease_files: tuple[str, ...] = ("/var/lib/NetworkManager/dnsmasq-{iface}.leases",   # --backend nm (root)
                                     "/run/k1000-ap/dnsmasq.leases")    # hostapd backend (the default)
@@ -247,6 +321,7 @@ class PhoneSettings:
             notch_gain_db=pick("notch_gain_db", is_num(g_rng.min, 0.0), float),
             notch_q=pick("notch_q", is_num(q_rng.min, q_rng.max), float),
             extra_origins=pick("extra_origins", str_list, lambda v: tuple(x.strip() for x in v)),
+            min_app=pick("min_app", is_int(0, 1_000_000_000)),
             state_file=pick("state_file", is_str, lambda v: Path(v.strip())),
         )
         if bad:
@@ -303,6 +378,130 @@ class _Bucket:
             self.tokens -= n
             return True
         return False
+
+
+# =========================================================================== protocol 2 helpers
+def _generic(path: str) -> str:
+    """A field path without its index: 'live_peq.2.gain' -> 'live_peq.gain' (fields{} keys)."""
+    return ".".join(p for p in path.split(".") if not p.isdigit())
+
+
+def _ceil_s(v: Any) -> int:
+    """A countdown in whole seconds, rounded up (0 = over): the state then changes once a
+    second at most while it runs, not at every rebuild."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return int(math.ceil(f - 1e-9)) if math.isfinite(f) and f > 0 else 0
+
+
+def _rta_bytes(levels: Any, top_db: float) -> str | None:
+    """dB levels -> base64 of one byte each: (top - level) in RTA_STEP_DB steps, 0..255
+    (docs/14 §3.4). Pure Python: the web module needs no numpy."""
+    if levels is None:
+        return None
+    out = bytearray()
+    try:
+        for x in levels:
+            v = float(x)
+            out.append(255 if not math.isfinite(v)
+                       else max(0, min(255, int(round((top_db - v) / RTA_STEP_DB)))))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return base64.b64encode(bytes(out)).decode("ascii")
+
+
+def rta_message(frame: Any, state: str, seq: int) -> dict[str, Any]:
+    """One box spectrum frame for the v2 phones (docs/14 §3.4). No usable frame: the state
+    only (the page clears its layer)."""
+    out: dict[str, Any] = {"t": "rta", "seq": int(seq), "src": "PGM", "st": str(state or "off"),
+                           "n": 0, "f0": None, "f1": None, "hi": None, "lo": None,
+                           "peak_hz": None, "b": None, "h": None}
+    if frame is None:
+        return out
+    src = getattr(frame, "source", None)
+    if isinstance(src, str) and src:
+        out["src"] = src[:8]
+    freqs, level, hold = (getattr(frame, "freqs", None), getattr(frame, "level", None),
+                          getattr(frame, "hold", None))
+    try:
+        n = len(level) if level is not None else 0
+        ok = n >= 2 and freqs is not None and len(freqs) == n
+    except TypeError:
+        ok = False
+    hi, lo = _f(getattr(frame, "hi_db", None), 1), _f(getattr(frame, "lo_db", None), 1)
+    if not ok or hi is None:
+        return out
+    f0, f1 = _f(_as_float(freqs[0]), 3), _f(_as_float(freqs[n - 1]), 3)
+    b = _rta_bytes(level, hi)
+    if f0 is None or f1 is None or b is None:
+        return out
+    try:
+        h = _rta_bytes(hold, hi) if hold is not None and len(hold) == n else None
+    except TypeError:
+        h = None
+    out.update(n=n, f0=f0, f1=f1, hi=hi, lo=lo, b=b, h=h,
+               peak_hz=_f(_as_float(getattr(frame, "peak_hz", None)), 1))
+    return out
+
+
+def _as_float(v: Any) -> float | None:
+    """A numpy scalar or a number -> float (None otherwise; bools are not numbers here)."""
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _mute_band(st: Any, status: Any) -> dict[str, str]:
+    """What the box's MUTED band says, for the phone (pages._mute_hint's rule, without the
+    box's own words "hold B4"): ramp (K1000 brings Main in by itself: a hold keeps it muted),
+    alert (its text), ready (engine running, in sync), wait (not processing yet)."""
+    smuted = getattr(status, "muted", None)
+    muted = smuted if isinstance(smuted, bool) else bool(getattr(st, "muted", False))
+    if not muted:
+        return {"kind": "", "text": ""}
+    if getattr(status, "ramping", False) is True and getattr(st, "muted", None) is False:
+        return {"kind": "ramp", "text": "RAMPS IN BY ITSELF"}
+    alert = str(getattr(status, "alert", "") or "")
+    if alert:
+        return {"kind": "alert", "text": alert}
+    eng = getattr(status, "engine", None)
+    running = isinstance(eng, str) and eng.upper() == "RUNNING"
+    if running and getattr(status, "ready", None) is not False:
+        return {"kind": "ready", "text": "READY"}
+    return {"kind": "wait", "text": ""}
+
+
+def _takes_kw(fn: Any, name: str) -> bool:
+    """Does `fn` accept the keyword `name`? (older controllers and test stand-ins do not)"""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+@dataclass(eq=False)
+class PhoneSession:
+    """What the box keeps per v2 connection (docs/14 §7): its number, its ALIGN unlock (on the
+    bridge's clock; 0 = locked), its spectrum subscription, when it last sent anything (on the
+    server's clock: a subscription lapses after RTA_SUB_IDLE_S of silence), what its `hi` said."""
+
+    n: int = 0
+    unlock_until: float = 0.0
+    rta: bool = False
+    seen: float = 0.0
+    app: int | None = None
+    bridge: int | None = None
+    caps: tuple[str, ...] = ()
+
+    @property
+    def name(self) -> str:
+        return f"phone {self.n}" if self.n else "phone"
 
 
 # =========================================================================== presence (screen QR)
@@ -473,7 +672,10 @@ class PhoneBridge:
 
     Uses only the Controller's public surface: snapshot(), nudge(), set_value(), set_mute(),
     reset_live(), displayed_muted() (and `version` / `mute_view()` when present). Every method
-    returns (ok, value, why) and never raises on bad input.
+    returns (ok, value, why) and never raises on bad input. Protocol 2 (`apply2`, docs/14) adds
+    set_choice(), setup_readonly(), notch_helper(target=, select=False), undo_reset(),
+    undo_left(), setup_actions["laptop_access"], `state` (read only) and `laptop`, and returns
+    (ok, value, why, code).
 
     **Mute generation.** Every state message carries `mute_seq`, a number that moves whenever the
     mute the box shows changes and whenever any surface asks for a mute. A phone sends the
@@ -491,15 +693,22 @@ class PhoneBridge:
     """
 
     def __init__(self, ctl: Any, *, notch_gain_db: float = -6.0, notch_q: float = 8.0,
-                 master_up_db_per_s: float = 6.0, clock: Callable[[], float] = time.monotonic) -> None:
+                 master_up_db_per_s: float = 6.0, clock: Callable[[], float] = time.monotonic,
+                 unlock_s: float = UNLOCK_S, min_app: int = 0) -> None:
         self.ctl = ctl
         self.notch_gain_db = notch_gain_db
         self.notch_q = notch_q
+        self._clock = clock
         up = max(0.5, float(master_up_db_per_s))
-        # the whole box (all phones together) may raise master by this much per second
+        # the whole box (all phones together) may raise master by this much per second; v2's
+        # trims rise through the same bucket (raising a trim raises the PA like master)
         self._master_up = _Bucket(up, max(1.0, up / 2.0), clock)
         self._mute_seen: tuple[bool, bool] | None = None
         self._mute_gen = 0
+        self._mute_src_kw: bool | None = None       # does ctl.set_mute take `source`?
+        # protocol 2 (docs/14): the ALIGN unlock, min_app
+        self.unlock_s = float(unlock_s)
+        self.min_app = int(min_app)
 
     # ------------------------------------------------------------------ mute generation
     def _displayed_muted(self) -> bool:
@@ -530,8 +739,12 @@ class PhoneBridge:
             self._mute_gen += 1
         return key[1], self._mute_gen
 
-    def _apply_mute(self, on: bool) -> bool:
-        out = bool(self.ctl.set_mute(on))
+    def _apply_mute(self, on: bool, src: str = "phone") -> bool:
+        fn = self.ctl.set_mute
+        if self._mute_src_kw is None:
+            self._mute_src_kw = _takes_kw(fn, "source")
+        # `source` only says who muted (Controller.mute_src, docs/14 §3.2): same call otherwise
+        out = bool(fn(on, source=src) if self._mute_src_kw else fn(on))
         if not callable(getattr(self.ctl, "mute_view", None)):
             self._mute_gen += 1          # a request is a new generation, even a repeated mute
         return out
@@ -611,8 +824,9 @@ class PhoneBridge:
         return {"t": "m", "l": out_l, "c": out_c}
 
     # ------------------------------------------------------------------ in
-    def apply(self, msg: dict[str, Any]) -> tuple[bool, Any, str]:
-        """One phone message (already JSON-decoded, rate-checked). Returns (ok, value, why)."""
+    def apply(self, msg: dict[str, Any], src: str = "phone") -> tuple[bool, Any, str]:
+        """One phone message (already JSON-decoded, rate-checked). Returns (ok, value, why).
+        `src` ("phone 2") only names who muted (Controller.mute_src)."""
         t = msg.get("t")
         if t == "nudge":
             return self._nudge(msg.get("f"), msg.get("d"), msg.get("fine") is True)
@@ -623,7 +837,7 @@ class PhoneBridge:
         if t == "notch":
             return self._notch(msg.get("hz"), msg.get("s"))
         if t == "mute":
-            return self._mute(msg.get("on"), msg.get("seq"))
+            return self._mute(msg.get("on"), msg.get("seq"), src)
         if t == "reset_live":
             if msg.get("confirm") is not True:
                 return False, None, "reset needs confirm: true"
@@ -649,25 +863,31 @@ class PhoneBridge:
             return False, None, f"{f}: refused"
         return True, v, ""
 
-    def _mute(self, on: Any, seq: Any) -> tuple[bool, Any, str]:
+    def _mute(self, on: Any, seq: Any, src: str = "phone") -> tuple[bool, Any, str]:
         """MUTE: always. UNMUTE: only with the `seq` of the state the phone was showing when the
         hold started, and only if the mute has not changed since (see the class docstring).
         A refusal returns the mute as it is now."""
+        ok, value, why, _code = self._mute4(on, seq, src)
+        return ok, value, why
+
+    def _mute4(self, on: Any, seq: Any, src: str = "phone") -> tuple[bool, Any, str, str]:
+        """_mute with the v2 error code (docs/14 §5): the same rules for both protocols."""
         if not isinstance(on, bool):
-            return False, None, "mute needs on: true/false"
+            return False, None, "mute needs on: true/false", "BAD"
         unmutes, gen = self.mute_view()
         if on:
-            return True, self._apply_mute(True), ""
+            return True, self._apply_mute(True, src), "", ""
         shown = self._displayed_muted()
         if isinstance(seq, bool) or not isinstance(seq, int):
-            return False, shown, "unmute refused: this page is out of date (reload it)"
+            return False, shown, "unmute refused: this page is out of date (reload it)", "BAD"
         if seq != gen:
-            return False, shown, "MUTE CHANGED meanwhile: unmute refused, look and hold again"
+            return (False, shown, "MUTE CHANGED meanwhile: unmute refused, look and hold again",
+                    "STALE")
         if not unmutes:
             if shown:   # K1000 itself holds Main muted (boot ramp / setup guard): B4's rule
-                return False, True, "K1000 brings the sound in by itself: nothing to unmute"
-            return True, False, ""
-        return True, self._apply_mute(False), ""
+                return False, True, "K1000 brings the sound in by itself: nothing to unmute", "HELD"
+            return True, False, "", ""
+        return True, self._apply_mute(False, src), "", ""
 
     def _set(self, f: Any, v: Any) -> tuple[bool, Any, str]:
         if not isinstance(f, str):
@@ -775,6 +995,392 @@ class PhoneBridge:
             return False, None, "notch: refused"
         return True, {"s": i, "f": f, "q": q, "g": g}, ""
 
+    # ================================================================== protocol 2 (docs/14)
+    def hello2(self, phone_on: bool, build: str = "", *, you: int = 0,
+               limits: dict[str, Any] | None = None) -> dict[str, Any]:
+        """The v2 hello (docs/14 §3.1): everything the page needs to draw and gate its controls,
+        so it hard-codes no rule the box enforces."""
+        ctl = self.ctl
+        return {
+            "t": "hello", "v": PROTOCOL_VERSION_V2, "server": f"k1000 {__version__}",
+            "build": build, "phone_on": phone_on, "you": int(you), "min_app": self.min_app,
+            "surface": {"screen": bool(getattr(ctl, "has_screen", True)),
+                        "knobs": bool(getattr(ctl, "has_knobs", True))},
+            "bands": list(LIVE_SLOTS), "labels": list(LIVE_SLOT_LABELS),
+            "short": list(LIVE_SLOT_SHORT),
+            "kind": ["bell"] * N_LIVE_PEQ + ["low_shelf", "high_shelf"],
+            "order": list(BAND_CYCLE), "bells": list(BELL_SLOTS),
+            "fields": fields_v2(self._master_up.rate, self._master_up.burst),
+            "slide": dict(SLIDE_V2),
+            "setup": setup_v2(),
+            "acts": list(ACTS_V2),
+            "notch": {"q": round(NOTCH_Q, 3), "near_oct": round(NOTCH_NEAR_OCT, 4)},
+            "unlock_s": self.unlock_s, "pick_window_s": PICK_WINDOW_S,
+            "undo_reset_s": UNDO_RESET_S, "fs": SAMPLERATE,
+            "rta": {"enabled": getattr(ctl, "spectrum_enabled", True) is not False, "src": "PGM",
+                    "hz": round(1.0 / RTA_MIN_INTERVAL_S, 1), "step_db": RTA_STEP_DB,
+                    "idle_s": RTA_SUB_IDLE_S},
+            "limits": dict(limits or {}),
+            "nudge": {k: list(v) for k, v in NUDGE_CAPS_V2.items()},
+        }
+
+    @staticmethod
+    def state_message2(snap: tuple[Any, Any, Any, Any], *, phone_on: bool, phones: int,
+                       mute: tuple[bool, int] | None = None, knobs: bool = True) -> dict[str, Any]:
+        """The v2 state (docs/14 §3.2): every v1 key, plus the alerts, pills, ALIGN and SETUP
+        values, the box's countdowns (whole seconds), who muted and what the box's MUTED band
+        says. `knobs`: the box has knobs (not --no-hw): the mute fallback names B4 then."""
+        out = PhoneBridge.state_message(snap, phone_on=phone_on, phones=phones, mute=mute)
+        _page, st, status, focus = snap
+        alerts = []
+        for a in list(getattr(status, "alerts", None) or []):
+            try:
+                lvl, text = a
+            except (TypeError, ValueError):
+                continue
+            alerts.append([str(lvl), str(text)])
+        hint, hint_s = "", 0
+        hint_now = getattr(focus, "hint_now", None)
+        if callable(hint_now):
+            try:
+                h = hint_now()
+            except Exception:   # noqa: BLE001 - a hint never breaks the state
+                h = None
+            if h:
+                hint = str(h)
+                hint_s = max(1, _ceil_s(float(getattr(focus, "hint_until", 0.0)) - time.monotonic()))
+        get = getattr(st, "get", None)
+
+        def value(path: str) -> Any:
+            try:
+                return get(path) if callable(get) else None
+            except (KeyError, ValueError, TypeError):
+                return None
+
+        setup: dict[str, Any] = {}
+        for it in SETUP_ITEMS:
+            if it.kind == "num":
+                setup[it.field] = _f(value(it.field), 3)
+            elif it.kind == "bool":
+                v = value(it.field)
+                setup[it.field] = None if v is None else bool(v)
+            elif it.kind == "choice":
+                v = value(it.field)
+                setup[it.field] = v if isinstance(v, str) else None
+        knobs_ok = getattr(status, "knobs_ok", None)
+        band = getattr(status, "band", 0)
+        readonly = getattr(focus, "readonly", None)
+        out.update({
+            "alerts": alerts,
+            "pills": [str(p) for p in list(getattr(status, "pills", None) or [])],
+            "hint": hint, "hint_s": hint_s,
+            "ready": bool(getattr(status, "ready", False)),
+            "in_clip": bool(getattr(status, "in_clip", False)),
+            "mute_src": str(getattr(status, "mute_src", "") or ""),
+            "mute_band": _mute_band(st, status),
+            "mute_fallback": (MUTE_FALLBACK_KNOBS if knobs and knobs_ok is not False
+                              else MUTE_FALLBACK_NONE),
+            "undo_reset_s": _ceil_s(getattr(status, "undo_reset_s", 0.0)),
+            "align_delay_ms": _f(value("align_delay_ms"), 6),
+            "setup": setup,
+            "spectrum": {"on": bool(getattr(status, "spectrum_on", False)), "src": "PGM",
+                         "state": str(getattr(status, "spectrum_state", "off") or "off")},
+            "laptop": {"state": str(getattr(status, "laptop_state", "off") or "off"),
+                       "s": _ceil_s(getattr(status, "laptop_s", 0.0))},
+            "readonly": ({str(k): str(v) for k, v in readonly.items()}
+                         if isinstance(readonly, dict) else {}),
+            "box_band": band if isinstance(band, int) and not isinstance(band, bool) else 0,
+            "box_page": str(getattr(status, "page", "") or ""),
+            "knobs_ok": knobs_ok if isinstance(knobs_ok, bool) else None,
+        })
+        return out
+
+    @staticmethod
+    def meters_message2(status: Any) -> dict[str, Any]:
+        """v1's meters plus `i`: the program inputs' capture peaks (docs/14 §3.3)."""
+        out = PhoneBridge.meters_message(status)
+        ins = []
+        for x in list(getattr(status, "in_peak_db", None) or [])[:4]:
+            v = _f(x, 3)
+            v = METER_FLOOR_DB if v is None else max(METER_FLOOR_DB, min(0.0, v))
+            ins.append(round(v * 2.0) / 2.0)
+        out["i"] = ins
+        return out
+
+    def apply2(self, msg: dict[str, Any], sess: PhoneSession) -> tuple[bool, Any, str, str]:
+        """One v2 message (decoded, rate-checked; `sub` and `ping` are the server's). Returns
+        (ok, value, why, code): `code` is the err code (docs/14 §3.5), "" when ok."""
+        t = msg.get("t")
+        if t == "nudge":
+            return self._nudge2(msg.get("f"), msg.get("d"), msg.get("fine") is True, sess)
+        if t == "band":
+            ok, v, why = self._band(msg)
+            return ok, v, why, "" if ok else ("REFUSED" if "refused" in why else "BAD")
+        if t == "mute":
+            return self._mute4(msg.get("on"), msg.get("seq"), sess.name)
+        if t == "grab":
+            return self._grab(msg, sess)
+        if t == "choose":
+            return self._choose(msg, sess)
+        if t == "act":
+            return self._act(msg.get("a"), sess)
+        if t == "reset_live":
+            if msg.get("confirm") is not True:
+                return False, None, "reset needs confirm: true", "BAD"
+            return self._act("reset_live", sess)
+        if t == "unlock":
+            if msg.get("what") != "align":
+                return False, None, "unlock needs what: \"align\"", "BAD"
+            sess.unlock_until = self._clock() + self.unlock_s
+            return True, {"align_s": self.unlock_s}, "", ""
+        if t == "lock":
+            if msg.get("what", "align") != "align":
+                return False, None, "lock: what must be \"align\"", "BAD"
+            sess.unlock_until = 0.0
+            return True, {"align_s": 0.0}, "", ""
+        if t == "hi":
+            return self._hi(msg, sess)
+        return False, None, "unknown message", "UNKNOWN"
+
+    def _value(self, path: str) -> Any:
+        """A field's value now, as the phone shows it (a refusal snaps its tile back)."""
+        st = getattr(self.ctl, "state", None)
+        if not callable(getattr(st, "get", None)):
+            st = self.ctl.snapshot()[1]
+        try:
+            v = st.get(path)
+        except (KeyError, ValueError, TypeError):
+            return None
+        return v if isinstance(v, (bool, str)) or v is None else _f(v, 6)
+
+    def unlock_left(self, sess: PhoneSession) -> float:
+        return round(max(0.0, sess.unlock_until - self._clock()), 1) if sess.unlock_until else 0.0
+
+    def _nudge2(self, f: Any, d: Any, fine: bool, sess: PhoneSession) -> tuple[bool, Any, str, str]:
+        """Steps on one number (docs/14 §4.1). DELAY and LO-CUT only inside this connection's
+        unlock (renewed by each accepted move); master and the trims rise through ONE shared
+        bucket (master's: every phone, v1 and v2), then master meets the Controller's own guard."""
+        if not isinstance(f, str) or f not in NUDGE_CAPS_V2:
+            return False, None, f"not a phone control: {str(f)[:40]}", "BAD"
+        if isinstance(d, bool) or not isinstance(d, int):
+            return False, None, "detents must be an integer", "BAD"
+        lo, hi = NUDGE_CAPS_V2[f]
+        if not lo <= d <= hi or d == 0:
+            return False, None, f"{f}: {d} detents out of {lo}..{hi}", "BAD"
+        now = self._clock()
+        if f in LOCKED_V2 and not (sess.unlock_until and now < sess.unlock_until):
+            sess.unlock_until = 0.0
+            return False, self._value(f), HINT_LOCKED_V2, "LOCKED"
+        if d > 0 and (f == "master_db" or f in TRIM_FIELDS_V2):
+            rng = range_for(f)
+            step = rng.fine if (fine and rng is not None and rng.fine) else (rng.step if rng else 0.5)
+            if not self._master_up.take(d * step):
+                what = "MASTER" if f == "master_db" else "TRIM"
+                return False, self._value(f), f"{what}: SLOW DOWN", "SLOW"
+        v = self.ctl.nudge(f, d, fine, source=sess.name)
+        if v is None:
+            if f == "master_db" and d > 0:     # the Controller's guard refused every detent
+                return False, self._value(f), "MASTER: SLOW DOWN", "SLOW"
+            return False, self._value(f), f"{f}: refused", "REFUSED"
+        if f in LOCKED_V2:
+            sess.unlock_until = now + self.unlock_s
+        return True, (v if isinstance(v, bool) else _f(v, 6)), "", ""
+
+    def _grab(self, msg: dict[str, Any], sess: PhoneSession) -> tuple[bool, Any, str, str]:
+        """The notch helper, silent, without moving the box's selection (docs/14 §4.3). `s` is
+        the phone's selected band, any of the six: only a free bell is preferred (a shelf, or a
+        bell in use, is ignored: the helper picks as if no `s` came)."""
+        hz, s = msg.get("hz"), msg.get("s")
+        if hz is not None and not (_is_num(hz) and hz > 0):
+            return False, None, "grab: hz must be a frequency", "BAD"
+        if s is not None and (isinstance(s, bool) or not isinstance(s, int)
+                              or not 0 <= s < len(LIVE_SLOTS)):
+            return False, None, f"grab: s must be 0..{len(LIVE_SLOTS) - 1}", "BAD"
+        if s not in BELL_SLOTS:
+            s = None                     # a shelf is never the helper's: as if no preference
+        fn = getattr(self.ctl, "notch_helper", None)
+        if not callable(fn):
+            return False, None, "grab: not on this box", "REFUSED"
+        _p, st, status, _f0 = self.ctl.snapshot()
+        used = {i: effective_gain(st.live_peq[i]) != 0.0 for i in BELL_SLOTS}
+        pk = getattr(status, "peak_hz", None)
+        peak = hz is not None or (bool(getattr(status, "spectrum_on", False))
+                                  and _is_num(pk) and pk > 0)
+        slot = fn(target=float(hz) if hz is not None else None, select=False, prefer=s,
+                  source=sess.name)
+        if slot is None:
+            return False, None, "NO FREE BAND", "NOFREE"
+        b = self.ctl.snapshot()[1].live_peq[slot]
+        return True, {"s": slot, "f": _f(b.freq, 1), "q": _f(b.q, 3), "g": _f(b.gain, 2),
+                      "on": getattr(b, "on", True) is not False, "new": not used.get(slot, False),
+                      "peak": bool(peak)}, "", ""
+
+    def _choose(self, msg: dict[str, Any], sess: PhoneSession) -> tuple[bool, Any, str, str]:
+        """SETUP choose-then-set (docs/14 §4.6) -> Controller.set_choice, with the value the
+        phone saw: a value changed meanwhile is never overwritten blind."""
+        f = msg.get("f")
+        item = SETUP_PICKS_V2.get(f) if isinstance(f, str) else None
+        if item is None:
+            return False, None, f"not a SETUP choice: {str(f)[:40]}", "BAD"
+        if "v" not in msg or "seen" not in msg:
+            return False, None, "choose needs v and seen", "BAD"
+        v, seen = msg["v"], msg["seen"]
+        choices = item.choices
+
+        def legal(x: Any) -> bool:
+            if item.kind == "bool":
+                return isinstance(x, bool)
+            return isinstance(x, str) and x in choices
+
+        if not legal(v) or not legal(seen):
+            return False, None, f"{f}: v and seen must be one of {list(choices)}", "BAD"
+        cur = self._value(f)
+        cur = bool(cur) if item.kind == "bool" and cur is not None else cur
+        if seen != cur:
+            return False, cur, HINT_CHANGED_V2, "STALE"
+        if v == cur:
+            return False, cur, "NO CHANGE: ALREADY SET", "NOCHANGE"
+        ro_fn = getattr(self.ctl, "setup_readonly", None)
+        ro = (ro_fn() or {}).get(f) if callable(ro_fn) else None
+        ok = bool(self.ctl.set_choice(f, v))      # the box's own rules, unchanged
+        now = self._value(f)
+        now = bool(now) if item.kind == "bool" and now is not None else now
+        if not ok:
+            if ro:
+                return False, now, str(ro), "READONLY"
+            return False, now, f"{f}: refused", "REFUSED"
+        return True, now, "", ""
+
+    def _act(self, a: Any, sess: PhoneSession) -> tuple[bool, Any, str, str]:
+        """The SETUP actions (docs/14 §4.7), through the knobs' own Controller methods."""
+        if a not in ACTS_V2:
+            return False, None, f"act: one of {list(ACTS_V2)}", "BAD"
+        ctl = self.ctl
+        if a == "reset_live":
+            before = self._live_now()
+            ctl.reset_live()
+            return True, {"changed": self._live_now() != before, "undo_s": self._undo_s()}, "", ""
+        if a == "undo_reset":
+            if not ctl.undo_reset():
+                return False, {"undo_s": 0}, "NOTHING TO UNDO", "NOCHANGE"
+            return True, {"undo_s": self._undo_s()}, "", ""
+        lap = getattr(ctl, "laptop", None)
+        fn = (getattr(ctl, "setup_actions", None) or {}).get(A_LAPTOP)
+        if lap is None or not callable(fn):
+            return False, {"state": "off", "s": 0}, "LAPTOP ACCESS: NOT AVAILABLE", "UNAVAILABLE"
+        want_open = a == "laptop_open"
+        if want_open != (str(getattr(lap, "state", "closed")) in ("open", "opening")):
+            r = fn()                     # Controller.laptop_toggle: root opens, the box says so
+            if want_open and r is False:
+                return False, self._laptop_view(lap), "LAPTOP ACCESS: REFUSED (SEE THE BOX)", "REFUSED"
+        return True, self._laptop_view(lap), "", ""
+
+    def _live_now(self) -> list[tuple[Any, ...]]:
+        st = getattr(self.ctl, "state", None)
+        if not callable(getattr(st, "get", None)):
+            st = self.ctl.snapshot()[1]
+        out = []
+        for path in LIVE_SLOTS:
+            try:
+                b = st.get(path)
+            except (KeyError, ValueError, TypeError):
+                b = None
+            out.append((getattr(b, "freq", None), getattr(b, "gain", None), getattr(b, "q", None),
+                        getattr(b, "on", True)))
+        return out
+
+    def _undo_s(self) -> int:
+        fn = getattr(self.ctl, "undo_left", None)
+        try:
+            return _ceil_s(fn()) if callable(fn) else 0
+        except Exception:   # noqa: BLE001
+            return 0
+
+    @staticmethod
+    def _laptop_view(lap: Any) -> dict[str, Any]:
+        try:
+            left = float(lap.left_s())
+        except Exception:   # noqa: BLE001
+            left = 0.0
+        return {"state": str(getattr(lap, "state", "closed")), "s": _ceil_s(left)}
+
+    def _hi(self, msg: dict[str, Any], sess: PhoneSession) -> tuple[bool, Any, str, str]:
+        """Who is connecting (docs/14 §4.10): logged by the server; app vs min_app."""
+        app, br, caps = msg.get("app"), msg.get("bridge"), msg.get("caps", [])
+
+        def ver(x: Any) -> bool:
+            return x is None or (isinstance(x, int) and not isinstance(x, bool)
+                                 and 0 <= x <= 1_000_000_000)
+
+        caps = [] if caps is None else caps
+        if not ver(app) or not ver(br):
+            return False, None, "hi: app and bridge are integers or null", "BAD"
+        if not isinstance(caps, list) or len(caps) > HI_MAX_CAPS or not all(
+                isinstance(c, str) and 0 < len(c) <= HI_CAP_LEN for c in caps):
+            return False, None, f"hi: caps are at most {HI_MAX_CAPS} short strings", "BAD"
+        sess.app, sess.bridge, sess.caps = app, br, tuple(caps)
+        ok = app is None or self.min_app <= 0 or app >= self.min_app
+        return True, {"min_app": self.min_app, "app_ok": ok}, "", ""
+
+
+def fields_v2(master_up: float = 6.0, master_burst: float = 3.0) -> dict[str, dict[str, Any]]:
+    """hello.fields (docs/14 §3.1.1): one entry per editable number, from the box's own RANGES,
+    the v2 allowlist, the knobs' acceleration (input_map.knob_accel) and DESIGN §5.3-§5.4."""
+    out: dict[str, dict[str, Any]] = {}
+    for path, caps in NUDGE_CAPS_V2.items():
+        key = _generic(path)
+        e = out.get(key)
+        if e is None:
+            rng = range_for(path)
+            assert rng is not None, path
+            suffix = "." + key.rsplit(".", 1)[-1] if "." in key else ""
+            acc = knob_accel(path) or _V2_ACCEL.get(key, (1, 1))
+            e = {"label": _V2_LABEL.get(key) or _V2_LABEL.get(suffix) or suffix[1:].upper(),
+                 "unit": rng.unit, "min": rng.min, "max": rng.max, "default": rng.default,
+                 "log": rng.log, "step": rng.step, "fine": rng.fine or rng.step,
+                 "digits": rng.digits, "snap": rng.snap, "caps": list(caps),
+                 "stepper": list(_V2_STEPPER.get(key) or _V2_STEPPER.get(suffix) or (-1, 1)),
+                 "accel": {"up": acc[0], "down": acc[1]},
+                 "lock": "align" if path in LOCKED_V2 else None,
+                 "sticky": list(_V2_STICKY.get(key) or _V2_STICKY.get(suffix) or ()),
+                 "landmarks": list(_V2_LANDMARKS.get(key) or _V2_LANDMARKS.get(suffix) or ()),
+                 "paths": []}
+            # one bucket ("pa") for every rise that raises the PA: master and the trims
+            if key == "master_db":
+                e["up_px_per_detent"] = SLIDE_V2["master_up_px_per_detent"]
+            if key == "master_db" or path in TRIM_FIELDS_V2:
+                e["up_limit"] = {"db_per_s": master_up, "burst_db": master_burst, "bucket": "pa"}
+            out[key] = e
+        e["paths"].append(path)
+    return out
+
+
+def setup_v2() -> list[dict[str, Any]]:
+    """hello.setup (docs/14 §3.1.3): input_map.setup_schema() plus what the phone may do with
+    each row (edit / readonly / hidden) and the `act` names of the actions."""
+    acts = {A_RESET_LIVE: ["reset_live"], A_UNDO_RESET: ["undo_reset"],
+            A_LAPTOP: ["laptop_open", "laptop_close"]}
+    groups = setup_schema()
+    for g in groups:
+        for row in g["items"]:
+            f, kind = row["f"], row["kind"]
+            if kind == "num":
+                row["field"] = _generic(f)
+                if f in NUDGE_CAPS_V2:
+                    row["phone"] = "edit"
+                else:
+                    row["phone"], row["why"] = "readonly", "SET ON THE BOX"
+            elif kind in ("bool", "choice"):
+                row["phone"] = "edit"
+            elif kind == "action":
+                row["act"] = acts.get(f, [])
+                row["phone"] = "edit" if row["act"] else "hidden"
+            elif kind == "page" and f == "PHONE":
+                row["phone"], row["why"] = "readonly", "ON · SWITCHED AT THE BOX"
+            else:
+                row["phone"], row["why"] = "hidden", "ON THE BOX ONLY"
+    return groups
+
 
 # =========================================================================== static files
 @dataclass(frozen=True)
@@ -793,6 +1399,16 @@ def load_static(root: Path) -> tuple[dict[str, _Asset], str]:
     page compares its own stamp with the box's `hello.build` and reloads itself once when the
     box was updated (a cached shell would otherwise run one launch behind the box).
     """
+    assets, builds = load_static_all(root)
+    return assets, builds["v1"]
+
+
+def load_static_all(root: Path) -> tuple[dict[str, _Asset], dict[str, str]]:
+    """load_static, with both build ids: {"v1": ..., "v2": ...}.
+
+    v1's is a hash of every file OUTSIDE /v2/ (and not /sw.js), as before /v2/ existed: a v2
+    deploy never makes a v1 page reload itself. v2's is a hash of every file under /v2/ and is
+    stamped into every .js/.mjs there (docs/14 §1)."""
     files: dict[str, bytes] = {}
     for p in sorted(root.rglob("*")):
         rel = p.relative_to(root).as_posix()
@@ -801,18 +1417,22 @@ def load_static(root: Path) -> tuple[dict[str, _Asset], str]:
         if p.suffix not in CONTENT_TYPES:
             continue
         files["/" + rel] = p.read_bytes()
-    h = hashlib.sha256()
+    h, h2 = hashlib.sha256(), hashlib.sha256()
     for k in sorted(files):
-        if k != "/sw.js":
+        if k.startswith(V2_PREFIX):
+            h2.update(k.encode() + b"\0" + files[k] + b"\0")
+        elif k != "/sw.js":
             h.update(k.encode() + b"\0" + files[k] + b"\0")
-    build = h.hexdigest()[:12]
+    build, build2 = h.hexdigest()[:12], h2.hexdigest()[:12]
     assets: dict[str, _Asset] = {}
     for k, body in files.items():
         if k in BUILD_STAMPED:
             body = body.replace(BUILD_MARK, build.encode())
+        elif k.startswith(V2_PREFIX) and k.endswith((".js", ".mjs")):
+            body = body.replace(BUILD_MARK, build2.encode())
         etag = '"' + hashlib.sha256(body).hexdigest()[:16] + '"'
         assets[k] = _Asset(body, CONTENT_TYPES[Path(k).suffix], etag)
-    return assets, build
+    return assets, {"v1": build, "v2": build2}
 
 
 def _csp(connect: str) -> str:
@@ -837,6 +1457,14 @@ class _Client:
     out: collections.deque[str] = field(default_factory=collections.deque)
     tracebacks: int = 0              # per-phone: the first failure is logged with a traceback,
     log_bucket: _Bucket | None = None    # later ones as one line, throttled
+    v: int = 1                       # protocol: 1 on /ws, 2 on /v2/ws
+    n: int = 0                       # phone number (lowest free at connect): "phone 2"
+    sess: PhoneSession | None = None     # v2 only: unlock, spectrum subscription, hi
+    sent_rta: int = -1
+
+    @property
+    def name(self) -> str:
+        return f"phone {self.n}" if self.n else "phone"
 
 
 class _QuietHandshakes(logging.Filter):
@@ -899,7 +1527,8 @@ class PhoneServer:
         self.send_timeout_s = send_timeout_s
         self.presence_s = presence_s
         self.bridge = PhoneBridge(ctl, notch_gain_db=self.cfg.notch_gain_db, notch_q=self.cfg.notch_q,
-                                  master_up_db_per_s=self.cfg.master_up_db_per_s, clock=clock)
+                                  master_up_db_per_s=self.cfg.master_up_db_per_s, clock=clock,
+                                  min_app=self.cfg.min_app)
         self._on = self._load_on()
         self._clients: set[_Client] = set()
         self._ws_servers: list[Any] = []
@@ -907,6 +1536,19 @@ class PhoneServer:
         self._tasks: list[asyncio.Task[Any]] = []
         self._static: dict[str, _Asset] = {}
         self.build = ""
+        self.build_v2 = ""
+        # protocol 2 (docs/14): its own state/meter JSON, the spectrum frames for subscribers
+        self._state2_json = ""
+        self._meter2_json = ""
+        self._state2_seq = 0
+        self._meter2_seq = 0
+        self._last_meter_seq: Any = None
+        self._rta_json = ""
+        self._rta_seq = 0
+        self._rta_t = -math.inf
+        self._rta_dirty = False
+        self._hooked = False
+        self.rx2: dict[str, int] = {}
         self._tls: ssl.SSLContext | None = None
         self.tls_error = ""
         self._ca_pem: bytes | None = None
@@ -936,7 +1578,8 @@ class PhoneServer:
         self.tune_undo_file = tune_undo_file
         self._started = False
         self.stats: dict[str, int] = {"connects": 0, "refused": 0, "rate_limited": 0, "errors": 0,
-                                      "dropped": 0, "dropped_replies": 0}
+                                      "dropped": 0, "dropped_replies": 0, "rta_sent": 0,
+                                      "rta_dropped": 0}
         self.rx: dict[str, int] = {}
 
     # ------------------------------------------------------------------ public
@@ -1052,10 +1695,15 @@ class PhoneServer:
             self._notify_ready()
             return
         try:
-            self._static, self.build = await asyncio.to_thread(load_static, self.static_dir)
+            self._static, builds = await asyncio.to_thread(load_static_all, self.static_dir)
+            self.build, self.build_v2 = builds["v1"], builds["v2"]
         except Exception as e:  # noqa: BLE001 - a broken install must not stop the service
             self._error(f"phone page files unreadable ({self.static_dir}: {e})")
             self._static = {}
+        hooks = getattr(self.ctl, "spectrum_hooks", None)
+        if isinstance(hooks, list) and self._on_spectrum not in hooks:
+            hooks.append(self._on_spectrum)          # v2 phones' spectrum frames (docs/14 §3.4)
+            self._hooked = True
         try:
             self._tune_static, _ = await asyncio.to_thread(load_static, self.tune_dir)
         except Exception as e:  # noqa: BLE001 - the tune page is never worth the phone page
@@ -1109,8 +1757,14 @@ class PhoneServer:
         self._ws_servers.clear()
         self._portal_servers.clear()
         self._clients.clear()
+        self._rta_subs_changed()
         self._tune_clients.clear()
         self.ports.clear()
+        hooks = getattr(self.ctl, "spectrum_hooks", None)
+        if self._hooked and isinstance(hooks, list):
+            with contextlib.suppress(ValueError):
+                hooks.remove(self._on_spectrum)
+            self._hooked = False
         self._started = False
         self._notify_ready()
 
@@ -1244,7 +1898,7 @@ class PhoneServer:
     def _make_process_request(self, scheme: str) -> Callable[[ServerConnection, Request], Response | None]:
         def process_request(conn: ServerConnection, req: Request) -> Response | None:
             path = urllib.parse.unquote(req.path.split("?", 1)[0].split("#", 1)[0]) or "/"
-            if path in ("/ws", "/tune/ws"):
+            if path in WS_PATHS:
                 origin = req.headers.get("Origin")
                 if origin not in self.origins():
                     self.stats["refused"] += 1
@@ -1265,8 +1919,12 @@ class PhoneServer:
                                                    ("Cache-Control", "no-store")])
         if path in ("/k1000-ca.crt", "/k1000-ca.der"):
             return self._ca_response(path)
+        if path == V2_PREFIX.rstrip("/"):    # /v2 -> /v2/ (its relative URLs resolve there)
+            return self._response(302, b"", None, [("Location", V2_PREFIX), ("Cache-Control", "no-cache")])
         if path == "/":
             path = "/index.html"
+        elif path == V2_PREFIX:
+            path = V2_PREFIX + "index.html"
         asset = self._static.get(path)
         if asset is None or path in PORTAL_ONLY:
             return self._response(404, b"not found\n", "text/plain; charset=utf-8")
@@ -1279,6 +1937,15 @@ class PhoneServer:
             extra.append(("Content-Security-Policy", _csp(connect)))
         if path == "/sw.js":
             extra.append(("Service-Worker-Allowed", "/"))
+        elif path == V2_PREFIX + "sw.js":
+            extra.append(("Service-Worker-Allowed", V2_PREFIX))   # v2's own scope, never /
+        if (path.startswith(V2_PREFIX) and path.endswith(".html")
+                and headers.get("Sec-Fetch-Mode") == "navigate"):
+            # v1's worker (scope /) re-fetches every navigation in its scope and caches it under
+            # "/": a response with `Vary: *` cannot be put in a Cache (Service Workers, Cache.put),
+            # so opening /v2/ in a browser that has v1 installed never replaces v1's page. The v2
+            # worker caches its shell at install (cors fetches: no Vary). docs/14 §1.
+            extra.append(("Vary", "*"))
         if headers.get("If-None-Match") == asset.etag:
             return self._response(304, b"", None, extra)
         return self._response(200, asset.body, asset.ctype, extra)
@@ -1430,14 +2097,23 @@ class PhoneServer:
             log.warning("phone %s refused: already %d phones", peer, len(self._clients))
             await self._refuse(ws, CLOSE_BUSY, "too many phones")
             return
+        version = 2 if path == V2_WS else 1
         c = _Client(ws, peer, _Bucket(self.cfg.rate_per_s, self.cfg.burst, self._clock),
-                    errors=_Bucket(5.0, 5.0, self._clock), log_bucket=_Bucket(0.2, 3.0, self._clock))
+                    errors=_Bucket(5.0, 5.0, self._clock), log_bucket=_Bucket(0.2, 3.0, self._clock),
+                    v=version, n=self._free_number())
         self._clients.add(c)
         self.stats["connects"] += 1
         self._dirty = True
-        log.info("phone %s connected (%d)", peer, len(self._clients))
-        c.out.append(json.dumps(self.bridge.hello(self._on, self.build)))   # always the first frame
-        sender = asyncio.get_running_loop().create_task(self._sender(c), name="k1000-web-send")
+        if version == 2:
+            c.sess = PhoneSession(n=c.n, seen=self._clock())
+            log.info("phone %s connected (%d, v2, %s)", peer, len(self._clients), c.name)
+            hello = self.bridge.hello2(self._on, self.build_v2, you=c.n, limits=self._limits())
+        else:
+            log.info("phone %s connected (%d)", peer, len(self._clients))
+            hello = self.bridge.hello(self._on, self.build)
+        c.out.append(json.dumps(hello))                                     # always the first frame
+        sender = asyncio.get_running_loop().create_task(
+            self._sender(c) if version == 1 else self._sender2(c), name="k1000-web-send")
         try:
             self._refresh(force=True)
             c.kick.set()
@@ -1458,6 +2134,9 @@ class PhoneServer:
         finally:
             self._clients.discard(c)
             self._dirty = True
+            if c.sess is not None and c.sess.rta:
+                c.sess.rta = False
+                self._rta_subs_changed()
             sender.cancel()
             with contextlib.suppress(BaseException):
                 await sender
@@ -1599,10 +2278,12 @@ class PhoneServer:
         """One raw message -> the reply (or None). Never raises: whatever a phone sends, a bug
         it triggers stays with that message."""
         try:
-            return self._handle(c, raw)
+            return self._handle(c, raw) if c.v != 2 else self._handle2(c, raw)
         except Exception as e:  # noqa: BLE001
             self.stats["errors"] += 1
             self._log_failure(c, "message failed", e)
+            if c.v == 2:
+                return self._err2(c, None, "INTERNAL", f"internal error ({type(e).__name__})")
             return self._err(c, None, f"internal error ({type(e).__name__})")
 
     def _handle(self, c: _Client, raw: Any) -> dict[str, Any] | None:
@@ -1631,7 +2312,7 @@ class PhoneServer:
             self.stats["rate_limited"] += 1
             return self._err(c, mid, "too fast")
         try:
-            ok, value, why = self.bridge.apply(msg)
+            ok, value, why = self.bridge.apply(msg, src=c.name)
         except Exception as e:  # noqa: BLE001 - a controller error stays with this message
             self.stats["errors"] += 1
             self._log_failure(c, f"{t} failed", e)
@@ -1654,6 +2335,238 @@ class PhoneServer:
         if c.errors is not None and not c.errors.take():
             return None     # a broken phone looping on errors gets silence, not a flood
         return {"t": "err", "id": mid, "why": why}
+
+    # ------------------------------------------------------------------ protocol 2
+    def _err2(self, c: _Client, mid: Any, code: str, why: str, v: Any = None) -> dict[str, Any] | None:
+        if c.errors is not None and not c.errors.take():
+            return None     # throttled like v1's
+        out: dict[str, Any] = {"t": "err", "id": mid, "code": code, "why": why}
+        if v is not None:
+            out["v"] = v
+        return out
+
+    def _free_number(self) -> int:
+        used = {c.n for c in self._clients}
+        n = 1
+        while n in used:
+            n += 1
+        return n
+
+    def _limits(self) -> dict[str, Any]:
+        """hello.limits (docs/14 §6)."""
+        b = self.bridge
+        return {"max_message": MAX_MESSAGE, "rate_per_s": self.cfg.rate_per_s,
+                "burst": self.cfg.burst, "max_phones": self.cfg.max_clients,
+                "master_up_db_per_s": b._master_up.rate, "master_up_burst_db": b._master_up.burst,
+                "guard_db": float(getattr(self.ctl, "master_up_guard_db", 6.0) or 0.0),
+                "guard_window_s": MASTER_UP_WINDOW_S}
+
+    def _handle2(self, c: _Client, raw: Any) -> dict[str, Any] | None:
+        """One v2 message (docs/14 §4). The same envelope rules as v1: size, JSON, the message
+        bucket (a MUTE and a ping are never limited), errors throttled, a refused unmute always
+        answered. Every reply goes through the sender; nothing here awaits."""
+        if c.sess is not None:
+            c.sess.seen = self._clock()      # the page runs: its spectrum subscription holds
+        if not isinstance(raw, str) or len(raw) > MAX_MESSAGE:
+            return self._err2(c, None, "BAD", "bad message")
+        try:
+            msg = json.loads(raw)
+        except (ValueError, RecursionError):
+            return self._err2(c, None, "BAD", "not JSON")
+        if not isinstance(msg, dict):
+            return self._err2(c, None, "BAD", "not an object")
+        t = msg.get("t")
+        mid = msg.get("id")
+        mid = mid if (isinstance(mid, int) and not isinstance(mid, bool)) or (
+            isinstance(mid, str) and len(mid) <= 32) else None
+        if t not in MESSAGE_TYPES_V2:
+            return self._err2(c, mid, "UNKNOWN", "unknown message")
+        self.rx2[t] = self.rx2.get(t, 0) + 1
+        if t == "ping":
+            ts = msg.get("ts")
+            return {"t": "pong", "ts": ts if _is_num(ts) else None}
+        if not self._on:
+            return self._err2(c, mid, "OFF", "phone off")
+        urgent = t == "mute" and msg.get("on") is True     # a MUTE is never rate-limited
+        if not urgent and not c.bucket.take():
+            self.stats["rate_limited"] += 1
+            return self._err2(c, mid, "RATE", "too fast")
+        sess = c.sess if c.sess is not None else PhoneSession(n=c.n)
+        if t == "sub":
+            return self._sub(c, sess, msg, mid)
+        try:
+            ok, value, why, code = self.bridge.apply2(msg, sess)
+        except Exception as e:  # noqa: BLE001 - a controller error stays with this message
+            self.stats["errors"] += 1
+            self._log_failure(c, f"{t} failed", e)
+            return self._err2(c, mid, "INTERNAL", f"internal error ({type(e).__name__})")
+        if ok and t == "mute":
+            self._dirty = True               # every phone sees the new mute generation at once
+        if t in ("mute", "reset_live", "grab", "choose", "act", "unlock", "lock", "hi") or (
+                t == "band" and "on" in msg):
+            log.info("phone %s (%s): %s %s -> %s", c.peer, sess.name, t,
+                     json.dumps({k: v for k, v in msg.items() if k not in ("t", "id")})[:80],
+                     value if ok else f"refused ({code} {why})")
+        if not ok:
+            if t == "mute":           # a refused unmute is never throttled away: say it, with the mute
+                return {"t": "err", "id": mid, "code": code, "why": why, "v": value}
+            return self._err2(c, mid, code, why, value)
+        if mid is None:
+            return None
+        ack: dict[str, Any] = {"t": "ack", "id": mid, "v": value}
+        if t == "nudge" and msg.get("f") in LOCKED_V2:
+            ack["unlock_s"] = self.bridge.unlock_left(sess)
+        return ack
+
+    def _sub(self, c: _Client, sess: PhoneSession, msg: dict[str, Any], mid: Any) -> dict[str, Any] | None:
+        """sub {rta}: this connection's spectrum subscription (docs/14 §4.8)."""
+        on = msg.get("rta")
+        if not isinstance(on, bool):
+            return self._err2(c, mid, "BAD", "sub needs rta: true/false")
+        if on != sess.rta:
+            sess.rta = on
+            log.info("phone %s (%s): spectrum %s", c.peer, sess.name, "ON" if on else "off")
+            self._rta_subs_changed()
+        if on:
+            self._flush_rta(force=True)      # the latest picture (or state) at once
+            c.sent_rta = -1
+            c.kick.set()
+        st = self._rta_state()
+        return {"t": "ack", "id": mid, "v": {"rta": on, "st": st}} if mid is not None else None
+
+    def _rta_subs_changed(self) -> None:
+        n = sum(1 for c in self._clients if c.sess is not None and c.sess.rta)
+        fn = getattr(self.ctl, "set_spectrum_phones", None)
+        if callable(fn):
+            try:
+                fn(n)
+            except Exception as e:   # noqa: BLE001
+                log.debug("set_spectrum_phones: %s", e)
+
+    def _rta_state(self) -> str:
+        if getattr(self.ctl, "spectrum_enabled", True) is False:
+            return "disabled"
+        status = getattr(self.ctl, "status", None)
+        return str(getattr(status, "spectrum_state", "off") or "off")
+
+    def _on_spectrum(self) -> None:
+        """Controller.set_spectrum published a new picture or state (a spectrum hook)."""
+        self._rta_dirty = True
+        self._flush_rta()
+
+    def _flush_rta(self, force: bool = False) -> None:
+        """Encode the latest spectrum frame once for every subscriber, at most every
+        RTA_MIN_INTERVAL_S (the pump sends a frame held back by the interval later)."""
+        if not (self._rta_dirty or force):
+            return
+        subs = [c for c in self._clients if c.sess is not None and c.sess.rta]
+        if not subs:
+            self._rta_dirty = False
+            return
+        now = self._clock()
+        if not force and now - self._rta_t < RTA_MIN_INTERVAL_S:
+            return
+        self._rta_dirty, self._rta_t = False, now
+        status = getattr(self.ctl, "status", None)
+        state = self._rta_state()
+        frame = getattr(status, "spectrum", None) if state != "disabled" else None
+        self._rta_seq += 1
+        self._rta_json = json.dumps(rta_message(frame, state, self._rta_seq))
+        for c in subs:
+            c.kick.set()
+
+    def _expire_unlocks(self) -> None:
+        """A v2 phone's ALIGN unlock ran out (UNLOCK_S idle): it is told (docs/14 §4.4)."""
+        now = self._clock()
+        for c in list(self._clients):
+            s = c.sess
+            if s is not None and s.unlock_until and now >= s.unlock_until:
+                s.unlock_until = 0.0
+                self._queue(c, {"t": "locked", "what": "align", "why": "idle"})
+                log.info("phone %s (%s): ALIGN relocked (idle)", c.peer, s.name)
+
+    def _expire_subs(self) -> None:
+        """A subscribed v2 phone that sent nothing for RTA_SUB_IDLE_S (a frozen page: its 2 s
+        pings stopped, while the browser still answers the box's websocket pings) stops
+        getting spectrum frames, and is told so (docs/14 §4.8): the box stops polling when
+        nobody looks."""
+        now = self._clock()
+        lapsed = False
+        for c in list(self._clients):
+            s = c.sess
+            if s is not None and s.rta and now - s.seen > RTA_SUB_IDLE_S:
+                s.rta = False
+                lapsed = True
+                self._queue(c, {"t": "unsub", "what": "rta", "why": "idle"})
+                log.info("phone %s (%s): spectrum off (nothing from the page for %.0f s)",
+                         c.peer, s.name, now - s.seen)
+        if lapsed:
+            self._rta_subs_changed()
+
+    @staticmethod
+    def _backlog(c: _Client) -> int:
+        """Bytes on their way to this phone that a frame written now would queue behind (0 when
+        unknown): asyncio's buffer, under TLS also the TCP transport's buffer below it, and the
+        kernel's send queue (TIOCOUTQ: written and not yet acknowledged by the phone). The
+        asyncio buffers alone stay at 0 until the kernel's queue is full, which can hold
+        megabytes on a stalled link (docs/14 §3.4)."""
+        tr = getattr(c.ws, "transport", None)
+        total = 0
+        layers = [tr, getattr(getattr(tr, "_ssl_protocol", None), "_transport", None)]
+        for t in layers:
+            fn = getattr(t, "get_write_buffer_size", None)
+            try:
+                total += int(fn()) if callable(fn) else 0
+            except Exception:   # noqa: BLE001
+                pass
+        info = getattr(tr, "get_extra_info", None)
+        try:
+            sock = info("socket") if callable(info) else None
+            fd = sock.fileno() if sock is not None else -1
+            if fd >= 0:
+                total += struct.unpack("i", fcntl.ioctl(fd, termios.TIOCOUTQ, b"\0\0\0\0"))[0]
+        except Exception:   # noqa: BLE001 - not a TCP socket, not Linux: what asyncio says
+            pass
+        return total
+
+    async def _sender2(self, c: _Client) -> None:
+        """v2's sender: replies first, then the latest state, the latest meters, and the latest
+        spectrum frame last. Before each send it looks again, so a reply (a mute ack) queued
+        meanwhile goes before anything else; a spectrum frame is dropped, never queued, while
+        more than RTA_MAX_BUFFERED bytes are still on their way to the phone, kernel included
+        (_backlog): it never makes a later send wait."""
+        try:
+            while True:
+                await c.kick.wait()
+                c.kick.clear()
+                while True:
+                    if c.out:
+                        await self._send(c, c.out.popleft())
+                    elif c.sent_state != self._state2_seq and self._state2_json:
+                        seq, text = self._state2_seq, self._state2_json
+                        await self._send(c, text)
+                        c.sent_state = seq
+                    elif c.sent_meter != self._meter2_seq and self._meter2_json:
+                        seq, text = self._meter2_seq, self._meter2_json
+                        await self._send(c, text)
+                        c.sent_meter = seq
+                    elif (c.sess is not None and c.sess.rta and c.sent_rta != self._rta_seq
+                          and self._rta_json):
+                        seq, text = self._rta_seq, self._rta_json
+                        c.sent_rta = seq
+                        if self._backlog(c) > RTA_MAX_BUFFERED:
+                            self.stats["rta_dropped"] += 1
+                            continue
+                        await self._send(c, text)
+                        self.stats["rta_sent"] += 1
+                    else:
+                        break
+        except (ConnectionClosed, asyncio.CancelledError):
+            return
+        except Exception:   # noqa: BLE001
+            log.exception("phone %s: sender failed", c.peer)
+            with contextlib.suppress(Exception):
+                c.ws.transport.abort()
 
     async def _send(self, c: _Client, text: str) -> None:
         async with c.lock:
@@ -1698,11 +2611,15 @@ class PhoneServer:
         (a setup guard, a reconnect) do not bump it, and the mute generation must not lag."""
         v = getattr(self.ctl, "version", None)
         mute = self.bridge.mute_view()
+        v2 = [c for c in self._clients if c.v == 2]
+        # v2's input meter moves without `version` (Controller.meter_seq): only with v2 phones
+        ms = getattr(self.ctl, "meter_seq", None) if v2 else None
         if (not force and not self._dirty and isinstance(v, int) and v == self._last_version
-                and mute == self._last_mute):
+                and mute == self._last_mute and ms == self._last_meter_seq):
             return False
         self._last_version = v if isinstance(v, int) else None
         self._last_mute = mute
+        self._last_meter_seq = ms
         self._dirty = False
         snap = self.ctl.snapshot()
         state = json.dumps(self.bridge.state_message(snap, phone_on=self._on, phones=len(self._clients),
@@ -1716,6 +2633,20 @@ class PhoneServer:
         if changed:
             for c in self._clients:
                 c.kick.set()
+        if v2:
+            state2 = json.dumps(self.bridge.state_message2(
+                snap, phone_on=self._on, phones=len(self._clients), mute=mute,
+                knobs=bool(getattr(self.ctl, "has_knobs", True))))
+            meters2 = json.dumps(self.bridge.meters_message2(snap[2]))
+            changed2 = False
+            if state2 != self._state2_json:
+                self._state2_json, self._state2_seq, changed2 = state2, self._state2_seq + 1, True
+            if meters2 != self._meter2_json:
+                self._meter2_json, self._meter2_seq, changed2 = meters2, self._meter2_seq + 1, True
+            if changed2:
+                for c in v2:
+                    c.kick.set()
+            changed = changed or changed2
         return changed
 
     async def _pump(self) -> None:
@@ -1730,6 +2661,10 @@ class PhoneServer:
                 continue
             try:
                 self._refresh()
+                self._expire_unlocks()
+                self._expire_subs()
+                if self._rta_dirty:
+                    self._flush_rta()
             except Exception as e:  # noqa: BLE001 - the pump must survive anything
                 self.stats["errors"] += 1
                 log.warning("phone pump: %s: %s", type(e).__name__, e)
@@ -1791,6 +2726,7 @@ def _raw(status: int, body: bytes, ctype: str, extra: Iterable[tuple[str, str]] 
     return ("\r\n".join(lines) + "\r\n\r\n").encode("latin-1") + (b"" if head_only else body)
 
 
-__all__ = ["PhoneBridge", "PhoneScreenInfo", "PhoneServer", "PhoneSettings", "ap_is_up",
-           "iface_ipv4", "load_static", "read_ap_info", "read_arp", "read_leases", "read_psk",
-           "NUDGE_CAPS", "SET_NUMERIC", "SET_BOOL"]
+__all__ = ["PhoneBridge", "PhoneScreenInfo", "PhoneServer", "PhoneSession", "PhoneSettings",
+           "ap_is_up", "fields_v2", "iface_ipv4", "load_static", "load_static_all", "read_ap_info",
+           "read_arp", "read_leases", "read_psk", "rta_message", "setup_v2",
+           "NUDGE_CAPS", "NUDGE_CAPS_V2", "SET_NUMERIC", "SET_BOOL", "LOCKED_V2", "MESSAGE_TYPES_V2"]

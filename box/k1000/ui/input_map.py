@@ -389,6 +389,37 @@ def setup_group_step(i: int, delta: int) -> int:
     return starts[max(0, min(len(starts) - 1, g + delta))]
 
 
+def choice_name(item: SetupItem, value: Any) -> str:
+    """How the box screen names one value of an ON/off or choice row (pages._fmt_setup's words):
+    polarity normal / INVERTED, other ON/off rows off / ON, choices upper case."""
+    if item.field.endswith("_inverted"):
+        return "INVERTED" if value else "normal"
+    if item.kind == "bool" or isinstance(value, bool):
+        return "ON" if value else "off"
+    return str(value).upper()
+
+
+def setup_schema() -> list[dict[str, Any]]:
+    """SETUP_GROUPS as plain data, for the phone (protocol 2, docs/14 §3.1.3): one entry per
+    group, `{group, items: [{label, f, kind, ...}]}` in the box's order. ON/off and choice rows
+    carry their `choices`, the box's `names` for them and `rebuild` (a pipeline rebuild: may
+    click); action rows their `confirm`. Data only: nothing here changes what the knobs do."""
+    out: list[dict[str, Any]] = []
+    for name, items in SETUP_GROUPS:
+        rows: list[dict[str, Any]] = []
+        for it in items:
+            row: dict[str, Any] = {"label": it.label, "f": it.field, "kind": it.kind}
+            if it.picks:
+                row["choices"] = list(it.choices)
+                row["names"] = [choice_name(it, c) for c in it.choices]
+                row["rebuild"] = it.rebuild
+            elif it.kind == "action":
+                row["confirm"] = it.needs_confirm
+            rows.append(row)
+        out.append({"group": name, "items": rows})
+    return out
+
+
 @dataclass(frozen=True)
 class Knob:
     """One encoder's meaning on one page. `field` may contain '{slot}' (the selected band)."""
@@ -427,6 +458,21 @@ KNOBS: dict[str, tuple[Knob, Knob, Knob, Knob]] = {
     "HWTEST": (Knob("", None), Knob("", None), Knob("", None), Knob("", None)),
     "PHONE": (Knob("QR", None, kind="phone_qr"), Knob("", None), Knob("", None), Knob("", None)),
 }
+
+
+def knob_accel(field: str) -> tuple[int, int] | None:
+    """(accel_up, accel_down) of the SHOW/ALIGN knob that edits `field` (a band field matches
+    its '{slot}' pattern by parameter: 'live_peq.2.freq' -> FREQ), None when no knob there edits
+    it. Data for the phone's slide (docs/14 §3.1.1); the knobs read KNOBS themselves."""
+    param = field.rsplit(".", 1)[-1] if field.startswith(("live_peq", "live_lowshelf",
+                                                          "live_highshelf")) else None
+    for page in ("SHOW", "ALIGN"):
+        for k in KNOBS[page]:
+            if k.field is None or k.kind != "nudge":
+                continue
+            if k.field == field or (param is not None and k.field == "{slot}." + param):
+                return k.accel_up, k.accel_down
+    return None
 
 # Screen corner of each logical encoder: E1 top-left, E2 bottom-left, E3 top-right, E4
 # bottom-right. Confirmed by Thomas on the box on 2026-10-12 (each knob sits at its label's
