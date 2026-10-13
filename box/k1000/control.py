@@ -75,12 +75,13 @@ from .dspconfig import FADER_MAIN, FADER_SUBS, FADER_TOPS, Fader, FaderMute, Op,
 from .profiles import (PROC_ASOUND, PROFILE_NAMES, Profile, ProfileChoice, card_id, card_present,
                        load_profile)
 from .state import (BOOL_FIELDS, CHOICES, N_SYS_PEQ, RANGES, REBUILD_FIELDS, State, atomic_write,
-                    load_state)
+                    effective_gain, is_band_on_path, load_state)
 from .ui.input_map import (
     A_LAPTOP, ALL_PAGES, AUTO_HOME_PAGES, BELL_SLOTS, EDIT_HIGHLIGHT_S, F_LOWCUT_ON, F_SPECTRUM_ON,
     HINT_S, HOME_AFTER_S, HOME_PAGE, LIVE_SLOT_LABELS, LIVE_SLOT_SHORT, LIVE_SLOTS, MUTE_TOGGLE,
     PAGES, ControlMap, Focus, GotoPage, Mute, NextPage, NotchHelper, Nudge, PhoneQr, PhoneToggle,
-    B1_TAP, SETUP_ITEMS, ResetLive, SetChoice, SetupAction, Toggle, UndoReset, apply_focus, knob_tag_style,
+    B1_TAP, SETUP_ITEMS, ResetLive, SetChoice, SetupAction, Toggle, ToggleBand, UndoReset,
+    apply_focus, knob_tag_style,
     map_event, page_name, parse_knob_tags,
 )
 
@@ -160,6 +161,11 @@ HINT_MASTER_SLOW = "MASTER: SLOW DOWN"
 HINT_NO_FREE_BAND = "NO FREE BAND"
 HINT_NOTCH = "{band} · {hz} · E3 TO CUT"              # D-009: "P3 · 2.44k · E3 TO CUT"
 HINT_NOTCH_NO_PEAK = "{band} · {hz} · NO PEAK · E3 TO CUT"
+HINT_BAND_OUT = "{band} OUT"                         # D-014: B3 hold on SHOW, the phone's chip hold
+HINT_BAND_IN = "{band} IN"
+HINT_EDIT_OUT = "{band} OUT · HOLD B3 = IN"          # a knob moves a band that is OUT: inaudible
+HINT_EDIT_OUT_PHONE = "{band} OUT · IN FROM THE PHONE"  # the same, B3's hold gated (map unconfirmed)
+PILL_OUT = "OUT"                                     # SHOW pill: "OUT P2", "OUT P2 LS"
 HINT_SPECTRUM_DISABLED = "SPECTRUM OFF IN k1000.yaml"
 HINT_AUDITION_DEV_ONLY = "AUDITION: DEV PROFILE ONLY"
 SETUP_PICK_FIELDS: frozenset[str] = frozenset(it.field for it in SETUP_ITEMS if it.picks)
@@ -396,14 +402,30 @@ def _live_dict(s: State) -> dict[str, Any]:
 
 
 def _audible_live(s: State) -> tuple[tuple[float, ...], ...]:
-    """What the live EQ does to the sound: each band's gain, and its frequency and Q only when
-    its gain is not 0 dB (a 0 dB peaking or shelf biquad is exactly unity, wherever it sits).
-    The notch helper's Q/frequency write on a free bell leaves this unchanged."""
+    """What the live EQ does to the sound: each band's EFFECTIVE gain (0 dB while it is OUT,
+    D-014), and its frequency and Q only when that is not 0 dB (a 0 dB peaking or shelf biquad
+    is exactly unity, wherever it sits). The notch helper's Q/frequency write on a free bell
+    leaves this unchanged, and so does switching a band at 0 dB IN or OUT; switching one with a
+    stored cut or boost changes it."""
     out = []
     for b in (*s.live_peq, s.live_lowshelf, s.live_highshelf):
-        g = float(b.gain)
+        g = effective_gain(b)
         out.append((g, float(b.freq), float(b.q)) if g != 0.0 else (0.0,))
     return tuple(out)
+
+
+def _live_band(s: State, slot: int) -> Any:
+    """The live band of a LIVE_SLOTS index (P1..P4, LS, HS)."""
+    return s.get(LIVE_SLOTS[slot])
+
+
+def _slot_of(field: Any) -> int | None:
+    """LIVE_SLOTS index of a live band field path ("live_peq.1.gain" -> 1), else None."""
+    if isinstance(field, str):
+        for i, base in enumerate(LIVE_SLOTS):
+            if field.startswith(base + "."):
+                return i
+    return None
 
 
 def _log_master(old: Any, new: Any, source: str) -> None:
@@ -627,8 +649,9 @@ class Controller:
     """The brain: `Controller(client, profile, state, paths)` + `await start()`.
 
     UI actions are synchronous and never block (they edit the state and schedule the engine
-    work): `nudge`, `set_value`, `toggle`, `reset_live`, `set_mute`, `next_page`, `goto_page`,
-    `show_hint`, or `handle_event` / `handle_action` for input_map events and actions.
+    work): `nudge`, `set_value`, `toggle`, `set_band_on` / `toggle_band` (D-014), `reset_live`,
+    `set_mute`, `next_page`, `goto_page`, `show_hint`, or `handle_event` / `handle_action` for
+    input_map events and actions.
     `await settle()` waits until the engine has everything (tests, shutdown).
     """
 
@@ -789,6 +812,10 @@ class Controller:
         if self._started:
             return
         self._started = True
+        if not self.controls.buttons_confirmed:
+            log.warning("controls: buttons %s not confirmed (SETUP > Knob test, then a hand-written "
+                        "map or buttons_confirmed: true): a B3 hold on SHOW only says so, it does "
+                        "not switch a band IN/OUT (D-014)", list(self.controls.buttons))
         self.save_now()
         self.client.on_connect = self._on_connect
         self.client.on_disconnect = self._on_disconnect
@@ -883,7 +910,8 @@ class Controller:
         - align_locked / align_unlock_s: ALIGN's E3/E4 lock and the EDIT countdown;
         - pills: persistent non-default states: `pill_sources` first (the laptop-access
           countdown: the only sign that SSH and CamillaGUI are open on the K1000 Wi-Fi), then
-          LO-CUT OFF, POL INV SUB|TOP|SUB+TOP, MONO SUB, AUDITION TOPS|SUBS;
+          LO-CUT OFF, OUT <bands> (D-014: live bands switched OUT), POL INV SUB|TOP|SUB+TOP,
+          MONO SUB, AUDITION TOPS|SUBS;
         - alerts / sys_alert / sys_alert_level: system alerts for the status bar, most urgent
           first (critical red, warning orange, info); hints stay in Focus (amber, brief);
         - undo_reset_s: SETUP > Undo reset availability;
@@ -931,6 +959,10 @@ class Controller:
                 out.append(str(t))
         if not s.lowcut_on:
             out.append("LO-CUT OFF")
+        outs = [LIVE_SLOT_SHORT[i] for i in range(len(LIVE_SLOTS))
+                if getattr(_live_band(s, i), "on", True) is False]
+        if outs:
+            out.append(" ".join([PILL_OUT, *outs]))       # D-014: "OUT P2", "OUT P2 LS"
         inv = [n for n, on in (("SUB", s.sub_inverted), ("TOP", s.top_inverted)) if on]
         if inv:
             out.append("POL INV " + "+".join(inv))
@@ -1050,6 +1082,8 @@ class Controller:
             return self.set_mute(bool(value))
         if field == F_LOWCUT_ON and isinstance(value, bool):
             return self.set_lowcut(value)     # the phone's switch: the box's path (hint, log)
+        if is_band_on_path(field) and isinstance(value, bool):
+            return self.set_band_on(_slot_of(field), value, source)   # D-014: logged, said
         if field in REBUILD_FIELDS and not self._setup_allowed(field, confirmed):
             return None
         try:
@@ -1196,18 +1230,19 @@ class Controller:
     def notch_helper(self, now: float | None = None) -> int | None:
         """B3 on SHOW (D-009). Returns the slot it selected (None: no free band).
 
-        1. A spectrum PEAK within NOTCH_NEAR_OCT of a bell already in use (gain != 0): select
-           that bell, write nothing.
-        2. Else a free bell (gain exactly 0; the selected band if it is one, else the first of
-           P1..P4, never a shelf): Q = NOTCH_Q (1/6 octave), freq = the PEAK if there is one.
-           The gain is never touched: a 0 dB peaking biquad is exactly unity, so this is
-           inaudible until E3 cuts.
+        1. A spectrum PEAK within NOTCH_NEAR_OCT of a bell in use (its EFFECTIVE gain != 0: a
+           bell switched OUT is not in use, D-014): select that bell, write nothing.
+        2. Else a free bell (stored gain exactly 0, IN or OUT; the selected band if it is one,
+           else the first of P1..P4, never a shelf): Q = NOTCH_Q (1/6 octave), freq = the PEAK
+           if there is one, and IN if it was OUT. The gain is never touched: a 0 dB peaking
+           biquad is exactly unity, so this is inaudible until E3 cuts. A bell OUT with a stored
+           cut or boost is NOT free: it keeps its settings for its way back IN.
         3. Else: hint NO FREE BAND, nothing changes.
         The selected band moves there, its GAIN gets the edit highlight, the hint says
         "P3 · 2.44k · E3 TO CUT"."""
         target = self._peak_target()
         peq = self.state.live_peq
-        used = [i for i in BELL_SLOTS if i < len(peq) and float(peq[i].gain) != 0.0]
+        used = [i for i in BELL_SLOTS if i < len(peq) and effective_gain(peq[i]) != 0.0]
         if target is not None:
             near = [(abs(math.log2(float(peq[i].freq) / target)), i) for i in used
                     if float(peq[i].freq) > 0]
@@ -1225,15 +1260,22 @@ class Controller:
             return None
         i = sel if sel in free else free[0]
         base = LIVE_SLOTS[i]
-        old = (self.state.get(f"{base}.freq"), self.state.get(f"{base}.q"))
+
+        def setup() -> tuple[Any, Any, Any]:
+            return (self.state.get(f"{base}.freq"), self.state.get(f"{base}.q"),
+                    self.state.get(f"{base}.on"))
+
+        old = setup()
         self.state.set(f"{base}.q", NOTCH_Q)
         if target is not None:
             self.state.set(f"{base}.freq", target)
-        if (self.state.get(f"{base}.freq"), self.state.get(f"{base}.q")) != old:
+        self.state.set(f"{base}.on", True)        # at 0 dB: IN is inaudible, and E3 then cuts
+        if setup() != old:
             self._local_edit()
-        log.info("notch helper: P%d at %.0f Hz, Q %.2f%s (gain untouched)", i + 1,
+        log.info("notch helper: P%d at %.0f Hz, Q %.2f%s%s (gain untouched)", i + 1,
                  self.state.get(f"{base}.freq"), self.state.get(f"{base}.q"),
-                 "" if target is not None else ", no peak")
+                 "" if target is not None else ", no peak",
+                 ", was OUT: now IN" if old[2] is False else "")
         self._notch_select(i, HINT_NOTCH if target is not None else HINT_NOTCH_NO_PEAK, now)
         return i
 
@@ -1252,6 +1294,38 @@ class Controller:
         self.focus.edit_until = now + max(EDIT_HIGHLIGHT_S, NOTCH_HINT_S)
         hz = float(self.state.get(f"{LIVE_SLOTS[slot]}.freq"))
         self.show_hint(template.format(band=LIVE_SLOT_SHORT[slot], hz=fmt_hz_short(hz)), NOTCH_HINT_S)
+
+    def set_band_on(self, slot: Any, on: Any, source: str = "knob") -> bool | None:
+        """D-014: live band `slot` (LIVE_SLOTS index: 0-3 P1-P4, 4 LS, 5 HS) IN (True) or OUT
+        (False). OUT keeps its freq, gain and Q; the engine plays it at 0 dB, smoothed like a
+        gain edit (no rebuild, no click). Switching a band with a stored cut or boost is an
+        audible live edit (it ends the reset's undo); at 0 dB it changes nothing audible. Logged
+        with `source` (knob / phone / console) and said on the screen ("P2 OUT" / "P2 IN") when
+        it changes. Returns the band's `on` now, or None when refused (not a band, not a bool)."""
+        if isinstance(slot, bool) or not isinstance(slot, int) or not 0 <= slot < len(LIVE_SLOTS):
+            log.warning("band on/off %r refused: not a live band", slot)
+            return None
+        if not isinstance(on, bool):
+            log.warning("band on/off %s=%r refused: not true/false", LIVE_SLOT_SHORT[slot], on)
+            return None
+        path = f"{LIVE_SLOTS[slot]}.on"
+        if bool(self.state.get(path)) == on:
+            return on
+        self.state.set(path, on)
+        band = _live_band(self.state, slot)
+        log.info("band %s %s (%s): %.0f Hz, %+.1f dB stored, Q %.2f", LIVE_SLOT_SHORT[slot],
+                 "IN" if on else "OUT", source, float(band.freq), float(band.gain), float(band.q))
+        self._local_edit()
+        self.show_hint((HINT_BAND_IN if on else HINT_BAND_OUT).format(band=LIVE_SLOT_SHORT[slot]))
+        return on
+
+    def toggle_band(self, slot: Any = None, source: str = "knob") -> bool | None:
+        """B3 hold on SHOW (D-014): live band `slot` (default: the selected one) IN <-> OUT."""
+        slot = self.focus.band if slot is None else slot
+        if isinstance(slot, bool) or not isinstance(slot, int) or not 0 <= slot < len(LIVE_SLOTS):
+            log.warning("band toggle %r refused: not a live band", slot)
+            return None
+        return self.set_band_on(slot, not bool(self.state.get(f"{LIVE_SLOTS[slot]}.on")), source)
 
     def set_lowcut(self, on: bool) -> bool:
         """Lo-Cut on/off: SETUP > Lo-Cut (after its confirm) and the phone's switch (confirmed
@@ -1415,6 +1489,12 @@ class Controller:
             return
         if isinstance(action, Nudge):
             self.nudge(action.field, action.detents, action.fine)
+            slot = _slot_of(action.field)
+            if slot is not None and self.state.get(f"{LIVE_SLOTS[slot]}.on") is False:
+                # D-014: moving a band that is OUT is stored but inaudible: say so, and how it
+                # comes back (B3's hold only once the button map is confirmed)
+                tpl = HINT_EDIT_OUT if self.controls.buttons_confirmed else HINT_EDIT_OUT_PHONE
+                self.show_hint(tpl.format(band=LIVE_SLOT_SHORT[slot]))
         elif isinstance(action, SetChoice):
             self.set_choice(action.field, action.value)
         elif isinstance(action, Toggle):
@@ -1433,6 +1513,8 @@ class Controller:
             self.undo_reset()
         elif isinstance(action, NotchHelper):
             self.notch_helper()
+        elif isinstance(action, ToggleBand):
+            self.toggle_band(action.slot)
         elif isinstance(action, SetupAction):
             fn = self.setup_actions.get(action.name)
             if fn is None:

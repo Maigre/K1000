@@ -10,7 +10,9 @@ Why this module is strict:
   bad copy is kept for post-mortem.
 
 Field paths (`"master_db"`, `"live_peq.2.gain"`, `"out_trim_db.1"`) address one value for the UI
-and controller; `range_for(path)` gives its `Range`.
+and controller; `range_for(path)` gives its `Range`. Each live band also has an IN/OUT switch
+(`"live_peq.2.on"`, `"live_lowshelf.on"`, D-014): OUT keeps the band's settings, and the engine
+gets 0 dB for it (`effective_gain`).
 """
 from __future__ import annotations
 
@@ -163,23 +165,50 @@ CHOICES: dict[str, tuple[str, ...]] = {"profile": PROFILES, "dev_audition": AUDI
 # Changing these rebuilds the CamillaDSP pipeline (mixers/devices): SETUP page only, with confirm.
 REBUILD_FIELDS: frozenset[str] = frozenset({"mono_subs", "profile", "dev_audition"})
 
+# The live EQ layer (D-014: each of its bands has an IN/OUT switch, `<band>.on`). The system EQ
+# (sys_peq, set at the tune) has none: its bands are always IN.
+LIVE_BAND_KEYS: tuple[str, ...] = ("live_peq", "live_lowshelf", "live_highshelf")
+
 
 @dataclass
 class PeqBand:
-    """One Biquad Peaking band (gain 0 dB = transparent)."""
+    """One Biquad Peaking band (gain 0 dB = transparent). `on` False = OUT (D-014, live bands
+    only): the band keeps its settings and the engine gets 0 dB (`effective_gain`)."""
 
     freq: float = 1000.0
     gain: float = 0.0
     q: float = 1.0
+    on: bool = True
 
 
 @dataclass
 class ShelfBand:
-    """One Biquad shelf (Lowshelf/Highshelf), steepness given as Q."""
+    """One Biquad shelf (Lowshelf/Highshelf), steepness given as Q. `on`: as PeqBand."""
 
     freq: float = 1000.0
     gain: float = 0.0
     q: float = 0.707
+    on: bool = True
+
+
+def effective_gain(band: Any) -> float:
+    """The gain the engine plays for a band: its gain while IN, 0 dB while OUT (D-014). A 0 dB
+    peaking or shelf biquad is exactly unity, so OUT is a gain move, never a pipeline change.
+    Every "is this band audible / in use" question reads this, not `band.gain`."""
+    try:
+        g = float(getattr(band, "gain", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+    return g if getattr(band, "on", True) is not False else 0.0
+
+
+def is_band_on_path(path: str) -> bool:
+    """True for a live band's IN/OUT field: "live_peq.0.on" .. "live_peq.3.on",
+    "live_lowshelf.on", "live_highshelf.on"."""
+    parts = path.split(".") if isinstance(path, str) else []
+    if len(parts) == 3 and parts[0] == "live_peq" and parts[2] == "on":
+        return parts[1].isdigit() and 0 <= int(parts[1]) < N_LIVE_PEQ
+    return len(parts) == 2 and parts[0] in ("live_lowshelf", "live_highshelf") and parts[1] == "on"
 
 
 def default_sys_peq() -> list[PeqBand]:
@@ -241,7 +270,8 @@ class State:
         return State.from_dict(self.to_dict())
 
     def live_reset(self) -> "State":
-        """A copy with the live EQ layer (4 PEQ + 2 shelves) back to defaults: SETUP › LIVE EQ › Reset live EQ."""
+        """A copy with the live EQ layer (4 PEQ + 2 shelves) back to defaults, every band IN:
+        SETUP › LIVE EQ › Reset live EQ."""
         s = self.copy()
         s.live_peq = default_live_peq()
         s.live_lowshelf = default_lowshelf()
@@ -253,10 +283,12 @@ class State:
         d: dict[str, Any] = {"schema": SCHEMA_VERSION}
         for f in fields(self):
             v = getattr(self, f.name)
+            live = f.name in LIVE_BAND_KEYS
             if isinstance(v, list):
-                d[f.name] = [_band_dict(b) if isinstance(b, (PeqBand, ShelfBand)) else b for b in v]
+                d[f.name] = [_band_dict(b, live) if isinstance(b, (PeqBand, ShelfBand)) else b
+                             for b in v]
             elif isinstance(v, (PeqBand, ShelfBand)):
-                d[f.name] = _band_dict(v)
+                d[f.name] = _band_dict(v, live)
             else:
                 d[f.name] = v
         return d
@@ -266,7 +298,8 @@ class State:
         """Tolerant parse: unknown keys ignored, missing/invalid values -> defaults, all clamped.
 
         Old or partial files (fewer bands, missing fields) are upgraded in place, so a state
-        saved by an earlier build never blocks boot.
+        saved by an earlier build never blocks boot. A live band without `on` (every state saved
+        before D-014) is IN.
         """
         if not isinstance(data, dict):
             data = {}
@@ -293,8 +326,8 @@ class State:
 
     # ----------------------------------------------------------------- path access
     def get(self, path: str) -> Any:
-        """Read a field by path, e.g. "master_db", "live_peq.2.gain", "out_trim_db.1"
-        ("align_delay_ms" = sub_delay_ms - top_delay_ms, computed)."""
+        """Read a field by path, e.g. "master_db", "live_peq.2.gain", "live_peq.2.on",
+        "out_trim_db.1" ("align_delay_ms" = sub_delay_ms - top_delay_ms, computed)."""
         if path == ALIGN_DELAY:
             return align_delay_ms(self)
         obj: Any = self
@@ -322,7 +355,7 @@ class State:
         rng = range_for(path)
         if rng is not None:
             new: Any = rng.clamp(value, current)
-        elif path in BOOL_FIELDS:
+        elif path in BOOL_FIELDS or is_band_on_path(path):
             new = _as_bool(value, current)
         elif path in CHOICES:
             if value not in CHOICES[path]:
@@ -391,8 +424,11 @@ def range_for(path: str) -> Range | None:
 
 
 # --------------------------------------------------------------------------- helpers
-def _band_dict(b: PeqBand | ShelfBand) -> dict[str, float]:
-    return {"freq": b.freq, "gain": b.gain, "q": b.q}
+def _band_dict(b: PeqBand | ShelfBand, live: bool = False) -> dict[str, Any]:
+    d: dict[str, Any] = {"freq": b.freq, "gain": b.gain, "q": b.q}
+    if live:
+        d["on"] = bool(b.on)
+    return d
 
 
 def _as_bool(v: Any, fallback: bool) -> bool:
@@ -405,6 +441,8 @@ def _band(raw: Any, default: Any, key: str, cls: type) -> Any:
         freq=RANGES[f"{key}.freq"].clamp(raw.get("freq"), default.freq),
         gain=RANGES[f"{key}.gain"].clamp(raw.get("gain"), default.gain),
         q=RANGES[f"{key}.q"].clamp(raw.get("q"), default.q),
+        # missing (an older file) or not a bool -> IN; the system EQ is always IN
+        on=_as_bool(raw.get("on"), True) if key in LIVE_BAND_KEYS else True,
     )
 
 

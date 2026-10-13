@@ -5,13 +5,14 @@ and a captive portal on plain HTTP.
 Why it is shaped like this:
 
 - **Same controller as the knobs.** Phone messages become the Controller's public calls
-  (`nudge`, `set_value`, `set_mute`, `reset_live`), so the phone gets the same clamps, the same
-  click-safe engine moves and the same single state as the knobs. Never CamillaGUI, which POSTs
-  whole configs and can undo knob work.
+  (`nudge`, `set_value`, `set_band_on`, `set_mute`, `reset_live`), so the phone gets the same
+  clamps, the same click-safe engine moves and the same single state as the knobs. Never
+  CamillaGUI, which POSTs whole configs and can undo knob work.
 - **A strict allowlist, smaller than the knobs'.** The phone reaches the show controls only:
   master / balance / Lo-Cut (steps only, never an absolute jump) and the live EQ layer (absolute
-  values, because dragging a notch is the point of the phone), mute, and a confirmed live-EQ
-  reset. Setup-class fields (profile, mono subs, delays, polarity, system EQ, trims) are refused.
+  values, because dragging a notch is the point of the phone; each band IN/OUT, D-014), mute,
+  and a confirmed live-EQ reset. Setup-class fields (profile, mono subs, delays, polarity,
+  system EQ, trims) are refused.
   Master may rise by a few dB per second at most, whatever the phone sends.
 - **The phone never stalls the box.** Every client has its own sender that only ever sends the
   LATEST state (slow phones skip states, they do not queue them), a send timeout that drops a
@@ -564,7 +565,9 @@ class PhoneBridge:
             except KeyError:
                 b = None
             bands.append({"f": _f(getattr(b, "freq", None), 1), "g": _f(getattr(b, "gain", None), 2),
-                          "q": _f(getattr(b, "q", None), 3)})
+                          "q": _f(getattr(b, "q", None), 3),
+                          # D-014: IN/OUT (OUT keeps f/g/q, plays 0 dB); an older page ignores it
+                          "on": getattr(b, "on", True) is not False})
         drift = getattr(status, "drift", None) or []
         engine = getattr(status, "engine", "Unknown")
         present = getattr(status, "device_present", None)
@@ -684,30 +687,66 @@ class PhoneBridge:
         return True, out, ""
 
     def _band(self, msg: dict[str, Any]) -> tuple[bool, Any, str]:
+        """{t:"band", s, f?, q?, g?, on?}: absolute values for live band `s` (a dot drag, FLAT)
+        and, D-014, `on` = IN (true) / OUT (false) through `Controller.set_band_on` (logged, said
+        on the box).
+
+        `on` comes ALONE or with `g` only; with `f` or `q` the message is refused, nothing set.
+        Why: the whole message is written to the state before the engine worker runs, so the
+        engine gets it as ONE smoothed move whatever the order of the writes here; `on` with a
+        new frequency would sweep that frequency while the gain fades in or out (audible). With
+        `g` only it is a gain move: FLAT on an OUT band ({g: 0, on: true}) plays 0 dB all along,
+        {on: false} fades the band to 0 dB, {on: true} back to its stored gain."""
         s = msg.get("s")
         if isinstance(s, bool) or not isinstance(s, int) or not 0 <= s < len(LIVE_SLOTS):
             return False, None, "band: s must be 0..5"
         vals = {k: msg.get(k) for k in ("f", "q", "g") if k in msg}
-        if not vals:
+        has_on = "on" in msg
+        if not vals and not has_on:
             return False, None, "band: nothing to set"
+        if has_on and not isinstance(msg["on"], bool):
+            return False, None, "band: on must be true/false"
+        if has_on and ("f" in vals or "q" in vals):
+            return False, None, "band: on goes alone or with g (no f, no q)"
         if not all(_is_num(v) for v in vals.values()):
             return False, None, "band: values must be numbers"
         out: dict[str, Any] = {}
-        # frequency and Q first, gain last: a band moves while still at its old gain
+        if has_on and msg["on"] is False:
+            r = self._band_on(s, False)
+            if r is None:
+                return False, None, "band on/off: refused"
+            out["on"] = r
+        # (the engine gets the message as one smoothed move: this order is the state's only)
         for key, param in (("f", "freq"), ("q", "q"), ("g", "gain")):
             if key in vals:
                 r = self.ctl.set_value(f"{LIVE_SLOTS[s]}.{param}", float(vals[key]))
                 if r is None:
                     return False, out or None, f"band {param}: refused"
                 out[key] = r
+        if has_on and msg["on"] is True:
+            r = self._band_on(s, True)
+            if r is None:
+                return False, out or None, "band on/off: refused"
+            out["on"] = r
         return True, out, ""
+
+    def _band_on(self, s: int, on: bool) -> bool | None:
+        """Band `s` IN/OUT through the Controller (D-014); a controller without it (an older
+        build behind a newer page) refuses."""
+        fn = getattr(self.ctl, "set_band_on", None)
+        if not callable(fn):
+            return None
+        r = fn(s, on, source="phone")
+        return r if isinstance(r, bool) else None
 
     def _notch(self, hz: Any, s: Any = None) -> tuple[bool, Any, str]:
         """'Notch here': a flat PEQ slot -> hz, notch Q, notch cut (in that order).
 
         `s` = the slot the phone predicted (it starts dragging that dot at once, under the same
         finger): used only if it is still flat, else refused, so a drag that follows can never
-        move a band someone else just set. Without `s`: the first flat slot."""
+        move a band someone else just set. Without `s`: the first flat slot. Flat = its STORED
+        gain is 0 (D-014): a band OUT with a cut keeps it; a flat one OUT is put IN before the
+        cut."""
         if not _is_num(hz):
             return False, None, "notch needs hz"
         st = self.ctl.snapshot()[1]
@@ -729,6 +768,8 @@ class PhoneBridge:
         base = f"live_peq.{i}"
         f = self.ctl.set_value(f"{base}.freq", RANGES["live_peq.freq"].clamp(hz))
         q = self.ctl.set_value(f"{base}.q", self.notch_q)
+        if getattr(st.live_peq[i], "on", True) is False:   # a free band OUT (at 0 dB): IN first
+            self._band_on(i, True)
         g = self.ctl.set_value(f"{base}.gain", self.notch_gain_db)
         if f is None or q is None or g is None:
             return False, None, "notch: refused"
@@ -1598,7 +1639,8 @@ class PhoneServer:
         if ok and t == "mute":
             self._dirty = True               # every phone sees the new mute generation at once
         f = msg.get("f")
-        if t in ("mute", "reset_live", "notch") or (t == "set" and isinstance(f, str) and f in SET_BOOL):
+        if t in ("mute", "reset_live", "notch") or (t == "band" and "on" in msg) or (
+                t == "set" and isinstance(f, str) and f in SET_BOOL):
             log.info("phone %s: %s %s -> %s", c.peer, t,
                      json.dumps({k: v for k, v in msg.items() if k not in ("t", "id")})[:80],
                      value if ok else f"refused ({why})")

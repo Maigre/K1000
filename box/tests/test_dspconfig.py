@@ -1213,3 +1213,72 @@ def test_with_live_devices_keeps_running_devices_only():
     assert up["devices"]["volume_limit"] == 50.0 and up["mixers"] == exp["mixers"]
     assert exp["devices"]["volume_limit"] == 0.0                         # expected untouched
     assert d.with_live_devices(exp, "garbage") == exp
+
+
+# ============================================================================ D-014 band IN/OUT
+def _cut(on: bool = True, slot: int = 1, gain: float = -6.5) -> State:
+    s = State()
+    b = s.live_peq[slot]
+    b.freq, b.gain, b.q, b.on = 2520.0, gain, 8.0, on
+    return s
+
+
+def test_an_out_band_is_written_as_0_db_with_its_freq_and_q_kept():
+    on, out = _cut(), _cut(on=False)
+    g = d._pp("live_peq_2", "gain")
+    assert d.param_map(on)[g] == -6.5 and d.param_map(out)[g] == 0.0
+    for k in ("freq", "q"):
+        p = d._pp("live_peq_2", k)
+        assert d.param_map(on)[p] == d.param_map(out)[p]
+    filt = d.generate(dev(), out)["filters"]["live_peq_2"]["parameters"]
+    assert (filt["freq"], filt["gain"], filt["q"]) == (2520.0, 0.0, 8.0)
+    # shelves too
+    s = State()
+    s.live_lowshelf.gain, s.live_lowshelf.on = 4.0, False
+    assert d.param_map(s)[d._pp("live_lowshelf", "gain")] == 0.0
+    # an OUT band at 0 dB writes exactly what an IN one does: nothing to send
+    flat_out = State()
+    flat_out.live_peq[0].on = False
+    assert d.diff_ops(State(), flat_out) == []
+
+
+def test_band_out_and_in_is_a_smoothed_gain_move_never_a_rebuild():
+    on, out = _cut(), _cut(on=False)
+    g = d._pp("live_peq_2", "gain")
+    for a, b, start, end in ((on, out, -6.5, 0.0), (out, on, 0.0, -6.5)):
+        ops = d.diff_ops(a, b)
+        assert ops == [d.SetValue(g, end)]                              # one value, no Rebuild
+        plan = d.smooth_ops(a, b)
+        vals = [op.value for op in _flatten(plan)]
+        assert all(isinstance(op, d.SetValue) and op.pointer == g for op in _flatten(plan))
+        assert len(vals) == 13 and vals[-1] == end                      # 6.5 dB in 0.5 dB steps
+        prev = start
+        for v in vals:
+            assert abs(v - prev) <= 0.5 + 1e-9
+            prev = v
+        assert plan[0][0] == 0.0 and all(w == d.STEP_WAIT_S for w, _ in plan[1:])
+    # exactly the plan of the same gain edit
+    zero = _cut(gain=0.0)
+    assert d.smooth_ops(on, out) == d.smooth_ops(on, zero)
+
+
+def test_adoption_keeps_an_out_band_and_its_stored_gain():
+    out = _cut(on=False)
+    cfg = d.generate(dev(), out)                                        # the engine plays 0 dB
+    s = d.state_from_config(cfg, None, out)
+    assert s.live_peq[1].on is False and s.live_peq[1].gain == -6.5
+    assert s == out.clamped()
+    assert d.config_drift(cfg, d.generate(dev(), s)).clean
+    # CamillaGUI puts a gain on the OUT band: that is what plays, so it is adopted, and IN
+    cfg["filters"]["live_peq_2"]["parameters"]["gain"] = -3.0
+    s = d.state_from_config(cfg, None, out)
+    assert s.live_peq[1].on is True and s.live_peq[1].gain == -3.0
+    # a value K1000 wrote itself moments ago is skipped as usual: the band stays as it was
+    s = d.state_from_config(cfg, None, out, skip_pointers=[d._pp("live_peq_2", "gain")])
+    assert s.live_peq[1].on is False and s.live_peq[1].gain == -6.5
+    # an IN band adopts the engine's gain, as before
+    on = _cut()
+    cfg = d.generate(dev(), on)
+    cfg["filters"]["live_peq_2"]["parameters"]["gain"] = 0.0
+    s = d.state_from_config(cfg, None, on)
+    assert s.live_peq[1].on is True and s.live_peq[1].gain == 0.0

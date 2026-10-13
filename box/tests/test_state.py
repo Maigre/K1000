@@ -395,3 +395,94 @@ def test_align_delay_walk_never_delays_both_sides_nor_jumps_across_zero():
             assert v == s.get(st.ALIGN_DELAY) and -50.0 <= v <= 50.0
             assert not (prev > 0 > v or prev < 0 < v), (prev, d, v)    # 0 in between, always
             prev = v
+
+
+# ----------------------------------------------------------------------------- D-014 band IN/OUT
+LIVE_ON_PATHS = ("live_peq.0.on", "live_peq.1.on", "live_peq.2.on", "live_peq.3.on",
+                 "live_lowshelf.on", "live_highshelf.on")
+
+
+def test_every_live_band_is_in_by_default_and_has_an_on_path():
+    s = State()
+    assert all(b.on is True for b in s.live_peq) and s.live_lowshelf.on and s.live_highshelf.on
+    for p in LIVE_ON_PATHS:
+        assert st.is_band_on_path(p), p
+        assert s.get(p) is True
+        assert range_for(p) is None                                    # a bool, not a number
+    for p in ("sys_peq.0.on", "live_peq.4.on", "live_peq.on", "live_peq.0.gain", "master_db", "on",
+              "live_lowshelf.0.on", "muted", "", "live_peq.x.on"):
+        assert not st.is_band_on_path(p), p
+    with pytest.raises(KeyError):
+        s.set("sys_peq.0.on", False)                                  # the system EQ has none
+    with pytest.raises(KeyError):
+        s.nudge("live_peq.0.on", 1)
+
+
+def test_band_on_set_and_read_like_the_other_fields():
+    s = State()
+    assert s.set("live_peq.2.on", False) is False and s.live_peq[2].on is False
+    assert s.get("live_peq.2.on") is False
+    assert s.set("live_lowshelf.on", False) is False and s.live_lowshelf.on is False
+    for junk in ("false", 0, 1, None, [False]):                        # only a real bool moves it
+        assert s.set("live_peq.2.on", junk) is False
+        assert s.set("live_peq.1.on", junk) is True
+    assert s.set("live_peq.2.on", True) is True
+    # OUT keeps the band's settings
+    s.live_peq[3].freq, s.live_peq[3].gain, s.live_peq[3].q = 3150.0, -7.5, 8.0
+    s.set("live_peq.3.on", False)
+    assert (s.live_peq[3].freq, s.live_peq[3].gain, s.live_peq[3].q) == (3150.0, -7.5, 8.0)
+
+
+def test_effective_gain_is_zero_while_out():
+    assert st.effective_gain(PeqBand(1000.0, -6.0, 4.0)) == -6.0
+    assert st.effective_gain(PeqBand(1000.0, -6.0, 4.0, on=False)) == 0.0
+    assert st.effective_gain(ShelfBand(120.0, 3.0, 0.7, False)) == 0.0
+    assert st.effective_gain(ShelfBand(120.0, 3.0, 0.7)) == 3.0
+    assert st.effective_gain(object()) == 0.0                         # no gain at all: silent
+
+
+def test_band_on_round_trips_and_only_live_bands_store_it(tmp_path):
+    s = State()
+    s.live_peq[1].gain, s.live_peq[1].on = -6.5, False
+    s.live_highshelf.gain, s.live_highshelf.on = 2.0, False
+    d = s.to_dict()
+    assert d["live_peq"][1] == {"freq": 1000.0, "gain": -6.5, "q": 4.0, "on": False}
+    assert d["live_peq"][0]["on"] is True and d["live_lowshelf"]["on"] is True
+    assert d["live_highshelf"]["on"] is False
+    assert all("on" not in b for b in d["sys_peq"])                   # tune files unchanged
+    back = State.from_dict(json.loads(json.dumps(d)))
+    assert back.to_dict() == d and back.live_peq[1].on is False and back.live_highshelf.on is False
+    assert s.clamped().to_dict() == d
+    p = tmp_path / "state.json"
+    save_state_atomic(p, s)
+    assert load_state(p).to_dict() == d
+
+
+def test_a_state_saved_before_d014_loads_unchanged_every_band_in(tmp_path):
+    old = State()
+    old.live_peq[2].freq, old.live_peq[2].gain, old.live_peq[2].q = 2440.0, -6.0, 8.65
+    raw = old.to_dict()
+    for b in raw["live_peq"]:
+        del b["on"]
+    for k in ("live_lowshelf", "live_highshelf"):
+        del raw[k]["on"]
+    p = tmp_path / "state.json"
+    p.write_text(json.dumps(raw))
+    s = load_state(p)
+    assert all(b.on for b in s.live_peq) and s.live_lowshelf.on and s.live_highshelf.on
+    assert (s.live_peq[2].freq, s.live_peq[2].gain, s.live_peq[2].q) == (2440.0, -6.0, 8.65)
+    assert s.to_dict() == old.to_dict()
+    # a hostile "on" falls back to IN, never raises
+    raw["live_peq"][0]["on"] = "no"
+    raw["live_lowshelf"]["on"] = 0
+    s = State.from_dict(raw)
+    assert s.live_peq[0].on is True and s.live_lowshelf.on is True
+
+
+def test_live_reset_puts_every_band_back_in():
+    s = State()
+    for b in (*s.live_peq, s.live_lowshelf, s.live_highshelf):
+        b.on = False
+    r = s.live_reset()
+    assert all(b.on for b in (*r.live_peq, r.live_lowshelf, r.live_highshelf))
+    assert all(b.on is False for b in s.live_peq)                     # a copy: the original stays

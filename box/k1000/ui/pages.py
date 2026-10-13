@@ -21,9 +21,12 @@ Design rules (why it looks like this):
   blue. Hints (what the operator's own press did, 2.5 s) keep the amber strip: the chip row on
   SHOW, the middle strip on ALIGN, the footer on SETUP. "The system has a problem" and "this is
   what your press did" never share a place or a colour.
-- SHOW has persistent pills for every non-default system state (LO-CUT OFF, POL INV, MONO SUB,
-  AUDITION, LAPTOP OPEN…), on the bottom row between the E2 and E4 labels, where neither a hint
-  nor the MUTED band ever covers them.
+- SHOW has persistent pills for every non-default system state (LO-CUT OFF, OUT P2, POL INV,
+  MONO SUB, AUDITION, LAPTOP OPEN…), on the bottom row between the E2 and E4 labels, where
+  neither a hint nor the MUTED band ever covers them.
+- A live band switched OUT (D-014: a B3 hold, or a chip hold on the phone) keeps its settings:
+  its chip is drawn dark with a dashed outline and a small OUT, its marker hollow and dashed at
+  its stored gain, the curve without it, and the pill row says OUT P2.
 - The 4-bar output meter stays on SHOW and ALIGN: clipping must be visible while notching.
 - Overlays are derived from the status, never a page the controller must remember to show:
   NO DEVICE > ENGINE DOWN replace the body. MUTED is a red pill in the status bar plus a red
@@ -54,9 +57,9 @@ from PIL import Image, ImageDraw, ImageFont
 from . import eqgraph as eg
 from .input_map import (A_LAPTOP, A_RESET_LIVE, A_UNDO_RESET, BAND_CYCLE, F_ALIGN_DELAY, F_BALANCE,
                         F_LOWCUT_FREQ, F_LOWCUT_ON, F_MASTER, F_SLOT, F_SPECTRUM_ON, HINT_LOCKED,
-                        KNOB_CORNERS, KNOB_TAGS_DEFAULT, LIVE_SLOT_LABELS, LIVE_SLOTS,
-                        SETUP_GROUPS, SETUP_ITEMS, Focus, knob_labels, page_name, parse_knob_tags,
-                        setup_group_pos)
+                        KNOB_CORNERS, KNOB_TAGS_DEFAULT, LIVE_SLOT_LABELS, LIVE_SLOT_SHORT,
+                        LIVE_SLOTS, SETUP_GROUPS, SETUP_ITEMS, Focus, knob_labels, page_name,
+                        parse_knob_tags, setup_group_pos)
 
 log = logging.getLogger(__name__)
 
@@ -103,7 +106,7 @@ PAGE_SHORT: dict[str, str] = {"SHOW": "SHW", "ALIGN": "ALN", "SETUP": "SET", "PH
                               "TEST": "TST"}
 # Persistent SHOW pills that change the sound or open the box: orange, and folded into '+N'
 # only after every neutral one (MONO SUB, AUDITION).
-RISKY_PILLS: tuple[str, ...] = ("LAPTOP OPEN", "LO-CUT OFF", "POL INV")
+RISKY_PILLS: tuple[str, ...] = ("LAPTOP OPEN", "LO-CUT OFF", "OUT ", "POL INV")
 PILL_MIN_PX = 13
 
 STATUS_H = 30
@@ -130,6 +133,7 @@ PILL_Y0, PILL_Y1 = 296, 315            # SHOW: persistent pills, between the bot
 # the 0 dB line (y 162.7), the curve's cuts and every value stay visible.
 SHOW_MUTED_BAND = (CHIP_Y0, 160)
 CHIP_TEXT: dict[int, str] = {4: "LS", 0: "1", 1: "2", 2: "3", 3: "4", 5: "HS"}
+OUT_CHIP_BG = (18, 18, 18)             # D-014: a band switched OUT: a dark chip, dashed outline
 
 
 # ------------------------------------------------------------------------------------------
@@ -337,7 +341,8 @@ def screen_alerts(status: Any) -> list[tuple[str, str]]:
 
 def screen_pills(state: Any, status: Any) -> list[str]:
     """SHOW's persistent pills: `status.pills` (the controller's list, in its order), or, for
-    an older status, the ones the state alone tells (LO-CUT OFF, POL INV, MONO SUB, AUDITION)."""
+    an older status, the ones the state alone tells (LO-CUT OFF, OUT <bands>, POL INV, MONO SUB,
+    AUDITION)."""
     raw = _get(status, "pills", None)
     if isinstance(raw, str):
         return [raw] if raw else []
@@ -346,6 +351,9 @@ def screen_pills(state: Any, status: Any) -> list[str]:
     out: list[str] = []
     if _truth(_get(state, "lowcut_on", True)) is False:
         out.append("LO-CUT OFF")
+    outs = [LIVE_SLOT_SHORT[i] for i, b in enumerate(eg.live_bands(state)) if not b.on]
+    if outs:
+        out.append(" ".join(["OUT", *outs]))
     inv = [n for n, f in (("SUB", "sub_inverted"), ("TOP", "top_inverted"))
            if _truth(_get(state, f, False))]
     if inv:
@@ -899,10 +907,12 @@ def _middle(c: _Ctx, status: Any = None) -> None:
 # SHOW
 # ------------------------------------------------------------------------------------------
 def _block(c: _Ctx, e: int, label: str, value: str, unit: str, field_key: str | None, *,
-           size: int = 44, dim: bool = False, tag: str = "", tag_hot: bool = False) -> None:
+           size: int = 44, dim: bool = False, tag: str = "", tag_hot: bool = False,
+           value_dim: bool = False) -> None:
     """One encoder's block on SHOW: 'E1 MASTER' on the outer edge, the value in a box next to
     its knob (amber while edited, FINE while its push is held). `tag` (the band's name) sits
-    next to the label, amber-filled right after the band changed."""
+    next to the label, amber-filled right after the band changed. `value_dim`: the value is
+    grey (the selected band is OUT, D-014: stored, not playing)."""
     corner = KNOB_CORNERS[e]
     top = corner[0] == "t"
     left = corner[1] == "l"
@@ -945,7 +955,7 @@ def _block(c: _Ctx, e: int, label: str, value: str, unit: str, field_key: str | 
     fine = e in c.held
     if edited:
         d.rounded_rectangle((x0 + 4, by0, x1 - 4, by1), radius=8, fill=AMBER)
-    fg = BG if edited else (DIM if dim else FG)
+    fg = BG if edited else (DIM if dim or value_dim else FG)
     funit = font(18)
     unit_w = int(d.textlength(unit, font=funit)) + 6 if unit else 0
     # FINE has its own column at the box's right edge (the value and its unit stay left of it)
@@ -962,9 +972,26 @@ def _block(c: _Ctx, e: int, label: str, value: str, unit: str, field_key: str | 
         d.text((x1 - 10, by0 + 4), "FINE", font=font(14), fill=BG if edited else CYAN, anchor="ra")
 
 
+def _dashed_rect(d: Any, box: tuple[float, float, float, float], fill: Any, width: int = 2,
+                 dash: int = 6, gap: int = 4) -> None:
+    """A dashed rectangle outline (an OUT chip, D-014)."""
+    x0, y0, x1, y1 = box
+    for a, b, horizontal, at in ((x0, x1, True, y0), (x0, x1, True, y1 - width + 1),
+                                 (y0, y1, False, x0), (y0, y1, False, x1 - width + 1)):
+        p = a
+        while p < b:
+            q = min(b, p + dash)
+            if horizontal:
+                d.rectangle((p, at, q, at + width - 1), fill=fill)
+            else:
+                d.rectangle((at, p, at + width - 1, q), fill=fill)
+            p = q + gap
+
+
 def _chips(c: _Ctx, sel: int, bands: Sequence[eg.Band]) -> None:
     """LS · 1 · 2 · 3 · 4 · HS (B2's order): the selected band amber, a band in use outlined in
-    its cut (orange) / boost (green) colour, an idle band faint."""
+    its cut (orange) / boost (green) colour, an idle band faint. A band switched OUT (D-014) is
+    dark with a dashed outline (its cut/boost colour, amber when selected) and a small OUT."""
     d = c.d
     n, gap = len(BAND_CYCLE), 4
     w = (W - 8 - gap * (n - 1)) / n
@@ -972,11 +999,20 @@ def _chips(c: _Ctx, sel: int, bands: Sequence[eg.Band]) -> None:
         bx0 = round(4 + k * (w + gap))
         bx1 = round(4 + k * (w + gap) + w)
         box = (bx0, CHIP_Y0, bx1, CHIP_Y1)
-        g = bands[slot].gain if slot < len(bands) else 0.0
+        b = bands[slot] if slot < len(bands) else None
+        g = b.gain if b is not None else 0.0
+        on = b.on if b is not None else True
         active = abs(g) >= 0.05
         acol = CUT if g < 0 else GREEN
         label = CHIP_TEXT.get(slot, "?")
         cxy = ((bx0 + bx1) / 2, (CHIP_Y0 + CHIP_Y1) / 2)
+        if not on:
+            col = AMBER if slot == sel else acol if active else DIM
+            d.rounded_rectangle(box, radius=4, fill=OUT_CHIP_BG)
+            _dashed_rect(d, box, col, width=2)
+            d.text((bx0 + (bx1 - bx0) * 0.36, cxy[1]), label, font=font(20), fill=col, anchor="mm")
+            d.text((bx1 - 5, cxy[1] + 1), "OUT", font=font(11), fill=col, anchor="rm")
+            continue
         if slot == sel:
             d.rounded_rectangle(box, radius=4, fill=AMBER)
             d.text(cxy, label, font=font(20), fill=BG, anchor="mm")
@@ -1089,16 +1125,18 @@ def _page_show(c: _Ctx, state: Any, status: Any) -> None:
     _chips(c, slot, bands)
     labels = knob_labels("SHOW")
     base = LIVE_SLOTS[slot]
+    out = slot < len(bands) and not bands[slot].on       # D-014: its values are stored, not played
     _block(c, 0, labels[0], fmt_db(_num(state, F_MASTER)), "dB", F_MASTER, size=44)
     _mini_meter(c, status)
     _block(c, 2, labels[2], fmt_db(_num(state, base + ".gain")), "dB", base + ".gain", size=44,
-           tag=LIVE_SLOT_LABELS[slot], tag_hot=c.editing == F_SLOT)
-    _block(c, 1, labels[1], fmt_hz(_num(state, base + ".freq")), "Hz", base + ".freq", size=40)
+           tag=LIVE_SLOT_LABELS[slot], tag_hot=c.editing == F_SLOT, value_dim=out)
+    _block(c, 1, labels[1], fmt_hz(_num(state, base + ".freq")), "Hz", base + ".freq", size=40,
+           value_dim=out)
     q = _num(state, base + ".q")
     if slot < 4:
-        _block(c, 3, labels[3], fmt_q(q), fmt_oct(q), base + ".q", size=40)
+        _block(c, 3, labels[3], fmt_q(q), fmt_oct(q), base + ".q", size=40, value_dim=out)
     else:     # shelves: the same knob is the slope (a Q of 0.4..1.5)
-        _block(c, 3, "SLOPE", fmt_q(q), "Q", base + ".q", size=40)
+        _block(c, 3, "SLOPE", fmt_q(q), "Q", base + ".q", size=40, value_dim=out)
     lx = c.bottom_label_end.get("l", 110.0) + 12
     rx = c.bottom_label_end.get("r", W - 70.0) - 12
     _pills_row(c, screen_pills(state, status), lx, rx)
@@ -1755,6 +1793,11 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
     renotch, renotch_focus = demo_notch(s, peak, 2)
     pills = State.from_dict({**s.to_dict(), "lowcut_on": False, "sub_inverted": True,
                              "mono_subs": True})
+    # D-014: P2 (cutting 6.5 dB at 2.52k) switched OUT by a B3 hold, and selected: the curve
+    # without it, its chip dashed with OUT, its marker hollow at -6.5, its values grey, the
+    # OUT P2 pill; the hint is the hold's answer
+    band_out = State.from_dict(s.to_dict())
+    band_out.live_peq[1].on = False
     lc_off = State.from_dict({**s.to_dict(), "lowcut_on": False})
     dev = ScreenStatus(profile="dev", device="HiFiBerry", device_present=True, engine="Running",
                        load=0.1, ready=True, laptop_state="closed")
@@ -1789,6 +1832,9 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
         ("show_band", "SHOW", s, run_plain, Focus(slot=2, editing=F_SLOT, edit_until=inf)),
         ("show_shelf", "SHOW", s, run_plain, Focus(slot=4, editing="live_lowshelf.gain",
                                                    edit_until=inf)),
+        ("show_band_out", "SHOW", band_out, with_(run_plain, pills=["OUT P2"]), Focus(slot=1)),
+        ("show_band_out_hint", "SHOW", band_out, with_(run_plain, pills=["OUT P2"]),
+         Focus(slot=1, hint="P2 OUT", hint_until=inf)),
         ("show_flat_spectrum_off", "SHOW", State(), with_(run, spectrum=None, spectrum_on=False,
                                                           spectrum_state="off"), Focus(slot=4)),
         ("show_no_spectrum", "SHOW", s, with_(run, spectrum=None, spectrum_state="unavailable"),

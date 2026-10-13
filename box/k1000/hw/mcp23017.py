@@ -30,8 +30,9 @@ real chip re-asserts INT right after every clearing read (2 fresh falling edges 
 read). Any persistent condition (corrupted INTCON, a chattering contact) would therefore turn the
 edge -> read loop into a CPU spin; the worker detects it and degrades to 5 ms polling instead.
 
-Config guard (audio safety): B4 long = mute toggle on every page (UI v1, D-009: the only LONG that
-changes audio; a B3 hold only shows a hint, the live-EQ reset is a confirmed SETUP item), so a chip
+Config guard (audio safety): B4 long = mute toggle on every page (UI v1, D-009/D-013; the other
+LONG that changes audio is a B3 hold on SHOW, band IN/OUT, D-014, and only once the button map is
+confirmed; the live-EQ reset is a confirmed SETUP item), so a chip
 that lost its configuration must never be able to fake a long press. If the expander alone resets
 (a VDD glitch shorter than the gap between reads gives no I2C error), its pull-ups turn off and
 the switch inputs float, possibly low. So every service read starts at GPPUA (8 bytes instead of 6,

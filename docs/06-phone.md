@@ -97,7 +97,7 @@ time), `phone_connected.png` (muted box, one phone connected), `phone_off.png`, 
 | Page | Controls |
 |---|---|
 | **MAIN** | Master: −6 / −1 / −½ / +½ / +1 dB steps (never an absolute jump). Balance subs↔tops ±½/±1. Lo-Cut on/off + frequency (−10 / −2 / +2 / +10 Hz since D-011; it was ±1/12, ±⅓ oct) |
-| **LIVE EQ** | The 6 live bands (PEQ 1–4, low shelf, high shelf) on a 20 Hz–20 kHz log graph with the summed curve. **Drag a dot** = frequency + gain. **Long-press empty space = "notch here"**: the first flat PEQ band goes there at −6 dB, Q 8, and **stays under the finger**: keep it down and slide to tune it. Per band: FREQ ±1/12, ±⅓ oct · GAIN ±½, ±3 dB · Q ½× (wide) / − / + / 2× (narrow) · *FLAT* (hold) = this band to 0 dB. *ALL FLAT…* with a confirm (the box's own reset: SETUP › LIVE EQ › Undo reset brings it back until the next EQ cut or 5 minutes) |
+| **LIVE EQ** | The 6 live bands (PEQ 1–4, low shelf, high shelf) on a 20 Hz–20 kHz log graph with the summed curve. **Drag a dot** = frequency + gain. **Long-press empty space = "notch here"**: the first flat PEQ band goes there at −6 dB, Q 8, and **stays under the finger**: keep it down and slide to tune it. **Tap a band chip** = select it; **hold a chip 0.6 s** = that band **IN / OUT** (D-014: OUT keeps its settings and plays 0 dB; dashed chip, hollow dot, the curve without it; toast `P2 OUT` / `P2 IN` once the box acks; the box screen says it too). A finger that slides more than 12 px or off the chip does neither (no IN/OUT, no select); a vertical slide scrolls the page. Per band: FREQ ±1/12, ±⅓ oct · GAIN ±½, ±3 dB · Q ½× (wide) / − / + / 2× (narrow) · *FLAT* (hold) = this band to 0 dB and IN. *ALL FLAT…* with a confirm (the box's own reset: SETUP › LIVE EQ › Undo reset brings it back until the next EQ cut or 5 minutes) |
 | Always | **Hold to mute** (0.6 s; unmute needs 1.2 s), the 4 output meters (~10 Hz, clip boxes), engine state, NO DEVICE / ENGINE DOWN / the box's messages, external changes (drift) |
 
 Not on the phone in v0 (setup-class, refused by the box): profile, Mono L+R, delays, polarity,
@@ -285,10 +285,14 @@ PHONE page's third QR (**FIRST TIME**, `http://10.42.0.1/`). Back to the portal,
   *Certificate Trust Settings*). Not a v0 target.
 
 Wire protocol (JSON over `/ws`): box → phone `hello` (ranges, bands, build), `state` (on change;
-`muted`, `hold`, `mute_seq`), `m` (meters), `ack`/`err`, `bye` (code 4002 too many phones, 4003
-phone off), `pong`; phone → box `nudge {f, d, fine}`, `set {f, v}` (live EQ values, `lowcut_on`),
-`band {s, f, g, q}`, `notch {hz, s}`, `mute {on, seq}` (seq: unmute only), `reset_live
-{confirm: true}`, `ping`. The laptop's tune page has its own socket, `/tune/ws` (§11).
+`muted`, `hold`, `mute_seq`; each band `{f, g, q, on}`, `on` since D-014), `m` (meters),
+`ack`/`err`, `bye` (code 4002 too many phones, 4003 phone off), `pong`; phone → box
+`nudge {f, d, fine}`, `set {f, v}` (live EQ values, `lowcut_on`), `band {s, f, g, q, on}` (each
+optional; `on`: true/false, alone or with `g` only: with `f` or `q` it is refused, because the box
+turns a whole message into one smoothed engine move and the frequency would sweep while the band
+fades), `notch {hz, s}`, `mute {on, seq}`
+(seq: unmute only), `reset_live {confirm: true}`, `ping`. The laptop's tune page has its own
+socket, `/tune/ws` (§11).
 
 ## 9. Friday rig-test checklist (go/no-go for Sunday)
 

@@ -167,8 +167,11 @@ switches 0–7 (0–3 are the encoder pushes, 4–7 the buttons on the V4).
 - **Find the map with SETUP › BOX › Knob test**: press every button and turn every knob, note the
   `sw`/`enc` index shown for each physical position, write them here, restart k1000. Until this is
   done, **MUTE may sit on another button**: a wrong `buttons` order moves the hold-B4 mute
-  elsewhere (a hold on the button that is really B3 only says `RESET LIVE EQ: IN SETUP`, one on B2
-  at most unlocks ALIGN, and nothing mutes). The Knob test names each switch's role (`= B1` … `= B4`):
+  elsewhere (a hold on the button that is really B3 only says `B3 HOLD: IN/OUT AFTER KNOB TEST`
+  while the map is unconfirmed, one on B2 at most unlocks ALIGN, and nothing mutes). Once the Knob
+  test shows the defaults are right, add `buttons_confirmed: true` under `controls:`: only then does
+  a B3 hold on SHOW switch the selected band IN/OUT (D-014). A changed `buttons` list counts as
+  confirmed by itself. The Knob test names each switch's role (`= B1` … `= B4`):
   label the buttons on the shell from it once the map is right.
 - **`steps_per_detent` and `detent_ab`** describe the encoders themselves. The defaults suit the
   Zynthian V4's knobs. For another encoder, record a trace with `k1000-knobtrace.py capture

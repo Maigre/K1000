@@ -104,7 +104,8 @@ On SHOW the strip covers the band chips, on ALIGN the middle, on SETUP the foote
 | `P3 · 2.44k · E3 TO CUT` (4 s) | B3 on SHOW set P3 up as a notch at the PEAK (gain still 0 dB), or selected the bell already cutting there |
 | `P2 · 1.00k · NO PEAK · E3 TO CUT` (4 s) | The same, but no PEAK was shown: the band kept its frequency. E3 down first (about −6 dB: at 0 dB the bell is inaudible), then sweep E2 until the ring drops, then E4 up |
 | `NO FREE BAND` (4 s) | B3: all four bells are in use |
-| `RESET LIVE EQ: IN SETUP` | B3 held on SHOW: resetting is SETUP › LIVE EQ › Reset live EQ |
+| `P2 OUT` / `P2 IN` | B3 held on SHOW (map confirmed): the selected band switched OUT (kept, silent) or back IN (D-014) |
+| `B3 HOLD: IN/OUT AFTER KNOB TEST` | B3 held on SHOW while the button map is unconfirmed: nothing changed. Knob test, then `buttons_confirmed: true` |
 | `B2: NEXT BAND ON SHOW`, `B3: NOTCH HELPER ON SHOW` | B2 or B3 on a page where it does nothing |
 | `LOCKED · HOLD B2 TO EDIT` | ALIGN: E3/E4 turned (or B2 tapped) while locked. Nothing changed |
 | `DELAY + LO-CUT UNLOCKED` / `DELAY + LO-CUT LOCKED` | ALIGN: a B2 hold unlocked them for 30 s of idle; a B2 tap locked them |

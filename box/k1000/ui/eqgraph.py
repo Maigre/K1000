@@ -44,16 +44,20 @@ _GAIN_KINDS = (PEAKING, PEAKING_BW, LOWSHELF, HIGHSHELF)
 # ------------------------------------------------------------------------------------------
 @dataclass(frozen=True)
 class Band:
-    """One biquad as CamillaDSP sees it. `q` is Q (or octaves for PEAKING_BW); `gain` in dB."""
+    """One biquad as CamillaDSP sees it. `q` is Q (or octaves for PEAKING_BW); `gain` in dB (the
+    band's stored gain). `on` False = a live band switched OUT (D-014): the engine plays it at
+    0 dB, so it adds nothing to the curve, while its marker still sits at its stored gain."""
     kind: str
     freq: float
     gain: float = 0.0
     q: float = 0.707
+    on: bool = True
 
     @property
     def flat(self) -> bool:
-        """A gain filter at 0 dB is exactly unity (b == a): skip it."""
-        return self.kind in _GAIN_KINDS and abs(self.gain) < 1e-9
+        """It does nothing to the sound: a gain filter at 0 dB is exactly unity (b == a), and
+        an OUT band plays at 0 dB. Skip it."""
+        return self.kind in _GAIN_KINDS and (abs(self.gain) < 1e-9 or not self.on)
 
 
 def coefficients(band: Band, fs: float = FS) -> tuple[float, float, float, float, float]:
@@ -156,6 +160,11 @@ def _f(v: Any, default: float) -> float:
     return v if math.isfinite(v) else default
 
 
+def _on(b: Any) -> bool:
+    """A band's IN/OUT (D-014): only an explicit False is OUT (an older State has no `on`)."""
+    return _attr(b, "on", True) is not False
+
+
 def live_bands(state: Any) -> list[Band]:
     """The 6 live slots of a k1000 State (or its dict) as Bands, in LIVE_SLOTS order.
 
@@ -167,11 +176,11 @@ def live_bands(state: Any) -> list[Band]:
     for i in range(4):
         b = peq[i] if i < len(peq) else None
         out.append(Band(PEAKING, _f(_attr(b, "freq"), defaults[i][0]), _f(_attr(b, "gain"), 0.0),
-                        _f(_attr(b, "q"), defaults[i][1])))
+                        _f(_attr(b, "q"), defaults[i][1]), _on(b)))
     for name, kind, fd in (("live_lowshelf", LOWSHELF, 120.0), ("live_highshelf", HIGHSHELF, 8000.0)):
         b = _attr(state, name, None)
         out.append(Band(kind, _f(_attr(b, "freq"), fd), _f(_attr(b, "gain"), 0.0),
-                        _f(_attr(b, "q"), 0.707)))
+                        _f(_attr(b, "q"), 0.707), _on(b)))
     return out
 
 
@@ -413,6 +422,7 @@ class GraphStyle:
     cut: tuple[int, int, int] = (255, 90, 0)            # the v0 slot-pill colours
     boost: tuple[int, int, int] = (40, 220, 70)
     idle: tuple[int, int, int] = (150, 150, 150)
+    out_fill: tuple[int, int, int] = (0, 0, 0)           # D-014: an OUT band's marker is hollow
     peak: tuple[int, int, int] = (0, 200, 255)          # D-009: a small CYAN pointer
     peak_line: bool = False           # the mockups' dashed line down the graph (off: a pointer)
     curve_w: int = 3
@@ -470,6 +480,16 @@ def _marker(img: Image.Image, d: ImageDraw.ImageDraw, x: float, y: float, text: 
     _text(img, (x, y + 0.5), text, size, txt)
 
 
+def _out_marker(img: Image.Image, d: ImageDraw.ImageDraw, x: float, y: float, text: str,
+                colour: Any, r: int, size: int, fill: Any = (0, 0, 0), width: int = 2) -> None:
+    """A band switched OUT (D-014): hollow, with a dashed ring (the chip's dashed outline)."""
+    box = (x - r, y - r, x + r, y + r)
+    d.ellipse(box, fill=fill)
+    for k in range(8):
+        d.arc(box, k * 45 - 14, k * 45 + 14, fill=colour, width=width)
+    _text(img, (x, y + 0.5), text, size, colour)
+
+
 def draw_graph(img: Image.Image, box: tuple[int, int, int, int], bands: Sequence[Band],
                selected: int | None = None, rta: RtaFrame | None = None, *,
                labels: Sequence[str] = MARKER_TEXT, order: Sequence[int] = DISPLAY_ORDER,
@@ -478,8 +498,11 @@ def draw_graph(img: Image.Image, box: tuple[int, int, int, int], bands: Sequence
 
     bands/labels are in slot order (LIVE_SLOTS); `order` is the drawing order (the selected
     marker is always drawn last, on top). `selected` is a slot index or None (e.g. SUB chosen).
-    eq_in=False draws the curve grey (EQ OUT). Returns geometry for the caller (axes, marker
-    positions) so overlays such as a PEAK label can line up.
+    eq_in=False draws the curve grey (EQ OUT). A band switched OUT (`Band.on` False, D-014)
+    adds nothing to the curve and gets no amber fill; its marker stays at its stored gain,
+    hollow (outlined in its cut/boost colour, amber when selected), so its way back IN is in
+    sight. Returns geometry for the caller (axes, marker positions) so overlays such as a PEAK
+    label can line up.
     """
     x0, y0, x1, y1 = (int(v) for v in box)
     w, h = x1 - x0, y1 - y0
@@ -540,7 +563,7 @@ def draw_graph(img: Image.Image, box: tuple[int, int, int, int], bands: Sequence
 
     live = [i for i in order if i < len(bands)]
     for i in live:
-        if i != selected and abs(bands[i].gain) < 0.05:
+        if i != selected and abs(bands[i].gain) < 0.05 and bands[i].on:
             mx, my = place(i, style.idle_r)
             r = style.idle_r
             d.ellipse((mx - r, my - r, mx + r, my + r), outline=style.idle, width=2)
@@ -559,16 +582,27 @@ def draw_graph(img: Image.Image, box: tuple[int, int, int, int], bands: Sequence
         if style.peak_line:
             for yy in range(y0 + 13, y1 - 1, 6):      # dashed: it is a pointer, not a curve
                 d.line((peak_x, yy, peak_x, min(y1 - 1, yy + 2)), fill=style.peak, width=1)
-    # 7. bands in use, then the selected one on top
-    for i in [i for i in live if i != selected and abs(bands[i].gain) >= 0.05]:
+    # 7. bands OUT (hollow, at their stored gain), bands in use, then the selected one on top
+    def colour(b: Band) -> Any:
+        return style.idle if abs(b.gain) < 0.05 else style.cut if b.gain < 0 else style.boost
+
+    for i in [i for i in live if i != selected and not bands[i].on]:
+        mx, my = place(i, style.marker_r)
+        _out_marker(img, d, mx, my, labels[i] if i < len(labels) else "?", colour(bands[i]),
+                    style.marker_r, style.marker_size, style.out_fill)
+    for i in [i for i in live if i != selected and bands[i].on and abs(bands[i].gain) >= 0.05]:
         mx, my = place(i, style.marker_r)
         _marker(img, d, mx, my, labels[i] if i < len(labels) else "?",
                 style.cut if bands[i].gain < 0 else style.boost, (0, 0, 0), style.marker_r,
                 (0, 0, 0), style.marker_size)
     if sel_band is not None and selected is not None:
         mx, my = place(selected, style.sel_r)
-        _marker(img, d, mx, my, labels[selected] if selected < len(labels) else "?",
-                style.sel_marker, (0, 0, 0), style.sel_r, (0, 0, 0), style.marker_size + 2)
+        if sel_band.on:
+            _marker(img, d, mx, my, labels[selected] if selected < len(labels) else "?",
+                    style.sel_marker, (0, 0, 0), style.sel_r, (0, 0, 0), style.marker_size + 2)
+        else:
+            _out_marker(img, d, mx, my, labels[selected] if selected < len(labels) else "?",
+                        style.sel_marker, style.sel_r, style.marker_size + 2, style.out_fill, 3)
     return {"faxis": fa, "daxis": da, "markers": pos, "peak_x": peak_x, "y_zero": y_zero}
 
 
@@ -602,10 +636,15 @@ def q_for_octaves(octaves: float) -> float:
 
 def free_band(bands: Sequence[Band], prefer: int | None = None,
               candidates: Sequence[int] = (0, 1, 2, 3)) -> int | None:
-    """A peaking slot at 0 dB (inaudible to move): `prefer` if it is free, else the first."""
-    if prefer is not None and prefer in candidates and prefer < len(bands) and bands[prefer].flat:
+    """A peaking slot at 0 dB (inaudible to move): `prefer` if it is free, else the first. The
+    STORED gain decides (D-014): a band OUT with a cut or boost is not free, it keeps its
+    settings; an OUT band at 0 dB is."""
+    def free(i: int) -> bool:
+        return i < len(bands) and abs(bands[i].gain) < 1e-9
+
+    if prefer is not None and prefer in candidates and free(prefer):
         return prefer
     for i in candidates:
-        if i < len(bands) and bands[i].flat:
+        if free(i):
             return i
     return None

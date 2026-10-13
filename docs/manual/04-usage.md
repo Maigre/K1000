@@ -56,7 +56,7 @@ SETUP and a hold to SHOW; on the Knob test any hold but B4 goes back to SETUP.
 |---|---|---|---|
 | B1 | tap: ALIGN · hold: SETUP | tap: SHOW · hold: SETUP | tap or hold: SHOW |
 | B2 | tap: next band | **hold: unlock E3/E4** · tap: lock again | hint only |
-| B3 | tap: **notch helper** · hold: hint only | hint only | hint only |
+| B3 | tap: **notch helper** · **hold: the selected band IN / OUT** | hint only | hint only |
 | B4 | **hold: mute / unmute** (a tap only shows a hint) | the same | the same, also on PHONE and the Knob test |
 
 ## 2. Power on to sound
@@ -99,6 +99,7 @@ Everything a show needs: the master, the live EQ, the meter and the spectrum.
 | E4 **Q** | Width of the selected band (shelves: `SLOPE`) | Q × 1.12 (1/6 octave) | Q × 1.03 (1/24 octave) |
 | B2 tap | Next band: **LS → 1 → 2 → 3 → 4 → HS**, then LS again | | |
 | B3 tap | The notch helper ([§3.2](#32-notching-a-ring-in-3-gestures)) | | |
+| B3 hold | The selected band **IN / OUT** ([§3.6](#36-a-band-in-or-out)): `P2 OUT`, `P2 IN`, once the Knob test confirmed the buttons | | |
 
 Under the Q value, the width in octaves (`8.65` = `1/6 oct`). The E3 label names the band
 (`PEQ 2 GAIN`, `LO SHELF GAIN`).
@@ -152,7 +153,9 @@ Master, balance and the mute move with a 0.1 s fade.
 | No PEAK (nothing on the spectrum, or Spectrum OFF) | Sets the free bell up at its own frequency: `P2 · 1.00k · NO PEAK · E3 TO CUT`. **Cut first, then sweep**: E3 down (about −6 dB; at 0 dB the bell is inaudible wherever it sits), then E2 until the ring drops (250 Hz → 2.5 kHz is about 40 clicks), then E4 up to narrow |
 | `NO FREE BAND` | All four bells are in use. Reuse one (B2 to select it), or reset the live EQ in SETUP |
 
-A B3 **hold** on SHOW only says `RESET LIVE EQ: IN SETUP`. Nothing on SHOW resets the live EQ.
+Nothing on SHOW resets the live EQ (that is SETUP › LIVE EQ, with its undo). A bell switched OUT
+([§3.6](#36-a-band-in-or-out)) is not "in use" for B3; with a cut stored it is not free either:
+B3 leaves it as it is. An OUT bell at 0 dB is free, and B3 puts it back IN (still silent).
 
 ![After B3: P3 moved to the PEAK, gain still 0 dB](../ui/show_notch.png) ![B3 on a PEAK already cut: that bell is selected](../ui/show_notch_reselect.png)
 
@@ -168,6 +171,7 @@ hint nor the MUTED band covers them:
 |---|---|---|
 | `LAPTOP OPEN 1:59` | orange | SETUP › PHONE › Laptop access is open (hours:minutes left) |
 | `LO-CUT OFF` | orange | The tops' Lo-Cut is off |
+| `OUT P2`, `OUT P2 LS` | orange | These live bands are OUT ([§3.6](#36-a-band-in-or-out)) |
 | `POL INV SUB`, `POL INV TOP`, `POL INV SUB+TOP` | orange | A polarity is inverted |
 | `MONO SUB` | grey | SETUP › SUBS › Mono L+R is on |
 | `AUDITION TOPS`, `AUDITION SUBS` | grey | The bench profile plays one group only |
@@ -195,6 +199,28 @@ red box on top = that output clipped. ALIGN shows the same meter, larger.
 
 The Meyers start limiting around −14 dBFS at the M4 outputs (research,
 [chapter 5 §3](05-tuning.md#3-gain-structure)).
+
+### 3.6 A band in or out
+
+**Hold B3 on SHOW** (0.8 s): the selected band goes **OUT**, the strip says `P2 OUT`; hold again:
+`P2 IN`. OUT keeps the band's frequency, gain and Q, and plays it at 0 dB: the same smoothed move as
+turning its gain to 0 (no click), and back IN exactly as it was. To compare a cut with and without,
+or to drop a cut that went wrong, without losing it. On the phone: hold the band's chip, without
+sliding (D-014).
+
+**Only once the buttons are confirmed.** Until SETUP › Knob test has proved which button is B3 and
+`/etc/k1000/k1000.yaml` says so (a `controls: buttons` map written by hand, or the default kept
+with `buttons_confirmed: true`), a B3 hold changes nothing and says
+`B3 HOLD: IN/OUT AFTER KNOB TEST`: on a swapped map, that hold may be a mute aimed at B4, and a
+notch going OUT would feed the ring. The phone's chip hold works either way.
+
+An OUT band: its chip is dark with a dashed outline and a small `OUT`, its marker hollow and dashed
+where its gain is, the curve without it, its values grey, and the pill `OUT P2` (several:
+`OUT P2 LS`). Its knobs still move it, silently: the strip says `P2 OUT · HOLD B3 = IN` (before
+the Knob test: `P2 OUT · IN FROM THE PHONE`).
+SETUP › LIVE EQ › Reset live EQ puts every band back IN (its undo puts them back as they were).
+
+![P2 held OUT: the curve without it, its marker hollow, OUT P2](../ui/show_band_out.png)
 
 ## 4. ALIGN
 
@@ -479,7 +505,7 @@ Step by step, other Android menus and the fixes: [`docs/06-phone.md`](../06-phon
 | Tab | Controls |
 |---|---|
 | **MAIN** | Master −6 / −1 / −½ / +½ / +1 dB. Balance ±½ / ±1 dB. Lo-Cut on/off (with a confirm) and its frequency (−10 / −2 / +2 / +10 Hz) |
-| **LIVE EQ** | The six live bands on a graph. **Drag a dot** = frequency and gain. **Long-press empty space = notch here**: the first flat bell goes there at **−6 dB, Q 8, at once** (audible, unlike B3) and stays under the finger: slide to tune it. Per band: FREQ, GAIN, Q steps; *FLAT* (hold) = this band to 0 dB. *ALL FLAT…* with a confirm (the undo is on the box) |
+| **LIVE EQ** | The six live bands on a graph. **Drag a dot** = frequency and gain. **Long-press empty space = notch here**: the first flat bell goes there at **−6 dB, Q 8, at once** (audible, unlike B3) and stays under the finger: slide to tune it. **Tap a band chip** = select it; **hold a chip** (0.6 s) = that band **IN / OUT** (`P2 OUT`, the chip dashed, its dot hollow). Per band: FREQ, GAIN, Q steps; *FLAT* (hold) = this band to 0 dB and IN. *ALL FLAT…* with a confirm (the undo is on the box) |
 | Always | **Hold to mute** (0.6 s; unmute 1.2 s), the four meters, the engine state, the box's alerts, changes made outside K1000 |
 
 - **What a hold does is decided when the finger goes down**, and the button says it:

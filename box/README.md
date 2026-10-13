@@ -434,9 +434,12 @@ The knobs are confirmed: on 2026-10-12 Thomas checked on the box that each knob 
 on-screen corner (E1 top-left, E2 bottom-left, E3 top-right, E4 bottom-right) and that 10 clicks
 read +10. Nobody has confirmed yet which physical button is B1–B4, and `/etc/k1000/k1000.yaml`
 still holds the defaults.
-A B3 hold only shows a hint (the live-EQ reset is a SETUP item), so a swapped map cannot reset the
-EQ, but the emergency mute (a B4 hold, D-013) would then land on another button and do nothing:
-confirm the map before the speakers. `k1000-m4-bringup.sh` warns while the defaults are in place.
+Until the map is confirmed, a B3 hold only shows a hint (`B3 HOLD: IN/OUT AFTER KNOB TEST`): a
+swapped map cannot take a band OUT (D-014's gate) or reset the EQ, but the emergency mute (a B4
+hold, D-013) would then land on another button and do nothing: confirm the map before the
+speakers. When the Knob test shows the defaults are right, add `buttons_confirmed: true` under
+`controls:` (a different `buttons` list counts as confirmed by itself); then a B3 hold on SHOW
+switches the selected band IN/OUT. `k1000-m4-bringup.sh` warns while the defaults are in place.
 
 What each button and knob does per page (SHOW · ALIGN · SETUP) is the operator card,
 `docs/04-operator-card.md`. In short (D-013): B1 tap = SHOW ↔ ALIGN (SETUP → SHOW), hold = SETUP ·

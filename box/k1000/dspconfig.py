@@ -10,6 +10,8 @@ Why it is shaped like this (docs/03-v0-architecture.md §3):
 - `param_map(state)` is the single list of owned parameters: `generate`, `diff_ops`,
   `state_from_config` and `config_drift` all derive from it, so they cannot disagree.
 - Every value is clamped to `state.RANGES` before it is emitted, whoever built the State.
+- A live band switched OUT (D-014) is written as 0 dB (`state.effective_gain`): a gain move,
+  smoothed like a gain edit, never a pipeline change; its freq and Q stay where they are.
 - Delays reach the engine as whole samples (`subsample: false` rounds anyway): a write that
   would not change the sample count is never emitted, because every Delay write rebuilds the
   delay line and clicks (measured).
@@ -30,7 +32,7 @@ import yaml
 from .profiles import LOGICAL_NAMES, Profile
 from .state import (
     LOWCUT_OFF_HZ, LOWCUT_Q, N_LIVE_PEQ, N_OUT, N_SYS_PEQ, RANGES, SAMPLE_MS, SAMPLERATE,
-    SUB_LOWPASS_OFF_HZ, SUB_LOWPASS_Q, PeqBand, ShelfBand, State, delay_samples,
+    SUB_LOWPASS_OFF_HZ, SUB_LOWPASS_Q, PeqBand, ShelfBand, State, delay_samples, effective_gain,
 )
 
 CHUNKSIZE = 256
@@ -55,6 +57,8 @@ BOOT_RAMP_S = 3.0
 # Aux1 = -Aux2 within this is a balance setting (adopted); anything else is reverted.
 BALANCE_TOL_DB = 0.05
 FADER_TOL_DB = 0.01
+# An OUT live band reads back as 0 dB; a gain further from 0 than this was set outside K1000.
+OUT_GAIN_TOL_DB = 0.001
 
 FADER_MAIN, FADER_SUBS, FADER_TOPS = 0, 1, 2
 
@@ -177,7 +181,7 @@ def param_map(state: State) -> dict[str, Any]:
     ]
     for name, b in bands:
         m[_pp(name, "freq")] = b.freq
-        m[_pp(name, "gain")] = b.gain
+        m[_pp(name, "gain")] = effective_gain(b)      # an OUT live band plays 0 dB (D-014)
         m[_pp(name, "q")] = b.q
     m[_pp("sub_trim", "inverted")] = s.sub_inverted
     m[_pp("sub_lowpass", "freq")] = effective_sub_lowpass_hz(s)
@@ -692,7 +696,14 @@ def state_from_config(cfg_json: Any, faders: Any, base_state: State, *,
         if f is not None:
             band.freq = f
         if gn is not None:
-            band.gain = gn
+            if band.on is False:
+                # OUT (D-014): the engine plays 0 dB and the band keeps its own gain. Anything
+                # else there was set outside K1000 (CamillaGUI): that is what plays, so it is
+                # adopted as the band's gain, and the band IN.
+                if abs(gn) > OUT_GAIN_TOL_DB:
+                    band.gain, band.on = gn, True
+            else:
+                band.gain = gn
         if q is not None:
             band.q = q
     for name, attr in (("sub_trim", "sub_inverted"), ("top_trim", "top_inverted")):

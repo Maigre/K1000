@@ -30,10 +30,11 @@ profiles:
 
 # Physical -> logical controls (MCP23017 indices, see docs/03-v0-architecture.md §1).
 # UNCONFIRMED DEFAULTS until SETUP > Knob test (HWTEST) on the box has identified every button
-# and knob by physical position (README "Knobs and buttons"). UI v1 (D-009): hold-B2 = MUTE on
-# every page; B4 tap = the notch helper on SHOW (a B4 hold only says RESET LIVE EQ: IN SETUP).
-# A wrong `buttons` order moves MUTE to another button. Fix them here, then restart k1000, and
-# label the buttons on the shell.
+# and knob by physical position (README "Knobs and buttons"). D-013: B1 PAGE · B2 BAND/UNLOCK ·
+# B3 NOTCH · B4 MUTE (hold, every page). A wrong `buttons` order moves MUTE to another button.
+# Fix them here, then restart k1000, and label the buttons on the shell. If the defaults prove
+# right, add `buttons_confirmed: true` here: only then does a B3 hold on SHOW switch a band
+# IN/OUT (D-014; until then it only says B3 HOLD: IN/OUT AFTER KNOB TEST).
 # Keys as read by k1000/ui/input_map.py (ControlMap.from_cfg); invalid entries -> these defaults.
 controls:
   encoders: [0, 1, 2, 3]         # E1..E4 = physical encoder index

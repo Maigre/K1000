@@ -36,7 +36,7 @@ bottom-right. Buttons: **B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE**.
 | 2. **Turn E1** | Master volume, 0.5 dB a click; at most +6 dB per 2 s (`MASTER: SLOW DOWN`) |
 | 3. **Tap B1** | SHOW ↔ ALIGN; from SETUP, back to SHOW. A hold opens SETUP |
 | 4. **B3, E3 down, E4 up** | **Kill a ring** (SHOW). B3: a narrow, silent filter on the cyan PEAK; E3 down cuts (12 clicks = −6 dB); E4 up narrows. `NO PEAK`: E3 down first, then E2 until the ring drops |
-| 5. **B2, then E2 / E3 / E4** | Next band (LS 1 2 3 4 HS), then its frequency / gain / width |
+| 5. **B2, then E2 / E3 / E4** | Next band (LS 1 2 3 4 HS), then its frequency / gain / width; **hold B3**: OUT/IN |
 
 During the show leave ALIGN and SETUP alone; they go back to SHOW by themselves after a minute.
 

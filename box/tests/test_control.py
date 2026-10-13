@@ -231,6 +231,8 @@ async def fast_sleep(s: float) -> None:
 
 
 DEV = load_profile("dev", {})
+# k1000.yaml once the Knob test confirmed B1..B4 (D-014's gate on the B3 hold)
+CONFIRMED: dict[str, Any] = {"controls": {"buttons_confirmed": True}}
 
 
 def make(tmp_path: Path, state: State | None = None, *, playing: bool = False,
@@ -1026,7 +1028,7 @@ def test_knob_and_button_events_through_input_map(tmp_path: Path) -> None:
     """The v1 show, gesture by gesture (D-009, buttons D-013: B1 PAGE tap/hold, B2 BAND/UNLOCK,
     B3 NOTCH, B4 MUTE): SHOW <-> ALIGN on a B1 tap, SETUP on a B1 hold, and home."""
     async def body() -> None:
-        ctl, cl = make(tmp_path, State(master_db=-20.0), playing=True)
+        ctl, cl = make(tmp_path, State(master_db=-20.0), playing=True, settings=CONFIRMED)
         await boot(ctl)
         assert ctl.page == "SHOW"
         ctl.handle_event(_enc_ev(0, 1))                               # E1 = master
@@ -1046,8 +1048,12 @@ def test_knob_and_button_events_through_input_map(tmp_path: Path) -> None:
         assert ctl.focus.slot == 1 and ctl.state.muted is False and ctl.page == "SHOW"
         ctl.handle_event(_enc_ev(2, -2))                              # E3 = gain of PEQ 2
         assert ctl.state.live_peq[1].gain == -1.0
-        ctl.handle_event(_sw_ev(6, "long"))                           # B3 hold: never a reset
-        assert ctl.state.live_peq[1].gain == -1.0 and "SETUP" in (ctl.focus.hint_now() or "")
+        ctl.handle_event(_sw_ev(6, "long"))                           # B3 hold: P2 OUT (D-014),
+        assert ctl.state.live_peq[1].gain == -1.0 and ctl.state.live_peq[1].on is False   # no reset
+        assert ctl.focus.hint_now() == "P2 OUT"
+        ctl.handle_event(_sw_ev(6, "long"))                           # again: back IN, as it was
+        assert ctl.state.live_peq[1].gain == -1.0 and ctl.state.live_peq[1].on is True
+        assert ctl.focus.hint_now() == "P2 IN"
         ctl.handle_event(_sw_ev(4, "press"))                          # B1 press: nothing yet
         assert ctl.page == "SHOW"
         ctl.handle_event(_sw_ev(4, "short"))                          # B1 tap: ALIGN
@@ -3930,5 +3936,234 @@ def test_set_choice_only_takes_setup_choice_rows(tmp_path: Path) -> None:
             assert ctl.set_choice(field, value) is False, field
         assert ctl.state.to_dict() == before
         assert ctl.set_choice("sub_inverted", True) is True and ctl.state.sub_inverted is True
+
+    run(body())
+
+
+# ======================================================================= D-014 band IN/OUT
+def _p2_cut_state() -> State:
+    st = State()
+    st.live_peq[1].freq, st.live_peq[1].gain, st.live_peq[1].q = 2520.0, -6.5, 8.0
+    return st
+
+
+P2_GAIN = "/filters/live_peq_2/parameters/gain"
+
+
+def test_band_out_and_in_is_a_smoothed_gain_move_kept_through_adoption_and_saved(tmp_path: Path,
+                                                                                 caplog) -> None:
+    import logging
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, _p2_cut_state(), playing=True)
+        await boot(ctl)
+        n = len(cl.log)
+        with caplog.at_level(logging.INFO, logger="k1000.control"):
+            assert ctl.set_band_on(1, False, source="phone") is False
+        assert ctl.state.live_peq[1].on is False
+        b = ctl.state.live_peq[1]
+        assert (b.freq, b.gain, b.q) == (2520.0, -6.5, 8.0)              # settings kept
+        assert ctl.focus.hint_now() == "P2 OUT"
+        assert "band P2 OUT (phone): 2520 Hz, -6.5 dB stored, Q 8.00" in caplog.text
+        assert await ctl.settle(5.0)
+        writes = sets_for(cl.log[n:], P2_GAIN)
+        assert writes[-1] == 0.0 and len(writes) == 13                  # 0.5 dB steps, no jump
+        prev = -6.5
+        for v in writes:
+            assert abs(v - prev) <= 0.5 + 1e-9
+            prev = v
+        assert not any(e[0] == "config" for e in cl.log[n:])            # never a rebuild
+        p = cl.cfg["filters"]["live_peq_2"]["parameters"]
+        assert (p["freq"], p["gain"], p["q"]) == (2520.0, 0.0, 8.0)
+        # the 1 Hz adoption keeps the band OUT with its stored gain (the engine's 0 dB is OUT's)
+        ctl._own_ptr.clear()
+        await ctl.poll_once()
+        assert ctl.state.live_peq[1].on is False and ctl.state.live_peq[1].gain == -6.5
+        assert await ctl.settle(5.0)
+        # the same request again changes nothing (an explicit value, never a blind toggle)
+        n = len(cl.log)
+        ctl.show_hint("X")
+        assert ctl.set_band_on(1, False) is False and ctl.focus.hint_now() == "X"
+        assert await ctl.settle(5.0)
+        assert sets_for(cl.log[n:], P2_GAIN) == []
+        # IN: the stored cut comes back, smoothed
+        assert ctl.toggle_band(1) is True and ctl.focus.hint_now() == "P2 IN"
+        assert await ctl.settle(5.0)
+        assert sets_for(cl.log[n:], P2_GAIN)[-1] == -6.5 and len(sets_for(cl.log[n:], P2_GAIN)) == 13
+        # saved: an OUT band survives a restart
+        ctl.set_band_on(1, False)
+        assert await ctl.settle(5.0)
+        await ctl.stop()
+        saved = json.loads((tmp_path / "state.json").read_text())
+        assert saved["live_peq"][1] == {"freq": 2520.0, "gain": -6.5, "q": 8.0, "on": False}
+        assert yaml.safe_load((tmp_path / "active.yml").read_text())["filters"]["live_peq_2"][
+            "parameters"]["gain"] == 0.0
+
+    run(body())
+
+
+def test_band_on_refuses_garbage(tmp_path: Path) -> None:
+    ctl, _ = make(tmp_path, State())
+    before = ctl.state.to_dict()
+    for slot, on in ((6, False), (-1, False), (True, False), ("1", False), (None, False), (1.0, False),
+                     (1, "false"), (1, 0), (1, None)):
+        assert ctl.set_band_on(slot, on) is None, (slot, on)
+    for slot in (6, -1, True, "1"):
+        assert ctl.toggle_band(slot) is None
+    assert ctl.state.to_dict() == before
+
+
+def test_b3_hold_on_show_switches_the_selected_band(tmp_path: Path) -> None:
+    """D-014: B3 (sw6) held on SHOW = the selected band IN/OUT, hint P2 OUT / P2 IN; a tap is
+    still the notch helper; off SHOW the hold does nothing."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, _p2_cut_state(), playing=True, settings=CONFIRMED)
+        await boot(ctl)
+        ctl.focus.slot = 1
+        ctl.handle_event(SwitchEvent(6, "press", time.monotonic()))
+        ctl.handle_event(SwitchEvent(6, "long", time.monotonic()))
+        ctl.handle_event(SwitchEvent(6, "release", time.monotonic()))
+        assert ctl.state.live_peq[1].on is False and ctl.focus.hint_now() == "P2 OUT"
+        assert ctl.snapshot()[2].pills == ["OUT P2"]
+        ctl.handle_event(SwitchEvent(6, "long", time.monotonic()))
+        assert ctl.state.live_peq[1].on is True and ctl.focus.hint_now() == "P2 IN"
+        ctl.focus.slot = 4                                              # a shelf, flat
+        ctl.handle_event(SwitchEvent(6, "long", time.monotonic()))
+        assert ctl.state.live_lowshelf.on is False and ctl.focus.hint_now() == "LS OUT"
+        assert ctl.snapshot()[2].pills == ["OUT LS"]
+        ctl.goto_page("ALIGN")
+        before = ctl.state.to_dict()
+        ctl.handle_event(SwitchEvent(6, "long", time.monotonic()))
+        assert ctl.state.to_dict() == before
+        # a knob moving a band that is OUT: stored, inaudible, and said
+        ctl.goto_page("SHOW")
+        ctl.handle_event(EncoderEvent(2, -2, time.monotonic()))        # E3 GAIN on LS
+        assert ctl.state.live_lowshelf.gain == -1.0 and ctl.state.live_lowshelf.on is False
+        assert ctl.focus.hint_now() == "LS OUT · HOLD B3 = IN"
+        assert await ctl.settle(5.0)
+        assert cl.cfg["filters"]["live_lowshelf"]["parameters"]["gain"] == 0.0
+        await ctl.stop()
+
+    run(body())
+
+
+def test_b3_hold_is_only_a_hint_until_the_button_map_is_confirmed(tmp_path: Path, caplog: Any) -> None:
+    """Review of D-014 (HIGH): with `controls: buttons` unconfirmed (the shipped k1000.yaml), a
+    hold on what the map calls B3 changes nothing (it may be the B4 an operator holds to MUTE
+    on a swapped map) and says which button it was; the journal says why at start. A band put
+    OUT from the phone meanwhile is said to come back from the phone, not from B3. B4 still
+    mutes; the B3 tap is still the notch helper."""
+    import logging
+
+    async def body() -> None:
+        shipped = {"controls": {"encoders": [0, 1, 2, 3], "pushes": [0, 1, 2, 3],
+                                "buttons": [4, 5, 6, 7]}}
+        ctl, cl = make(tmp_path, _p2_cut_state(), playing=True, settings=shipped)
+        assert "not confirmed" not in caplog.text                    # a demo/test object: quiet
+        with caplog.at_level(logging.WARNING, logger="k1000.control"):
+            await boot(ctl)
+        assert "not confirmed" in caplog.text and "D-014" in caplog.text   # the journal says why
+        ctl.focus.slot = 1
+        before = ctl.state.to_dict()
+        for k in ("press", "long", "release"):
+            ctl.handle_event(SwitchEvent(6, k, time.monotonic()))
+        assert ctl.state.to_dict() == before and ctl.state.live_peq[1].on is True
+        assert ctl.focus.hint_now() == "B3 HOLD: IN/OUT AFTER KNOB TEST"
+        assert ctl.pills() == []
+        assert ctl.set_band_on(1, False, source="phone") is False     # the phone's chip hold
+        ctl.handle_event(EncoderEvent(2, -1, time.monotonic()))        # E3 GAIN on P2 (OUT)
+        assert ctl.focus.hint_now() == "P2 OUT · IN FROM THE PHONE"
+        ctl.handle_event(SwitchEvent(7, "long", time.monotonic()))    # B4 hold: still the mute
+        assert ctl.state.muted is True
+        await ctl.stop()
+
+    run(body())
+
+
+def test_out_pills_name_every_band_out_in_band_order(tmp_path: Path) -> None:
+    ctl, _ = make(tmp_path, State(lowcut_on=False, mono_subs=True))
+    assert ctl.pills() == ["LO-CUT OFF", "MONO SUB"]
+    ctl.set_band_on(4, False)
+    ctl.set_band_on(1, False)
+    assert ctl.pills() == ["LO-CUT OFF", "OUT P2 LS", "MONO SUB"]
+    ctl.reset_live()                                                    # all IN again
+    assert ctl.pills() == ["LO-CUT OFF", "MONO SUB"]
+
+
+def test_notch_helper_reads_the_effective_gain_and_keeps_an_out_cut(tmp_path: Path) -> None:
+    """D-014: a bell OUT is not in use (no reselect at its peak) and, with a stored cut, not free
+    either (it keeps its settings); a flat bell OUT is free and comes back IN (inaudible)."""
+    async def body() -> None:
+        st = _p2_cut_state()
+        st.live_peq[1].on = False                                       # P2 OUT, -6.5 at 2.52k
+        st.live_peq[0].on = False                                       # P1 OUT, flat
+        ctl, cl = make(tmp_path, st, playing=True)
+        await boot(ctl)
+        ctl.focus.slot = 1
+        ctl.set_spectrum(_Frame(2440.0), "live")                        # P2's ring
+        n = len(cl.log)
+        assert ctl.notch_helper() == 0                                  # not P2: P1, free (0 dB)
+        b0, b1 = ctl.state.live_peq[0], ctl.state.live_peq[1]
+        assert b0.on is True and b0.freq == 2440.0 and b0.gain == 0.0
+        assert (b1.on, b1.freq, b1.gain, b1.q) == (False, 2520.0, -6.5, 8.0)
+        assert ctl.focus.hint_now() == "P1 · 2.44k · E3 TO CUT"
+        assert await ctl.settle(5.0)
+        assert _gain_writes(cl.log[n:]) == []                           # still silent
+        # P2 back IN: now in use, so its peak selects it and writes nothing
+        ctl.set_band_on(1, True)
+        assert await ctl.settle(5.0)
+        before = ctl.state.to_dict()
+        ctl.focus.slot = 5
+        assert ctl.notch_helper() == 1 and ctl.state.to_dict() == before
+        # every bell either in use or OUT with a cut: no free band
+        for i in (0, 2, 3):
+            ctl.set_value(f"live_peq.{i}.gain", -3.0)
+        ctl.set_band_on(3, False)
+        ctl.set_spectrum(_Frame(100.0), "live")
+        before = ctl.state.to_dict()
+        assert ctl.notch_helper() is None and ctl.state.to_dict() == before
+        assert ctl.focus.hint_now() == ctl_mod.HINT_NO_FREE_BAND
+        await ctl.stop()
+
+    run(body())
+
+
+def test_switching_a_band_with_a_cut_ends_the_reset_undo_a_flat_one_does_not(tmp_path: Path) -> None:
+    async def body() -> None:
+        st = _p2_cut_state()
+        ctl, _ = make(tmp_path, st, playing=True)
+        await boot(ctl)
+        clk = _Clock()
+        ctl._ui_clock = clk
+        want = ctl_mod._live_dict(ctl.state)
+        ctl.reset_live()
+        ctl.set_band_on(0, False)                                       # flat: inaudible
+        ctl.set_band_on(0, True)
+        ctl.set_band_on(5, False)
+        assert ctl.undo_left() == pytest.approx(300.0)
+        assert ctl.undo_reset() is True and ctl_mod._live_dict(ctl.state) == want
+        assert ctl.state.live_highshelf.on is True                      # as it was before the reset
+        # a reset of a live EQ with a band OUT brings every band back IN, and the undo puts the
+        # OUT back
+        ctl.set_band_on(1, False)
+        want = ctl_mod._live_dict(ctl.state)
+        assert ctl_mod._audible_live(ctl.state)[1] == (0.0,)
+        ctl.reset_live()
+        assert ctl.state.live_peq[1].on is True and ctl.undo_left() > 0
+        assert ctl.undo_reset() is True and ctl.state.live_peq[1].on is False
+        # an audible switch (a stored cut going IN) after a reset ends the undo, said so
+        ctl.state.live_peq[1].on = True
+        ctl.reset_live()
+        ctl.set_value("live_peq.1.gain", -4.0)                          # an audible edit...
+        assert ctl.undo_left() == 0.0
+        ctl.reset_live()
+        ctl.state.live_peq[2].gain = -3.0                               # (a stored cut, OUT)
+        ctl.state.live_peq[2].on = False
+        ctl._undo["after"] = ctl_mod._audible_live(ctl.state)          # as if it was so at reset
+        assert ctl.undo_left() > 0
+        ctl.set_band_on(2, True)                                        # ...and a band going IN
+        assert ctl.undo_left() == 0.0
+        assert ctl.focus.hint_now() == "P3 IN"                          # the press's answer wins
+        await ctl.stop()
 
     run(body())

@@ -102,7 +102,7 @@ below name the D-013 build, on the box since 14:31 (`dd740ce`). Re-label the she
 - [ ] **15.** From ALIGN: tap B1, wait for the PEAK (~2 s), then B3 → it lands on the PEAK.
   *Claude:* `NO PEAK` although the PEAK showed.
 - [ ] **16.** B3 in silence → `… NO PEAK · E3 TO CUT`. All four bells cut (B2, E3 on each), B3
-  → `NO FREE BAND`. A B3 hold → `RESET LIVE EQ: IN SETUP`.
+  → `NO FREE BAND`. A B3 hold → `B3 HOLD: IN/OUT AFTER KNOB TEST` (until `buttons_confirmed`), then `P2 OUT` / `P2 IN` (D-014).
 - [ ] **17.** SETUP › LIVE EQ › Reset live EQ, push twice → `LIVE EQ RESET · UNDO IN SETUP`,
   curve flat. Undo reset (its row counts down, `UNDO 4:47`), push → `LIVE EQ RESTORED`, the cuts
   back. Reset again, one E3 click on SHOW, Undo → `RESET UNDO LOST`, then `NOTHING TO UNDO`.

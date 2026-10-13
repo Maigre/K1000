@@ -24,11 +24,15 @@ from k1000 import state as st
 from k1000.ui import display, eqgraph, input_map as im, pages
 from k1000.ui.input_map import (ControlMap, Focus, GotoPage, Lock, Mute, NextPage, NotchHelper,
                                 Nudge, ResetLive, SelectBand, SelectGroup, SelectItem, SelectSlot,
-                                SetChoice, ShowHint, Toggle, UndoReset, Unlock, apply_focus,
-                                map_event)
+                                SetChoice, ShowHint, Toggle, ToggleBand, UndoReset, Unlock,
+                                apply_focus, map_event)
 
 
 # ------------------------------------------------------------------------------ helpers
+# D-014's gate: the B3 hold switches a band only on a confirmed button map (the Knob test).
+CONFIRMED = {"controls": {"buttons_confirmed": True}}
+
+
 @dataclass
 class Enc:
     index: int
@@ -1358,12 +1362,15 @@ def test_b2_on_show_cycles_the_bands_low_to_high_and_wraps():
 
 
 def test_b3_on_show_is_the_notch_helper_never_a_reset():
-    """D-013: the notch helper moved from B4 to B3 (sw6)."""
+    """D-013: the notch helper moved from B4 to B3 (sw6). D-014: a B3 hold on SHOW switches the
+    SELECTED band IN/OUT (it said RESET LIVE EQ: IN SETUP before); it never resets anything."""
     f = Focus()
     assert map_event("SHOW", f, Sw(6, "short")) == [NotchHelper()]
     assert apply_focus(f, NotchHelper()) is False                 # the controller acts on it
-    for _ in range(3):                                            # holds never arm anything
-        assert map_event("SHOW", f, Sw(6, "long")) == [ShowHint(im.HINT_RESET_IN_SETUP)]
+    for slot in (0, 1, 4, 5):                                     # holds never arm anything
+        f.slot = slot
+        assert map_event("SHOW", f, Sw(6, "long"), CONFIRMED) == [ToggleBand(slot)]
+    assert apply_focus(f, ToggleBand(1)) is False                 # the controller acts on it
     assert f.confirm is None
     assert map_event("SHOW", f, Sw(6, "press")) == [] and map_event("SHOW", f, Sw(6, "release")) == []
     for sw in (4, 5, 7):                                          # no other button is the helper
@@ -2499,3 +2506,176 @@ def test_demo_cases_include_the_d013_pictures():
         hw = cases[name][4].hw
         assert hw.sw_down[7] and hw.sw_last[7] == "long" and hw.last.endswith("= B4"), name
         assert not hw.sw_down[5] and hw.sw_last[5] == ""
+
+
+# ------------------------------------------------------------------------------ D-014 band IN/OUT
+def _chip_box(slot: int) -> tuple[int, int, int, int]:
+    w = (pages.W - 8 - 4 * 5) / 6
+    k = im.BAND_CYCLE.index(slot)
+    return (round(4 + k * (w + 4)), pages.CHIP_Y0, round(4 + k * (w + 4) + w) + 1, pages.CHIP_Y1 + 1)
+
+
+def _p2_cut(on: bool = True, q: float = 8.0) -> st.State:
+    s = st.State()
+    s.live_peq[1].freq, s.live_peq[1].gain, s.live_peq[1].q, s.live_peq[1].on = 2520.0, -6.5, q, on
+    return s
+
+
+def test_b3_hold_on_show_switches_the_selected_band_off_show_unchanged():
+    """D-014: B3 hold on SHOW = the selected band IN/OUT (ToggleBand of that band); a tap stays
+    the notch helper. Off SHOW a B3 hold keeps its D-013 behaviour (nothing)."""
+    for slot in range(6):
+        assert map_event("SHOW", Focus(slot=slot), Sw(6, "long"), CONFIRMED) == [ToggleBand(slot)]
+    assert map_event("SHOW", Focus(slot=3), Sw(6, "short"), CONFIRMED) == [NotchHelper()]
+    for page in ("ALIGN", "SETUP", "PHONE"):
+        assert map_event(page, Focus(slot=2), Sw(6, "long"), CONFIRMED) == [], page
+    for sw in (4, 5, 7):                                          # no other button switches a band
+        for k in ("press", "short", "long", "release"):
+            assert not any(isinstance(a, ToggleBand)
+                           for a in map_event("SHOW", Focus(), Sw(sw, k), CONFIRMED))
+
+
+@pytest.mark.parametrize("cfg", [
+    None, {}, {"controls": None},
+    {"controls": {"buttons": [4, 5, 6, 7]}},                         # the shipped k1000.yaml
+    {"controls": {"buttons": [4, 5, 6, 7], "buttons_confirmed": "true"}},   # quoted: a typo
+    {"controls": {"buttons_confirmed": 1}},                          # not a real bool
+    {"controls": {"buttons": [4, 5, 6, 8], "buttons_confirmed": True}},     # invalid: fell back
+    {"controls": {"buttons": [0, 1, 2, 3], "buttons_confirmed": True}},     # collides: fell back
+    {"controls": {"buttons": "4567", "buttons_confirmed": True}},
+    {"controls": {"buttons": [True, 5, 6, 7], "buttons_confirmed": True}},
+    {"controls": {"encoders": [3, 2, 1, 0]}},                        # knobs set, buttons not
+])
+def test_b3_hold_never_switches_a_band_on_an_unconfirmed_button_map(cfg):
+    """Review of D-014 (HIGH): until the Knob test proved which button is B3, a B3 hold may be
+    an emergency MUTE aimed at B4 on a swapped map; taking the selected band (the notch holding
+    the ring) OUT would make it worse. So it only says which button it was, and changes
+    nothing; B4's mute and the B3 tap are untouched."""
+    m = ControlMap.from_cfg(cfg)
+    assert m.buttons_confirmed is False
+    f = Focus(slot=1)
+    for k in ("press", "long", "release"):
+        acts = map_event("SHOW", f, Sw(6, k), cfg)
+        assert not any(isinstance(a, ToggleBand) for a in acts), k
+    assert map_event("SHOW", f, Sw(6, "long"), cfg) == [ShowHint(im.HINT_B3_HOLD_UNCONFIRMED)]
+    assert map_event("SHOW", f, Sw(6, "short"), cfg) == [NotchHelper()]
+    assert map_event("SHOW", f, Sw(m.buttons[3], "long"), cfg, muted=False) == [Mute(True)]
+    assert "B3" in im.HINT_B3_HOLD_UNCONFIRMED
+
+
+@pytest.mark.parametrize("cfg,b3", [
+    ({"controls": {"buttons_confirmed": True}}, 6),                  # the default map, confirmed
+    ({"controls": {"buttons": [4, 5, 6, 7], "buttons_confirmed": True}}, 6),
+    ({"controls": {"buttons": [7, 6, 5, 4]}}, 5),                    # written by hand: B3 = sw5
+    ({"hw": {"buttons": [4, 5, 7, 6]}}, 7),                          # the older section name
+])
+def test_b3_hold_switches_the_band_once_the_map_is_confirmed(cfg, b3):
+    m = ControlMap.from_cfg(cfg)
+    assert m.buttons_confirmed is True and m.buttons[2] == b3
+    assert map_event("SHOW", Focus(slot=4), Sw(b3, "long"), cfg) == [ToggleBand(4)]
+    assert map_event("SHOW", Focus(slot=4), Sw(b3, "long"), m) == [ToggleBand(4)]   # a ControlMap
+    assert ControlMap.from_cfg(m) is m
+
+
+def test_live_bands_carry_in_out_and_an_out_band_adds_nothing_to_the_curve():
+    on, out = eqgraph.live_bands(_p2_cut()), eqgraph.live_bands(_p2_cut(on=False))
+    assert on[1].on and not out[1].on and out[1].gain == -6.5        # the marker keeps its place
+    assert not on[1].flat and out[1].flat
+    f = np.geomspace(20, 20000, 200)
+    assert np.allclose(eqgraph.curve_db(out, f), 0.0)
+    assert eqgraph.curve_db(on, f).min() < -6.0
+    assert not np.allclose(eqgraph.response_db(on[1], f), 0.0)
+    # a dict state (the phone's) and an older State without `on` read as IN
+    assert eqgraph.live_bands({"live_peq": [{"freq": 100, "gain": -3, "q": 4}]})[0].on
+    assert not eqgraph.live_bands({"live_peq": [{"freq": 100, "gain": -3, "q": 4, "on": False}]})[0].on
+    # GRAB's free band: the STORED gain decides (an OUT cut keeps its settings; OUT at 0 dB is free)
+    bands = eqgraph.live_bands(_p2_cut(on=False))
+    assert eqgraph.free_band(bands, prefer=1) == 0
+    flat_out = st.State()
+    flat_out.live_peq[1].on = False
+    assert eqgraph.free_band(eqgraph.live_bands(flat_out), prefer=1) == 1
+
+
+def test_an_out_band_marker_is_hollow_and_the_curve_goes_without_it():
+    box = (0, 0, 456, 130)
+    on = eqgraph.render_graph((456, 130), eqgraph.live_bands(_p2_cut(q=2.0)), selected=None)
+    out = eqgraph.render_graph((456, 130), eqgraph.live_bands(_p2_cut(on=False, q=2.0)), selected=None)
+    flat = eqgraph.render_graph((456, 130), eqgraph.live_bands(st.State()), selected=None)
+    cut = eqgraph.STYLE.cut
+    fa = eqgraph.LogAxis(0, 455)
+    da = eqgraph.DbAxis(0, 129, eqgraph.STYLE.top_db, eqgraph.STYLE.bottom_db)
+    mx, my = fa.x(2520.0), da.y(-6.5)
+    r = eqgraph.STYLE.marker_r
+    mbox = (mx - r - 2, my - r - 2, mx + r + 3, my + r + 3)
+    assert _count(on, mbox, cut) > 150                 # a solid orange dot
+    assert 15 < _count(out, mbox, cut) < 120           # a dashed orange ring
+    # away from the marker, the OUT picture is the flat one: the curve does not dip at 2.5k
+    dip = (fa.x(1400.0), da.y(-0.7), fa.x(1800.0), da.y(-6.0))
+    assert _count(on, dip, eqgraph.STYLE.curve) > 0
+    assert (_crop(out, tuple(int(v) for v in dip)) == _crop(flat, tuple(int(v) for v in dip))).all()
+    # selected and OUT: an amber ring (not a disc), no amber fill under a curve it no longer makes
+    sel_on = eqgraph.render_graph((456, 130), eqgraph.live_bands(_p2_cut(q=2.0)), selected=1)
+    sel_out = eqgraph.render_graph((456, 130), eqgraph.live_bands(_p2_cut(on=False, q=2.0)), selected=1)
+    amber = eqgraph.STYLE.sel_marker
+
+    def blended(img: Image.Image, b: tuple[float, float, float, float]) -> int:
+        a = _crop(img, tuple(int(v) for v in b)).astype(int)
+        return int(((a[..., 0] > 80) & (a[..., 1] > 50) & (a[..., 2] < 40)).sum())
+
+    assert blended(sel_on, dip) > 20 and blended(sel_out, dip) == 0
+    rs = eqgraph.STYLE.sel_r
+    sbox = (mx - rs - 2, my - rs - 2, mx + rs + 3, my + rs + 3)
+    assert 15 < _count(sel_out, sbox, amber) < _count(sel_on, sbox, amber) * 0.7
+
+
+def test_show_draws_an_out_band_dark_dashed_with_out_its_values_grey():
+    s_on, s_out = _p2_cut(), _p2_cut(on=False)
+    for sel in (1, 2):                                   # selected, and not
+        on = pages.render("SHOW", s_on, pages.ScreenStatus(**RUN), Focus(slot=sel), now=0.0)
+        out = pages.render("SHOW", s_out, pages.ScreenStatus(**RUN), Focus(slot=sel), now=0.0)
+        chip = _chip_box(1)
+        assert _count(out, chip, pages.OUT_CHIP_BG) > 400, sel       # dark
+        assert _count(on, chip, pages.OUT_CHIP_BG) == 0, sel
+        col = pages.AMBER if sel == 1 else pages.CUT
+        # dashed: the outline colour on the top edge is broken by gaps
+        top = np.asarray(out)[pages.CHIP_Y0, chip[0] + 6:chip[2] - 6]
+        hits = (top == np.array(col, np.uint8)).all(axis=1)
+        assert 0.3 < hits.mean() < 0.9, (sel, hits.mean())
+    # the OUT mark: small text right of the band number, in the chip's colour
+    out = pages.render("SHOW", s_out, pages.ScreenStatus(**RUN), Focus(slot=2), now=0.0)
+    on = pages.render("SHOW", s_on, pages.ScreenStatus(**RUN), Focus(slot=2), now=0.0)
+    x0, y0, x1, y1 = _chip_box(1)
+    right = (x0 + (x1 - x0) * 0.6, y0 + 4, x1 - 3, y1 - 4)
+    assert _count(out, right, pages.CUT) > 20 and _count(on, right, pages.CUT) == 0
+    # the selected band OUT: its FREQ / GAIN / Q are grey (stored, not playing), never white
+    sel_on = pages.render("SHOW", s_on, pages.ScreenStatus(**RUN), Focus(slot=1), now=0.0)
+    sel_out = pages.render("SHOW", s_out, pages.ScreenStatus(**RUN), Focus(slot=1), now=0.0)
+    gain = (pages.METER_BOX[2] + 4, pages.TOP_BOX[0], pages.W - 4, pages.TOP_BOX[1])
+    freq = (4, pages.BOT_BOX[0], pages.W // 2 - 4, pages.BOT_BOX[1])
+    for box in (gain, freq):
+        assert _count(sel_on, box, pages.FG) > 200 and _count(sel_out, box, pages.FG) == 0
+        assert _count(sel_out, box, pages.DIM) > 200
+
+
+def test_out_pill_from_the_state_and_it_is_orange():
+    s = _p2_cut(on=False)
+    s.live_lowshelf.on = False
+    assert pages.screen_pills(s, pages.ScreenStatus()) == ["OUT P2 LS"]
+    s.lowcut_on, s.mono_subs = False, True
+    assert pages.screen_pills(s, None) == ["LO-CUT OFF", "OUT P2 LS", "MONO SUB"]
+    assert pages.screen_pills(st.State(), None) == []
+    region = (0, pages.PILL_Y0, pages.W, pages.PILL_Y1 + 1)
+    img = pages.render("SHOW", _p2_cut(on=False), pages.ScreenStatus(pills=["OUT P2"], **RUN), Focus())
+    assert _count(img, region, pages.ORANGE) > 100
+    shown, folded, _size = pages.pill_layout(["OUT P2", "MONO SUB"], 120)
+    assert (shown, folded) == (["OUT P2"], ["MONO SUB"])    # a neutral pill folds before OUT
+
+
+def test_demo_cases_include_the_d014_pictures():
+    cases = {c[0]: c for c in pages.demo_cases()}
+    _n, page, s, status, f = cases["show_band_out"]
+    assert page == "SHOW" and f.slot == 1 and s.live_peq[1].on is False and s.live_peq[1].gain < 0
+    assert [b.on for b in eqgraph.live_bands(s)].count(False) == 1
+    assert list(status.pills) == ["OUT P2"]
+    _n, page, s2, _status, f2 = cases["show_band_out_hint"]
+    assert f2.hint == "P2 OUT" and s2.to_dict() == s.to_dict()

@@ -16,7 +16,7 @@ UI v1 (D-009, D-013), ops `box/README.md`. **New (D-013):** B4 mute · B2 band �
 |---|---|
 | B1 | tap: **SHOW ↔ ALIGN** (SETUP → SHOW) · **hold: SETUP** · Knob test: hold, tap · SHOW by itself after 60 s |
 | B2 | SHOW tap: **next band** LS · 1 · 2 · 3 · 4 · HS · ALIGN **hold: unlock E3/E4** for 30 s idle, tap: relock |
-| B3 | SHOW tap: **notch helper** · elsewhere a hint |
+| B3 | SHOW tap: **notch helper** · **hold: band OUT/IN** (Knob test first; pill `OUT P2`) · elsewhere a hint |
 | B4 | **hold 0.8 s: MUTE / UNMUTE**, every page, 0.1 s fade (tap: hint only) |
 
 **Notch in 3 gestures (SHOW): B3, E3 down, E4 up.** (1) **B3** sets a free bell (P1–P4 at 0 dB, the selected one first) to Q 8.65 (1/6 oct) and, if the cyan PEAK pointer is up, to its frequency; gain stays 0 dB (inaudible); strip `P3 · 2.44k · E3 TO CUT`. (2) **E3 down**: 12 clicks = −6 dB. (3) **E4 up** narrows (6 clicks = Q 16, max); E2 with its push held centres it. `NO PEAK`: **E3 down first** (≈ −6 dB; at 0 dB the sweep is silent), then sweep E2 until the ring drops (250 Hz → 2.5 kHz ≈ 40 clicks), then E4 up. `NO FREE BAND`: four bells in use. No PEAK on silence.

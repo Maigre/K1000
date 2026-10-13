@@ -9,6 +9,7 @@ No pytest-asyncio on the box (apt only): each test drives its own asyncio.run().
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import json
 import math
@@ -30,6 +31,7 @@ from k1000.cdsp import CdspError, CdspNoConfig, CdspUnavailable
 from k1000.control import Controller, Paths, Status
 from k1000.profiles import load_profile
 from k1000.state import RANGES, State
+from k1000.ui.input_map import LIVE_SLOTS
 from k1000.web import server as web
 from k1000.web.server import (NUDGE_CAPS, SET_BOOL, SET_NUMERIC, PhoneBridge, PhoneServer,
                               PhoneSettings, ap_is_up, load_static, read_ap_info, read_arp,
@@ -421,7 +423,7 @@ def test_state_and_meter_messages_are_strict_json(tmp_path: Path) -> None:
     text = json.dumps(msg, allow_nan=False)            # raises on NaN/inf
     back = json.loads(text)
     assert back["muted"] is True and back["mute_known"] is True and back["load"] is None
-    assert len(back["bands"]) == 6 and back["bands"][1] == {"f": 1000.0, "g": -6.5, "q": 4.0}
+    assert len(back["bands"]) == 6 and back["bands"][1] == {"f": 1000.0, "g": -6.5, "q": 4.0, "on": True}
     assert back["drift"] == ["SUBS muted outside K1000"] and back["phones"] == 2
     status.muted = None
     assert PhoneBridge.state_message(("MAIN", st, status, None), phone_on=True, phones=0)["muted"] is False
@@ -1299,3 +1301,298 @@ def test_values_are_finite_on_the_wire(tmp_path: Path) -> None:
                 assert isinstance(x, (int, float)) and math.isfinite(x)
         await ctl.stop()
     run(go())
+
+
+# ======================================================================= D-014 band IN/OUT (v1)
+class _RecCtl:
+    """Records the bridge's controller calls, in order (set_value, set_band_on)."""
+
+    def __init__(self, with_band_on: bool = True) -> None:
+        self.calls: list[tuple[Any, ...]] = []
+        self.st = State()
+        if with_band_on:
+            self.set_band_on = self._set_band_on
+
+    def snapshot(self) -> tuple[Any, Any, Any, Any]:
+        return "SHOW", self.st, Status(), None
+
+    def set_value(self, f: str, v: Any, confirmed: bool = False, source: str = "local") -> Any:
+        self.calls.append(("set", f, v))
+        return self.st.set(f, v)
+
+    def _set_band_on(self, s: int, on: bool, source: str = "knob") -> bool:
+        self.calls.append(("on", s, on, source))
+        self.st.set(f"{LIVE_SLOTS[s]}.on", on)
+        return on
+
+
+def test_state_message_carries_each_band_in_out() -> None:
+    st = State()
+    st.live_peq[1].gain, st.live_peq[1].on = -6.5, False
+    st.live_highshelf.on = False
+    msg = json.loads(json.dumps(PhoneBridge.state_message(("SHOW", st, Status(), None), phone_on=True,
+                                                          phones=1), allow_nan=False))
+    assert [b["on"] for b in msg["bands"]] == [True, False, True, True, True, False]
+    assert msg["bands"][1] == {"f": 1000.0, "g": -6.5, "q": 4.0, "on": False}   # OUT keeps its gain
+
+
+def test_bridge_band_on_off_validated_and_through_the_controller(tmp_path: Path, caplog) -> None:
+    import logging
+
+    async def go() -> None:
+        st = State()
+        st.live_peq[1].freq, st.live_peq[1].gain, st.live_peq[1].q = 2520.0, -6.5, 8.0
+        ctl, eng = make_ctl(tmp_path, st)
+        await boot(ctl)
+        b = PhoneBridge(ctl)
+        with caplog.at_level(logging.INFO, logger="k1000.control"):
+            assert b.apply({"t": "band", "s": 1, "on": False}) == (True, {"on": False}, "")
+        assert ctl.state.live_peq[1].on is False and ctl.state.live_peq[1].gain == -6.5
+        assert "band P2 OUT (phone)" in caplog.text
+        assert ctl.focus.hint_now() == "P2 OUT"                       # the box says it too
+        assert await ctl.settle(5.0)
+        assert eng.cfg["filters"]["live_peq_2"]["parameters"]["gain"] == 0.0
+        assert b.apply({"t": "band", "s": 1, "on": False}) == (True, {"on": False}, "")   # explicit
+        before = ctl.state.to_dict()
+        for bad in ({"s": 1, "on": "false"}, {"s": 1, "on": 0}, {"s": 1, "on": None}, {"s": 6, "on": True},
+                    {"s": True, "on": True}, {"s": "1", "on": True}, {"on": True}, {"s": 1},
+                    {"s": 1, "on": [True]}, {"s": 1, "on": True, "g": "x"}):
+            ok, _v, why = b.apply({"t": "band", **bad})
+            assert not ok and why, bad
+        assert ctl.state.to_dict() == before
+        # FLAT on the phone: the band to 0 dB and IN
+        ok, v, _ = b.apply({"t": "band", "s": 1, "g": 0, "on": True})
+        assert ok and v == {"g": 0.0, "on": True}
+        assert ctl.state.live_peq[1].on is True and ctl.state.live_peq[1].gain == 0.0
+        assert b.apply({"t": "band", "s": 4, "on": False})[:2] == (True, {"on": False})   # a shelf
+        assert ctl.state.live_lowshelf.on is False
+        await ctl.stop()
+    run(go())
+
+
+def test_bridge_band_on_goes_alone_or_with_g_only() -> None:
+    """Review of D-014 (LOW): `on` with `f` or `q` is refused before anything is set (the engine
+    gets a whole message as one smoothed move: a new frequency would sweep while the band fades
+    in or out). Alone or with `g` it is a gain move."""
+    ctl = _RecCtl()
+    b = PhoneBridge(ctl)
+    assert b.apply({"t": "band", "s": 2, "g": 0, "on": True})[0]        # FLAT: 0 dB and IN
+    assert ctl.calls == [("set", "live_peq.2.gain", 0.0), ("on", 2, True, "phone")]
+    ctl.calls.clear()
+    assert b.apply({"t": "band", "s": 2, "g": -3, "on": False})[0]
+    assert ctl.calls == [("on", 2, False, "phone"), ("set", "live_peq.2.gain", -3.0)]
+    ctl.calls.clear()
+    for bad in ({"f": 500, "g": -3, "on": False}, {"f": 4000, "on": True}, {"q": 4, "on": False},
+                {"f": 500, "q": 4, "g": 0, "on": True}, {"f": "x", "on": True}):
+        ok, v, why = b.apply({"t": "band", "s": 2, **bad})
+        assert (ok, v) == (False, None) and "alone or with g" in why, bad
+    assert ctl.calls == []
+    assert b.apply({"t": "band", "s": 2, "f": 500, "q": 4, "g": -1})[0]      # a drag: unchanged
+    # a box without set_band_on (an older controller) refuses, and sets nothing
+    old = _RecCtl(with_band_on=False)
+    ok, _v, why = PhoneBridge(old).apply({"t": "band", "s": 2, "on": False})
+    assert not ok and "refused" in why and old.calls == []
+
+
+def test_band_on_never_sweeps_a_frequency_while_it_fades(tmp_path: Path) -> None:
+    """Review of D-014 (LOW, the experiment): P2 OUT at 1 kHz with -6 dB stored. `{s:1, f:4000,
+    on:true}` used to reach the engine as one plan sweeping 1k -> 4k while the gain faded in.
+    Now it is refused and nothing moves; `{s:1, on:true}` fades the gain in at 1 kHz only."""
+    async def go() -> None:
+        st = State()
+        st.live_peq[1].freq, st.live_peq[1].gain, st.live_peq[1].q, st.live_peq[1].on = 1000.0, -6.0, 8.0, False
+        ctl, eng = make_ctl(tmp_path, st)
+        await boot(ctl)
+        p2 = eng.cfg["filters"]["live_peq_2"]["parameters"]
+        assert (p2["freq"], p2["gain"]) == (1000.0, 0.0)
+        trace: list[tuple[float, float]] = []
+        for name in ("set_value", "patch_config"):
+            orig = getattr(eng, name)
+
+            async def rec(*a: Any, _orig: Any = orig, **k: Any) -> Any:
+                r = await _orig(*a, **k)
+                q = eng.cfg["filters"]["live_peq_2"]["parameters"]
+                trace.append((float(q["freq"]), float(q["gain"])))
+                return r
+            setattr(eng, name, rec)
+        b = PhoneBridge(ctl)
+        before = ctl.state.to_dict()
+        ok, _v, why = b.apply({"t": "band", "s": 1, "f": 4000, "on": True})
+        assert not ok and "alone or with g" in why
+        assert ctl.state.to_dict() == before
+        assert await ctl.settle(5.0) and trace == []
+        assert b.apply({"t": "band", "s": 1, "on": True}) == (True, {"on": True}, "")
+        assert await ctl.settle(5.0)
+        assert trace and {f for f, _g in trace} == {1000.0}          # the frequency never moved
+        gains = [g for _f, g in trace]
+        assert gains == sorted(gains, reverse=True) and gains[-1] == -6.0
+        await ctl.stop()
+    run(go())
+
+
+def test_phone_notch_rules_with_bands_out(tmp_path: Path) -> None:
+    """The v1 'notch here': a free band is one with a STORED gain of 0 (D-014). An OUT band with
+    a cut keeps it; a flat OUT band is free and comes back IN with the notch."""
+    async def go() -> None:
+        st = State()
+        st.live_peq[0].gain, st.live_peq[0].on = -6.5, False         # P1 OUT with a cut
+        st.live_peq[1].on = False                                     # P2 OUT, flat
+        ctl, _ = make_ctl(tmp_path, st)
+        await boot(ctl)
+        b = PhoneBridge(ctl, notch_gain_db=-6.0, notch_q=8.0)
+        ok, _v, why = b.apply({"t": "notch", "hz": 900, "s": 0})
+        assert not ok and "already in use" in why
+        ok, v, _ = b.apply({"t": "notch", "hz": 900})
+        assert ok and v["s"] == 1 and v["g"] == -6.0
+        assert ctl.state.live_peq[1].on is True                       # IN: the notch is heard
+        p1 = ctl.state.live_peq[0]
+        assert (p1.on, p1.gain) == (False, -6.5)                      # kept
+        await ctl.stop()
+    run(go())
+
+
+def test_band_on_over_the_socket_acks_logs_and_is_rate_limited(tmp_path: Path, caplog) -> None:
+    import logging
+
+    async def go() -> None:
+        ctl, _ = make_ctl(tmp_path)
+        await boot(ctl)
+        srv = PhoneServer(ctl, settings(tmp_path, rate_per_s=2.0, burst=3), tick_s=0.02)
+        await srv.start()
+        port = srv.ports["plain"]
+        async with ws_connect(f"ws://127.0.0.1:{port}/ws", origin=f"http://127.0.0.1:{port}") as ws:
+            await recv_until(ws, lambda m: m["t"] == "state")
+            with caplog.at_level(logging.INFO, logger="k1000.web"):
+                await ws.send(json.dumps({"t": "band", "s": 2, "on": False, "id": "bandon2"}))
+                ack = await recv_until(ws, lambda m: m["t"] in ("ack", "err"))
+            assert ack == {"t": "ack", "id": "bandon2", "v": {"on": False}}
+            m = await recv_until(ws, lambda m: m["t"] == "state" and m["bands"][2]["on"] is False)
+            assert all(bd["on"] for i, bd in enumerate(m["bands"]) if i != 2)
+            assert "band" in caplog.text and '"on": false' in caplog.text
+            for i in range(8):                                        # the same bucket as the rest
+                await ws.send(json.dumps({"t": "band", "s": 3, "on": i % 2 == 0, "id": f"b{i}"}))
+            replies = []
+            with contextlib.suppress(AssertionError):
+                while True:
+                    replies.append(await recv_until(ws, lambda m: m["t"] in ("ack", "err"), timeout=0.5))
+            acks = [r for r in replies if r["t"] == "ack"]
+            assert 1 <= len(acks) <= 4
+            assert any(r["t"] == "err" and r["why"] == "too fast" for r in replies)
+        assert srv.stats["rate_limited"] >= 4
+        await srv.stop()
+        await ctl.stop()
+    run(go())
+
+
+# ---------------------------------------------------------------- D-014 review: the chip hold
+def _js_function(src: str, name: str) -> str:
+    """The source of `function name(...) {...}` in app.js: brace-matched, skipping strings and
+    // comments (enough for this file: no regex literal with a brace in holdButton)."""
+    start = src.index(f"function {name}(")
+    i = src.index(") {", start) + 2
+    depth, j = 0, i
+    while True:
+        ch = src[j]
+        if ch in "\"'`":
+            j = src.index(ch, j + 1)
+            while src[j - 1] == "\\":
+                j = src.index(ch, j + 1)
+        elif src.startswith("//", j):
+            j = src.index("\n", j)
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start:j + 1]
+        j += 1
+
+
+_HOLD_HARNESS = r"""
+const SLIDE_PX = %(slide)s;
+let canEditNow = true;
+const canEdit = () => canEditNow, capture = () => {}, holds = new Set();
+const toasts = [], toast = (t) => toasts.push(t), buzz = () => {};
+const requestAnimationFrame = (f) => setTimeout(f, 16), cancelAnimationFrame = (t) => clearTimeout(t);
+%(fn)s
+function chip(opts) {
+  const L = [], bar = { style: {} };
+  const node = { style: {}, querySelector: () => bar,
+    getBoundingClientRect: () => ({ left: 0, right: 60, top: 0, bottom: 44 }),
+    addEventListener: (type, f, cap) => L.push({ type, f, cap: !!cap }) };
+  const r = { node, acted: 0, selected: 0 };
+  holdButton(node, () => ({ ms: 80 }), () => { r.acted++; }, opts);
+  node.addEventListener("click", () => { r.selected++; });   // the chip's own select, after
+  r.fire = (type, x = 30, y = 22, id = 1) => {
+    let stopped = false;
+    const e = { type, pointerId: id, clientX: x, clientY: y, preventDefault() {},
+      stopImmediatePropagation() { stopped = true; } };
+    for (const cap of [true, false]) for (const l of L) {
+      if (l.type === type && l.cap === cap && !stopped) l.f(e);
+    }
+  };
+  return r;
+}
+const wait = (ms) => new Promise((ok) => setTimeout(ok, ms));
+async function gesture(opts, moves, holdMs) {
+  const c = chip(opts);
+  c.fire("pointerdown", 30, 22);
+  for (const [x, y] of moves) { await wait(5); c.fire("pointermove", x, y); }
+  await wait(holdMs);
+  c.fire("pointerup");
+  c.fire("click");
+  await wait(20);
+  return { acted: c.acted, selected: c.selected, touchAction: c.node.style.touchAction };
+}
+(async () => {
+  const T = { tap: true }, R = {};
+  R.still_hold = await gesture(T, [], 140);
+  R.jitter_hold = await gesture(T, [[33, 24], [27, 20], [30, 25]], 140);
+  R.slide_up = await gesture(T, [[30, 15], [30, 2]], 140);              // 20 px, still on the chip
+  R.slide_sideways = await gesture(T, [[40, 22], [58, 22]], 140);       // 28 px
+  R.off_the_edge = await gesture(T, [[30, 22]], 0).then(async () => {
+    const c = chip(T); c.fire("pointerdown", 55, 22); c.fire("pointermove", 62, 22);   // 7 px, off
+    await wait(140); c.fire("pointerup", 62, 22); c.fire("click", 62, 22); await wait(20);
+    return { acted: c.acted, selected: c.selected };
+  });
+  R.tap = await gesture(T, [], 10);
+  R.scroll_cancel = await (async () => {        // the browser takes a scroll: pointercancel
+    const c = chip(T); c.fire("pointerdown"); c.fire("pointermove", 30, 30);
+    await wait(20); c.fire("pointercancel"); await wait(140);
+    return { acted: c.acted, selected: c.selected };
+  })();
+  R.plain_hold_with_wobble = await gesture({}, [[50, 22], [58, 40]], 140);   // MUTE / FLAT
+  R.toasts = toasts.slice();
+  canEditNow = false;
+  R.offline_slide = await gesture(T, [[30, 2]], 10);
+  console.log(JSON.stringify(R));
+})();
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run app.js's holdButton")
+def test_chip_hold_is_cancelled_by_a_slide_and_a_slide_is_not_a_tap(tmp_path: Path) -> None:
+    """Review of D-014 (MEDIUM, reproduced in Chromium): a band-chip hold had no movement rule
+    and the chips lost vertical scrolling, so a thumb crossing the chip row, reaching up for a
+    dot or scrolling switched a band IN/OUT after 0.6 s. Now (app.js holdButton, opts.tap): a
+    move over SLIDE_PX or off the chip ends the hold silently and swallows the click (no stray
+    select either); the chip keeps pan-y, so a scroll still scrolls and its pointercancel ends
+    the hold. A still or slightly shaky hold still switches, a tap still selects, and MUTE /
+    FLAT (no opts.tap) keep their rules: no movement rule, touch-action none."""
+    src = (web.STATIC_DIR / "app.js").read_text()
+    m = __import__("re").search(r"const SLIDE_PX = (\d+);", src)
+    assert m and 8 <= int(m.group(1)) <= 16
+    script = tmp_path / "hold.js"
+    script.write_text(_HOLD_HARNESS % {"slide": m.group(1), "fn": _js_function(src, "holdButton")})
+    out = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    r = json.loads(out.stdout)
+    assert r["still_hold"] == {"acted": 1, "selected": 1, "touchAction": "pan-y"}
+    assert r["jitter_hold"]["acted"] == 1
+    for slide in ("slide_up", "slide_sideways", "off_the_edge"):
+        assert (r[slide]["acted"], r[slide]["selected"]) == (0, 0), slide
+    assert (r["tap"]["acted"], r["tap"]["selected"]) == (0, 1)
+    assert r["scroll_cancel"]["acted"] == 0
+    assert r["plain_hold_with_wobble"] == {"acted": 1, "selected": 1, "touchAction": "none"}
+    assert r["toasts"] == []                                   # a chip tap is not "Hold to confirm"
+    assert r["offline_slide"]["acted"] == 0

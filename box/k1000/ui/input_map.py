@@ -17,8 +17,9 @@ Pages (D-009, buttons D-013): SHOW (front) <-> ALIGN on a B1 tap; SETUP on a B1 
 HWTEST reached from SETUP.
 - Buttons (D-013): B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE.
 - SHOW: E1 MASTER, E2/E3/E4 = FREQ/GAIN/Q of the selected live band. B2 tap = next band in
-  LS 1 2 3 4 HS order (wraps). B3 tap = the notch helper (Controller.notch_helper). An encoder
-  push is FINE while held, never a select.
+  LS 1 2 3 4 HS order (wraps). B3 tap = the notch helper (Controller.notch_helper); B3 hold =
+  the selected band IN/OUT (D-014, Controller.toggle_band). An encoder push is FINE while held,
+  never a select.
 - ALIGN: E1 MASTER and E2 BALANCE live; E3 DELAY (the signed sub/top alignment, D-011) and E4
   LO-CUT are LOCKED: a turn shows HINT_LOCKED and changes nothing. A B2 hold unlocks them for
   UNLOCK_S, renewed by every input on ALIGN (so any UNLOCK_S of idle relocks); a B2 tap relocks
@@ -38,7 +39,13 @@ Safety rules carried here:
   screen shows (`map_event(..., muted=...)`): the operator presses for the opposite of what
   they see, never for a state the controller has not adopted yet.
 - Resetting the live EQ is a SETUP item with a confirm (and a one-step undo in the Controller):
-  B3 on SHOW only ever selects a band and sets an inaudible one up (gain is never touched).
+  a B3 tap on SHOW only ever selects a band and sets an inaudible one up (gain is never touched).
+  A B3 hold (0.8 s) on SHOW switches ONE band, the selected one, IN or OUT (D-014): OUT keeps
+  its settings, so a second hold brings back exactly what was there. ONLY once the button map
+  is confirmed (`ControlMap.buttons_confirmed`): until the Knob test proved which button is B3,
+  a hold on it may be an emergency mute aimed at B4, and taking a band (often the notch that
+  holds the ring) OUT then makes things worse. Unconfirmed, the hold only says
+  HINT_B3_HOLD_UNCONFIRMED, as the B3 hold did before D-014.
 - DELAY (every settled change dips the subs or the tops under the delay guard) keeps v0's
   wake-up detent on top of the lock: the first detent after ARM_WINDOW_S at rest only wakes it.
 - Every SETUP setting that is not a number (the pipeline rebuilds among them: mono subs,
@@ -172,6 +179,13 @@ class NotchHelper:
 
 
 @dataclass(frozen=True)
+class ToggleBand:
+    """SHOW, B3 hold (D-014): live band `slot` (a LIVE_SLOTS index: the band selected when the
+    hold fired) IN <-> OUT (Controller.toggle_band). OUT keeps the band's settings."""
+    slot: int
+
+
+@dataclass(frozen=True)
 class Unlock:
     """ALIGN, B2 hold: E3/E4 (delay, Lo-Cut) editable until `seconds` without input on
     ALIGN. UI-local (Focus.unlock_until)."""
@@ -202,7 +216,8 @@ class PhoneQr:
 
 Action = (Nudge | Toggle | SetChoice | SelectSlot | SelectBand | SelectItem | SelectGroup
           | NextPage | GotoPage | Mute
-          | ResetLive | UndoReset | SetupAction | NotchHelper | Unlock | Lock | ShowHint
+          | ResetLive | UndoReset | SetupAction | NotchHelper | ToggleBand | Unlock | Lock
+          | ShowHint
           | PhoneToggle | PhoneQr)
 
 # ------------------------------------------------------------------------------------------
@@ -473,7 +488,10 @@ HINT_UNLOCKED = "DELAY + LO-CUT UNLOCKED"
 HINT_RELOCKED = "DELAY + LO-CUT LOCKED"
 HINT_B2_OFF_SHOW = "B2: NEXT BAND ON SHOW"
 HINT_B3_OFF_SHOW = "B3: NOTCH HELPER ON SHOW"
-HINT_RESET_IN_SETUP = "RESET LIVE EQ: IN SETUP"
+HINT_RESET_IN_SETUP = "RESET LIVE EQ: IN SETUP"     # B3 hold on SHOW until D-014 (now: band IN/OUT)
+# D-014's gate: a B3 hold on SHOW while the button map is unconfirmed (it names the button, so an
+# operator who meant B4 MUTE sees which one he held).
+HINT_B3_HOLD_UNCONFIRMED = "B3 HOLD: IN/OUT AFTER KNOB TEST"
 HINT_TURN_VALUE = "TURN THE VALUE KNOB"
 HINT_PUSH_OPEN = "PUSH TO OPEN"
 HINT_PUSH_RUN = "PUSH TO RUN"
@@ -493,11 +511,18 @@ PICK_WINDOW_S = 8.0           # SETUP: a chosen value waits this long for its pu
 @dataclass(frozen=True)
 class ControlMap:
     """encoders[i] = physical encoder index of E(i+1); buttons[i] = switch index of B(i+1);
-    pushes[i] = switch index of E(i+1)'s push; reverse[i] flips E(i+1)'s direction."""
+    pushes[i] = switch index of E(i+1)'s push; reverse[i] flips E(i+1)'s direction.
+
+    `buttons_confirmed` (D-014's gate): someone proved which physical button is B1..B4 (SETUP >
+    Knob test) and wrote it down. Read as `k1000-m4-bringup.sh` reads it: a `buttons` map other
+    than the default is a hand-written one; the default map counts only with an explicit
+    `buttons_confirmed: true` (a real YAML bool) next to it, and never when the `buttons` the
+    file gives was invalid (the map in use is then not the one that was confirmed)."""
     encoders: tuple[int, int, int, int] = (0, 1, 2, 3)
     buttons: tuple[int, int, int, int] = (4, 5, 6, 7)
     pushes: tuple[int, int, int, int] = (0, 1, 2, 3)
     reverse: tuple[bool, bool, bool, bool] = (False, False, False, False)
+    buttons_confirmed: bool = False
 
     @classmethod
     def from_cfg(cls, cfg: Any) -> "ControlMap":
@@ -545,7 +570,14 @@ class ControlMap:
             enc = d.encoders
         if len(set(btn + psh)) != 8:
             btn, psh = d.buttons, d.pushes
-        return cls(enc, btn, psh, rev)
+        # D-014's gate. The file's own `buttons`, as written (None = not given): a confirmation
+        # covers the map in use only if that is what the file says (or it says nothing).
+        said = sec.get("buttons")
+        took = said is None or (isinstance(said, (list, tuple)) and len(said) == 4
+                                and all(type(x) is int for x in said) and tuple(said) == btn)
+        flag = sec.get("buttons_confirmed", False) is True       # a real bool: "yes" is a typo
+        confirmed = took and (btn != d.buttons or flag)
+        return cls(enc, btn, psh, rev, confirmed)
 
     def encoder_role(self, phys: int) -> int | None:
         """Physical encoder index -> logical 0..3 (E1..E4), or None."""
@@ -832,11 +864,16 @@ def map_event(page: str, focus: Focus, event: Any, cfg: Any = None, *,
         return [GotoPage(B1_HOLD.get(page, HOME_PAGE))] if kind == "long" else []
     if n == 1:   # B2: next band (SHOW), unlock/lock the alignment knobs (ALIGN)
         return _band_button(page, focus, kind, now)
-    if n == 2:   # B3: the notch helper (SHOW)
+    if n == 2:   # B3: the notch helper (SHOW tap), the selected band IN/OUT (SHOW hold, D-014)
         if page == "SHOW":
             if kind == "short":
                 return [NotchHelper()]
-            return [ShowHint(HINT_RESET_IN_SETUP)] if kind == "long" else []
+            if kind != "long":
+                return []
+            # Only on a confirmed map: on a swapped one this "B3" may be the B4 the operator
+            # holds to MUTE, and a band (the notch fighting the ring) going OUT is the opposite.
+            return ([ToggleBand(focus.band)] if cmap.buttons_confirmed
+                    else [ShowHint(HINT_B3_HOLD_UNCONFIRMED)])
         return [ShowHint(HINT_B3_OFF_SHOW)] if kind == "short" else []
     if n == 3:   # B4 mute — long press only, on the intent of its press
         return _b2(focus, kind, muted, mute_seq)

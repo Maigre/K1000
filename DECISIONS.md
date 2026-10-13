@@ -383,3 +383,64 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   `choice` (`rebuild` is now a property); its VENUES page needs a B1 tap back to SETUP, like PHONE
   (`input_map.B1_TAP`). Its E1/E2 tags go through `pages._knob_label` (D-011). Its hints and docs
   name the D-013 buttons: mute B4, band B2, notch B3.
+
+## D-014 — Each live band IN/OUT: a chip hold on the phone, a B3 hold on SHOW · decided 2026-10-13
+
+- **Ask** (Thomas at the bench, 2026-10-13): "i'd like a way to enable/disable/hold-to-reset on
+  each band, maybe using the band selector directly ? or do you have a better UX in mind ?"
+- **Answer** (Claude, to "a better UX?"): the band selector itself, as he suggested, with its tap
+  kept for selecting; the per-band reset stays FLAT, and the whole reset stays where it is.
+- **Decided**: Thomas went with it (he held a chip at the bench before it was built: "Hold a band
+  chip: does not seems to work..."). Built as below.
+- **The gestures**:
+  - **Phone (v1, `/`)**: a band chip **tap = select** (unchanged); a chip **hold 0.6 s = that band
+    IN/OUT** (the hold fill, the intent fixed at touch-down); **FLAT** (hold) = the selected band to
+    0 dB **and IN**; **ALL FLAT…** = reset all, with its confirm (unchanged). A finger that
+    **slides** more than 12 px or off the chip is neither a hold nor a tap (no IN/OUT, no select),
+    and a vertical slide still scrolls the page: the chip row is full width, under the graph, where
+    a thumb crosses it or reaches up for a dot.
+  - **Box**: **B3 hold on SHOW = the selected band IN/OUT** (`P2 OUT` / `P2 IN`), **once the button
+    map is confirmed** (below); it only said `RESET LIVE EQ: IN SETUP`. The B3 tap stays the notch
+    helper; off SHOW nothing changes.
+- **What OUT is**:
+  - The band keeps its frequency, gain and Q; the engine plays it at **0 dB** through the same
+    smoothing as a gain edit (0.5 dB steps, no rebuild, no click). Back IN brings exactly what was
+    there. Saved in state.json (`on`; a file without it loads with every band IN).
+  - **Every "audible / in use" question reads the effective gain** (0 dB while OUT): the curve (box
+    and phone), the chips' cut/boost colours, the notch helper's "in use" reselect, the reset undo
+    (switching a band with a stored cut is an audible edit; at 0 dB it is not).
+  - **Free for B3** (and the phone's notch) is the **stored** gain: an OUT bell with a cut keeps its
+    settings; an OUT bell at 0 dB is free and comes back IN (silently) when B3 takes it.
+  - SETUP › Reset live EQ puts every band IN; its undo puts back what was OUT. A gain set on an OUT
+    band from CamillaGUI is what plays, so it is adopted as the band's gain, and the band IN.
+- **Screen**: an OUT chip dark with a dashed outline and a small `OUT`, its marker hollow and dashed
+  at its stored gain, the curve without it, its values grey; an orange pill `OUT P2` (several:
+  `OUT P2 LS`); a knob on an OUT band says `P2 OUT · HOLD B3 = IN` (`P2 OUT · IN FROM THE PHONE`
+  while the button map is unconfirmed). The phone: the same chip and dot, a toast `P2 OUT` once
+  the box acks.
+- **Protocol** (`/ws` stays v1, additive): each `state.bands[i]` carries `on`; `band {s, on}`
+  (alone, or with `g` only) goes through `Controller.set_band_on`, logged with its source and said
+  on the box screen, validated and rate-limited like the other messages. `on` with `f` or `q` is
+  refused, nothing set: the box writes a whole message to the state before the engine worker runs,
+  so the engine gets ONE smoothed move whatever the order, and a new frequency would sweep while
+  the band fades in or out. With `g` it is a gain move (FLAT = `{g: 0, on: true}` plays 0 dB all
+  along). An older page ignores `on`. The v2 protocol (docs/14) adds band on/off later.
+- **Why**: IN/OUT is the console's per-band bypass: hear a cut with and without, drop one that went
+  wrong without losing it. The chip is where the eye already is; a hold keeps a tap harmless (no
+  single tap changes the sound on LIVE) and makes the change deliberate. B3's hold on SHOW was free.
+  No separate IN/OUT button: the compacted LIVE EQ page has no room, the box no spare button.
+- **Cost, and its gate in code**: a B3 hold now changes the sound. On a swapped button map an
+  emergency mute held on "B4" could be a B3 hold, and take the selected band (often the notch
+  fighting the ring) OUT instead of muting. So **the B3 hold switches a band only once the map is
+  confirmed** (`ControlMap.buttons_confirmed`): `controls: buttons` in k1000.yaml differs from the
+  default `[4, 5, 6, 7]` (written by hand after SETUP › Knob test, the rule `k1000-m4-bringup.sh`
+  warns on), or the default is kept with `buttons_confirmed: true` beside it (a real YAML bool).
+  Until then a B3 hold on SHOW changes nothing and says `B3 HOLD: IN/OUT AFTER KNOB TEST` (it names
+  the button the operator actually held), and k1000 logs why at start. The phone's chip hold is not
+  gated (no button map there). Lines elsewhere that still say "a B3 hold only shows a hint"
+  (`box/README.md`, manual chapters 3 and 6, `hw/mcp23017.py`'s config-guard note) hold only until
+  the map is confirmed; `etc/k1000.yaml`'s comment does not name `buttons_confirmed` yet.
+- **Pictures**: `docs/ui/show_band_out.png` (P2 OUT and selected), `show_band_out_hint.png`.
+- **Supersedes** D-013's "B3 … SHOW hold = `RESET LIVE EQ: IN SETUP`". Everything else in D-013
+  stands.
+- **Gate**: the Sunday field test, beside the knobs and the bypass.

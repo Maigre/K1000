@@ -5,8 +5,14 @@
    Safety rules carried here (the box enforces them again):
    - Values change only from explicit controls: +/- buttons (click = released on the button, so a
      scroll never fires one), the EQ dots (a drag must START on a dot), hold-to-act buttons.
-   - Mute and "band flat" need a hold; the live-EQ reset and the Lo-Cut switch need a confirm
-     (the box's SETUP asks for a second push for both; the box keeps an undo of the reset).
+   - Mute, "band flat" and a band IN/OUT (a hold on its chip, D-014; a tap only selects) need a
+     hold; the live-EQ reset and the Lo-Cut switch need a confirm (the box's SETUP asks for a
+     second push for both; the box keeps an undo of the reset).
+   - A band switched OUT keeps its settings and plays at 0 dB: the curve leaves it out, its dot
+     is hollow and its chip dashed. The page sends the IN/OUT it showed at touch-down (never a
+     blind toggle), and says it once the box acks. A finger that slides off its spot (SLIDE_PX)
+     or off the chip is neither a hold nor a tap: a thumb crossing the chip row or reaching up
+     for a dot never switches a band, and a vertical slide still scrolls the page.
    - The MUTE hold acts on what the finger MEANT when it went down: a hold that starts as "hold to
      mute" always sends a mute, whatever happens meanwhile. An unmute carries the mute generation
      (mute_seq) the page showed, and is dropped here (and refused by the box) if the mute changed
@@ -37,7 +43,8 @@
   const CONNECT_MS = 4000;     // a connect attempt that hangs this long is abandoned
   const ECHO_MS = 450;         // after a drag, local values win for this long
   const LONG_MS = 550;         // long-press on empty graph = notch here
-  const MUTE_MS = 600, UNMUTE_MS = 1200, FLAT_MS = 600;
+  const MUTE_MS = 600, UNMUTE_MS = 1200, FLAT_MS = 600, BAND_MS = 600;
+  const SLIDE_PX = 12;         // a band-chip hold that moves this far is a slide: no IN/OUT, no select
   const ACK_MS = 1500;         // no ack for a mute/notch this long = say so
   const FS = 48000;
   const G_TOP = 9, G_BOT = -21; // graph gain span (dB)
@@ -81,11 +88,16 @@
     const key = BANDS[i].replace(/\.\d$/, "") + "." + p;
     return (H && H.ranges && H.ranges[key]) || RANGES[key];
   }
+  // A band as drawn: the local values while this phone drags it, else the box's. `on` (IN/OUT,
+  // D-014) is always the box's: a box without it (older) means IN.
   function band(i) {
-    if (local[i] && Date.now() < echo[i]) return local[i];
     const b = S && S.bands && S.bands[i];
-    return b ? { f: b.f, g: b.g, q: b.q } : null;
+    const on = !(b && b.on === false);
+    if (local[i] && Date.now() < echo[i]) return { f: local[i].f, g: local[i].g, q: local[i].q, on };
+    return b ? { f: b.f, g: b.g, q: b.q, on } : null;
   }
+  // What the band does to the sound: its gain while IN, 0 dB while OUT.
+  function audible(v) { return !!v && v.on && num(v.g) && Math.abs(v.g) >= 0.05; }
   function canEdit() { return open && link === "ok" && S !== null; }
   let toastTimer = 0;
   function toast(text, ms = 2200) {
@@ -190,6 +202,10 @@
       case "ack":
         if (m.id === "mute") muteDone(true, m.v, "");
         else if (m.id === "notch" && m.v && Number.isInteger(m.v.s)) notchDone(true, m.v, "");
+        else if (typeof m.id === "string" && m.id.startsWith("bandon") && m.v && typeof m.v.on === "boolean") {
+          const i = clampInt(parseInt(m.id.slice(6), 10), 0, 5);
+          toast(SHORT[i] + (m.v.on ? " IN" : " OUT"), 1400);
+        }
         break;
       case "err":
         if (m.id === "mute") muteDone(false, m.v, String(m.why || "refused"));
@@ -213,7 +229,7 @@
     master: $("#master-val"), bal: $("#bal-val"), balSub: $("#bal-sub"),
     lc: $("#lc-switch"), lcTxt: $("#lc-switch span"), lcVal: $("#lc-val"),
     muteLabel: $("#mute-label"), slots: $("#slots"), slotName: $("#slot-name"), slotState: $("#slot-state"),
-    pf: $("#p-freq"), pg: $("#p-gain"), pq: $("#p-q"),
+    pf: $("#p-freq"), pg: $("#p-gain"), pq: $("#p-q"), slotBlock: $("#page-live .block.slot"),
   };
 
   function chip(node, txt, cls, label) {
@@ -303,20 +319,38 @@
     drawMeters();   // no link = empty meters, never the last levels frozen
   }
 
+  // The band chips. A tap selects (as before); a HOLD of BAND_MS switches that band IN/OUT
+  // (D-014), with the hold's fill bar, the intent fixed at touch-down. A finger that slides
+  // (a thumb crossing the row, reaching up for a dot, a scroll) is neither: see holdButton.
   function renderSlots() {
     if (!el.slots.children.length) {
       SHORT.forEach((name, i) => {
         const bt = document.createElement("button");
-        bt.textContent = name; bt.dataset.slot = String(i);
-        bt.addEventListener("click", () => select(i));
+        bt.className = "hold"; bt.dataset.slot = String(i);
+        bt.setAttribute("aria-label", LABELS[i] + ": tap = select, hold = in / out");
+        const bar = document.createElement("b"), lab = document.createElement("span"), mark = document.createElement("i");
+        lab.textContent = name; mark.textContent = "OUT";
+        bt.append(bar, lab, mark);
+        holdButton(bt, () => {
+          const v = band(i);
+          return v ? { ms: BAND_MS, want: !v.on } : null;
+        }, (c) => {
+          buzz(30);
+          send({ t: "band", s: i, on: c.want, id: "bandon" + i });
+        }, { tap: true });
+        bt.addEventListener("click", () => select(i));   // after holdButton: a slide swallows it
         el.slots.appendChild(bt);
       });
     }
     Array.from(el.slots.children).forEach((bt, i) => {
       const v = band(i);
       const g = v && num(v.g) ? v.g : 0;
-      bt.classList.toggle("cut", g <= -0.05);
-      bt.classList.toggle("boost", g >= 0.05);
+      const out = !!v && !v.on;
+      bt.classList.toggle("cut", !out && g <= -0.05);
+      bt.classList.toggle("boost", !out && g >= 0.05);
+      bt.classList.toggle("out", out);
+      bt.classList.toggle("out-cut", out && g <= -0.05);
+      bt.classList.toggle("out-boost", out && g >= 0.05);
       bt.classList.toggle("sel", i === sel);
     });
     const v = band(sel);
@@ -325,7 +359,10 @@
     el.pg.textContent = v ? fmtDb(v.g) : "--";
     el.pq.textContent = v ? fmtQ(v.q) : "--";
     const g = v && num(v.g) ? v.g : 0;
-    el.slotState.textContent = Math.abs(g) < 0.05 ? "flat (inactive)" : g < 0 ? "cut" : "boost";
+    const out = !!v && !v.on;
+    el.slotBlock.classList.toggle("bandout", out);
+    el.slotState.textContent = out ? "OUT · hold " + SHORT[sel] + " = in"
+      : Math.abs(g) < 0.05 ? "flat (inactive)" : g < 0 ? "cut" : "boost";
   }
 
   function select(i) {
@@ -409,11 +446,11 @@
       ctx.fillStyle = g === 0 ? "#bbb" : "#777";
       ctx.fillText(g > 0 ? "+" + g : minus(String(g)), PAD.l - 5, y);
     }
-    // the summed live-EQ response
+    // the summed live-EQ response (a band OUT plays 0 dB: it adds nothing)
     const cos = [];
     for (let i = 0; i < 6; i++) {
       const v = band(i);
-      if (v && num(v.f) && num(v.g) && num(v.q) && Math.abs(v.g) >= 0.05) cos.push(coeffs(KIND[i], v.f, v.g, v.q));
+      if (audible(v) && num(v.f) && num(v.q)) cos.push(coeffs(KIND[i], v.f, v.g, v.q));
     }
     const N = Math.max(80, Math.floor((w - PAD.l - PAD.r) / 2));
     const pts = [];
@@ -436,31 +473,41 @@
       ctx.strokeStyle = "#ffb800"; ctx.lineWidth = 3;
       ctx.beginPath(); ctx.moveTo(flash.x, PAD.t); ctx.lineTo(flash.x, h - PAD.b); ctx.stroke(); ctx.lineWidth = 1;
     }
-    // the dots: unselected first, the selected one on top
+    // the dots: unselected first, the selected one on top. A band OUT: hollow, dashed, at its
+    // stored gain (what comes back with it), in its cut/boost colour (white when selected).
     const order = [0, 1, 2, 3, 4, 5].filter((i) => i !== sel).concat([sel]);
     ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.font = "bold 12px system-ui, Roboto, sans-serif";
     for (const i of order) {
       const v = band(i);
       if (!v || !num(v.f) || !num(v.g)) continue;
       const x = xOf(v.f), y = yOf(clamp(v.g, G_BOT, G_TOP));
-      const active = Math.abs(v.g) >= 0.05;
-      const r = i === sel ? 17 : active ? 14 : 10;
+      const stored = Math.abs(v.g) >= 0.05;
+      const r = i === sel ? 17 : stored ? 14 : 10;
       ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI);
-      ctx.fillStyle = !active ? "#202020" : v.g < 0 ? "#ff5a00" : "#28dc46";
-      ctx.fill();
-      ctx.lineWidth = i === sel ? 3 : 1.5;
-      ctx.strokeStyle = i === sel ? "#ffffff" : active ? "#000" : "#5a5a5a";
-      ctx.stroke(); ctx.lineWidth = 1;
-      ctx.fillStyle = active ? "#000" : i === sel ? "#ddd" : "#8a8a8a";
+      if (!v.on) {
+        const col = i === sel ? "#ffffff" : !stored ? "#8a8a8a" : v.g < 0 ? "#ff5a00" : "#28dc46";
+        ctx.fillStyle = "#070707"; ctx.fill();
+        ctx.setLineDash([4, 3]); ctx.lineWidth = i === sel ? 3 : 2; ctx.strokeStyle = col;
+        ctx.stroke(); ctx.setLineDash([]); ctx.lineWidth = 1;
+        ctx.fillStyle = col;
+      } else {
+        ctx.fillStyle = !stored ? "#202020" : v.g < 0 ? "#ff5a00" : "#28dc46";
+        ctx.fill();
+        ctx.lineWidth = i === sel ? 3 : 1.5;
+        ctx.strokeStyle = i === sel ? "#ffffff" : stored ? "#000" : "#5a5a5a";
+        ctx.stroke(); ctx.lineWidth = 1;
+        ctx.fillStyle = stored ? "#000" : i === sel ? "#ddd" : "#8a8a8a";
+      }
       ctx.font = (r < 12 ? "bold 10px" : "bold 12px") + " system-ui, Roboto, sans-serif";
       ctx.fillText(SHORT[i], x, y + 0.5);
     }
   }
 
   function pos(e) { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
-  // Grabbable: the active bands and the selected one. Flat bands are parked on the 0 dB line and
-  // must not swallow a long-press meant as "notch here" near their frequency.
-  function grabbable(i) { const v = band(i); return !!v && num(v.f) && num(v.g) && (i === sel || Math.abs(v.g) >= 0.05); }
+  // Grabbable: the bands that play (IN, not flat) and the selected one. Flat bands are parked on
+  // the 0 dB line and must not swallow a long-press meant as "notch here" near their frequency;
+  // a band OUT (hollow) is moved only once selected (its chip): a drag on it is inaudible.
+  function grabbable(i) { const v = band(i); return !!v && num(v.f) && num(v.g) && (i === sel || audible(v)); }
   function hit(p) {
     let best = -1, bestD = 30;
     for (let i = 0; i < 6; i++) {
@@ -604,9 +651,18 @@
   // A hold-to-act button. begin() runs when the finger goes down and returns the hold's context
   // ({ms, valid?, why?, ...}) or null (no hold); act(ctx) runs when the hold completes. valid(),
   // when given, is checked every frame and at the end: false = the hold is cancelled (with `why`).
-  function holdButton(node, begin, act) {
+  // opts.tap: a short press is a tap with its own meaning (a band chip selects), not a hold
+  // released too early, so it is not answered with "Hold to confirm". Such a button sits where
+  // thumbs travel (the full-width chip row under the graph), so a finger that SLIDES is not a
+  // hold: moving more than SLIDE_PX from where it went down, or off the button, ends the hold
+  // silently, and is not a tap either (its click is swallowed). The button keeps vertical
+  // panning (touch-action pan-y): a scroll that starts on it still scrolls the page, and the
+  // browser's pointercancel ends the hold too. A plain hold button (MUTE, FLAT) takes every
+  // gesture (touch-action none) and has no movement rule: the mute hold must survive a shaky
+  // finger.
+  function holdButton(node, begin, act, opts = {}) {
     const bar = node.querySelector("b");
-    let timer = 0, raf = 0, t0 = 0, ms = 0, id = null, ctx = null;
+    let timer = 0, raf = 0, t0 = 0, ms = 0, id = null, ctx = null, x0 = 0, y0 = 0, slid = false;
     const stop = () => { clearTimeout(timer); cancelAnimationFrame(raf); timer = 0; raf = 0; id = null; ctx = null; bar.style.width = "0"; holds.delete(node); };
     const broken = () => ctx && ctx.valid && !ctx.valid();
     const cancel = () => { const why = ctx && ctx.why; stop(); if (why) { toast(why, 2600); buzz([30, 60, 30]); } };
@@ -615,12 +671,26 @@
       bar.style.width = (Math.min(1, (performance.now() - t0) / ms) * 100).toFixed(1) + "%";
       raf = requestAnimationFrame(tick);
     };
-    node.style.touchAction = "none";
+    node.style.touchAction = opts.tap ? "pan-y" : "none";
+    if (opts.tap) {
+      node.addEventListener("pointermove", (e) => {
+        if (e.pointerId !== id) return;
+        const r = node.getBoundingClientRect();
+        const off = e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+        if (off || Math.hypot(e.clientX - x0, e.clientY - y0) > SLIDE_PX) { slid = true; stop(); }
+      });
+      // registered before the button's own click listener, and in the capture phase: it runs first
+      node.addEventListener("click", (e) => {
+        if (slid) { slid = false; e.stopImmediatePropagation(); e.preventDefault(); }
+      }, true);
+    }
     node.addEventListener("pointerdown", (e) => {
+      slid = false;
       if (!canEdit() || id !== null) return;
       const c = begin();
       if (!c) return;
       id = e.pointerId; capture(node, id); ctx = c; holds.add(node);
+      x0 = e.clientX; y0 = e.clientY;
       t0 = performance.now(); ms = c.ms;
       timer = setTimeout(() => {
         if (broken()) { cancel(); return; }
@@ -632,7 +702,7 @@
       if (e.pointerId !== id) return;
       const early = timer !== 0 && performance.now() - t0 < ms;
       stop();
-      if (early && e.type === "pointerup") toast("Hold to confirm", 1200);
+      if (early && e.type === "pointerup" && !opts.tap) toast("Hold to confirm", 1200);
     };
     node.addEventListener("pointerup", release);
     node.addEventListener("pointercancel", release);
@@ -665,8 +735,9 @@
     else { toast(why, 3000); buzz([30, 60, 30, 60, 30]); }
     render();
   }
+  // FLAT: the selected band to 0 dB, and IN (D-014: the box zeroes it before it comes back IN)
   holdButton($("#band-flat"), () => ({ ms: FLAT_MS }), () => {
-    send({ t: "band", s: sel, g: 0, id: "flat" });
+    send({ t: "band", s: sel, g: 0, on: true, id: "flat" });
   });
 
   // One confirm dialog for the actions that need one (live-EQ reset, Lo-Cut on/off).
@@ -682,7 +753,7 @@
   $("#reset-live").addEventListener("click", () => {
     if (!canEdit()) return;
     ask("All bands flat?", "The 4 bells and both shelves go back to 0 dB and their default " +
-      "frequencies, smoothly. The box can undo it for 5 minutes, or until the next EQ cut " +
+      "frequencies, all IN, smoothly. The box can undo it for 5 minutes, or until the next EQ cut " +
       "(SETUP › LIVE EQ › Undo reset).", "All flat",
       () => send({ t: "reset_live", confirm: true, id: "reset" }));
   });
