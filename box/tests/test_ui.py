@@ -1654,10 +1654,12 @@ def test_knob_tag_style_from_k1000_yaml(cfg, want):
     assert im.knob_tag_style(cfg) == want
 
 
-def test_shipped_k1000_yaml_says_dim():
+def test_shipped_k1000_yaml_says_off():
+    """Thomas's box (2026-10-13): no tags, a sticker on the shell; the built-in default stays dim."""
     from k1000.profiles import load_settings
     settings = load_settings(Path(__file__).resolve().parents[1] / "etc" / "k1000.yaml")
-    assert settings["ui"]["knob_tags"] == "dim" and im.knob_tag_style(settings) == "dim"
+    assert settings["ui"]["knob_tags"] is False and im.knob_tag_style(settings) == "off"
+    assert im.knob_tag_style({}) == "dim"
 
 
 def test_knob_corners_are_the_sticker_layout():

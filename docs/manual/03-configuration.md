@@ -63,7 +63,7 @@ spectrum:
   program_floor_db: -60.0
 
 ui:
-  knob_tags: dim                 # dim | off | bright: the E1-E4 tags on the screen
+  knob_tags: off                 # dim | off | bright: the E1-E4 tags (Thomas's box: off; built-in dim)
 
 engine:
   url: ws://127.0.0.1:1234

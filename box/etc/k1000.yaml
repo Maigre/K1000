@@ -65,9 +65,10 @@ spectrum:
 # Screen (D-011). knob_tags: the "E1".."E4" tag next to each knob's label. dim = small, dark
 # grey (default) · off = no tag, the label takes the corner (a sticker on the shell names the
 # knobs: E1 top-left, E2 bottom-left, E3 top-right, E4 bottom-right) · bright = cyan (v1).
-# Anything else = dim. Restart k1000 after a change.
+# Anything else, or no ui: section, = dim. Thomas's box: off (2026-10-13). Restart k1000 after a
+# change.
 ui:
-  knob_tags: dim
+  knob_tags: off
 
 engine:
   url: ws://127.0.0.1:1234

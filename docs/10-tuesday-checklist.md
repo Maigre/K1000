@@ -19,7 +19,8 @@ soak ran 1 h 34 min, clean (06:28-08:02), and is stopped. The PEAK now survives 
 **Your asks of this morning (D-011), from Claude's next deploy:** the Lo-Cut moves 2 Hz a click
 (1 Hz with the push); ALIGN E3 is one signed **DELAY** (clockwise `SUBS LATER`, anticlockwise
 `TOPS LATER`, a stop on `ALIGNED` between them), so SETUP › Top delay is gone; the E1–E4 tags are
-small and grey (`ui: {knob_tags: off}` in k1000.yaml removes them, for a sticker). Steps 8, 9 and 31
+small and grey (`ui: {knob_tags: off}` in k1000.yaml removes them, for a sticker): Thomas chose
+`off`, on the box since 13:39 (sticker the shell). Steps 8, 9 and 31
 describe that build; before the deploy the box still shows SUB DELAY and 1/12-octave Lo-Cut steps.
 
 | SHOW | after B4 | ALIGN, locked | SETUP, undo | Knob test |

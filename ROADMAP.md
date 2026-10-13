@@ -177,8 +177,8 @@ parametric bands + the spectrum serve live notching better on 4 knobs).
   - ALIGN page: master, balance, sub delay, Lo-Cut (sub delay and Lo-Cut locked; top delay went to
     SETUP). Built and accepted on the box Tue 13 (D-009).
   - Thomas's bench asks, Tue 13 (D-011): Lo-Cut 2 Hz a click; E3 = one signed DELAY for subs or
-    tops (SETUP › Top delay gone); E1–E4 tags dim grey (`ui.knob_tags`, `off` for a sticker).
-    Built and tested; on the box with the next deploy, before the freeze.
+    tops (SETUP › Top delay gone); E1–E4 tags dim grey by default (`ui.knob_tags`; Thomas's box:
+    `off`, a sticker on the shell). On the box since `24cba65` (Tue 13, 10:46); tags off 13:39.
   - SETUP keeps the rest; B1 hold returns to SHOW.
   - Knob fast-turn fix.
   - Design: `docs/07-live-ui-v1.md` + `docs/ui/v1/`. Knob analysis: `docs/08-knob-precision.md`.

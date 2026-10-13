@@ -17,9 +17,10 @@ message means is in [chapter 6](06-troubleshooting.md).
 knob's value at its corner: **E1 top-left, E2 bottom-left, E3 top-right, E4 bottom-right**. Which
 physical knob and button is which is set once with SETUP › Knob test ([§5.4](#54-knob-test)) and
 the `controls:` map ([chapter 3](03-configuration.md#5-controls)). Label the buttons on the
-shell: **B1 PAGE · B2 MUTE · B3 BAND/UNLOCK · B4 NOTCH**. Each knob's label carries a small grey
-`E1`…`E4` tag; with a sticker on the shell, `knob_tags: off` in k1000.yaml's `ui:` section removes
-them (or `bright` makes them cyan, [chapter 3 §5](03-configuration.md#5-controls)).
+shell: **B1 PAGE · B2 MUTE · B3 BAND/UNLOCK · B4 NOTCH**, and the knobs **E1–E4**: Thomas's box
+draws no `E1`…`E4` tag on the screen (`knob_tags: off` in k1000.yaml's `ui:` section). `dim` puts a
+small grey tag by each label (the built-in default, as in the pictures), `bright` a cyan one
+([chapter 3 §5](03-configuration.md#5-controls)).
 
 | Gesture | Means |
 |---|---|

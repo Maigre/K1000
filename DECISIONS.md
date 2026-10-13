@@ -258,6 +258,9 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
     secondary to the label; the default), `off` (no tag, the label takes the corner: for a sticker
     on the shell) or `bright` (v1's cyan). The knobs stay E1 top-left, E2 bottom-left, E3 top-right, E4
     bottom-right, and the docs keep their names.
+  - **Thomas's box: `off`** (Thomas, 13:39 the same day): a sticker on the shell names the knobs.
+    Set in the box's `/etc/k1000/k1000.yaml` and in the repo template `box/etc/k1000.yaml`; the
+    built-in default (no `ui:` section) stays `dim`, and the manual's pictures show `dim`.
 - **Why this delay design**: one knob already guarded (lock, wake-up click, dip) covers both
   layouts, and "which side is late" is the question the operator asks, so the screen answers it in
   words. Two independent delays could both be non-zero, which only adds latency to the whole rig.

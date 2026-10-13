@@ -26,8 +26,8 @@ with the source down, **no B2** (it would mute).
 
 ## The 5 gestures
 
-Knobs at the screen's corners (E1–E4: the small grey tag by each label, or a sticker on the
-shell), each value next to its knob: **E1** top-left, **E2** bottom-left, **E3** top-right, **E4**
+Knobs at the screen's corners (E1–E4: the sticker on the shell; the screen draws no tag,
+`knob_tags: off`), each value next to its knob: **E1** top-left, **E2** bottom-left, **E3** top-right, **E4**
 bottom-right. Buttons: **B1 PAGE · B2 MUTE · B3 BAND · B4 NOTCH**.
 
 | Gesture | Does |
