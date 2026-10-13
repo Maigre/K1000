@@ -1,17 +1,80 @@
 <!doctype html>
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-<!-- Placeholder until the v2 page (docs/14-phone-v2-protocol.md) replaces this file: it sends the
-     visitor (the K1000 app opens /v2/ by default) straight to the v1 page, so nothing half-built
-     ever shows on the phone. -->
+<!-- K1000 v2: the phone page of protocol 2 (docs/14-phone-v2-protocol.md, docs/15-phone-v2-page.md).
+     No inline script or style (the box's CSP: script-src 'self'; style-src 'self'). -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#000000">
 <meta name="color-scheme" content="dark">
-<meta http-equiv="refresh" content="0; url=/">
+<meta name="description" content="K1000 v2: the live page (master, mute, live EQ, ALIGN, SETUP) from the phone">
 <title>K1000 v2</title>
+<link rel="icon" href="/icons/icon-192.png" type="image/png">
+<link rel="stylesheet" href="app.css">
+<script type="module" src="js/main.js"></script>
 </head>
-<body>
-<p><a href="/">Open the K1000 page</a></p>
+<body class="nolink">
+<div id="app">
+  <header id="strip" class="strip">
+    <button id="stBtn" class="st" type="button" aria-label="Status">
+      <span class="norm">
+        <span id="sLink" class="bad"><i></i><span>NO LINK</span></span>
+        <span id="sRun" class="ph"><i></i><span>RUN</span></span>
+        <span id="sDev" class="dv">--</span>
+        <span id="sBadge" class="badge" hidden>!1</span>
+        <span id="sPh" class="ph">0 PH</span>
+      </span>
+      <span id="sMute" class="mutemsg">MUTED</span>
+    </button>
+    <button id="setupBtn" class="setupbtn" type="button" aria-expanded="false">&#9776; SETUP</button>
+  </header>
+  <button id="alertLine" class="alert" type="button" hidden><span></span><small></small></button>
+
+  <div id="graph" class="graph">
+    <canvas id="cv" aria-label="Live EQ graph: tap a dot to select, drag a dot, long-press for the notch helper"></canvas>
+    <div class="ostrip">
+      <button id="srcBtn" class="gtag src" type="button" aria-expanded="false">PGM &#9662;</button>
+      <div id="pills" class="pills"></div>
+      <button id="peakTag" class="gtag peak" type="button" hidden><b class="fill"></b><span>&#9660; PEAK</span></button>
+    </div>
+    <div id="hud" class="hud" hidden><div class="hl"><b></b><em></em></div><div class="hv"><span></span><small></small></div></div>
+    <div id="readout" class="readout" hidden></div>
+    <div id="ring" class="ring" hidden></div>
+    <div id="pop" class="pop" hidden>
+      <div class="ph"><span class="lab">SPECTRUM ON THIS PHONE</span><button id="popX" class="x" type="button" aria-label="Close">&#10005;</button></div>
+      <div class="seg" id="popShow">
+        <button type="button" data-v="box">BOX</button><button type="button" data-v="off">OFF</button>
+      </div>
+      <button id="popFreeze" class="wide" type="button" aria-pressed="false">FREEZE</button>
+      <div id="popNote" class="note"></div>
+    </div>
+  </div>
+
+  <div class="ctl">
+    <div id="slot" class="slot">
+      <div id="bands" class="bands"></div>
+      <div id="stepper" class="stepper" hidden></div>
+    </div>
+    <div id="tiles" class="row3 tiles"></div>
+    <div id="alignRow" class="row3 align"></div>
+  </div>
+
+  <footer id="foot" class="foot">
+    <div id="footTile" class="ftile"></div>
+    <div id="meters" class="meters" aria-label="Output meters"></div>
+    <button id="mute" class="mute nolink" type="button"><b class="fill"></b><span>NO LINK</span></button>
+  </footer>
+
+  <section id="sheet" class="sheet" hidden>
+    <div class="sh-h"><h2 id="shTitle">SETUP</h2><button id="shX" class="x" type="button" aria-label="Close">&#10005;</button></div>
+    <div id="shTabs" class="tabs" role="tablist"></div>
+    <div id="shBody" class="sh-b"></div>
+  </section>
+
+  <div id="toast" class="toast" hidden></div>
+  <div id="frame" class="frame" hidden></div>
+  <div id="rotate" class="rotate">Portrait for now (the APK locks it). MASTER, the meters and MUTE stay live below.</div>
+</div>
 </body>
 </html>

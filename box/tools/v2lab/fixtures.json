@@ -1,0 +1,1161 @@
+{
+ "hello": {
+  "t": "hello",
+  "v": 2,
+  "server": "k1000 0.1.0",
+  "build": "16c6613d2f04",
+  "phone_on": true,
+  "you": 1,
+  "min_app": 0,
+  "surface": {
+   "screen": true,
+   "knobs": true
+  },
+  "bands": [
+   "live_peq.0",
+   "live_peq.1",
+   "live_peq.2",
+   "live_peq.3",
+   "live_lowshelf",
+   "live_highshelf"
+  ],
+  "labels": [
+   "PEQ 1",
+   "PEQ 2",
+   "PEQ 3",
+   "PEQ 4",
+   "LO SHELF",
+   "HI SHELF"
+  ],
+  "short": [
+   "P1",
+   "P2",
+   "P3",
+   "P4",
+   "LS",
+   "HS"
+  ],
+  "kind": [
+   "bell",
+   "bell",
+   "bell",
+   "bell",
+   "low_shelf",
+   "high_shelf"
+  ],
+  "order": [
+   4,
+   0,
+   1,
+   2,
+   3,
+   5
+  ],
+  "bells": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "fields": {
+   "master_db": {
+    "label": "MASTER",
+    "unit": "dB",
+    "min": -80.0,
+    "max": 0.0,
+    "default": -20.0,
+    "log": false,
+    "step": 0.5,
+    "fine": 0.5,
+    "digits": 2,
+    "snap": false,
+    "caps": [
+     -12,
+     2
+    ],
+    "stepper": [
+     -12,
+     -2,
+     -1,
+     1,
+     2
+    ],
+    "accel": {
+     "up": 1,
+     "down": 4
+    },
+    "lock": null,
+    "sticky": [],
+    "landmarks": [],
+    "paths": [
+     "master_db"
+    ],
+    "up_px_per_detent": 20,
+    "up_limit": {
+     "db_per_s": 6.0,
+     "burst_db": 3.0,
+     "bucket": "pa"
+    }
+   },
+   "balance_db": {
+    "label": "BAL",
+    "unit": "dB",
+    "min": -12.0,
+    "max": 12.0,
+    "default": 0.0,
+    "log": false,
+    "step": 0.5,
+    "fine": 0.5,
+    "digits": 2,
+    "snap": false,
+    "caps": [
+     -4,
+     4
+    ],
+    "stepper": [
+     -2,
+     -1,
+     1,
+     2
+    ],
+    "accel": {
+     "up": 1,
+     "down": 1
+    },
+    "lock": null,
+    "sticky": [
+     0.0
+    ],
+    "landmarks": [],
+    "paths": [
+     "balance_db"
+    ]
+   },
+   "lowcut_hz": {
+    "label": "LO-CUT",
+    "unit": "Hz",
+    "min": 20.0,
+    "max": 300.0,
+    "default": 100.0,
+    "log": false,
+    "step": 2.0,
+    "fine": 1.0,
+    "digits": 2,
+    "snap": true,
+    "caps": [
+     -12,
+     12
+    ],
+    "stepper": [
+     -5,
+     -1,
+     1,
+     5
+    ],
+    "accel": {
+     "up": 4,
+     "down": 4
+    },
+    "lock": "align",
+    "sticky": [],
+    "landmarks": [],
+    "paths": [
+     "lowcut_hz"
+    ]
+   },
+   "live_peq.freq": {
+    "label": "FREQ",
+    "unit": "Hz",
+    "min": 20.0,
+    "max": 20000.0,
+    "default": 1000.0,
+    "log": true,
+    "step": 0.08333333333333333,
+    "fine": 0.020833333333333332,
+    "digits": 2,
+    "snap": false,
+    "caps": [
+     -24,
+     24
+    ],
+    "stepper": [
+     -4,
+     -1,
+     1,
+     4
+    ],
+    "accel": {
+     "up": 4,
+     "down": 4
+    },
+    "lock": null,
+    "sticky": [],
+    "landmarks": [
+     100.0,
+     1000.0,
+     10000.0
+    ],
+    "paths": [
+     "live_peq.0.freq",
+     "live_peq.1.freq",
+     "live_peq.2.freq",
+     "live_peq.3.freq"
+    ]
+   },
+   "live_peq.gain": {
+    "label": "GAIN",
+    "unit": "dB",
+    "min": -20.0,
+    "max": 6.0,
+    "default": 0.0,
+    "log": false,
+    "step": 0.5,
+    "fine": 0.5,
+    "digits": 2,
+    "snap": false,
+    "caps": [
+     -12,
+     12
+    ],
+    "stepper": [
+     -6,
+     -1,
+     1,
+     6
+    ],
+    "accel": {
+     "up": 1,
+     "down": 1
+    },
+    "lock": null,
+    "sticky": [
+     0.0
+    ],
+    "landmarks": [],
+    "paths": [
+     "live_peq.0.gain",
+     "live_peq.1.gain",
+     "live_peq.2.gain",
+     "live_peq.3.gain"
+    ]
+   },
+   "live_peq.q": {
+    "label": "Q",
+    "unit": "",
+    "min": 0.3,
+    "max": 16.0,
+    "default": 4.0,
+    "log": true,
+    "step": 0.16666666666666666,
+    "fine": 0.041666666666666664,
+    "digits": 3,
+    "snap": false,
+    "caps": [
+     -12,
+     12
+    ],
+    "stepper": [
+     -2,
+     -1,
+     1,
+     2
+    ],
+    "accel": {
+     "up": 1,
+     "down": 1
+    },
+    "lock": null,
+    "sticky": [],
+    "landmarks": [],
+    "paths": [
+     "live_peq.0.q",
+     "live_peq.1.q",
+     "live_peq.2.q",
+     "live_peq.3.q"
+    ]
+   },
+   "live_lowshelf.freq": {
+    "label": "FREQ",
+    "unit": "Hz",
+    "min": 30.0,
+    "max": 1000.0,
+    "default": 120.0,
+    "log": true,
+    "step": 0.08333333333333333,
+    "fine": 0.020833333333333332,
+    "digits": 2,
+    "snap": false,
+    "caps": [
+     -24,
+     24
+    ],
+    "stepper": [
+     -4,
+     -1,
+     1,
+     4
+    ],
+    "accel": {
+     "up": 4,
+     "down": 4
+    },
+    "lock": null,
+    "sticky": [],
+    "landmarks": [
+     100.0,
+     1000.0,
+     10000.0
+    ],
+    "paths": [
+     "live_lowshelf.freq"
+    ]
+   },
+   "live_lowshelf.gain": {
+    "label": "GAIN",
+    "unit": "dB",
+    "min": -12.0,
+    "max": 6.0,
+    "default": 0.0,
+    "log": false,
+    "step": 0.5,
+    "fine": 0.5,
+    "digits": 2,
+    "snap": false,
+    "caps": [
+     -12,
+     12
+    ],
+    "stepper": [
+     -6,
+     -1,
+     1,
+     6
+    ],
+    "accel": {
+     "up": 1,
+     "down": 1
+    },
+    "lock": null,
+    "sticky": [
+     0.0
+    ],
+    "landmarks": [],
+    "paths": [
+     "live_lowshelf.gain"
+    ]
+   },
+   "live_lowshelf.q": {
+    "label": "SLOPE",
+    "unit": "",
+    "min": 0.4,
+    "max": 1.5,
+    "default": 0.707,
+    "log": true,
+    "step": 0.16666666666666666,
+    "fine": 0.041666666666666664,
+    "digits": 3,
+    "snap": false,
+    "caps": [
+     -12,
+     12
+    ],
+    "stepper": [
+     -2,
+     -1,
+     1,
+     2
+    ],
+    "accel": {
+     "up": 1,
+     "down": 1
+    },
+    "lock": null,
+    "sticky": [],
+    "landmarks": [],
+    "paths": [
+     "live_lowshelf.q"
+    ]
+   },
+   "live_highshelf.freq": {
+    "label": "FREQ",
+    "unit": "Hz",
+    "min": 1000.0,
+    "max": 16000.0,
+    "default": 8000.0,
+    "log": true,
+    "step": 0.08333333333333333,
+    "fine": 0.020833333333333332,
+    "digits": 2,
+    "snap": false,
+    "caps": [
+     -24,
+     24
+    ],
+    "stepper": [
+     -4,
+     -1,
+     1,
+     4
+    ],
+    "accel": {
+     "up": 4,
+     "down": 4
+    },
+    "lock": null,
+    "sticky": [],
+    "landmarks": [
+     100.0,
+     1000.0,
+     10000.0
+    ],
+    "paths": [
+     "live_highshelf.freq"
+    ]
+   },
+   "live_highshelf.gain": {
+    "label": "GAIN",
+    "unit": "dB",
+    "min": -12.0,
+    "max": 6.0,
+    "default": 0.0,
+    "log": false,
+    "step": 0.5,
+    "fine": 0.5,
+    "digits": 2,
+    "snap": false,
+    "caps": [
+     -12,
+     12
+    ],
+    "stepper": [
+     -6,
+     -1,
+     1,
+     6
+    ],
+    "accel": {
+     "up": 1,
+     "down": 1
+    },
+    "lock": null,
+    "sticky": [
+     0.0
+    ],
+    "landmarks": [],
+    "paths": [
+     "live_highshelf.gain"
+    ]
+   },
+   "live_highshelf.q": {
+    "label": "SLOPE",
+    "unit": "",
+    "min": 0.4,
+    "max": 1.5,
+    "default": 0.707,
+    "log": true,
+    "step": 0.16666666666666666,
+    "fine": 0.041666666666666664,
+    "digits": 3,
+    "snap": false,
+    "caps": [
+     -12,
+     12
+    ],
+    "stepper": [
+     -2,
+     -1,
+     1,
+     2
+    ],
+    "accel": {
+     "up": 1,
+     "down": 1
+    },
+    "lock": null,
+    "sticky": [],
+    "landmarks": [],
+    "paths": [
+     "live_highshelf.q"
+    ]
+   },
+   "align_delay_ms": {
+    "label": "DELAY",
+    "unit": "ms",
+    "min": -50.0,
+    "max": 50.0,
+    "default": 0.0,
+    "log": false,
+    "step": 0.1,
+    "fine": 0.020833333333333332,
+    "digits": 6,
+    "snap": false,
+    "caps": [
+     -10,
+     10
+    ],
+    "stepper": [
+     -10,
+     -1,
+     1,
+     10
+    ],
+    "accel": {
+     "up": 1,
+     "down": 1
+    },
+    "lock": "align",
+    "sticky": [
+     0.0
+    ],
+    "landmarks": [],
+    "paths": [
+     "align_delay_ms"
+    ]
+   },
+   "out_trim_db": {
+    "label": "TRIM",
+    "unit": "dB",
+    "min": -24.0,
+    "max": 6.0,
+    "default": 0.0,
+    "log": false,
+    "step": 0.5,
+    "fine": 0.5,
+    "digits": 2,
+    "snap": false,
+    "caps": [
+     -4,
+     4
+    ],
+    "stepper": [
+     -2,
+     -1,
+     1,
+     2
+    ],
+    "accel": {
+     "up": 1,
+     "down": 1
+    },
+    "lock": null,
+    "sticky": [
+     0.0
+    ],
+    "landmarks": [],
+    "paths": [
+     "out_trim_db.0",
+     "out_trim_db.1",
+     "out_trim_db.2",
+     "out_trim_db.3"
+    ],
+    "up_limit": {
+     "db_per_s": 6.0,
+     "burst_db": 3.0,
+     "bucket": "pa"
+    }
+   },
+   "input_trim_db": {
+    "label": "TRIM",
+    "unit": "dB",
+    "min": -24.0,
+    "max": 12.0,
+    "default": 0.0,
+    "log": false,
+    "step": 0.5,
+    "fine": 0.5,
+    "digits": 2,
+    "snap": false,
+    "caps": [
+     -4,
+     4
+    ],
+    "stepper": [
+     -2,
+     -1,
+     1,
+     2
+    ],
+    "accel": {
+     "up": 1,
+     "down": 1
+    },
+    "lock": null,
+    "sticky": [
+     0.0
+    ],
+    "landmarks": [],
+    "paths": [
+     "input_trim_db"
+    ],
+    "up_limit": {
+     "db_per_s": 6.0,
+     "burst_db": 3.0,
+     "bucket": "pa"
+    }
+   },
+   "sub_lowpass_hz": {
+    "label": "LOW-PASS",
+    "unit": "Hz",
+    "min": 40.0,
+    "max": 250.0,
+    "default": 120.0,
+    "log": true,
+    "step": 0.08333333333333333,
+    "fine": 0.020833333333333332,
+    "digits": 2,
+    "snap": false,
+    "caps": [
+     -24,
+     24
+    ],
+    "stepper": [
+     -4,
+     -1,
+     1,
+     4
+    ],
+    "accel": {
+     "up": 4,
+     "down": 4
+    },
+    "lock": null,
+    "sticky": [],
+    "landmarks": [
+     100.0
+    ],
+    "paths": [
+     "sub_lowpass_hz"
+    ]
+   }
+  },
+  "slide": {
+   "px_per_detent": 14,
+   "hysteresis_px": 4,
+   "lockin_px": 10,
+   "axis_ratio": 2,
+   "vertical_px": 14,
+   "tap_px": 10,
+   "tap_ms": 450,
+   "edge_px": 24,
+   "speed_window_ms": 100,
+   "fine_below_px_s": 100,
+   "accel_from_px_s": 168,
+   "accel_full_px_s": 560,
+   "reverse_fine_ms": 150,
+   "send_ms": 50,
+   "max_per_s": 20,
+   "echo_ms": 450,
+   "master_up_px_per_detent": 20,
+   "unlock_hold_ms": 800,
+   "stepper_idle_s": 8.0
+  },
+  "setup": [
+   {
+    "group": "TOPS",
+    "items": [
+     {
+      "label": "Trim L",
+      "f": "out_trim_db.2",
+      "kind": "num",
+      "field": "out_trim_db",
+      "phone": "edit"
+     },
+     {
+      "label": "Trim R",
+      "f": "out_trim_db.3",
+      "kind": "num",
+      "field": "out_trim_db",
+      "phone": "edit"
+     },
+     {
+      "label": "Polarity",
+      "f": "top_inverted",
+      "kind": "bool",
+      "choices": [
+       false,
+       true
+      ],
+      "names": [
+       "normal",
+       "INVERTED"
+      ],
+      "rebuild": false,
+      "phone": "edit"
+     },
+     {
+      "label": "Lo-Cut",
+      "f": "lowcut_on",
+      "kind": "bool",
+      "choices": [
+       false,
+       true
+      ],
+      "names": [
+       "off",
+       "ON"
+      ],
+      "rebuild": false,
+      "phone": "edit"
+     }
+    ]
+   },
+   {
+    "group": "SUBS",
+    "items": [
+     {
+      "label": "Trim L",
+      "f": "out_trim_db.0",
+      "kind": "num",
+      "field": "out_trim_db",
+      "phone": "edit"
+     },
+     {
+      "label": "Trim R",
+      "f": "out_trim_db.1",
+      "kind": "num",
+      "field": "out_trim_db",
+      "phone": "edit"
+     },
+     {
+      "label": "Polarity",
+      "f": "sub_inverted",
+      "kind": "bool",
+      "choices": [
+       false,
+       true
+      ],
+      "names": [
+       "normal",
+       "INVERTED"
+      ],
+      "rebuild": false,
+      "phone": "edit"
+     },
+     {
+      "label": "Mono L+R",
+      "f": "mono_subs",
+      "kind": "bool",
+      "choices": [
+       false,
+       true
+      ],
+      "names": [
+       "off",
+       "ON"
+      ],
+      "rebuild": true,
+      "phone": "edit"
+     },
+     {
+      "label": "Low-pass",
+      "f": "sub_lowpass_on",
+      "kind": "bool",
+      "choices": [
+       false,
+       true
+      ],
+      "names": [
+       "off",
+       "ON"
+      ],
+      "rebuild": false,
+      "phone": "edit"
+     },
+     {
+      "label": "Low-pass freq",
+      "f": "sub_lowpass_hz",
+      "kind": "num",
+      "field": "sub_lowpass_hz",
+      "phone": "edit"
+     }
+    ]
+   },
+   {
+    "group": "INPUT",
+    "items": [
+     {
+      "label": "Trim",
+      "f": "input_trim_db",
+      "kind": "num",
+      "field": "input_trim_db",
+      "phone": "edit"
+     }
+    ]
+   },
+   {
+    "group": "LIVE EQ",
+    "items": [
+     {
+      "label": "Reset live EQ",
+      "f": "reset_live",
+      "kind": "action",
+      "confirm": true,
+      "act": [
+       "reset_live"
+      ],
+      "phone": "edit"
+     },
+     {
+      "label": "Undo reset",
+      "f": "undo_reset",
+      "kind": "action",
+      "confirm": false,
+      "act": [
+       "undo_reset"
+      ],
+      "phone": "edit"
+     },
+     {
+      "label": "Spectrum",
+      "f": "spectrum_on",
+      "kind": "bool",
+      "choices": [
+       false,
+       true
+      ],
+      "names": [
+       "off",
+       "ON"
+      ],
+      "rebuild": false,
+      "phone": "edit"
+     }
+    ]
+   },
+   {
+    "group": "PHONE",
+    "items": [
+     {
+      "label": "Phone",
+      "f": "PHONE",
+      "kind": "page",
+      "phone": "readonly",
+      "why": "ON · SWITCHED AT THE BOX"
+     },
+     {
+      "label": "Laptop access",
+      "f": "laptop_access",
+      "kind": "action",
+      "confirm": true,
+      "act": [
+       "laptop_open",
+       "laptop_close"
+      ],
+      "phone": "edit"
+     }
+    ]
+   },
+   {
+    "group": "BOX",
+    "items": [
+     {
+      "label": "Profile",
+      "f": "profile",
+      "kind": "choice",
+      "choices": [
+       "dev",
+       "m4"
+      ],
+      "names": [
+       "DEV",
+       "M4"
+      ],
+      "rebuild": true,
+      "phone": "edit"
+     },
+     {
+      "label": "Audition (dev)",
+      "f": "dev_audition",
+      "kind": "choice",
+      "choices": [
+       "sum",
+       "tops",
+       "subs"
+      ],
+      "names": [
+       "SUM",
+       "TOPS",
+       "SUBS"
+      ],
+      "rebuild": true,
+      "phone": "edit"
+     },
+     {
+      "label": "Knob test",
+      "f": "HWTEST",
+      "kind": "page",
+      "phone": "hidden",
+      "why": "ON THE BOX ONLY"
+     }
+    ]
+   }
+  ],
+  "acts": [
+   "reset_live",
+   "undo_reset",
+   "laptop_open",
+   "laptop_close"
+  ],
+  "notch": {
+   "q": 8.651,
+   "near_oct": 0.1667
+  },
+  "unlock_s": 30.0,
+  "pick_window_s": 8.0,
+  "undo_reset_s": 300.0,
+  "fs": 48000,
+  "rta": {
+   "enabled": true,
+   "src": "PGM",
+   "hz": 10.0,
+   "step_db": 0.5,
+   "idle_s": 10.0
+  },
+  "limits": {
+   "max_message": 1024,
+   "rate_per_s": 30.0,
+   "burst": 40,
+   "max_phones": 4,
+   "master_up_db_per_s": 6.0,
+   "master_up_burst_db": 3.0,
+   "guard_db": 6.0,
+   "guard_window_s": 2.0
+  },
+  "nudge": {
+   "master_db": [
+    -12,
+    2
+   ],
+   "balance_db": [
+    -4,
+    4
+   ],
+   "lowcut_hz": [
+    -12,
+    12
+   ],
+   "live_peq.0.freq": [
+    -24,
+    24
+   ],
+   "live_peq.0.gain": [
+    -12,
+    12
+   ],
+   "live_peq.0.q": [
+    -12,
+    12
+   ],
+   "live_peq.1.freq": [
+    -24,
+    24
+   ],
+   "live_peq.1.gain": [
+    -12,
+    12
+   ],
+   "live_peq.1.q": [
+    -12,
+    12
+   ],
+   "live_peq.2.freq": [
+    -24,
+    24
+   ],
+   "live_peq.2.gain": [
+    -12,
+    12
+   ],
+   "live_peq.2.q": [
+    -12,
+    12
+   ],
+   "live_peq.3.freq": [
+    -24,
+    24
+   ],
+   "live_peq.3.gain": [
+    -12,
+    12
+   ],
+   "live_peq.3.q": [
+    -12,
+    12
+   ],
+   "live_lowshelf.freq": [
+    -24,
+    24
+   ],
+   "live_lowshelf.gain": [
+    -12,
+    12
+   ],
+   "live_lowshelf.q": [
+    -12,
+    12
+   ],
+   "live_highshelf.freq": [
+    -24,
+    24
+   ],
+   "live_highshelf.gain": [
+    -12,
+    12
+   ],
+   "live_highshelf.q": [
+    -12,
+    12
+   ],
+   "align_delay_ms": [
+    -10,
+    10
+   ],
+   "out_trim_db.0": [
+    -4,
+    4
+   ],
+   "out_trim_db.1": [
+    -4,
+    4
+   ],
+   "out_trim_db.2": [
+    -4,
+    4
+   ],
+   "out_trim_db.3": [
+    -4,
+    4
+   ],
+   "input_trim_db": [
+    -4,
+    4
+   ],
+   "sub_lowpass_hz": [
+    -24,
+    24
+   ]
+  }
+ },
+ "state": {
+  "t": "state",
+  "master_db": -20.0,
+  "muted": false,
+  "hold": "mute",
+  "mute_seq": 1,
+  "mute_known": true,
+  "balance_db": 0.0,
+  "lowcut_on": true,
+  "lowcut_hz": 100.0,
+  "bands": [
+   {
+    "f": 250.0,
+    "g": 0.0,
+    "q": 4.0,
+    "on": true
+   },
+   {
+    "f": 1000.0,
+    "g": 0.0,
+    "q": 4.0,
+    "on": true
+   },
+   {
+    "f": 2500.0,
+    "g": 0.0,
+    "q": 4.0,
+    "on": true
+   },
+   {
+    "f": 5000.0,
+    "g": 0.0,
+    "q": 4.0,
+    "on": true
+   },
+   {
+    "f": 120.0,
+    "g": 0.0,
+    "q": 0.707,
+    "on": true
+   },
+   {
+    "f": 8000.0,
+    "g": 0.0,
+    "q": 0.707,
+    "on": true
+   }
+  ],
+  "engine": "Running",
+  "linked": true,
+  "device_present": true,
+  "device": "HiFiBerry",
+  "profile": "dev",
+  "message": "",
+  "drift": [],
+  "ramping": false,
+  "load": 1.5,
+  "phone_on": true,
+  "phones": 1,
+  "alerts": [],
+  "pills": [],
+  "hint": "",
+  "hint_s": 0,
+  "ready": true,
+  "in_clip": false,
+  "mute_src": "",
+  "mute_band": {
+   "kind": "",
+   "text": ""
+  },
+  "mute_fallback": "use B4 on the box",
+  "undo_reset_s": 0,
+  "align_delay_ms": 0.0,
+  "setup": {
+   "out_trim_db.2": 0.0,
+   "out_trim_db.3": 0.0,
+   "top_inverted": false,
+   "lowcut_on": true,
+   "out_trim_db.0": 0.0,
+   "out_trim_db.1": 0.0,
+   "sub_inverted": false,
+   "mono_subs": false,
+   "sub_lowpass_on": false,
+   "sub_lowpass_hz": 120.0,
+   "input_trim_db": 0.0,
+   "spectrum_on": true,
+   "profile": "dev",
+   "dev_audition": "sum"
+  },
+  "spectrum": {
+   "on": true,
+   "src": "PGM",
+   "state": "off"
+  },
+  "laptop": {
+   "state": "off",
+   "s": 0
+  },
+  "readonly": {},
+  "box_band": 0,
+  "box_page": "SHOW",
+  "knobs_ok": null
+ },
+ "m": {
+  "t": "m",
+  "l": [
+   -20.0,
+   -20.0,
+   -20.0,
+   -20.0
+  ],
+  "c": [
+   false,
+   false,
+   false,
+   false
+  ],
+  "i": [
+   -60.0,
+   -60.0
+  ]
+ }
+}
