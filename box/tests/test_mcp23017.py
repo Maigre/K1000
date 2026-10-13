@@ -23,7 +23,7 @@ from k1000.hw import mcp23017 as m
 from k1000.hw.mcp23017 import (
     DEFAULT_ENCODERS, DEFAULT_SWITCHES, EXPECTED_CONFIG, LONG, PRESS, RELEASE, SHORT,
     Accelerator, EncoderEvent, Mcp23017, QuadratureDecoder, SwitchDebouncer, SwitchEvent,
-    ZynthianControls, accel_multiplier, pin_index,
+    ZynthianControls, accel_multiplier, controls_options, parse_detent, pin_index,
 )
 
 # ---------------------------------------------------------------------------------------------
@@ -260,15 +260,43 @@ class TestDecoder:
 
     def test_skipped_state_mid_cycle_inferred_from_direction(self):
         d = QuadratureDecoder(4, state=3)
-        # 3 -> 1 (+1), 1 -> 2 skips 0 (both bits flip) -> +2, 2 -> 3 (+1) = one detent
-        assert run_states(d, [1, 2, 3]) == [0, 0, 1]
+        assert run_states(d, CW[1:]) == [0, 0, 0, 1]          # the knob is turning CW
+        # 3 -> 1 (+1), 1 -> 2 skips 0 (both bits flip) -> +2, since the knob left the detent
+        # already turning CW, 2 -> 3 (+1) = one detent
+        assert run_states(d, [1, 2, 3], t0=0.025) == [0, 0, 1]
         assert d.invalid == 0
 
-    def test_skipped_first_state_still_counts_by_rounding(self):
+    def test_a_skip_in_a_first_click_from_stillness_needs_two_steps_first(self):
+        # LAS-3: the excursion's own first edge is not "a recent move". 11 -> 01 -> 10 -> 11 on
+        # a resting knob (INTCAP 01 then GPIO 10 in one read) is a glitch, never a click.
         d = QuadratureDecoder(4, state=3)
-        # 3 -> 0 unattributable (no history), then 0 -> 2 -> 3: acc 2 at rest -> rounds to 1
-        assert run_states(d, [0, 2, 3]) == [0, 0, 1]
-        assert d.invalid == 1
+        assert run_states(d, [1, 2, 3]) == [0, 0, 0]
+        assert d.invalid == 1 and d.acc == 0
+        assert run_states(d, [2, 1, 3], t0=1.0) == [0, 0, 0]
+        # two counted steps that way since it left (|acc| >= 2): the skip is the turn's
+        assert run_states(d, [1, 0, 3], t0=2.0) == [0, 0, 1]
+        assert d.invalid == 2
+        # and the next click, left while turning, has its skip credited at once
+        assert run_states(d, [1, 2, 3], t0=2.015) == [0, 0, 1]
+
+    def test_a_click_from_stillness_faster_than_a_hand_is_a_glitch(self):
+        # staggered dips and releases make a valid cycle: only its speed gives it away
+        for spd, n in ((4, 1), (2, 2)):
+            d = QuadratureDecoder(spd, state=3)
+            assert sum(run_states(d, [1, 0, 2, 3], t0=5.0, dt=0.002)) == 0
+            assert d.glitches >= 1 and d.acc == 0
+            # the same cycle at a hand's pace counts, from stillness or in a spin
+            assert sum(run_states(d, [1, 0, 2, 3], t0=6.0, dt=0.004)) == n
+            assert sum(run_states(d, [1, 0, 2, 3], t0=6.016, dt=0.001)) == n
+
+    def test_unattributable_first_skip_never_invents_a_detent(self):
+        # 3 -> 0 with no movement before: +2 or -2, unknown (v0 and the first cut of patch A
+        # rounded the following 0 -> 2 -> 3 up to +1: a glitch then read as a click). Counted as
+        # the smaller reading (0), and the decoder is in sync again for the next real click.
+        d = QuadratureDecoder(4, state=3)
+        assert run_states(d, [0, 2, 3]) == [0, 0, 0]
+        assert d.invalid == 1 and d.acc == 0
+        assert run_states(d, CW[1:], t0=1.0) == [0, 0, 0, 1]
 
     def test_skip_right_after_a_detent_uses_recent_direction(self):
         d = QuadratureDecoder(4, state=3)
@@ -295,19 +323,249 @@ class TestDecoder:
         d = QuadratureDecoder(1, state=3)
         assert run_states(d, [1, 0, 0, 2, 0]) == [1, 1, 0, 1, -1]
 
-    def test_settle_reanchors_when_resting_off_anchor(self):
+    def test_a_pause_off_the_detent_never_moves_the_anchor(self):
         d = QuadratureDecoder(4, state=3, idle_s=0.3)
         assert d.update(1, 1.0) == 0          # one quarter step, then the knob rests there
         assert d.deadline() == pytest.approx(1.3)
         assert d.settle(1.2) == 0 and d.anchor == 3
-        assert d.settle(1.31) == 0            # 1/4 detent rounds to nothing
-        assert d.anchor == 1 and d.deadline() is None
-        assert run_states(d, [0, 2, 3, 1], t0=2.0) == [0, 0, 0, 1]   # detents now end at 01
+        assert d.settle(1.31) == 0            # 1/4 detent: nothing
+        assert d.anchor == 3 and d.deadline() is None and d.acc == 1
+        assert run_states(d, [0, 2, 3], t0=2.0) == [0, 0, 1]   # the click ends where it should
 
     def test_settle_flushes_three_quarters_as_one(self):
         d = QuadratureDecoder(4, state=3, idle_s=0.3)
         run_states(d, [1, 0, 2], t0=1.0)
         assert d.settle(2.0) == 1
+
+    # -- docs/08-knob-precision.md: pauses must never change the count ------------------------
+    @staticmethod
+    def drive(d: QuadratureDecoder, timeline) -> list[tuple[float, int]]:
+        """[(t, state)] with the driver's deadline-driven settle() in between -> emissions."""
+        out = []
+        for t, s in timeline:
+            while d.deadline() is not None and d.deadline() <= t:
+                dl = d.deadline()
+                n = d.settle(dl)
+                if n:
+                    out.append((dl, n))
+                if d.deadline() == dl:
+                    break
+            n = d.update(s, t)
+            if n:
+                out.append((t, n))
+        while d.deadline() is not None:
+            dl = d.deadline()
+            n = d.settle(dl)
+            if n:
+                out.append((dl, n))
+        return out
+
+    @staticmethod
+    def clicks(n, direction=1, start=3, t=1.0, gaps=(0.05, 0.05, 0.01, 0.01), hover_at=None,
+               hover_s=0.0, rest_s=0.6, spd=4):
+        """Timeline of `n` clicks: per-transition gaps, an optional pause after transition
+        `hover_at` (the top of the click), `rest_s` on each detent."""
+        ring = [3, 1, 0, 2]
+        state, out = start, []
+        for _ in range(n):
+            for k in range(spd):
+                t += gaps[k % len(gaps)]
+                state = ring[(ring.index(state) + direction) % 4]
+                out.append((round(t, 4), state))
+                if hover_at is not None and k + 1 == hover_at:
+                    t += hover_s
+            t += rest_s
+        return out
+
+    def test_pause_at_the_top_of_a_click_counts_once_on_arrival(self):
+        # v0 bug: a >= 0.3 s pause at AB=00 emitted the click there AND re-anchored, so every
+        # slow click counted twice
+        d = QuadratureDecoder(4, state=3, idle_s=0.3, rest=3, learn_rests=3)
+        tl = self.clicks(5, hover_at=2, hover_s=0.5)
+        out = self.drive(d, tl)
+        assert sum(n for _t, n in out) == 5
+        arrivals = [t for t, s in tl if s == 3]
+        assert [t for t, _n in out] == arrivals          # on the detent, not by a timer
+        assert d.anchor == 3 and d.relearned == 0
+
+    def test_very_slow_turn_counts_every_click_once_never_late(self):
+        # 0.5 s between contact changes: v0 counted each click 0.3 s after it ended; now it
+        # counts on arrival, or at 3/4 of the way when the knob is still there for idle_s
+        d = QuadratureDecoder(4, state=3, idle_s=0.3, rest=3, learn_rests=3)
+        tl = self.clicks(4, gaps=(0.5, 0.5, 0.5, 0.5))
+        out = self.drive(d, tl)
+        assert [n for _t, n in out] == [1, 1, 1, 1]
+        arrivals = [t for t, s in tl if s == 3]
+        assert all(a - 0.5 <= t <= a for (t, _n), a in zip(out, arrivals))
+        assert d.relearned == 0
+
+    def test_half_a_click_and_back_after_a_pause_is_nothing(self):
+        d = QuadratureDecoder(4, state=3, idle_s=0.3, rest=3)
+        out = self.drive(d, [(1.0, 1), (1.05, 0), (2.0, 1), (2.05, 3)])
+        assert out == []
+
+    def test_worn_contact_one_quarter_short_counts_once(self):
+        # the knob stops at AB=10 (3/4 of a click): counted after idle_s, and the last quarter
+        # (10 -> 11, when it moves on) does not count it again
+        d = QuadratureDecoder(4, state=3, idle_s=0.3, rest=3)
+        out = self.drive(d, [(1.0, 1), (1.01, 0), (1.02, 2), (2.0, 3), (2.01, 1), (2.02, 0),
+                             (2.03, 2), (2.04, 3)])
+        assert sum(n for _t, n in out) == 2 and out[0] == (pytest.approx(1.32), 1)
+
+    def test_mis_set_detent_is_learned_after_three_long_rests(self):
+        # an encoder whose detents are at AB=00 while the config says 11
+        d = QuadratureDecoder(4, state=0, idle_s=0.3, rest=3, learn_rests=3)
+        tl = self.clicks(6, start=0, rest_s=1.5)
+        out = self.drive(d, tl)
+        assert sum(n for _t, n in out) == 6               # never a wrong count meanwhile
+        assert d.anchor == 0 and d.relearned == 1 and d.rest == 0
+        d.reset(0, 50.0)
+        assert d.anchor == 0                              # an I2C re-seed keeps what was learned
+
+    def test_hovers_between_clicks_never_relearn(self):
+        d = QuadratureDecoder(4, state=3, idle_s=0.3, rest=3, learn_rests=3)
+        self.drive(d, self.clicks(8, hover_at=2, hover_s=0.8, rest_s=0.35))
+        assert d.anchor == 3 and d.relearned == 0
+
+    def test_two_transition_encoder_at_spd4_raises_the_hint_not_the_count(self):
+        d = QuadratureDecoder(4, state=3, idle_s=0.3, rest=3, learn_rests=3)
+        out = self.drive(d, self.clicks(10, spd=2, gaps=(0.04, 0.01)))
+        assert sum(n for _t, n in out) == 5               # half: the config must say 2
+        assert d.half_rests >= 8 and d.relearned == 0
+        d2 = QuadratureDecoder(2, state=3, idle_s=0.3, rest=3)
+        assert sum(n for _t, n in self.drive(d2, self.clicks(10, spd=2, gaps=(0.04, 0.01)))) == 10
+        assert d2.half_rests == 0
+
+    def test_spd2_pause_mid_click_counts_once(self):
+        d = QuadratureDecoder(2, state=3, idle_s=0.3, rest=3)
+        out = self.drive(d, self.clicks(4, spd=2, gaps=(0.05, 0.01), hover_at=1, hover_s=0.6))
+        assert [n for _t, n in out] == [1, 1, 1, 1]
+
+    def test_settle_never_spins(self):
+        d = QuadratureDecoder(4, state=3, idle_s=0.3, rest=3, learn_rests=3)
+        d.update(1, 1.0)
+        d.update(0, 1.01)                                 # half a click, then still
+        assert d.deadline() == pytest.approx(1.31)
+        d.settle(1.31)
+        assert d.deadline() == pytest.approx(2.01)        # the learn vote
+        d.settle(2.01)
+        assert d.deadline() is None
+        d0 = QuadratureDecoder(4, state=3, idle_s=0.3, rest=3)    # no learning: one wake
+        d0.update(1, 1.0)
+        d0.settle(1.3)
+        assert d0.deadline() is None
+
+    # -- phantom detents: a knob nobody touches must never move a value -----------------------
+    # 2026-10-12 20:25: Main went -19 -> -20 during a package purge, nobody known at the box, no
+    # knob warning in the journal. A resting knob that sees contact noise, half a click, or a
+    # glitch taking both contacts at once, and then nothing, must emit nothing: neither on a
+    # timer (v0) nor when its contacts come back to the detent one after the other.
+    @staticmethod
+    def near_detent_walks(spd: int, max_len: int = 6) -> list[list[int]]:
+        """Every sequence of single-contact flips from the detent (AB 11) that never strays
+        more than half a click from it: contact noise, a brushed knob, half a click."""
+        ring, bound, out = [3, 1, 0, 2], spd // 2, []
+
+        def walk(pos: int, seq: list[int]) -> None:
+            if seq:
+                out.append(seq)
+            if len(seq) < max_len:
+                for step in (1, -1):
+                    if abs(pos + step) <= bound:
+                        walk(pos + step, seq + [ring[(pos + step) % 4]])
+        walk(0, [])
+        return out
+
+    # Both contacts at once (00 first), and LAS-3's shapes whose first sample has ONE contact
+    # flipped (what INTCAP holds with interrupts): 01 then 10 in one read, and two dips whose
+    # release is simultaneous.
+    GLITCHES = ([0], [0, 3], [0, 1, 3], [0, 2, 3], [0, 1, 0, 2, 3], [0, 2, 0, 3],
+                [1, 2, 3], [2, 1, 3], [1, 2], [2, 1, 3, 1, 2, 3])
+    # Two dips released together: at 4 transitions per click (the box's knobs). At 2, 11 -> 01
+    # -> 00 is a whole click, so that shape is a click then a jump of unknown sign there.
+    GLITCHES_SPD4 = ([1, 0, 3], [2, 0, 3])
+    # Staggered dips AND releases: a valid quadrature cycle, so a glitch only by its speed (a
+    # click from stillness in 1.5 / 6 ms). The same cycle over 0.6 s is a click (tested too).
+    FAST_GLITCHES = ([1, 0, 2, 3], [2, 0, 1, 3], [1, 0, 2, 3, 1, 0, 2, 3])
+
+    @staticmethod
+    def resting(spd: int, moved: bool) -> QuadratureDecoder:
+        """The driver's decoder (detent 11, learning on) at rest; with `moved`, after a real
+        click 4 s earlier (its direction must not leak into a glitch)."""
+        d = QuadratureDecoder(spd, state=3, idle_s=0.3, rest=3, learn_rests=3)
+        if moved:
+            ring = [3, 1, 0, 2]
+            assert sum(d.update(ring[(k + 1) % 4], 1.0 + 0.01 * k) for k in range(4)) == \
+                (2 if spd == 2 else 1)
+            while d.deadline() is not None:
+                d.settle(d.deadline())
+        return d
+
+    @pytest.mark.parametrize("spd", [4, 2])
+    @pytest.mark.parametrize("moved", [False, True])
+    def test_noise_or_half_a_click_then_nothing_emits_nothing(self, spd, moved):
+        rng = random.Random(20251012 + spd)
+        walks = self.near_detent_walks(spd)
+        assert len(walks) > 20
+        for seq in walks:
+            for gaps in ([0.002] * len(seq), [0.35] * len(seq),           # brisk / hovering
+                         [rng.uniform(0.001, 0.9) for _ in seq]):
+                d = self.resting(spd, moved)
+                t, tl = 5.0, []
+                for s, g in zip(seq, gaps):
+                    t += g
+                    tl.append((round(t, 4), s))
+                tl.append((t + 30.0, seq[-1]))             # 30 s of nothing (same level)
+                assert self.drive(d, tl) == [], (seq, gaps)
+                assert d.anchor == 3 and d.relearned == 0
+
+    @pytest.mark.parametrize("spd", [4, 2])
+    @pytest.mark.parametrize("moved", [False, True])
+    @pytest.mark.parametrize("gap", [0.0005, 0.002, 0.2])
+    def test_both_contact_glitch_on_a_resting_knob_emits_nothing(self, spd, moved, gap):
+        # the first cut of patch A: 11 -> 00 -> 01 -> 11 gave -1, 11 -> 00 -> 10 -> 11 gave +1,
+        # and 11 -> 00 -> 11 one step in the direction of the last turn
+        for seq in self.GLITCHES + (self.GLITCHES_SPD4 if spd == 4 else ()):
+            d = self.resting(spd, moved)
+            tl = [(5.0 + k * gap, s) for k, s in enumerate(seq)]
+            assert self.drive(d, tl + [(40.0, seq[-1])]) == [], seq
+            assert d.anchor == 3 and d.relearned == 0
+            if seq[-1] == 3:                               # back on the detent: in sync again
+                t = 60.0
+                ring = [3, 1, 0, 2]
+                assert sum(d.update(ring[(k + 1) % 4], t + 0.01 * k) for k in range(4)) == \
+                    (2 if spd == 2 else 1), seq
+
+    @pytest.mark.parametrize("spd", [4, 2])
+    @pytest.mark.parametrize("moved", [False, True])
+    @pytest.mark.parametrize("gap", [0.0005, 0.002])
+    def test_staggered_glitch_on_a_resting_knob_emits_nothing(self, spd, moved, gap):
+        for seq in self.FAST_GLITCHES:
+            d = self.resting(spd, moved)
+            tl = [(5.0 + k * gap, s) for k, s in enumerate(seq)]
+            assert self.drive(d, tl + [(40.0, seq[-1])]) == [], seq
+            assert d.anchor == 3 and d.relearned == 0
+            ring = [3, 1, 0, 2]                            # in sync: the next click counts
+            assert sum(d.update(ring[(k + 1) % 4], 60.0 + 0.01 * k) for k in range(4)) == \
+                (2 if spd == 2 else 1), seq
+
+    def test_a_slow_valid_cycle_is_a_click_whatever_caused_it(self):
+        # the limit of LAS-3's fix, said: the contacts alone cannot tell a slow glitch from a
+        # click (the master log names every change's source instead)
+        d = self.resting(4, moved=False)
+        assert [n for _t, n in self.drive(d, [(5.0 + 0.2 * k, s)
+                                              for k, s in enumerate([1, 0, 2, 3])])] == [1]
+
+    def test_many_glitches_never_drift_a_resting_knob(self):
+        # the symptom: a value creeping one way while nobody touches the box. Fifty glitches
+        # whose contacts always come back B first (one line's RC slower), over ten minutes.
+        d = self.resting(4, moved=True)
+        tl = []
+        for k in range(50):
+            t = 10.0 + 12.0 * k
+            tl += [(t, 0), (t + 0.001, 1), (t + 0.002, 3)]
+        assert self.drive(d, tl) == []
+        assert d.invalid == 50 and d.acc == 0 and d.anchor == 3
 
     def test_random_walk_with_bounces_matches_net_detents(self):
         rng = random.Random(1234)
@@ -625,10 +883,11 @@ def test_switch_held_at_boot_fires_nothing():
 
 
 def test_box_idle_levels_seed_decoders_without_events():
-    chip, clk = FakeChip(ext=0xEFF9), Clock()   # the levels read on the box today
+    chip, clk = FakeChip(ext=0xEFF9), Clock()   # the levels read on the box (morning 2026-10-12)
     c = make(chip, clk)
     c.open()
-    assert [d.anchor for d in c._decoders] == [0b00, 0b11, 0b11, 0b10]
+    assert [d.anchor for d in c._decoders] == [0b11] * 4       # detents: both contacts open
+    assert [d.state for d in c._decoders] == [0b00, 0b11, 0b11, 0b10]
     assert drain(c) == []
     ext = chip.ext
     for s in [2, 3, 1, 0]:                      # CW from 00: 00 -> 10 -> 11 -> 01 -> 00
@@ -637,6 +896,156 @@ def test_box_idle_levels_seed_decoders_without_events():
         clk.advance(0.004)
         c._service()
     assert [(e.index, e.delta) for e in drain(c)] == [(0, 1)]
+
+
+@pytest.mark.parametrize("back_first", ["B", "A", "both"])
+def test_driver_glitch_on_every_line_of_a_resting_box_emits_nothing(back_first):
+    """A 2 ms disturbance that pulls every input low (ground bounce, a spark, a cable touched),
+    released one contact after the other, on a box at rest whose E1 last turned 4 s ago: no
+    knob event and no button event, then 30 s of resync polls with nothing either; the next
+    real click counts exactly."""
+    chip, clk = FakeChip(), Clock()
+    c = make(chip, clk)
+    c.open()
+    ext = chip.ext
+    for s in CW[1:]:                              # a real click on enc0 (E1 = MASTER)
+        ext = with_enc(ext, 0, s)
+        chip.set_ext(ext)
+        clk.advance(0.004)
+        c._service()
+    assert [(e.index, e.delta) for e in drain(c)] == [(0, 1)]
+    clk.advance(4.0)
+    c._service()
+    rest = chip.ext
+    half = 0x0000
+    for i in range(4):                            # one contact of every encoder back first
+        half = with_enc(half, i, {"B": 0b01, "A": 0b10, "both": 0b00}[back_first])
+    for levels in (0x0000, half, rest):
+        chip.set_ext(levels)
+        clk.advance(0.001)
+        c._service()
+    for _ in range(600):
+        clk.advance(0.05)
+        c._service()
+    assert drain(c) == []
+    for s in CW[1:]:
+        chip.set_ext(with_enc(chip.ext, 0, s))
+        clk.advance(0.004)
+        c._service()
+    assert [(e.index, e.delta) for e in drain(c)] == [(0, 1)]
+
+
+@pytest.mark.parametrize("first, then", [(0b01, 0b10), (0b10, 0b01), (0b01, 0b00), (0b10, 0b00)])
+@pytest.mark.parametrize("turned_before", [False, True])
+def test_driver_glitch_whose_first_edge_is_one_contact_emits_nothing(first, then, turned_before):
+    """LAS-3: with interrupts INTCAP holds a glitch's FIRST edge, which is usually one contact.
+    INTCAP 01 then GPIO 10 in the same read (and the same timestamp) once completed a click as
+    a "recent move" + an inferred skip. Every encoder, a resting box, then 30 s of polls."""
+    chip, clk = FakeChip(), Clock()
+    c = make(chip, clk)
+    c.open()
+    if turned_before:
+        for s in CW[1:]:
+            chip.set_ext(with_enc(chip.ext, 0, s))
+            clk.advance(0.004)
+            c._service()
+        assert [(e.index, e.delta) for e in drain(c)] == [(0, 1)]
+    clk.advance(50.0)
+    c._service()
+    rest = chip.ext
+    one, two = rest, rest
+    for i in range(4):
+        one, two = with_enc(one, i, first), with_enc(two, i, then)
+    chip.set_ext(one)                             # INT asserted, INTCAP = the first edge
+    chip.set_ext(two)                             # before the read: GPIO = the second state
+    clk.advance(0.0005)
+    c._service()
+    chip.set_ext(rest)
+    clk.advance(0.0005)
+    c._service()
+    for _ in range(600):
+        clk.advance(0.05)
+        c._service()
+    assert drain(c) == []
+    if then == 0b00:              # two dips released together: a whole click in 1 ms, dropped
+        assert c.stats["glitches"] == 4                                # (and counted, logged)
+    for s in CW[1:]:                              # in sync: the next real click counts
+        chip.set_ext(with_enc(chip.ext, 0, s))
+        clk.advance(0.01)
+        c._service()
+    assert [(e.index, e.delta) for e in drain(c)] == [(0, 1)]
+
+
+def test_per_encoder_steps_and_detents():
+    chip, clk = FakeChip(ext=0xEFF9), Clock()
+    c = make(chip, clk, steps_per_detent=[4, 2, 4, 1], detent_ab=["11", "11", "idle", 0b00])
+    c.open()
+    assert [d.spd for d in c._decoders] == [4, 2, 4, 1]
+    assert [d.anchor for d in c._decoders] == [0b11, 0b11, 0b11, 0b00]   # enc2 idle = its level
+    ext = chip.ext
+    for s in [1, 0]:                            # enc1 (spd 2): one click 11 -> 01 -> 00
+        ext = with_enc(ext, 1, s)
+        chip.set_ext(ext)
+        clk.advance(0.004)
+        c._service()
+    assert [(e.index, e.delta) for e in drain(c)] == [(1, 1)]
+
+
+def test_encoder_options_validation_and_yaml():
+    with pytest.raises(ValueError):
+        ZynthianControls(steps_per_detent=[4, 4, 4])
+    with pytest.raises(ValueError):
+        ZynthianControls(steps_per_detent=[4, 4, 3, 4])
+    with pytest.raises(ValueError):
+        ZynthianControls(detent_ab="12")
+    assert parse_detent("10") == 0b10 and parse_detent("idle") is None and parse_detent(2) == 2
+    assert controls_options({"controls": {"steps_per_detent": [4, 2, 4, 4],
+                                          "detent_ab": "11", "encoders": [0, 1, 2, 3]}}) == \
+        {"steps_per_detent": [4, 2, 4, 4], "detent_ab": "11"}
+    # a typo keeps the default for that key only (never no knobs)
+    assert controls_options({"controls": {"steps_per_detent": 3, "detent_ab": ["00"] * 4}}) == \
+        {"detent_ab": ["00"] * 4}
+    assert controls_options({}) == {} and controls_options(None) == {}
+    assert controls_options({"controls": "nonsense"}) == {}
+
+
+def test_service_opens_the_knobs_with_the_yaml_options(monkeypatch):
+    from k1000 import __main__ as main_mod
+    seen = []
+
+    class Spy:
+        def __init__(self, **kw):
+            seen.append(kw)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(m, "ZynthianControls", Spy)
+    assert main_mod.open_controls({"controls": {"steps_per_detent": [4, 2, 4, 4],
+                                                "detent_ab": "bogus"}}) is not None
+    assert seen == [{"steps_per_detent": [4, 2, 4, 4]}]
+    assert main_mod.open_controls({}) is not None and seen[-1] == {}
+
+
+def test_learned_detent_and_half_rest_hint_are_logged_once(caplog):
+    chip, clk = FakeChip(), Clock()
+    c = make(chip, clk)
+    c.open()
+    ext = chip.ext
+    ring = [3, 1, 0, 2]
+    state = 3
+    with caplog.at_level("WARNING", logger="k1000.hw.mcp23017"):
+        for _ in range(12):                     # a 2-transition encoder at the default spd 4
+            for _ in range(2):
+                state = ring[(ring.index(state) + 1) % 4]
+                ext = with_enc(ext, 0, state)
+                chip.set_ext(ext)
+                clk.advance(0.02)
+                c._service()
+            clk.advance(0.35)
+            c._service()
+    hints = [r for r in caplog.records if "steps_per_detent 2" in r.getMessage()]
+    assert len(hints) == 1 and "enc0" in hints[0].getMessage()
 
 
 def test_int_held_low_does_not_spin_the_service_loop():
@@ -983,6 +1392,107 @@ def test_thread_interrupt_storm_degrades_to_polling_without_spinning():
         await _turn(chip, 0, CW[1:])
         ev = await _next(agen)
         assert (ev.index, ev.delta) == (0, 1)
+        c.close()
+    asyncio.run(scenario())
+
+
+class _BusyKnobChip(FakeChip):
+    """A knob turned so fast that it moves right after EVERY service read (the clearing GPIO
+    read): INT is low again at each re-check, with a new level each time. Each read takes
+    `step_s` (the knob's transition period: 3 ms = 83 clicks/s), on the test's clock or for
+    real (a sleep, GIL released like smbus2's ioctl)."""
+
+    def __init__(self, enc: int, states, clock=None, step_s: float = 0.003, **kw) -> None:
+        super().__init__(**kw)
+        self.enc, self.script, self.armed = enc, list(states), False
+        self.clock, self.step_s = clock, step_s
+
+    def read_i2c_block_data(self, addr: int, reg: int, length: int) -> list[int]:
+        out = super().read_i2c_block_data(addr, reg, length)
+        if self.armed and reg == m.GPPUA and self.script:     # a service read (not a verify)
+            if self.clock is not None:
+                self.clock.advance(self.step_s)
+            else:
+                time.sleep(self.step_s)
+            with self.lock:
+                self.set_ext(with_enc(self.ext, self.enc, self.script.pop(0)))
+        return out
+
+
+def test_a_fast_turn_re_asserting_int_with_new_levels_is_busy_not_stuck():
+    """PERF-2: INT low again after MAX_REREADS reads that EACH brought a new level is a fast
+    knob, not a stuck line: no storm polling (its 5 ms passes left 20-35 ms gaps mid-spin on
+    the box, losing whole clicks), and the clicks count exactly."""
+    ring = [1, 0, 2, 3]
+    clk = Clock()
+    chip = _BusyKnobChip(0, ring * 6, clock=clk)
+    c = make(chip, clk)
+    c.open()
+    chip.armed = True
+    chip.set_ext(with_enc(chip.ext, 0, chip.script.pop(0)))   # the first transition: INT falls
+    results = []
+    for _ in range(20):
+        clk.advance(0.001)
+        results.append(c._service())
+    assert not any(results) and c.stats["int_stuck"] == 0 and c.stats["int_busy"] >= 5
+    assert sum(e.delta for e in drain(c) if isinstance(e, EncoderEvent)) == 6
+    # a line that stays low with NO new level is still stuck (a wedged INT, a corrupted INTCON)
+    c.force_interrupt("A")
+    clk.advance(0.001)
+    assert c._service() is True and c.stats["int_stuck"] == 1
+    # ... even while a knob on the OTHER port moves on every read
+    chip.enc, chip.script = 2, ring * 2
+    chip.set_ext(with_enc(chip.ext, 2, chip.script.pop(0)))
+    clk.advance(0.001)
+    assert c._service() is True
+    c.release_interrupt("A")
+
+
+class _WedgedLines(FakeLines):
+    """INTA wedged low (a hardware fault): no edge ever again, whatever the chip does."""
+
+    def fall(self, port: int) -> None:
+        if port == 1:
+            super().fall(port)
+
+    def levels(self) -> dict[int, int]:
+        return {**super().levels(), self.map[0]: 0}
+
+
+def test_a_wedged_int_line_is_stuck_even_while_a_knob_on_its_port_turns():
+    """PERF-2's busy rule needs a FRESH edge: a line wedged low makes none, so a knob turning
+    on its port must not keep the driver out of storm polling (5 ms) on a 50 ms poll."""
+    ring = [1, 0, 2, 3]
+    clk = Clock()
+    chip = _BusyKnobChip(0, ring * 4, clock=clk)
+    c = make(chip, clk, lines_factory=lambda chipname, offs: _WedgedLines(chip))
+    c.open()
+    c._lines.read_events()
+    chip.armed = True
+    chip.set_ext(with_enc(chip.ext, 0, chip.script.pop(0)))
+    clk.advance(0.001)
+    assert c._service() is True and c.stats["int_stuck"] == 1 and c.stats["int_busy"] == 0
+
+
+def test_thread_fast_turn_never_enters_storm_polling():
+    ring = [1, 0, 2, 3]
+    chip = _BusyKnobChip(1, ring * 10)
+
+    async def scenario():
+        c = make(chip, poll_ms=50)
+        c.start()
+        agen = c.events()
+        await asyncio.sleep(0.05)
+        chip.armed = True
+        with chip.lock:
+            chip.set_ext(with_enc(chip.ext, 1, chip.script.pop(0)))
+        total = 0
+        while total < 10:
+            ev = await _next(agen)
+            if isinstance(ev, EncoderEvent):
+                total += ev.delta
+        await asyncio.sleep(0.1)
+        assert total == 10 and c.stats["storms"] == 0 and c.stats["int_stuck"] == 0, c.stats
         c.close()
     asyncio.run(scenario())
 

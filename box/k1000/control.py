@@ -55,6 +55,7 @@ Why it is shaped like this:
 from __future__ import annotations
 
 import asyncio
+import collections
 import copy
 import dataclasses
 import json
@@ -73,10 +74,13 @@ from .cdsp import CdspError, CdspNoConfig, CdspUnavailable
 from .dspconfig import FADER_MAIN, FADER_SUBS, FADER_TOPS, Fader, FaderMute, Op, Rebuild, SetValue
 from .profiles import (PROC_ASOUND, PROFILE_NAMES, Profile, ProfileChoice, card_id, card_present,
                        load_profile)
-from .state import BOOL_FIELDS, CHOICES, RANGES, REBUILD_FIELDS, State, atomic_write, load_state
+from .state import (BOOL_FIELDS, CHOICES, N_SYS_PEQ, RANGES, REBUILD_FIELDS, State, atomic_write,
+                    load_state)
 from .ui.input_map import (
-    F_LOWCUT_ON, HINT_S, MUTE_TOGGLE, PAGES, ControlMap, Focus, GotoPage, Mute,
-    NextPage, Nudge, PhoneQr, PhoneToggle, ResetLive, Toggle, apply_focus, map_event,
+    A_LAPTOP, ALL_PAGES, AUTO_HOME_PAGES, BELL_SLOTS, EDIT_HIGHLIGHT_S, F_LOWCUT_ON, F_SPECTRUM_ON,
+    HINT_S, HOME_AFTER_S, HOME_PAGE, LIVE_SLOT_LABELS, LIVE_SLOT_SHORT, LIVE_SLOTS, MUTE_TOGGLE,
+    PAGES, ControlMap, Focus, GotoPage, Mute, NextPage, NotchHelper, Nudge, PhoneQr, PhoneToggle,
+    ResetLive, SetupAction, Toggle, UndoReset, apply_focus, map_event, page_name,
 )
 
 log = logging.getLogger(__name__)
@@ -145,9 +149,37 @@ ENGINE_DOWN_STATES = ("Inactive", "Stalled")
 HINT_STILL_MUTED = "STILL MUTED · HOLD B2 TO UNMUTE"
 HINT_CONFIRM_SETUP = "MUTE OR CONFIRM ON SETUP (MAY CLICK)"
 HINT_PINNED = "PROFILE PINNED IN k1000.yaml"
-HINT_LIVE_RESET = "LIVE EQ RESET (ALL BANDS FLAT)"
+HINT_LIVE_RESET = "LIVE EQ RESET · UNDO IN SETUP"
 HINT_LIVE_FLAT = "LIVE EQ ALREADY FLAT"
+HINT_LIVE_RESTORED = "LIVE EQ RESTORED"
+HINT_NOTHING_TO_UNDO = "NOTHING TO UNDO"
+HINT_UNDO_LOST = "RESET UNDO LOST"
 HINT_MUTE_CHANGED = "MUTE CHANGED · LOOK, HOLD B2 AGAIN"
+HINT_MASTER_SLOW = "MASTER: SLOW DOWN"
+HINT_NO_FREE_BAND = "NO FREE BAND"
+HINT_NOTCH = "{band} · {hz} · E3 TO CUT"              # D-009: "P3 · 2.44k · E3 TO CUT"
+HINT_NOTCH_NO_PEAK = "{band} · {hz} · NO PEAK · E3 TO CUT"
+HINT_SPECTRUM_DISABLED = "SPECTRUM OFF IN k1000.yaml"
+HINT_LAPTOP_NA = "LAPTOP ACCESS: NOT AVAILABLE"
+HINT_LAPTOP_OPENING = "LAPTOP ACCESS: OPENING…"
+HINT_LAPTOP_OPEN = "LAPTOP OPEN 2 H · GUI :5005 · SSH"
+HINT_LAPTOP_CLOSED = "LAPTOP ACCESS CLOSED"
+LAPTOP_HINT_S = 4.0
+
+# D-009 master-up guard: master rises at most this much within any MASTER_UP_WINDOW_S (knobs,
+# phone and console nudges alike); the detents beyond are refused with HINT_MASTER_SLOW. Going
+# down is never limited. k1000.yaml `controls.master_up_guard_db` (0 = off).
+MASTER_UP_GUARD_DB = 6.0
+MASTER_UP_WINDOW_S = 2.0
+# Reset live EQ keeps a one-level undo this long (and until the live EQ is edited again).
+UNDO_RESET_S = 300.0
+# The notch helper (B4 on SHOW): a free bell at 1/6 octave, at the spectrum PEAK if there is
+# one; a target this close to a bell already in use selects that bell instead.
+NOTCH_OCT = 1.0 / 6.0
+NOTCH_Q = 1.0 / (2.0 * math.sinh(math.log(2.0) / 2.0 * NOTCH_OCT))     # 8.65
+NOTCH_NEAR_OCT = 1.0 / 6.0
+NOTCH_HINT_S = 4.0
+UI_TICK_S = 0.5              # the auto-home check
 MSG_HELD_MUTED = "NO AUDIO FLOWING · HELD MUTED"
 # The knobs-offline alert sends Thomas to the phone mute only while there is one to use (phone
 # servers on, SETUP › Phone on, the AP up: PhoneServer.remote_mute_ready); otherwise, after a
@@ -155,10 +187,30 @@ MSG_HELD_MUTED = "NO AUDIO FLOWING · HELD MUTED"
 MSG_KNOBS_OFFLINE = "KNOBS OFFLINE · SOURCE DOWN / BYPASS"
 MSG_KNOBS_OFFLINE_PHONE = "KNOBS OFFLINE · USE PHONE MUTE / BYPASS"
 MSG_PROFILE_ROUTING = "k1000.yaml ROUTING FIXED UP (SEE LOG)"
+# Changes made to the engine by another client (CamillaGUI, the only other writer on the box):
+# short, so the status bar shows them whole at a readable size (UX-5; docs/03 §3 has the table).
+MSG_PIPELINE_CHANGED = "PIPELINE CHANGED (GUI)"
+MSG_DEVICES_CHANGED = "DEVICES CHANGED (GUI)"
+OUTSIDE = "(GUI)"
 NOTE_REBUILT = "STATE REBUILT · CHECK MASTER"
 NOTE_MISSING = "NO SAVED STATE · CHECK MASTER"
 # Messages at/above this priority are alerts: also shown inside the MUTED band and on SETUP.
 ALERT_PRIO = 4
+
+# System alerts for the status bar (D-009 "alerts vs hints"): each controller message key's
+# level. critical = red (KNOBS OFFLINE: full width), warning = orange, info = neither (a state
+# K1000 is in, e.g. ramping in). Hints (amber, brief) are not alerts: they live in Focus.
+ALERT_CRITICAL, ALERT_WARNING, ALERT_INFO = "critical", "warning", "info"
+MESSAGE_LEVELS = {
+    "knobs": ALERT_CRITICAL, "save": ALERT_CRITICAL, "engine": ALERT_CRITICAL,
+    "settings": ALERT_WARNING, "profile": ALERT_WARNING, "wait": ALERT_WARNING,
+    "drift": ALERT_WARNING, "devices": ALERT_WARNING, "held": ALERT_WARNING,
+    "setup": ALERT_INFO, "ramp": ALERT_INFO,
+}
+# Status-bar ranks of the conditions the controller does not hold as messages (the body shows
+# NO DEVICE / ENGINE DOWN in full; the status bar keeps KNOBS OFFLINE above them).
+RANK_NO_DEVICE = 7.6
+RANK_ENGINE_DOWN = 7.5
 
 
 class _LinkChanged(CdspUnavailable):
@@ -257,13 +309,108 @@ class Status:
     alert: str = ""                  # most urgent message (priority >= ALERT_PRIO)
     in_clip: bool = False            # an input_map capture channel clipped (latched)
     knobs_ok: bool | None = None     # None = no knobs expected (--no-hw) / not reported
+    # ---- UI v1 (D-009), refreshed by Controller.snapshot(); see docs in Controller.snapshot
+    page: str = HOME_PAGE            # SHOW | ALIGN | SETUP | PHONE | HWTEST
+    band: int = 0                    # selected live band, LIVE_SLOTS index (0-3 P1-P4, 4 LS, 5 HS)
+    band_label: str = LIVE_SLOT_LABELS[0]
+    band_short: str = LIVE_SLOT_SHORT[0]
+    align_locked: bool = True        # ALIGN E3/E4 (sub delay, Lo-Cut) locked
+    align_unlock_s: float = 0.0      # seconds left of the unlock (0 = locked): the EDIT pill
+    pills: list[str] = field(default_factory=list)       # persistent non-default states, in order
+    alerts: list[tuple[str, str]] = field(default_factory=list)   # (level, text), urgent first
+    sys_alert: str = ""              # alerts[0] text ("" = none): the status bar's alert
+    sys_alert_level: str = ""        # critical | warning | info | ""
+    undo_reset_s: float = 0.0        # SETUP > Undo reset: seconds left (0 = nothing to undo)
+    spectrum_on: bool = True         # SETUP > Spectrum (and not disabled in k1000.yaml)
+    spectrum_state: str = "off"      # off | waiting | live | unavailable | disabled
+    spectrum: Any = None             # eqgraph.RtaFrame (never mutated once published) or None
+    peak_hz: float | None = None     # the spectrum's PEAK (pointer + frequency), None = none
+    master_up_guard_db: float = MASTER_UP_GUARD_DB   # 0 = off
+    laptop_s: float = 0.0            # SETUP > Laptop access: seconds left (0 = closed)
+    laptop_state: str = "off"        # off (no such surface) | closed | opening | open | closing | unavailable
 
     def copy(self) -> "Status":
         return dataclasses.replace(self, levels=list(self.levels), clip=list(self.clip),
-                                   drift=list(self.drift))
+                                   drift=list(self.drift), pills=list(self.pills),
+                                   alerts=list(self.alerts))
 
 
 # =========================================================================== helpers
+def master_up_guard_db(settings: Any) -> float:
+    """k1000.yaml `controls.master_up_guard_db`: dB master may rise within MASTER_UP_WINDOW_S
+    (0 = off). Anything unreadable -> MASTER_UP_GUARD_DB; bounded to 0..24 dB."""
+    sec = settings.get("controls") if isinstance(settings, dict) else None
+    v = sec.get("master_up_guard_db", MASTER_UP_GUARD_DB) if isinstance(sec, dict) else MASTER_UP_GUARD_DB
+    if isinstance(v, bool):
+        return MASTER_UP_GUARD_DB
+    return _bounded(v, (0.0, 24.0), MASTER_UP_GUARD_DB)
+
+
+def _same_spectrum(a: Any, b: Any) -> bool:
+    """Two spectrum frames that would draw the same picture (scale, peak and every bin)."""
+    if a is b:
+        return True
+    if a is None or b is None or getattr(a, "level", None) is None \
+            or getattr(b, "level", None) is None:
+        return False           # nothing to compare: redraw
+    try:
+        import numpy as np     # only with a spectrum (the module stays importable without it)
+        for name in ("lo_db", "hi_db", "peak_hz"):
+            if getattr(a, name, None) != getattr(b, name, None):
+                return False
+        for name in ("freqs", "level", "hold"):
+            x, y = getattr(a, name, None), getattr(b, name, None)
+            if x is None and y is None:
+                continue
+            if x is None or y is None or not np.array_equal(x, y):
+                return False
+        return True
+    except Exception:   # noqa: BLE001 - when in doubt, redraw
+        return False
+
+
+def spectrum_enabled(settings: Any) -> bool:
+    """k1000.yaml `spectrum.enabled` (default true). False: no spectrum task, no second engine
+    connection; SETUP > Spectrum then says so. Only a real `false` turns it off."""
+    sec = settings.get("spectrum") if isinstance(settings, dict) else None
+    return not (isinstance(sec, dict) and sec.get("enabled") is False)
+
+
+def fmt_hz_short(hz: float) -> str:
+    """2440 -> '2.44k', 12500 -> '12.5k', 125 -> '125' (the notch hint)."""
+    if hz >= 10000:
+        return f"{hz / 1000:.1f}k"
+    if hz >= 1000:
+        return f"{hz / 1000:.2f}k"
+    return f"{hz:.0f}"
+
+
+def _live_dict(s: State) -> dict[str, Any]:
+    d = s.to_dict()
+    return {k: d[k] for k in ("live_peq", "live_lowshelf", "live_highshelf")}
+
+
+def _audible_live(s: State) -> tuple[tuple[float, ...], ...]:
+    """What the live EQ does to the sound: each band's gain, and its frequency and Q only when
+    its gain is not 0 dB (a 0 dB peaking or shelf biquad is exactly unity, wherever it sits).
+    The notch helper's Q/frequency write on a free bell leaves this unchanged."""
+    out = []
+    for b in (*s.live_peq, s.live_lowshelf, s.live_highshelf):
+        g = float(b.gain)
+        out.append((g, float(b.freq), float(b.q)) if g != 0.0 else (0.0,))
+    return tuple(out)
+
+
+def _log_master(old: Any, new: Any, source: str) -> None:
+    """Every change of the Main level, with what made it (knob / phone / console / adoption),
+    at INFO: a phantom detent and a hand must be told apart in the journal afterwards (the
+    unexplained Main -19 -> -20 of 2026-10-12 20:25 could not be)."""
+    try:
+        log.info("master %.1f -> %.1f dB (%s)", float(old), float(new), source)
+    except (TypeError, ValueError):
+        log.info("master %r -> %r (%s)", old, new, source)
+
+
 def _bounded(v: Any, rng: tuple[float, float], default: float) -> float:
     try:
         f = float(v)
@@ -522,9 +669,30 @@ class Controller:
         s.profile = profile.name          # the state always names the running profile
         self.state: State = s
         self._applied: State = s.copy()   # what the engine is believed to hold
-        self.page = "MAIN"
+        self.page = HOME_PAGE
         self.focus = Focus()
         self.controls = ControlMap.from_cfg(self.settings)
+        # UI timers (auto-home, the master-up window, the reset undo): time.monotonic, like
+        # the knob events' timestamps. Replaceable in tests.
+        self._ui_clock: Callable[[], float] = time.monotonic
+        self._last_input = self._ui_clock()
+        self.master_up_guard_db = master_up_guard_db(self.settings)
+        self._master_ups: collections.deque[tuple[float, float]] = collections.deque()
+        self._undo: dict[str, Any] | None = None       # reset_live's one-level undo
+        # The SHOW spectrum (rta.SpectrumTask, set by __main__; None = none) and whether
+        # k1000.yaml allows it at all (`spectrum: enabled: false` = no task, no second link).
+        self.rta: Any = None
+        self.spectrum_enabled = spectrum_enabled(self.settings)
+        # Extra persistent pills (e.g. the laptop access countdown): callables returning a
+        # short text or None, read at every snapshot. Never allowed to break the screen.
+        self.pill_sources: list[Callable[[], str | None]] = []
+        # SETUP action items beyond reset/undo (input_map.SetupAction): name -> callable, run
+        # after the item's confirm. Unknown names only say so.
+        self.setup_actions: dict[str, Callable[[], Any]] = {}
+        # SETUP > Laptop access (laptop.LaptopAccess, set by __main__ through attach_laptop;
+        # None = no such surface: the item then says NOT AVAILABLE).
+        self.laptop: Any = None
+        self._laptop_seen: str | None = None
         self.status = Status(profile=profile.name, device=DEVICE_NAMES.get(profile.name, profile.name))
         self.changed = asyncio.Event()
         self.version = 0
@@ -551,6 +719,7 @@ class Controller:
         self._persist_kick = asyncio.Event()
         self._saved_state_text: str | None = None
         self._saved_cfg_text: str | None = None
+        self._yaml_cache: tuple[str, str] | None = None   # (the config as JSON, its YAML)
         self._write_lock = threading.Lock()
         self._clip_until = [0.0] * 4
         self._peak_hold = [METER_FLOOR_DB] * 4
@@ -614,7 +783,8 @@ class Controller:
         self.client.on_disconnect = self._on_disconnect
         loop = asyncio.get_running_loop()
         for coro, name in ((self._worker(), "k1000-apply"), (self._poll_loop(), "k1000-poll"),
-                           (self._meter_loop(), "k1000-meter"), (self._persist_loop(), "k1000-persist")):
+                           (self._meter_loop(), "k1000-meter"), (self._persist_loop(), "k1000-persist"),
+                           (self._ui_loop(), "k1000-ui")):
             self._tasks.append(loop.create_task(coro, name=name))
         self._refresh_device()
         already = bool(getattr(self.client, "connected", False))
@@ -695,9 +865,84 @@ class Controller:
         return True
 
     def snapshot(self) -> tuple[str, State, Status, Focus]:
-        """Copies safe to hand to a render thread."""
-        self.status.ready = self._engine_ready
-        return self.page, self.state.copy(), self.status.copy(), copy.deepcopy(self.focus)
+        """Copies safe to hand to a render thread: (page, state, status, focus).
+
+        The UI v1 fields of the status are refreshed here (the render contract):
+        - page; band / band_label / band_short: the selected live band (Focus.slot);
+        - align_locked / align_unlock_s: ALIGN's E3/E4 lock and the EDIT countdown;
+        - pills: persistent non-default states: `pill_sources` first (the laptop-access
+          countdown: the only sign that SSH and CamillaGUI are open on the K1000 Wi-Fi), then
+          LO-CUT OFF, POL INV SUB|TOP|SUB+TOP, MONO SUB, AUDITION TOPS|SUBS;
+        - alerts / sys_alert / sys_alert_level: system alerts for the status bar, most urgent
+          first (critical red, warning orange, info); hints stay in Focus (amber, brief);
+        - undo_reset_s: SETUP > Undo reset availability;
+        - spectrum_on / spectrum_state / spectrum / peak_hz: the SHOW spectrum (set by the
+          spectrum task through set_spectrum; None when off, stale or not on SHOW);
+        - laptop_s / laptop_state: SETUP > Laptop access (seconds left, what root reports).
+        """
+        now = self._ui_clock()
+        st = self.status
+        st.ready = self._engine_ready
+        st.page = self.page
+        st.band = self.focus.band
+        st.band_label = LIVE_SLOT_LABELS[st.band]
+        st.band_short = LIVE_SLOT_SHORT[st.band]
+        st.align_unlock_s = round(self.focus.unlock_left(now), 3)
+        st.align_locked = st.align_unlock_s <= 0.0
+        st.pills = self.pills()
+        st.alerts = self.alerts()
+        st.sys_alert, st.sys_alert_level = (st.alerts[0][1], st.alerts[0][0]) if st.alerts else ("", "")
+        st.undo_reset_s = round(self.undo_left(now), 3)
+        st.spectrum_on = self.spectrum_enabled and bool(self.state.spectrum_on)
+        if not self.spectrum_enabled or self.rta is None:
+            st.spectrum_state = "disabled" if not self.spectrum_enabled else "off"
+            st.spectrum, st.peak_hz = None, None
+        st.master_up_guard_db = self.master_up_guard_db
+        st.laptop_s, st.laptop_state = self._laptop_view()
+        return self.page, self.state.copy(), st.copy(), copy.deepcopy(self.focus)
+
+    # ------------------------------------------------------------------ UI v1 views
+    def pills(self) -> list[str]:
+        """Persistent pills for any non-default system state (D-009). Spectrum OFF has none.
+        The extra sources (LAPTOP OPEN) come FIRST: the screen folds the last ones into '+N'
+        when they do not fit, and an open laptop access must never be the one hidden."""
+        s = self.state
+        out: list[str] = []
+        for src in list(self.pill_sources):
+            try:
+                t = src()
+            except Exception as e:   # noqa: BLE001 - a pill must never break the screen
+                self._log_once(("pill", repr(src), type(e).__name__), logging.ERROR,
+                               "pill source %r failed: %s", src, e)
+                continue
+            if t:
+                out.append(str(t))
+        if not s.lowcut_on:
+            out.append("LO-CUT OFF")
+        inv = [n for n, on in (("SUB", s.sub_inverted), ("TOP", s.top_inverted)) if on]
+        if inv:
+            out.append("POL INV " + "+".join(inv))
+        if s.mono_subs:
+            out.append("MONO SUB")
+        if self.profile.audition and s.dev_audition != "sum":
+            out.append(f"AUDITION {str(s.dev_audition).upper()}")
+        return out
+
+    def alerts(self) -> list[tuple[str, str]]:
+        """(level, text) of every system alert, most urgent first: the controller's messages
+        (MESSAGE_LEVELS) plus NO DEVICE and ENGINE DOWN."""
+        ranked: list[tuple[float, str, str]] = []
+        for key, (prio, text) in self._messages.items():
+            level = MESSAGE_LEVELS.get(key, ALERT_CRITICAL if prio >= ALERT_PRIO else ALERT_WARNING)
+            ranked.append((float(prio), level, text))
+        if self.status.device_present is False:
+            ranked.append((RANK_NO_DEVICE, ALERT_CRITICAL, f"NO DEVICE · {self.status.device}"))
+        eng = self.status.engine
+        if eng is None or eng in ENGINE_DOWN_STATES:
+            ranked.append((RANK_ENGINE_DOWN, ALERT_CRITICAL,
+                           "ENGINE DOWN" if eng is None else f"ENGINE {str(eng).upper()}"))
+        ranked.sort(key=lambda r: -r[0])
+        return [(level, text) for _r, level, text in ranked]
 
     def set_knobs_ok(self, ok: bool | None) -> None:
         """The knob service reports whether the MCP23017 answers (None = no knobs expected).
@@ -727,10 +972,12 @@ class Controller:
             self._set_message("knobs", 8, self._knobs_offline_text())
 
     # ------------------------------------------------------------------ UI actions
-    def nudge(self, field: str, detents: int | float, fine: bool = False) -> Any:
+    def nudge(self, field: str, detents: int | float, fine: bool = False,
+              source: str = "knob") -> Any:
         """Move a numeric field by encoder detents (input_map already applied acceleration).
         Non-finite or absurd detent counts are refused: Range.clamp would turn inf/nan into the
-        field's DEFAULT (master -80 -> -20 dB), and huge ones overflow log fields."""
+        field's DEFAULT (master -80 -> -20 dB), and huge ones overflow log fields. `source`
+        (knob / phone / console) is logged with every master change."""
         try:
             d = float(detents)
         except (TypeError, ValueError, OverflowError):
@@ -738,20 +985,56 @@ class Controller:
         if not math.isfinite(d) or abs(d) > MAX_DETENTS:
             log.warning("nudge %r by %r detents refused (not an encoder move)", field, detents)
             return None
+        n: int | float = detents if isinstance(detents, int) else d
+        if field == "master_db" and d > 0:
+            n = self._master_up_allowed(n, fine)
+            if not n:
+                return None
         try:
             old = self.state.get(field)
-            new = self.state.nudge(field, detents if isinstance(detents, int) else d, fine)
+            new = self.state.nudge(field, n, fine)
         except (KeyError, ValueError, TypeError, ArithmeticError) as e:
             log.warning("nudge %r refused: %s", field, e)
             return None
         if new != old:
+            if field == "master_db":
+                if new > old:
+                    self._master_ups.append((self._ui_clock(), float(new) - float(old)))
+                _log_master(old, new, source)
             self._local_edit(urgent=field == "master_db" and _lower(new, old))
         return new
 
-    def set_value(self, field: str, value: Any, confirmed: bool = False) -> Any:
-        """Set one field directly (clamped). Rebuild fields follow the `toggle` rules."""
+    def _master_up_allowed(self, detents: int | float, fine: bool) -> int | float:
+        """D-009 master-up guard: how many of `detents` (> 0) master may rise now, so that it
+        rises at most master_up_guard_db within any MASTER_UP_WINDOW_S. Refused detents say
+        so (HINT_MASTER_SLOW). Counts what was really raised (a clamp at 0 dB costs nothing)."""
+        cap = self.master_up_guard_db
+        if cap <= 0:
+            return detents
+        now = self._ui_clock()
+        win = self._master_ups
+        while win and now - win[0][0] >= MASTER_UP_WINDOW_S:
+            win.popleft()
+        room = cap - sum(db for _t, db in win)
+        rng = RANGES["master_db"]
+        cur = float(self.state.master_db)
+        if rng.nudge(cur, detents, fine) - cur <= room + 1e-9:
+            return detents
+        step = rng.fine if (fine and rng.fine) else rng.step
+        allowed = max(0, math.floor(room / step + 1e-9)) if room > 0 else 0
+        log.warning("master-up guard: %s of %s detent(s) up refused (%.1f dB already raised in "
+                    "the last %g s)", detents - allowed, detents, cap - room, MASTER_UP_WINDOW_S)
+        self.show_hint(HINT_MASTER_SLOW)
+        return int(allowed) if isinstance(detents, int) else float(allowed)
+
+    def set_value(self, field: str, value: Any, confirmed: bool = False,
+                  source: str = "local") -> Any:
+        """Set one field directly (clamped). Rebuild fields follow the `toggle` rules. `source`
+        (phone / console / ...) is logged with every master change."""
         if field == "muted":
             return self.set_mute(bool(value))
+        if field == F_LOWCUT_ON and isinstance(value, bool):
+            return self.set_lowcut(value)     # the phone's switch: the box's path (hint, log)
         if field in REBUILD_FIELDS and not self._setup_allowed(field, confirmed):
             return None
         try:
@@ -761,6 +1044,8 @@ class Controller:
             log.warning("set %r=%r refused: %s", field, value, e)
             return None
         if new != old:
+            if field == "master_db":
+                _log_master(old, new, source)
             self._local_edit(urgent=field == "master_db" and _lower(new, old))
         return new
 
@@ -790,16 +1075,160 @@ class Controller:
         return True
 
     def reset_live(self) -> None:
-        """B4 long (confirmed): the live EQ layer back to flat (smoothed by the worker). Says so
-        on the screen: nothing else on MAIN would show it."""
+        """SETUP > Reset live EQ (confirmed), or the phone's confirmed reset: the live EQ layer
+        back to flat (smoothed by the worker). Keeps a one-level undo (`undo_reset`) for
+        UNDO_RESET_S, or until the live EQ is edited audibly again, whoever edits it (see
+        undo_left)."""
         new = self.state.live_reset()
         if new.to_dict() == self.state.to_dict():
             self.show_hint(HINT_LIVE_FLAT)
             return
+        before = _live_dict(self.state)
         self.state = new
-        log.info("live EQ reset")
+        self._undo = {"before": before, "after": _audible_live(new),
+                      "until": self._ui_clock() + UNDO_RESET_S}
+        log.info("live EQ reset (undo kept %g s): was %s", UNDO_RESET_S, before)
         self.show_hint(HINT_LIVE_RESET)
         self._local_edit()
+
+    def undo_left(self, now: float | None = None) -> float:
+        """Seconds the reset undo stays available (0.0 = none). It ends at the first AUDIBLE
+        live EQ edit after the reset (a gain moved off 0 dB, by a knob, the phone or CamillaGUI
+        adopted; freq/Q of a band at 0 dB is inaudible and keeps it: the notch helper's B4, an
+        E2/E4 turn on a flat band), or after UNDO_RESET_S. Undo then restores the whole live
+        EQ from before the reset, over any such inaudible move. Dropped by an edit, it says
+        so (RESET UNDO LOST)."""
+        u = self._undo
+        if u is None:
+            return 0.0
+        now = self._ui_clock() if now is None else now
+        if now >= u["until"]:
+            self._undo = None
+            return 0.0
+        if _audible_live(self.state) != u["after"]:
+            self._undo = None
+            log.info("live EQ reset undo dropped: the live EQ was edited (audibly) since")
+            self.show_hint(HINT_UNDO_LOST)
+            return 0.0
+        return u["until"] - now
+
+    def undo_reset(self) -> bool:
+        """SETUP > Undo reset: the live EQ exactly as it was before the last reset (the worker
+        smooths the way back). One level: the undo is gone once used."""
+        if self.undo_left() <= 0.0:
+            self.show_hint(HINT_NOTHING_TO_UNDO)
+            return False
+        u, self._undo = self._undo, None
+        assert u is not None
+        new = State.from_dict({**self.state.to_dict(), **u["before"]})
+        new.profile = self.state.profile
+        self.state = new
+        log.info("live EQ reset undone: %s", u["before"])
+        self.show_hint(HINT_LIVE_RESTORED)
+        self._local_edit()
+        return True
+
+    def notch_helper(self, now: float | None = None) -> int | None:
+        """B4 on SHOW (D-009). Returns the slot it selected (None: no free band).
+
+        1. A spectrum PEAK within NOTCH_NEAR_OCT of a bell already in use (gain != 0): select
+           that bell, write nothing.
+        2. Else a free bell (gain exactly 0; the selected band if it is one, else the first of
+           P1..P4, never a shelf): Q = NOTCH_Q (1/6 octave), freq = the PEAK if there is one.
+           The gain is never touched: a 0 dB peaking biquad is exactly unity, so this is
+           inaudible until E3 cuts.
+        3. Else: hint NO FREE BAND, nothing changes.
+        The selected band moves there, its GAIN gets the edit highlight, the hint says
+        "P3 · 2.44k · E3 TO CUT"."""
+        target = self._peak_target()
+        peq = self.state.live_peq
+        used = [i for i in BELL_SLOTS if i < len(peq) and float(peq[i].gain) != 0.0]
+        if target is not None:
+            near = [(abs(math.log2(float(peq[i].freq) / target)), i) for i in used
+                    if float(peq[i].freq) > 0]
+            near = [x for x in near if x[0] <= NOTCH_NEAR_OCT + 1e-9]
+            if near:
+                i = min(near)[1]
+                log.info("notch helper: peak %.0f Hz is band P%d's (%.0f Hz): selected", target,
+                         i + 1, peq[i].freq)
+                self._notch_select(i, HINT_NOTCH, now)
+                return i
+        sel = self.focus.band
+        free = [i for i in BELL_SLOTS if i < len(peq) and float(peq[i].gain) == 0.0]
+        if not free:
+            self.show_hint(HINT_NO_FREE_BAND, NOTCH_HINT_S)
+            return None
+        i = sel if sel in free else free[0]
+        base = LIVE_SLOTS[i]
+        old = (self.state.get(f"{base}.freq"), self.state.get(f"{base}.q"))
+        self.state.set(f"{base}.q", NOTCH_Q)
+        if target is not None:
+            self.state.set(f"{base}.freq", target)
+        if (self.state.get(f"{base}.freq"), self.state.get(f"{base}.q")) != old:
+            self._local_edit()
+        log.info("notch helper: P%d at %.0f Hz, Q %.2f%s (gain untouched)", i + 1,
+                 self.state.get(f"{base}.freq"), self.state.get(f"{base}.q"),
+                 "" if target is not None else ", no peak")
+        self._notch_select(i, HINT_NOTCH if target is not None else HINT_NOTCH_NO_PEAK, now)
+        return i
+
+    def _peak_target(self) -> float | None:
+        if not (self.spectrum_enabled and self.state.spectrum_on):
+            return None
+        hz = self.status.peak_hz
+        if isinstance(hz, (int, float)) and not isinstance(hz, bool) and math.isfinite(hz) and hz > 0:
+            return float(hz)
+        return None
+
+    def _notch_select(self, slot: int, template: str, now: float | None) -> None:
+        now = time.monotonic() if now is None else now
+        self.focus.slot = slot
+        self.focus.editing = f"{LIVE_SLOTS[slot]}.gain"
+        self.focus.edit_until = now + max(EDIT_HIGHLIGHT_S, NOTCH_HINT_S)
+        hz = float(self.state.get(f"{LIVE_SLOTS[slot]}.freq"))
+        self.show_hint(template.format(band=LIVE_SLOT_SHORT[slot], hz=fmt_hz_short(hz)), NOTCH_HINT_S)
+
+    def set_lowcut(self, on: bool) -> bool:
+        """Lo-Cut on/off: SETUP > Lo-Cut (after its confirm) and the phone's switch (confirmed
+        on the phone). Off = parked at LOWCUT_OFF_HZ, a frequency move (no pipeline change).
+        Said on the screen either way. Returns the new state."""
+        on = bool(on)
+        if bool(self.state.lowcut_on) != on:
+            self.state.set(F_LOWCUT_ON, on)
+            log.info("Lo-Cut %s", "ON" if on else "OFF")
+            self._local_edit()
+        self.focus.editing, self.focus.edit_until = F_LOWCUT_ON, time.monotonic() + EDIT_HIGHLIGHT_S
+        self.show_hint(f"LO-CUT ON · {self.state.lowcut_hz:.0f} Hz" if on else "LO-CUT OFF")
+        return on
+
+    # ------------------------------------------------------------------ spectrum (SHOW)
+    def spectrum_wanted(self) -> bool:
+        """The spectrum task polls only while this holds: SHOW displayed, SETUP > Spectrum ON,
+        the engine reachable and processing (Running, or Paused on silence), device present."""
+        st = self.status
+        return (self.spectrum_enabled and self.page == "SHOW" and bool(self.state.spectrum_on)
+                and bool(st.connected) and st.engine in ("Running", "Paused")
+                and st.device_present is not False)
+
+    def set_spectrum(self, frame: Any, state: str) -> None:
+        """From the spectrum task: the frame to draw (None = no picture) and its state. Wakes
+        the screen only: `version` is not bumped (phones do not show the spectrum). A frame
+        identical to the one shown (silence: every bin at the floor, the scale settled) wakes
+        nothing, so a quiet SHOW page keeps the idle render rate."""
+        same = (str(state) == self.status.spectrum_state
+                and _same_spectrum(frame, self.status.spectrum))
+        self.status.spectrum = frame
+        hz = getattr(frame, "peak_hz", None) if frame is not None else None
+        self.status.peak_hz = float(hz) if isinstance(hz, (int, float)) and hz else None
+        self.status.spectrum_state = str(state)
+        if not same:
+            self.changed.set()
+
+    @property
+    def last_input(self) -> float:
+        """When the last knob/button event (or page change) came, on the UI clock: the render
+        loop draws the frame after an input at the knob rate, other frames at the stream rate."""
+        return self._last_input
 
     def set_mute(self, on: bool | str | None = MUTE_TOGGLE, seen: int | None = None) -> bool:
         """Main mute, sent at once (never queued behind other engine work). 'toggle' = the
@@ -834,12 +1263,37 @@ class Controller:
         return self.goto_page(PAGES[(i + 1) % len(PAGES)])
 
     def goto_page(self, page: str) -> str:
-        if page not in PAGES and page not in ("HWTEST", "PHONE"):
+        """Show `page` (v0 names MAIN/LIVE are aliases of ALIGN/SHOW). Leaving ALIGN locks its
+        E3/E4 again; a page change drops a pending SETUP confirm."""
+        page = page_name(page)
+        if page not in ALL_PAGES:
             log.warning("unknown page %r", page)
             return self.page
+        if page != "ALIGN":
+            self.focus.unlock_until = 0.0
+        if page != self.page:
+            self.focus.confirm = None
+        self._last_input = self._ui_clock()
         self.page = page
         self._changed()
         return page
+
+    def ui_tick(self, now: float | None = None) -> None:
+        """ALIGN and SETUP go back to SHOW after HOME_AFTER_S without a knob/button event (not
+        while a SETUP confirm is pending; PHONE and the Knob test stay where they are)."""
+        now = self._ui_clock() if now is None else now
+        if (self.page in AUTO_HOME_PAGES and now - self._last_input >= HOME_AFTER_S
+                and not self.focus.confirm_now(now)):
+            log.info("%s idle %.0f s: back to %s", self.page, now - self._last_input, HOME_PAGE)
+            self.goto_page(HOME_PAGE)
+
+    async def _ui_loop(self) -> None:
+        while True:
+            try:
+                self.ui_tick()
+            except Exception as e:   # noqa: BLE001
+                self._log_once(("ui", type(e).__name__), logging.ERROR, "ui tick failed: %s", e)
+            await asyncio.sleep(UI_TICK_S)
 
     def show_hint(self, text: str, seconds: float = HINT_S) -> None:
         self.focus.hint, self.focus.hint_until = text, time.monotonic() + seconds
@@ -872,7 +1326,15 @@ class Controller:
         return key[1], self.mute_seq
 
     def handle_event(self, event: Any) -> None:
-        """A knob/button event -> input_map actions for the current page -> applied."""
+        """A knob/button event -> input_map actions for the current page -> applied. Every event
+        counts as input (the auto-home timer; the spectrum holds its next frame)."""
+        self._last_input = self._ui_clock()
+        rta = self.rta
+        if rta is not None:
+            try:
+                rta.note_input()
+            except Exception:   # noqa: BLE001 - the knobs never depend on the spectrum
+                pass
         muted, seq = self.mute_view()
         for action in map_event(self.page, self.focus, event, self.controls,
                                 muted=muted, mute_seq=seq):
@@ -887,14 +1349,31 @@ class Controller:
         if isinstance(action, Nudge):
             self.nudge(action.field, action.detents, action.fine)
         elif isinstance(action, Toggle):
-            # input_map emits a Toggle on a rebuild field only after the SETUP double push.
-            if self.toggle(action.field, confirmed=True) and action.field == F_LOWCUT_ON:
-                self.show_hint(f"LO-CUT ON · {self.state.lowcut_hz:.0f} Hz" if self.state.lowcut_on
-                               else "LO-CUT OFF")
+            # input_map emits a Toggle on a confirmed field only after the SETUP double push.
+            if action.field == F_LOWCUT_ON:
+                self.set_lowcut(not self.state.lowcut_on)
+            elif self.toggle(action.field, confirmed=True) and action.field == F_SPECTRUM_ON:
+                on = bool(self.state.spectrum_on)
+                self.show_hint(HINT_SPECTRUM_DISABLED if on and not self.spectrum_enabled
+                               else ("SPECTRUM ON" if on else "SPECTRUM OFF"))
         elif isinstance(action, Mute):
             self.set_mute(action.on, seen=action.seen)
         elif isinstance(action, ResetLive):
             self.reset_live()
+        elif isinstance(action, UndoReset):
+            self.undo_reset()
+        elif isinstance(action, NotchHelper):
+            self.notch_helper()
+        elif isinstance(action, SetupAction):
+            fn = self.setup_actions.get(action.name)
+            if fn is None:
+                self.show_hint(f"{action.name.upper()}: NOT AVAILABLE")
+            else:
+                try:
+                    fn()
+                except Exception as e:   # noqa: BLE001 - a SETUP extra must not break the knobs
+                    log.exception("setup action %s failed: %s", action.name, e)
+                    self.show_hint(f"{action.name.upper()} FAILED (SEE LOG)")
         elif isinstance(action, NextPage):
             self.next_page()
         elif isinstance(action, GotoPage):
@@ -907,6 +1386,113 @@ class Controller:
                 self._changed()
         else:
             log.debug("unhandled action %r", action)
+
+    # ------------------------------------------------------------------ laptop access
+    def attach_laptop(self, laptop: Any) -> None:
+        """Wire SETUP > Laptop access (laptop.LaptopAccess): the SETUP action, the countdown
+        pill ("LAPTOP OPEN 1:59", before the system pills) and the screen/hint updates."""
+        self.laptop = laptop
+        self.setup_actions[A_LAPTOP] = self.laptop_toggle
+        if laptop.pill not in self.pill_sources:
+            self.pill_sources.append(laptop.pill)
+        laptop.on_change = self._laptop_changed
+        self._laptop_changed()
+
+    def laptop_toggle(self) -> bool | None:
+        """SETUP > Laptop access: open (after its double push) when closed, close (one push)
+        when open. The opening itself is root's (k1000-laptop.service): this only asks, and the
+        screen follows what root reports. None = no laptop surface."""
+        lap = self.laptop
+        if lap is None:
+            self.show_hint(HINT_LAPTOP_NA)
+            return None
+        if lap.state in ("open", "opening"):
+            lap.close("box")
+            self.show_hint(HINT_LAPTOP_CLOSED, LAPTOP_HINT_S)
+            return False
+        ok = lap.open()          # its on_change already put a refusal on the screen
+        if ok:
+            self.show_hint(HINT_LAPTOP_OPENING, LAPTOP_HINT_S)
+        elif not self.focus.hint_now():
+            self.show_hint(HINT_LAPTOP_NA, LAPTOP_HINT_S)
+        return bool(ok)
+
+    def _laptop_view(self) -> tuple[float, str]:
+        lap = self.laptop
+        if lap is None:
+            return 0.0, "off"
+        try:
+            return round(float(lap.left_s()), 1), str(lap.state)
+        except Exception as e:   # noqa: BLE001 - never break the screen
+            self._log_once(("laptop", type(e).__name__), logging.ERROR, "laptop view: %s", e)
+            return 0.0, "off"
+
+    def _laptop_changed(self) -> None:
+        """LaptopAccess moved (root opened/closed it, or the minute shown changed): closing
+        becomes a single push while open, root's news becomes a hint, the screen redraws."""
+        lap = self.laptop
+        if lap is None:
+            return
+        state = getattr(lap, "state", "closed")
+        if state == "open":
+            self.focus.no_confirm.add(A_LAPTOP)
+        else:
+            self.focus.no_confirm.discard(A_LAPTOP)
+        seen, self._laptop_seen = self._laptop_seen, state
+        msg = lap.take_message() if hasattr(lap, "take_message") else ""
+        if msg:
+            self.show_hint(msg, LAPTOP_HINT_S)
+        elif state == "open" and seen in ("opening", "unavailable", None):
+            self.show_hint(HINT_LAPTOP_OPEN, LAPTOP_HINT_S)
+        self._changed()
+
+    # ------------------------------------------------------------------ system EQ (the tune)
+    def system_eq(self) -> list[dict[str, float]]:
+        """The 8 system PEQ bands as plain dicts (freq, gain, q)."""
+        return [{"freq": b.freq, "gain": b.gain, "q": b.q} for b in self.state.sys_peq]
+
+    def set_system_eq(self, bands: Any, source: str = "tune") -> list[dict[str, float]]:
+        """The whole system EQ at once (the laptop's /tune page: an import, or its undo).
+
+        `bands`: 8 mappings (or objects) with freq/gain/q. Every value goes through State.set
+        (the system ranges; a missing or unreadable value keeps the current one), then ONE local
+        edit: the worker sends click-safe parameter writes (never a pipeline change) and the
+        state is saved at once, like a mute (a tune must survive a power cut). Returns the
+        system EQ as it was before (the caller's undo)."""
+        prev = self.system_eq()
+        seq = list(bands) if isinstance(bands, (list, tuple)) else []
+        for i in range(N_SYS_PEQ):
+            b = seq[i] if i < len(seq) else None
+            if b is None:
+                continue
+            for k in ("freq", "gain", "q"):
+                v = b.get(k) if isinstance(b, dict) else getattr(b, k, None)
+                if v is None:
+                    continue
+                try:
+                    self.state.set(f"sys_peq.{i}.{k}", v)
+                except (KeyError, ValueError, TypeError) as e:
+                    log.warning("system EQ band %d %s=%r refused: %s", i + 1, k, v, e)
+        now = self.system_eq()
+        if now != prev:
+            log.warning("system EQ set (%s): %s", source,
+                        ", ".join(f"{b['freq']:g} Hz {b['gain']:+g} dB Q {b['q']:g}"
+                                  for b in now if b["gain"] != 0.0) or "flat")
+            self._local_edit(urgent=True)
+        return prev
+
+    @property
+    def unsaved(self) -> bool:
+        """True until state.json on the disk holds the current state (the tune page says
+        'saved' then). Not just "no save pending": a save in flight (its write runs in a thread)
+        is not on the disk yet."""
+        if self._dirty_since is not None:
+            return True
+        try:
+            text = json.dumps(self.persist_state().to_dict(), indent=2) + "\n"
+        except Exception:   # noqa: BLE001 - cannot tell: not saved
+            return True
+        return text != self._saved_state_text
 
     def phone_toggle(self) -> bool | None:
         """SETUP > Phone, E1 push: phone control on/off. None = no phone surface."""
@@ -927,6 +1513,8 @@ class Controller:
         return True
 
     def _local_edit(self, urgent: bool = False) -> None:
+        if self._undo is not None:
+            self.undo_left()          # an audible live EQ edit ends the reset's undo, said so
         self._gen += 1
         self._mark_dirty(urgent=urgent)
         self._changed()
@@ -1693,6 +2281,8 @@ class Controller:
             diff = changed_fields(self.state, new)
             log.info("adopted from the engine: %s",
                      ", ".join(f"{k} {a!r}->{b!r}" for k, (a, b) in list(diff.items())[:12]))
+            if new.master_db != self.state.master_db:
+                _log_master(self.state.master_db, new.master_db, "adoption")
             self.state = new
             self._mark_dirty()
             self._changed()
@@ -1730,7 +2320,7 @@ class Controller:
         if drift.rebuild and wrong:
             # A pipeline restore keeps the live devices: useless there (and refused when the
             # channel counts differ). The device repair puts both back.
-            self._set_message("drift", 2, "PIPELINE CHANGED OUTSIDE K1000")
+            self._set_message("drift", 2, MSG_PIPELINE_CHANGED)
         elif drift.rebuild:
             await self._maybe_restore(live, expected, drift.rebuild, connect)
         else:
@@ -1949,12 +2539,12 @@ class Controller:
                            "engine devices differ from K1000's (not fixed while audio runs on "
                            "the profile's card; fixed at the next engine start, e.g. a power "
                            "cycle): %s", "; ".join(devices))
-            self._set_message("devices", 1, "ENGINE DEVICES CHANGED OUTSIDE K1000")
+            self._set_message("devices", 1, MSG_DEVICES_CHANGED)
         else:
             self._set_message("devices", 1, None)
         if held:
-            text = (f"{held[0].upper()} OUTSIDE K1000" if len(held) == 1
-                    else f"{len(held)} CUTS/MUTES MADE OUTSIDE K1000")
+            text = (f"{held[0].upper()} {OUTSIDE}" if len(held) == 1
+                    else f"{len(held)} CUTS/MUTES {OUTSIDE}")
             self._set_message("held", 1, text)
         else:
             self._set_message("held", 1, None)
@@ -2019,14 +2609,14 @@ class Controller:
             return
         now = self._clock()
         if now - self._last_restore < RESTORE_MIN_INTERVAL_S:
-            self._set_message("drift", 2, "PIPELINE CHANGED OUTSIDE K1000")
+            self._set_message("drift", 2, MSG_PIPELINE_CHANGED)
             return
         self._last_restore = now
         log.warning("pipeline differs from K1000's (%s): restoring it (Main muted around the "
                     "upload)", "; ".join(reasons)[:300])
         cfg = _keep_cuts(dc.with_live_devices(expected, live), live)
         ok = await self._guarded_upload(cfg, ramp_after=False, epoch=self._epoch)
-        self._set_message("drift", 2, None if ok else "PIPELINE CHANGED OUTSIDE K1000")
+        self._set_message("drift", 2, None if ok else MSG_PIPELINE_CHANGED)
         if ok:
             self._rebuild_seen = 0
 
@@ -2228,7 +2818,16 @@ class Controller:
         st = self.persist_state()
         try:
             text = json.dumps(st.to_dict(), indent=2) + "\n"
-            yml = dc.to_yaml(self._expected(st))
+            cfg = self._expected(st)
+            # The YAML text only when the config changed: MASTER, the balance and the mute are
+            # faders, not in active.yml, so a MASTER-down save (every 0.25 s) costs only the
+            # state JSON (PERF-3).
+            key = json.dumps(cfg, default=repr)       # ~0.3 ms; a snapshot, never aliased
+            if self._yaml_cache is not None and self._yaml_cache[0] == key:
+                yml = self._yaml_cache[1]
+            else:
+                yml = dc.to_yaml(cfg)
+                self._yaml_cache = (key, yml)
         except Exception as e:   # noqa: BLE001 - a generate() bug must not kill the loop
             if ("build", type(e).__name__, str(e)) not in self._logged:
                 self._logged.add(("build", type(e).__name__, str(e)))

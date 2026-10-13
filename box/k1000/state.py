@@ -131,6 +131,7 @@ RANGES: dict[str, Range] = {
 
 BOOL_FIELDS: tuple[str, ...] = (
     "muted", "mono_subs", "sub_inverted", "top_inverted", "lowcut_on", "sub_lowpass_on",
+    "spectrum_on",
 )
 CHOICES: dict[str, tuple[str, ...]] = {"profile": PROFILES, "dev_audition": AUDITIONS}
 
@@ -202,6 +203,9 @@ class State:
     out_trim_db: list[float] = field(default_factory=lambda: [0.0] * N_OUT)
     profile: str = "dev"
     dev_audition: str = "sum"
+    # SETUP > Spectrum (D-009): the SHOW page's program spectrum. UI only: the engine config
+    # never depends on it (dspconfig ignores it), and a v0 build ignores the key.
+    spectrum_on: bool = True
 
     # ----------------------------------------------------------------- copies / clamping
     def copy(self) -> "State":

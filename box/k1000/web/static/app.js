@@ -5,7 +5,8 @@
    Safety rules carried here (the box enforces them again):
    - Values change only from explicit controls: +/- buttons (click = released on the button, so a
      scroll never fires one), the EQ dots (a drag must START on a dot), hold-to-act buttons.
-   - Mute and "band flat" need a hold; the live-EQ reset needs a confirm.
+   - Mute and "band flat" need a hold; the live-EQ reset and the Lo-Cut switch need a confirm
+     (the box's SETUP asks for a second push for both; the box keeps an undo of the reset).
    - The MUTE hold acts on what the finger MEANT when it went down: a hold that starts as "hold to
      mute" always sends a mute, whatever happens meanwhile. An unmute carries the mute generation
      (mute_seq) the page showed, and is dropped here (and refused by the box) if the mute changed
@@ -589,9 +590,15 @@
     send({ t: "nudge", f, d: parseInt(b.dataset.d, 10) });
   }));
 
+  // Lo-Cut on/off: confirmed, as on the box (SETUP > Lo-Cut, second push). The value is fixed
+  // when the switch is tapped: a confirm that comes late still asks for what was shown.
   el.lc.addEventListener("click", () => {
-    if (!canEdit()) return;
-    send({ t: "set", f: "lowcut_on", v: !S.lowcut_on });
+    if (!canEdit() || !S) return;
+    const on = !S.lowcut_on;
+    ask(on ? "Lo-Cut on?" : "Lo-Cut off?",
+      on ? "The tops' 12 dB/oct high-pass comes back at " + fmtHz(S.lowcut_hz) + " Hz."
+        : "The tops get their full low end (the high-pass is parked at 10 Hz).",
+      on ? "Lo-Cut on" : "Lo-Cut off", () => send({ t: "set", f: "lowcut_on", v: on }));
   });
 
   // A hold-to-act button. begin() runs when the finger goes down and returns the hold's context
@@ -662,12 +669,28 @@
     send({ t: "band", s: sel, g: 0, id: "flat" });
   });
 
+  // One confirm dialog for the actions that need one (live-EQ reset, Lo-Cut on/off).
   const modal = $("#confirm");
-  $("#reset-live").addEventListener("click", () => { if (canEdit()) modal.hidden = false; });
-  $("#confirm-no").addEventListener("click", () => { modal.hidden = true; });
+  let onYes = null;
+  function ask(q, sub, yes, fn) {
+    $("#confirm-q").textContent = q;
+    $("#confirm-sub").textContent = sub;
+    $("#confirm-yes").textContent = yes;
+    onYes = fn;
+    modal.hidden = false;
+  }
+  $("#reset-live").addEventListener("click", () => {
+    if (!canEdit()) return;
+    ask("Reset the live EQ?", "All 4 notches and both shelves go back to flat (smoothly). " +
+      "The box can undo it until the next EQ cut or 5 minutes (SETUP › Undo reset).", "Reset",
+      () => send({ t: "reset_live", confirm: true, id: "reset" }));
+  });
+  $("#confirm-no").addEventListener("click", () => { modal.hidden = true; onYes = null; });
   $("#confirm-yes").addEventListener("click", () => {
     modal.hidden = true;
-    send({ t: "reset_live", confirm: true, id: "reset" });
+    const fn = onYes;
+    onYes = null;
+    if (fn && canEdit()) fn();
   });
 
   function showTab(t) {

@@ -3,9 +3,12 @@
 Thomas, 2026-10-12 evening, after using the v0 panel: *"Knobs are at the right place but they feel
 not precise, maybe a better debounce is necessary?"*
 
-Status: diagnosis and fix are written, the fix is **not applied** (two patches in §6), and the
-trace that confirms the knob type is **not run yet** (§4: about 2 minutes, needs Thomas's hands
-and k1000 stopped). Tool: `box/tools/k1000-knobtrace.py`, tests: `box/tools/tests/test_knobtrace.py`.
+Status: **applied in the repo on 2026-10-12 night** for UI v1 (D-009): patches A and B of §6,
+plus one amendment to the decoder (glitches, §9) and the 100 ms fader ramp (§7); a second
+amendment after the v1 review (2026-10-13, §10: glitches whose first edge is one contact, and
+fast turns losing clicks to the GIL, a storm misclassification and in-loop saves). The trace that
+confirms the knob type is **not run yet** (§4: about 2 minutes, needs Thomas's hands and k1000
+stopped). Tool: `box/tools/k1000-knobtrace.py`, tests: `box/tools/tests/test_knobtrace.py`.
 
 ## 1. Short answer
 
@@ -41,7 +44,7 @@ prints.
 | 3 | **(h) MASTER and BALANCE lag**: 300 ms fader ramp | **Confirmed in config and engine source**; not a knob fault | `/var/lib/k1000/active.yml`: `volume_ramp_time_ms: 300.0` (Main) and `ramp_time_ms: 300.0` (Aux1/Aux2 faders). CamillaDSP `basicfilters.rs` `prepare_processing`: on every target change, `ramp_start = current_volume` and a full ramp starts, linear in dB. One click finishes 0.3 s later, and a continuous turn trails the hand by about 0.3 s. |
 | 4 | **(b) Acceleration starts too early and reacts to one interval** | **Likely contributor** on MASTER-down, FREQ and LO-CUT only | `input_map._accel`: multiplier above 12 det/s (an 83 ms interval), from a **single** detent interval, cap ×4 (×2 for MASTER up). A brisk turn of a 24-click knob runs 10–20 clicks/s with uneven intervals, so one short interval jumps ×2–×3 mid-turn (FREQ ×2 = 1/6 oct, MASTER ×2 = 1 dB). GAIN, Q, BALANCE, SUB DELAY and slot never accelerate. |
 | 5 | **(e) Visual latency** | **Moderate**: a lag, not imprecision | Bench on the box (`k1000-knobtrace.py bench`): a MAIN frame takes **6.9 ms** on average, **15.1 ms** at most (render + RGB565). The render loop runs at most 15 fps (up to 67 ms wait; while music plays the meters already ask for frames at 10 Hz). fbtft deferred I/O runs at 30 fps (up to 33 ms) and SPI at 64 MHz (≈40 ms for a full 300 KiB frame). Estimated knob-to-pixels time is 50–150 ms, about 90 ms typical. **Not measured end to end.** |
-| 6 | **(c) Missed transitions** (I2C sampling, interrupt handling) | **Unlikely at normal speed**; possible on hard spins | The driver wakes on the INTA/INTB edge (gpiod) and reads GPPU..GPIO in one 8-byte transaction (≈1.1 ms at the box's default 100 kHz i2c-1). It feeds INTCAP, then GPIO, and the state table infers ±2 for a skipped state, so ≤2 lost transitions per sample are absorbed. Bench: wake-up delay of a sleeping thread while frames render (GIL contention) averages **0.10 ms**, p99 **0.74 ms**, max **4.8 ms**. The 50 ms resync poll (5 ms only without INT lines or during a storm) only matters when an edge is missed. Today's journal (service starts 18:21 and 18:38) has **no I2C errors, interrupt storms, polling fallback or reconfigs**. The driver does not log invalid-transition counts, so the logs cannot rule this out. The trace measures it: fastest contact change, invalid changes, and irq vs 1 kHz poll. |
+| 6 | **(c) Missed transitions** (I2C sampling, interrupt handling) | **Unlikely at normal speed**; possible on hard spins | The driver wakes on the INTA/INTB edge (gpiod) and reads GPPU..GPIO in one 8-byte transaction (≈1.1 ms at the box's default 100 kHz i2c-1). It feeds INTCAP, then GPIO, and the state table infers ±2 for a skipped state, so ≤2 lost transitions per sample are absorbed. Bench: wake-up delay of a sleeping thread while frames render (GIL contention) averages **0.10 ms**, p99 **0.74 ms**, max **4.8 ms**. The 50 ms resync poll (5 ms only without INT lines or during a storm) only matters when an edge is missed. Today's journal (service starts 18:21 and 18:38) has **no I2C errors, interrupt storms, polling fallback or reconfigs**. The driver does not log invalid-transition counts, so the logs cannot rule this out. The trace measures it: fastest contact change, invalid changes, and irq vs 1 kHz poll. **Superseded (§10): that bench rendered v0's MAIN in one thread, with no event loop, spectrum or saves, and timed a sleeping thread, not the worker. Under v1's real thread layout the worker lost clicks from 25 clicks/s (24 % at 45) until PERF-1/2/3.** |
 | 7 | **(d) Contact bounce** | **Not the cause**; debounce is not the lever | The full state table turns a bounce x→y→x into +1−1, which nets to zero (existing tests include a random walk with 30 % bounces). A time debounce like zyncoder's 0.3 ms drop would only remove real transitions on fast turns and add latency. Only a bounce that flips both contacts between two samples with no known direction can miscount, and the trace counts those ("invalid without a direction"). The Zynthian team requires 10 nF caps because their newer decoder has no bounce tolerance; ours has it by design. The switches keep their 10 ms trailing debounce (correct, unchanged). |
 | 8 | **(f) Step sizes** | **Not the cause** | 0.5 dB master and gain, 1/12 oct frequency, Q 1/6 oct, push for fine (1 sample, 1/48 oct): normal digital-console steps. |
 
@@ -119,13 +122,15 @@ click it saw.
 6. Steps 1 and 5 again with 1 kHz polling instead of interrupts. The tool switches by itself.
 
 Steps 1–5 sample INT-driven exactly like the driver: same classes, register config and
-INTCAP-then-GPIO order, imported from the installed tree, with the screen renderer running in a
-thread so the sampler competes for the GIL as the service's worker does.
+INTCAP-then-GPIO order, imported from the installed tree, with the v1 service's CPU load beside
+it (SHOW + spectrum rendered in a thread, an asyncio loop thread with the ballistics and save
+chunks; §10) so the sampler competes for the GIL as the service's worker does.
 
 The end of the run prints the analysis and the exact `controls:` lines for k1000.yaml. To re-read
 it later: `python3 …/k1000-knobtrace.py analyze ~/knobs-1.trace`. Once Patch A is installed, the
 same command also replays the trace through the fixed decoder. `--quick` covers E1 only (about 1
-minute). `bench` measures render time and wake-up delay without touching the chip.
+minute). `bench` drives the driver's real worker on a simulated chip beside the v1 load
+(§10), without touching the chip.
 
 **How to read it:**
 
@@ -168,7 +173,7 @@ run is a few hundred kilobytes at most.
 - **Bench on the box** (CPU only, `nice 19`, 4 s): see rows 5 and 6.
 - **CamillaDSP source** (`src/filters/basicfilters.rs`, master): see row 3.
 
-## 6. The fix, as patches (not applied)
+## 6. The fix, as patches (applied 2026-10-12 night; see §9 for what changed on top)
 
 Both patches apply cleanly to the working tree of 2026-10-12, 20:20
 (`git apply --check`). With both applied, the whole box suite passes locally: **462 passed** (all
@@ -966,19 +971,24 @@ Patch A is independent of the UI work. Its only file outside the driver is a one
 
 ## 7. Recommended, not patched (other owners)
 
-- **Fader ramp, for the MASTER/BALANCE feel (row 3).** Try 50–80 ms instead of 300 ms for Main
-  (`devices.volume_ramp_time_ms`) and the Aux faders (`ramp_time_ms`) in
-  `dspconfig.VOLUME_RAMP_MS`, by ear on the bench. Side effects to check:
-  - the unmute fade (the operator card says 0.3 s);
-  - the delay-guard dip (`GUARD_WAIT_S` = ramp + 50 ms, which gets shorter, and that is good);
-  - the boot ramp, which uses `VOLUME_RAMP_MS` as its step time (`control.py`).
+- **Fader ramp, for the MASTER/BALANCE feel (row 3). Applied: 100 ms** (D-009) for Main
+  (`devices.volume_ramp_time_ms`) and the Aux faders (`ramp_time_ms`), `dspconfig.VOLUME_RAMP_MS`.
+  Side effects, as built:
+  - the mute and unmute fades are 0.1 s (operator card updated);
+  - the delay-guard dip (`GUARD_WAIT_S` = ramp + 50 ms) is 0.15 s instead of 0.35 s;
+  - the boot ramp steps every 0.1 s (30 steps over 3 s instead of 10, each smaller).
 
-  A short ramp still declicks a 0.5 dB step.
+  A short ramp still declicks a 0.5 dB step; Friday's rig test is the ear check. A box already
+  running the 300 ms config gets the Aux ramps as plain value fixes (no restart); Main's is a
+  `devices` change, which K1000 never forces while audio runs: the panel shows DEVICES
+  CHANGED (GUI) (ENGINE DEVICES CHANGED OUTSIDE K1000 before 2026-10-13) until the engine next starts, when K1000 uploads its config to the
+  fresh engine (muted) and ramps in. So a deploy of this change restarts camilladsp too.
 - **Visual latency (row 5).** Render the first frame after a knob event at once, instead of
   waiting out the 15 fps cap. Consider fbtft `fps=50`.
 - **Sampling (row 6), only if the trace shows losses:**
   - i2c-1 at 400 kHz (the MCP23017 supports it), which brings a read down to about 0.3 ms;
-  - `sys.setswitchinterval(0.001)` in the k1000 process.
+  - `sys.setswitchinterval(0.001)` in the k1000 process. **Applied 2026-10-13 (§10)**: the v1
+    review measured the losses.
 
 ## 8. Not verified
 
@@ -995,3 +1005,121 @@ Patch A is independent of the UI work. Its only file outside the driver is a one
 - **Patches A and B have not run on the box itself, only locally on Python 3.13.** The trace tool
   has never sampled the live chip (by design: it needs k1000 stopped and Thomas's hands). Its
   INT-driven path follows the driver's own code and is untested against hardware.
+
+## 9. Applied (2026-10-12 night), and the glitch amendment
+
+Patches A and B went in by intent on the current files (both still applied cleanly). On top:
+
+- **MASTER up is never accelerated on any page**, enforced in `input_map._accel` whatever the
+  page's `Knob` row says, so the SHOW/ALIGN rows of UI v1 cannot reintroduce it.
+- **Phantom detents from a resting knob (the 20:25 Main −19 → −20).** Patch A removed the timer
+  emission, but its state table still turned a 2 ms glitch that takes **both** contacts at once
+  (ground bounce, a spark, a touched cable; the MCP23017 pull-ups are a weak 100 kΩ) into a
+  detent once the contacts came back:
+
+  | Glitch on a knob at rest (AB 11) | v0 and patch A | now |
+  |---|---|---|
+  | 11 → 00 → 01 → 11 (B back first) | −1 | nothing |
+  | 11 → 00 → 10 → 11 (A back first) | +1 | nothing |
+  | 11 → 00 → 11 (both back together), the knob turned some time before | ±1, the direction of its last turn | nothing |
+
+  Two such glitches are −1 dB on MASTER, which matches the unexplained change; the journal of
+  that boot (20:17–20:28) has no knob warning, as expected for this path. **Not proven:** the
+  service logs no nudges. The decoder now attributes a skipped state (both bits flipped
+  between two samples) only when the knob really moved within `infer_s`, measured from the last
+  counted transition, not from the glitch itself. **(Incomplete: when the glitch's first sample
+  has one contact flipped, that first edge IS the last counted transition. See §10.)** An unattributed skip leaves the decoder
+  *lost* by half a click until the knob is back on a detent; that arrival counts the smaller of
+  the two possible readings and re-syncs, and no 3/4 completion happens while lost. Cost: a turn
+  whose very first sample already skips two transitions loses its first click. With interrupts
+  that does not happen (INTCAP holds the first transition of any real turn); in the polling
+  fallback (no INT lines) it can. **(Wrong as a safety argument: INTCAP holds the first edge of
+  a glitch too, usually one contact. §10.)**
+- **Still possible, by design:** a glitch that releases the contacts in exactly the quadrature
+  order (A low, B low, A high, B high) is a full click to any state-table decoder. The trace's
+  "invalid without a direction" count and the hardware log are where to look if a value still
+  moves by itself.
+
+Tests (`box/tests/test_mcp23017.py`): every noise walk that stays within half a click, brisk,
+hovering and random timing, then 30 s of nothing; the glitch shapes above at 0.5 ms, 2 ms and
+0.2 s, fresh and after a real turn, spd 4 and 2, each followed by an exact real click; fifty
+glitches over ten minutes; the same through the driver with every input line pulled low and
+released B-first, A-first and together (no knob and no button event). The glitch cases fail on
+the patch A decoder as written in §6 (17 of them) and pass now; the noise walks pass on both
+(that part is patch A's own fix).
+
+## 10. Second amendment (2026-10-13, after the v1 review)
+
+**The 20:25 path is narrowed, not closed.** §9's fix covered glitches whose first sample has
+both contacts flipped. With interrupts, INTCAP holds the first edge of *anything*, a glitch
+included, and that edge is usually one contact: INTCAP 01 then GPIO 10 in the same read is
+11 → 01 → 10 → 11, and the glitch's own first edge counted as "the knob really moved", so the
+skip that followed was credited and a click completed. Now:
+
+- a skip is credited only to a knob **already turning that way before it left the detent** (a
+  counted transition within `infer_s` before the excursion: a spin, whose previous click just
+  landed), or after **two counted steps that way** since it left (|acc| ≥ 2);
+- a click that starts **from stillness** (nothing counted within `infer_s` before it left the
+  detent) and lands faster than **2.5 ms per transition** (`GLITCH_STEP_S`, 100 clicks/s at
+  4 transitions per click) is not counted: a glitch whose contacts dip and come back staggered
+  is a valid quadrature cycle, and only its speed gives it away.
+
+| Glitch on a knob at rest (AB 11), samples 0.5 or 2 ms apart | §9 | now |
+|---|---|---|
+| 11 → 01 → 10 → 11 (INTCAP 01, GPIO 10), and 11 → 10 → 01 → 11 | +1 / −1 | nothing |
+| 11 → 01 → 00 → 11 (two dips, released together), spd 4 | +1 | nothing |
+| 11 → 01 → 00 → 10 → 11 (staggered dips and releases) | +1 | nothing |
+| the same over 0.6 s | +1 | +1: a click, whatever made it |
+
+Cost: the **first click of a turn from stillness** is lost when one of its first two
+transitions is sampled late by more than one transition (a skip with |acc| < 2), or when it
+lands within 7.5 ms of leaving the detent (faster than ~67 clicks/s for that first click). The
+second click of a turn leaves the detent while moving and is never affected.
+
+**Still possible:** a glitch slower than 2.5 ms per transition that walks a whole quadrature
+cycle. **Attribution, now:** every master change is logged at INFO with its source,
+`master -19.0 -> -20.0 dB (knob)` (knob, phone, console, adoption), and the driver counts the
+glitches it dropped (`QuadratureDecoder.glitches`). A repeat of 20:25 will name what moved it.
+
+Tests (`box/tests/test_mcp23017.py`): the shapes above added to the glitch lists (spd 4 and 2,
+fresh and after a real turn, each followed by an exact real click), the staggered cycle at
+0.5 / 2 ms (nothing) and at 0.2 s (one click), and a driver test where INTCAP latches the
+glitch's one-contact first edge and GPIO the second state in the same read (four shapes, with
+and without an earlier turn). 25 of them fail on §9's decoder.
+
+**Fast turns losing clicks (Thomas: "FAST turns feel inaccurate").** Patches A/B fixed how a
+click is counted, not whether the worker sees the transitions. Measured on the box with the
+real v1 `run()` (review harness `~/dev/v1-perf`): MASTER down lost ~24 % of its clicks at
+45 clicks/s with SHOW drawn, and started losing them at 25; v1 SHOW was about twice v0 MAIN.
+Three causes, three fixes:
+
+- **The GIL** (PERF-1). The worker needs the GIL 3–4 times per chip read; at Python's default
+  5 ms switch interval each wait could last 5 ms behind the event loop or the renderer, and
+  20–35 ms sampling gaps swallowed whole clicks. `__main__.main()` now sets
+  `sys.setswitchinterval(0.001)` (`GIL_SWITCH_S`) before any thread starts: 0 clicks lost in
+  the harness, no CPU change.
+- **Storm misclassification** (PERF-2). A fast knob re-asserts INT after each clearing read;
+  after three reads the driver called that "INT held low" and fell back to 5 ms polling with
+  one read per pass, in the middle of the spin. Now a line still low is busy, not stuck, when
+  its own port brought a new level on the last read AND a fresh falling edge is queued
+  (`int_busy`); a line wedged low makes no edge and stays stuck even while a knob on its port
+  turns. The edge-flood detector and the 0.25 s config verify still catch a corrupted INTCON
+  or a chattering contact.
+- **Saves in the event loop** (PERF-3). `active.yml` was re-dumped with PyYAML's pure-Python
+  dumper (34 ms median on the Pi) every 0.25 s while MASTER went down. Now libyaml
+  (`CSafeDumper`, byte-identical, tested on every profile) and no YAML at all when the config
+  did not change (MASTER, balance and mute are faders, not in `active.yml`).
+
+With the first two, the harness measured edge → sample p95 3.4 / p99 5.6 ms and no loss at
+45 clicks/s. Regression test: `box/tests/test_knob_timing.py` drives the REAL worker thread
+on `k1000.hw.simchip` (a time-driven MCP23017: INTCAP, INT lines, a 0.9 ms transfer that
+releases the GIL) beside a thread holding the GIL 45 % of the time: at 1 ms a 45 clicks/s
+turn is sampled within one transition 95 % of the time (p95 ≈ 3.5 ms) and counted exactly; at
+the 5 ms default the p95 is ≈ 11.4 ms and the test fails.
+
+**The bench is not evidence of knob timing by itself** (row 6 above). `k1000-knobtrace.py
+bench` now drives the real worker on the sim chip at 25/35/45 clicks/s, idle and beside the v1
+load (SHOW + a moving spectrum rendered in a thread, the ballistics and a 40 ms save chunk
+every 0.25 s in an asyncio loop thread), and reports lost clicks and edge → sample delays. The
+capture's `render` load is the same v1 load. Its numbers are only as good as that model: the
+check is `capture --guided` on the real knobs, fast spins included, after the deploy.

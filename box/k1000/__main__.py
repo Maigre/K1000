@@ -15,6 +15,16 @@ Wiring only; the behaviour lives in `control.Controller`. What this file guarant
 Phone (D-007, docs/06-phone.md): the PWA + captive portal run in this process (`web.PhoneServer`);
 `--no-phone` leaves them out. Like the screen and the knobs, a phone failure is never fatal.
 
+Laptop access (docs/06-phone.md §11): SETUP > Laptop access asks root (k1000-laptop.path) to open
+CamillaGUI and SSH on the K1000 Wi-Fi for 2 h; `laptop.LaptopAccess` follows what root reports
+(the countdown pill, the PHONE page's password text, the /tune page's gate). This process never
+changes the firewall itself.
+
+Spectrum (D-009): with a screen (not `--headless`) and `spectrum.enabled` in k1000.yaml, the
+SHOW page's spectrum task (`rta.SpectrumTask`) runs on its OWN engine connection; it polls only
+while the controller wants it (SHOW, SETUP > Spectrum ON, engine processing). It is stopped
+after the controller, like the engine link: it never holds anything the audio needs.
+
 Test/bench flags: `--headless` (no framebuffer), `--no-hw` (no MCP23017 knobs), `--stdin` (one
 command per line on stdin, replies on stdout prefixed with '@'; see `COMMANDS`), and
 `--test-devices` (SignalGenerator -> File /dev/null instead of the ALSA card: engine tests only,
@@ -42,16 +52,23 @@ from .ui.input_map import Nudge, apply_focus
 
 log = logging.getLogger("k1000")
 
-RENDER_MAX_FPS = 15.0
+RENDER_MAX_FPS = 15.0    # the frame after a knob/button event
+RENDER_STREAM_FPS = 10.0  # frames nobody's hand caused: meters, the SHOW spectrum (docs/07 §6)
 RENDER_IDLE_S = 1.0      # re-render at least this often (hints/highlights wake it on expiry)
 HW_RETRY_S = 2.0         # screen / knobs not there: try again this often
 FORCE_WRITE_S = 5.0      # rewrite the panel even if the frame did not change (heals overdraw)
 KNOBS_ALARM_S = 1.0      # knobs unhealthy this long -> KNOBS OFFLINE (a retried glitch is not)
+# Python's GIL switch interval (default 5 ms). The knob worker is an I/O thread that needs the
+# GIL 3-4 times per chip read (after gpiod's wait, around the I2C ioctl, the INT level check);
+# with the default, each of those can wait 5 ms behind the event loop or the renderer, and a
+# 45 clicks/s turn (one contact transition every 5.6 ms) lost a quarter of its clicks on the
+# box. At 1 ms: none lost, same CPU (PERF-1, measured on the box).
+GIL_SWITCH_S = 0.001
 
 COMMANDS = """\
 nudge <field> <detents> [fine]   set <field> <json value> [confirm]   toggle <field> [confirm]
-mute on|off|toggle   reset_live   page <MAIN|LIVE|SETUP|HWTEST|PHONE>   next_page   hint <text>
-phone on|off|toggle|status
+mute on|off|toggle   reset_live   undo_reset   notch   page <SHOW|ALIGN|SETUP|HWTEST|PHONE>
+next_page   hint <text>   phone on|off|toggle|status   laptop open|close|status
 ev enc <0-3> <detents> | ev sw <0-7> <press|release|short|long>   (as if from the knobs)
 status   state   save   settle   help   quit"""
 
@@ -148,9 +165,9 @@ def _stop_frame(fb: Any) -> None:
 
 def _next_wake(focus: Any, now: float) -> float:
     """Seconds until the next frame that would differ without any change: a hint, an edit
-    highlight or a SETUP confirm expiring (+10 ms), capped at RENDER_IDLE_S."""
+    highlight, a SETUP confirm or the ALIGN unlock expiring (+10 ms), capped at RENDER_IDLE_S."""
     out = RENDER_IDLE_S
-    for attr in ("hint_until", "edit_until", "confirm_until"):
+    for attr in ("hint_until", "edit_until", "confirm_until", "unlock_until"):
         t = getattr(focus, attr, 0.0)
         if isinstance(t, (int, float)) and t > now:
             out = min(out, t - now + 0.01)
@@ -158,8 +175,11 @@ def _next_wake(focus: Any, now: float) -> float:
 
 
 async def render_loop(ctl: Controller, fb: Any) -> None:
-    """Re-render on change, at most RENDER_MAX_FPS (meters change ~10 times a second), and at
-    least every RENDER_IDLE_S. PIL work runs in a thread so knob events stay responsive."""
+    """Re-render on change, and at least every RENDER_IDLE_S. A frame that follows a knob or
+    button event comes at most RENDER_MAX_FPS; any other (the meters, the SHOW spectrum, both
+    ~10 Hz and not in step) at most RENDER_STREAM_FPS, so SHOW with a moving spectrum draws
+    ~10 frames/s, not one per wake-up. PIL work runs in a thread so knob events stay responsive;
+    the framebuffer sends only the rows that changed."""
     from .ui import pages
     loop = asyncio.get_running_loop()
     try:
@@ -167,16 +187,21 @@ async def render_loop(ctl: Controller, fb: Any) -> None:
         log.info("screen warm-up %.0f ms", ms)
     except Exception as e:   # noqa: BLE001
         log.warning("screen warm-up failed: %s", e)
-    min_dt = 1.0 / RENDER_MAX_FPS
+    knob_dt = 1.0 / RENDER_MAX_FPS
+    stream_dt = 1.0 / max(RENDER_STREAM_FPS, 0.1)
     last = 0.0
     failed = False
     wait = 0.0
     forced = loop.time()
+    seen_input = getattr(ctl, "last_input", None)
     while True:
-        # Woken by a change, by the next hint/highlight/confirm expiry (the only things the
-        # pages draw from the clock), else every RENDER_IDLE_S. An unchanged frame is never
-        # rendered at meter rate (that alone cost ~15 % of a core).
+        # Woken by a change, by the next hint/highlight/confirm/unlock expiry (the only things
+        # the pages draw from the clock), else every RENDER_IDLE_S. An unchanged frame is
+        # never rendered at meter rate (that alone cost ~15 % of a core).
         await ctl.wait_changed(wait)
+        inp = getattr(ctl, "last_input", None)
+        min_dt = knob_dt if inp != seen_input else stream_dt
+        seen_input = inp
         dt = loop.time() - last
         if dt < min_dt:
             await asyncio.sleep(min_dt - dt)
@@ -208,8 +233,8 @@ def open_controls(settings: dict[str, Any], quiet: bool = False) -> Any:
     A half-opened driver is closed again (its INT lines and bus released for the retry)."""
     controls = None
     try:
-        from .hw.mcp23017 import ZynthianControls
-        controls = ZynthianControls()
+        from .hw.mcp23017 import ZynthianControls, controls_options
+        controls = ZynthianControls(**controls_options(settings))
         controls.start()
         log.info("knobs on i2c-1 0x20 (irq=%s)", getattr(controls, "irq", "?"))
         return controls
@@ -314,7 +339,8 @@ async def run_command(ctl: Controller, line: str, stop: asyncio.Event) -> None:
     cmd, args = parts[0].lower(), parts[1:]
     try:
         if cmd == "nudge":
-            v = ctl.nudge(args[0], float(args[1]), len(args) > 2 and args[2] == "fine")
+            v = ctl.nudge(args[0], float(args[1]), len(args) > 2 and args[2] == "fine",
+                          source="console")
             if v is not None:    # the edit highlight, as a knob turn shows it
                 apply_focus(ctl.focus, Nudge(args[0], 0))
             _reply("ok" if v is not None else "err", {"cmd": cmd, "field": args[0], "value": v})
@@ -331,13 +357,15 @@ async def run_command(ctl: Controller, line: str, stop: asyncio.Event) -> None:
                 raise ValueError(f"ev {kind} {args[2:]}: expected 'enc <i> <d>' or 'sw <i> <kind>'")
             ctl.handle_event(ev)
             _reply("ok", {"cmd": cmd, "page": ctl.page, "slot": ctl.focus.slot,
-                          "item": ctl.focus.item, "held": sorted(ctl.focus.held)})
+                          "item": ctl.focus.item, "held": sorted(ctl.focus.held),
+                          "unlocked": ctl.focus.unlocked()})
         elif cmd == "set":
             try:
                 value = json.loads(args[1])
             except ValueError:
                 value = args[1]
-            v = ctl.set_value(args[0], value, confirmed=len(args) > 2 and args[2] == "confirm")
+            v = ctl.set_value(args[0], value, confirmed=len(args) > 2 and args[2] == "confirm",
+                              source="console")
             _reply("ok", {"cmd": cmd, "field": args[0], "value": v})
         elif cmd == "toggle":
             ok = ctl.toggle(args[0], confirmed=len(args) > 1 and args[1] == "confirm")
@@ -349,6 +377,12 @@ async def run_command(ctl: Controller, line: str, stop: asyncio.Event) -> None:
         elif cmd == "reset_live":
             ctl.reset_live()
             _reply("ok", {"cmd": cmd})
+        elif cmd == "undo_reset":
+            _reply("ok" if ctl.undo_reset() else "err", {"cmd": cmd})
+        elif cmd == "notch":
+            slot = ctl.notch_helper()
+            _reply("ok" if slot is not None else "err", {"cmd": cmd, "slot": slot,
+                                                         "hint": ctl.focus.hint_now()})
         elif cmd == "page":
             _reply("ok", {"cmd": cmd, "page": ctl.goto_page(args[0].upper())})
         elif cmd == "next_page":
@@ -372,9 +406,29 @@ async def run_command(ctl: Controller, line: str, stop: asyncio.Event) -> None:
                 _reply("ok", {"cmd": cmd, "on": ph.enabled, "phones": ph.phones, "url": info.url,
                               "tls": info.tls, "ap_up": info.ap_up, "stations": info.stations,
                               "ports": ph.ports, "error": info.error})
+        elif cmd == "laptop":
+            lap = getattr(ctl, "laptop", None)
+            arg = args[0] if args else "status"
+            if lap is None:
+                _reply("err", {"cmd": cmd, "why": "no laptop access surface"})
+            elif arg not in ("open", "close", "status"):
+                raise ValueError(f"laptop {arg}: open|close|status")
+            else:
+                if arg == "open" and lap.state not in ("open", "opening"):
+                    ctl.laptop_toggle()
+                elif arg == "close" and lap.state in ("open", "opening"):
+                    ctl.laptop_toggle()
+                lap.poll()
+                _reply("ok", {"cmd": cmd, "state": lap.state, "left_s": round(lap.left_s(), 1),
+                              "reason": lap.reason})
         elif cmd == "status":
             st = ctl.snapshot()[2]          # what the screen would show (ready included)
-            _reply("status", {**st.__dict__, "page": ctl.page, "engine_ready": ctl.engine_ready})
+            d = {**st.__dict__, "page": ctl.page, "engine_ready": ctl.engine_ready}
+            fr = d.get("spectrum")          # a summary, not 264 bins of numbers
+            d["spectrum"] = None if fr is None else {
+                "bins": len(getattr(fr, "freqs", ())), "lo_db": getattr(fr, "lo_db", None),
+                "hi_db": getattr(fr, "hi_db", None), "peak_hz": getattr(fr, "peak_hz", None)}
+            _reply("status", d)
         elif cmd == "state":
             _reply("state", ctl.state.to_dict())
         elif cmd == "save":
@@ -412,16 +466,57 @@ async def stdin_loop(ctl: Controller, stop: asyncio.Event) -> None:
 
 
 # =========================================================================== phone
-async def open_phone(ctl: Controller, settings: dict[str, Any]) -> Any:
-    """The phone surface (PWA + captive portal, D-007), or None. Never fatal: a missing
-    certificate or a refused port is logged and shown on SETUP > Phone; the knobs carry on."""
+async def open_phone(ctl: Controller, settings: dict[str, Any],
+                     tune_undo_file: Path | None = None) -> Any:
+    """The phone surface (PWA + captive portal, D-007; the laptop's /tune page), or None. Never
+    fatal: a missing certificate or a refused port is logged and shown on SETUP > Phone; the
+    knobs carry on."""
     try:
         from .web import PhoneServer, PhoneSettings
-        phone = PhoneServer(ctl, PhoneSettings.from_settings(settings))
+        phone = PhoneServer(ctl, PhoneSettings.from_settings(settings), tune_undo_file=tune_undo_file)
         await phone.start()      # with phone.enabled: false it only reports "disabled"
         return phone
     except Exception as e:   # noqa: BLE001
         log.error("phone surface unavailable (%s): knobs only", e)
+        return None
+
+
+# =========================================================================== laptop access
+def open_laptop(ctl: Controller) -> Any:
+    """SETUP > Laptop access (docs/06-phone.md §11), wired into the controller; None when it
+    cannot be built (never fatal: the SETUP item then says NOT AVAILABLE)."""
+    try:
+        from .laptop import LaptopAccess
+        lap = LaptopAccess()
+        ctl.attach_laptop(lap)
+        return lap
+    except Exception as e:   # noqa: BLE001
+        log.error("laptop access unavailable (%s)", e)
+        return None
+
+
+# =========================================================================== spectrum
+def open_spectrum(ctl: Controller, url: str) -> Any:
+    """The SHOW spectrum task on its own engine connection (D-009), started; None when
+    k1000.yaml disables it or it cannot be built (never fatal: SHOW then draws no spectrum)."""
+    if not ctl.spectrum_enabled:
+        log.info("spectrum disabled in k1000.yaml: no spectrum task")
+        return None
+    try:
+        from .rta import COMMAND_TIMEOUT_S, SpectrumTask
+
+        def client(u: str) -> Any:
+            # Its OWN client: never the controller's (a poll must not queue before a mute).
+            return CamillaClient(u, timeout=COMMAND_TIMEOUT_S, ping_interval=5.0,
+                                 backoff_max=2.0, fader_max_db=FADER_CEILING_DB)
+
+        task = SpectrumTask(url, wanted=ctl.spectrum_wanted,
+                            channels=lambda: list(getattr(ctl.profile, "input_map", ()) or ()),
+                            publish=ctl.set_spectrum, client_factory=client)
+        task.start()
+        return task
+    except Exception as e:   # noqa: BLE001
+        log.error("spectrum unavailable (%s): SHOW without it", e)
         return None
 
 
@@ -468,9 +563,14 @@ async def run(args: argparse.Namespace) -> int:
 
     hw: dict[str, Any] = {"fb": None, "controls": None}
     await ctl.start()
-    phone = None if args.no_phone else await open_phone(ctl, settings)
+    laptop = open_laptop(ctl)
+    lap_task = loop.create_task(laptop.run(), name="k1000-laptop") if laptop is not None else None
+    phone = None if args.no_phone else await open_phone(
+        ctl, settings, tune_undo_file=paths.state.with_name("tune-undo.json"))
     ctl.phone = phone
     ctl.phone_changed()          # the knobs-offline alert names the phone mute only when it exists
+    # The spectrum is for the screen: none without one (bench/engine runs stay single-link).
+    ctl.rta = None if args.headless else open_spectrum(ctl, eng.url)
     ui: list[asyncio.Task[Any]] = []          # screen + knobs: kept until the controller stopped
     if not args.headless:
         ui.append(loop.create_task(screen_task(ctl, hw), name="k1000-screen"))
@@ -481,12 +581,17 @@ async def run(args: argparse.Namespace) -> int:
     await stop.wait()
     log.info("stopping: saving the state, leaving the audio as it is")
     await _cancel([console] if console is not None else [])
+    if laptop is not None:
+        laptop.shutdown()        # root closes the fence within a second (and on k1000's stop anyway)
+        await _cancel([lap_task] if lap_task is not None else [])
     if phone is not None:
         await phone.stop()       # phones are told (1001) first; bounded to 1 s (TimeoutStopSec=5)
     # The screen keeps showing (and B2 keeps muting) while stop() lets a ramp/guard in flight
     # finish: a frozen 'MUTED' while the PA ramps up would say the opposite of the truth.
     await ctl.stop()
     await _cancel(ui)
+    if ctl.rta is not None:
+        await ctl.rta.stop()     # display only: after the controller, like the engine link
     fb = hw.get("fb")
     if fb is not None:
         _stop_frame(fb)
@@ -509,9 +614,18 @@ async def _cancel(tasks: list[asyncio.Task[Any]]) -> None:
             pass
 
 
+def configure_gil(interval_s: float = GIL_SWITCH_S) -> float:
+    """Set the GIL switch interval (see GIL_SWITCH_S) before any thread starts; returns the
+    previous one (tests restore it)."""
+    prev = sys.getswitchinterval()
+    sys.setswitchinterval(interval_s)
+    return prev
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     setup_logging(args.log_level)
+    configure_gil()              # before the knob worker, the renderer and to_thread exist
     try:
         return asyncio.run(run(args))
     except KeyboardInterrupt:

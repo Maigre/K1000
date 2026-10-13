@@ -24,6 +24,10 @@ Why it is shaped like this:
   `process_request` hook and upgrades /ws. The captive portal is a tiny asyncio HTTP/1.x server:
   phones' background traffic (HEAD, HTTP/1.0, bodies) must be answered quietly, which the
   websocket handshake parser does not do.
+- **The laptop's tune page rides on the same servers** (docs/06-phone.md §11): `/tune` and its
+  websocket `/tune/ws` answer only while SETUP > Laptop access is open (`Controller.laptop`), a
+  tune client is closed the moment it closes, and the page sends text that the box reads,
+  clamps and applies through the Controller (`tune.TuneDesk`). Phones never see it.
 - **Polling, not the screen's event.** `Controller.wait_changed()` clears a single event that the
   screen's render loop waits on; a second waiter would steal its wake-ups. The pump reads
   `Controller.version` (falling back to comparing snapshots) every `tick_s` instead, and only
@@ -57,11 +61,13 @@ from websockets.http11 import Request, Response
 
 from .. import __version__
 from ..state import N_LIVE_PEQ, RANGES, atomic_write
+from ..tune import MAX_TEXT, TuneDesk
 from ..ui.input_map import LIVE_SLOT_LABELS, LIVE_SLOT_SHORT, LIVE_SLOTS
 
 log = logging.getLogger("k1000.web")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+TUNE_DIR = Path(__file__).resolve().parent / "tune"      # served under /tune, laptop access only
 PROTOCOL_VERSION = 1
 
 # ----------------------------------------------------------------------------- the allowlist
@@ -85,7 +91,10 @@ PHONE_RANGES: tuple[str, ...] = (
     "live_highshelf.freq", "live_highshelf.gain", "live_highshelf.q",
 )
 MESSAGE_TYPES = ("ping", "nudge", "set", "band", "notch", "mute", "reset_live")
-MAX_MESSAGE = 1024               # bytes: the largest legal phone message is ~120
+MAX_MESSAGE = 1024               # bytes: the largest legal phone message is ~120 (bigger: 1009)
+TUNE_MAX_MESSAGE = 4 * MAX_TEXT + 1024   # bytes: the tune page's pasted text (UTF-8, JSON-escaped)
+TUNE_TYPES = ("ping", "state", "preview", "apply", "undo")
+TUNE_MAX_CLIENTS = 2
 MAX_ABS = 1e9                    # any number a phone sends is refused beyond this
 OUT_MAX = 32                     # replies queued per phone (pongs/errs dropped first when full)
 METER_FLOOR_DB = -60.0
@@ -94,6 +103,15 @@ FLAT_DB = 0.05                   # |gain| below this = band inactive (pages.py u
 QR_OVERRIDE_S = 60.0             # E1's choice of QR on the PHONE page lasts this long
 CLOSE_BUSY = 4002
 CLOSE_OFF = 4003
+CLOSE_LAPTOP = 4004              # the tune page: SETUP > Laptop access closed
+LEFT_EVERY_S = 30.0              # the tune page's "time left", refreshed this often
+TUNE_CLOSED_PAGE = (
+    b"<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
+    b"<title>K1000 tune</title><body style='background:#000;color:#fff;font-family:sans-serif;"
+    b"padding:24px;max-width:40em'><h1 style='color:#ffb800'>K1000: laptop access is closed</h1>"
+    b"<p>On the box: <b>SETUP &rsaquo; Laptop access</b>, push twice. It opens CamillaGUI "
+    b"(<code>http://10.42.0.1:5005/</code>), SSH and this page for 2 hours, from the K1000 Wi-Fi "
+    b"only. Then reload this page.</p>")
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -445,6 +463,7 @@ class PhoneScreenInfo:
     error: str = ""                  # e.g. port 443 refused
     ap_clash: str = ""               # "eth0 10.42.0.23": another interface in the AP's subnet
     ap_kept_down: bool = False       # setup-ap.sh --down (the no-go): ap.info state=down
+    laptop_left: float = 0.0         # SETUP > Laptop access open: seconds left (the password as text)
 
 
 # =========================================================================== the bridge
@@ -622,7 +641,7 @@ class PhoneBridge:
             step = rng.fine if (fine and rng.fine) else rng.step
             if not self._master_up.take(d * step):
                 return False, None, "master: rising too fast"
-        v = self.ctl.nudge(f, d, fine)
+        v = self.ctl.nudge(f, d, fine, source="phone")
         if v is None:
             return False, None, f"{f}: refused"
         return True, v, ""
@@ -659,7 +678,7 @@ class PhoneBridge:
             v = float(v)
         else:
             return False, None, f"not a phone setting: {str(f)[:40]}"
-        out = self.ctl.set_value(f, v)
+        out = self.ctl.set_value(f, v, source="phone")
         if out is None:
             return False, None, f"{f}: refused"
         return True, out, ""
@@ -828,10 +847,12 @@ class PhoneServer:
 
     def __init__(self, ctl: Any, settings: PhoneSettings | None = None, *,
                  static_dir: Path | str | None = None, clock: Callable[[], float] = time.monotonic,
-                 tick_s: float = 0.05, send_timeout_s: float = 2.0, presence_s: float = 2.0) -> None:
+                 tick_s: float = 0.05, send_timeout_s: float = 2.0, presence_s: float = 2.0,
+                 tune_dir: Path | str | None = None, tune_undo_file: Path | str | None = None) -> None:
         self.ctl = ctl
         self.cfg = settings or PhoneSettings()
         self.static_dir = Path(static_dir) if static_dir else STATIC_DIR
+        self.tune_dir = Path(tune_dir) if tune_dir else TUNE_DIR
         self._clock = clock
         self.tick_s = tick_s
         self.send_timeout_s = send_timeout_s
@@ -868,6 +889,10 @@ class PhoneServer:
         self._psk: tuple[str | None, str] = (None, "not read yet")
         self._ap_info: dict[str, str] = {}
         self._portal_sem = asyncio.Semaphore(32)
+        self._tune_static: dict[str, _Asset] = {}
+        self._tune_clients: set[Any] = set()
+        self._tune: TuneDesk | None = None
+        self.tune_undo_file = tune_undo_file
         self._started = False
         self.stats: dict[str, int] = {"connects": 0, "refused": 0, "rate_limited": 0, "errors": 0,
                                       "dropped": 0, "dropped_replies": 0}
@@ -963,7 +988,8 @@ class PhoneServer:
             stations=len(self._stations), phones=len(self._clients), tls="https" in self.ports,
             qr=qr, band=self._ap_info.get("label") or self.cfg.band,
             error=self.errors[-1] if self.errors else "",
-            ap_clash=self._clash, ap_kept_down=self._ap_info.get("state") == "down")
+            ap_clash=self._clash, ap_kept_down=self._ap_info.get("state") == "down",
+            laptop_left=self._laptop_left() if self.laptop_open() else 0.0)
 
     def origins(self) -> set[str]:
         """Origins allowed to open /ws: the box's own names on the ports it serves the page on."""
@@ -989,6 +1015,11 @@ class PhoneServer:
         except Exception as e:  # noqa: BLE001 - a broken install must not stop the service
             self._error(f"phone page files unreadable ({self.static_dir}: {e})")
             self._static = {}
+        try:
+            self._tune_static, _ = await asyncio.to_thread(load_static, self.tune_dir)
+        except Exception as e:  # noqa: BLE001 - the tune page is never worth the phone page
+            log.warning("tune page files unreadable (%s: %s): no /tune", self.tune_dir, e)
+            self._tune_static = {}
         self._tls = self._load_tls()
         self._load_ca()
         host = self.cfg.bind_address
@@ -1037,6 +1068,7 @@ class PhoneServer:
         self._ws_servers.clear()
         self._portal_servers.clear()
         self._clients.clear()
+        self._tune_clients.clear()
         self.ports.clear()
         self._started = False
         self._notify_ready()
@@ -1138,7 +1170,7 @@ class PhoneServer:
             srv = await serve(
                 self._ws_handler, sock=sock, ssl=ctx,
                 process_request=self._make_process_request("https" if ctx else "http"),
-                server_header=f"K1000/{__version__}", compression=None, max_size=MAX_MESSAGE,
+                server_header=f"K1000/{__version__}", compression=None, max_size=TUNE_MAX_MESSAGE,
                 max_queue=8, ping_interval=5.0, ping_timeout=10.0, open_timeout=10.0,
                 close_timeout=2.0, logger=_WS_LOG)
         except Exception as e:  # noqa: BLE001
@@ -1171,13 +1203,18 @@ class PhoneServer:
     def _make_process_request(self, scheme: str) -> Callable[[ServerConnection, Request], Response | None]:
         def process_request(conn: ServerConnection, req: Request) -> Response | None:
             path = urllib.parse.unquote(req.path.split("?", 1)[0].split("#", 1)[0]) or "/"
-            if path == "/ws":
+            if path in ("/ws", "/tune/ws"):
                 origin = req.headers.get("Origin")
                 if origin not in self.origins():
                     self.stats["refused"] += 1
                     log.warning("phone: websocket from origin %r refused", origin)
                     return self._response(403, b"forbidden origin\n", "text/plain; charset=utf-8")
+                if path == "/tune/ws" and not self.laptop_open():
+                    return self._response(403, b"laptop access is closed (SETUP > Laptop access)\n",
+                                          "text/plain; charset=utf-8")
                 return None
+            if path == "/tune" or path.startswith("/tune/"):
+                return self._tune_response(path, req.headers, scheme)
             return self._app_response(path, req.headers, scheme)
         return process_request
 
@@ -1203,6 +1240,25 @@ class PhoneServer:
             extra.append(("Service-Worker-Allowed", "/"))
         if headers.get("If-None-Match") == asset.etag:
             return self._response(304, b"", None, extra)
+        return self._response(200, asset.body, asset.ctype, extra)
+
+    def _tune_response(self, path: str, headers: Headers, scheme: str) -> Response:
+        """/tune (the laptop's tune page) and its files: only while SETUP > Laptop access is
+        open, never cached (a closed access must show the closed page at the next load)."""
+        if not self.laptop_open():
+            return self._response(403, TUNE_CLOSED_PAGE, "text/html; charset=utf-8",
+                                  [("Cache-Control", "no-store")])
+        rel = "/index.html" if path in ("/tune", "/tune/") else path[len("/tune"):]
+        asset = self._tune_static.get(rel)
+        if asset is None:
+            return self._response(404, b"not found\n", "text/plain; charset=utf-8")
+        extra = [("Cache-Control", "no-store")]
+        if rel.endswith(".html"):
+            host = _host_only(headers.get("Host", "") or "")
+            hp = headers.get("Host", "") if host in self.cfg.host_names else ""
+            ws = "wss" if scheme == "https" else "ws"
+            connect = f"'self' {ws}://{hp}" if hp and all(c not in hp for c in " ;'\"") else "'self'"
+            extra.append(("Content-Security-Policy", _csp(connect)))
         return self._response(200, asset.body, asset.ctype, extra)
 
     def _ca_response(self, path: str) -> Response:
@@ -1321,6 +1377,11 @@ class PhoneServer:
     # ------------------------------------------------------------------ websocket
     async def _ws_handler(self, ws: ServerConnection) -> None:
         peer = str((ws.remote_address or ("?",))[0])
+        req = getattr(ws, "request", None)
+        path = urllib.parse.unquote(str(req.path).split("?", 1)[0].split("#", 1)[0]) if req else ""
+        if path == "/tune/ws":                 # process_request checked Origin and the access
+            await self._tune_handler(ws, peer)
+            return
         if not self._on:
             await self._refuse(ws, CLOSE_OFF, "phone off")
             return
@@ -1340,6 +1401,11 @@ class PhoneServer:
             self._refresh(force=True)
             c.kick.set()
             async for raw in ws:
+                if len(raw.encode() if isinstance(raw, str) else raw) > MAX_MESSAGE:
+                    # the server takes the tune page's bigger frames: a phone's stays at 1 KB
+                    self.stats["errors"] += 1
+                    await ws.close(1009, "message too big")
+                    break
                 reply = self._on_message(c, raw)
                 if reply is not None:
                     self._queue(c, reply)
@@ -1355,6 +1421,102 @@ class PhoneServer:
             with contextlib.suppress(BaseException):
                 await sender
             log.info("phone %s disconnected (%d left)", peer, len(self._clients))
+
+    # ------------------------------------------------------------------ the tune page (laptop)
+    def laptop_open(self) -> bool:
+        """SETUP > Laptop access is open right now (as root reports it to the controller)."""
+        lap = getattr(self.ctl, "laptop", None)
+        try:
+            return lap is not None and lap.state == "open" and lap.left_s() > 0
+        except Exception:   # noqa: BLE001 - when in doubt, closed
+            return False
+
+    def _laptop_left(self) -> float:
+        lap = getattr(self.ctl, "laptop", None)
+        try:
+            return round(float(lap.left_s()), 1) if lap is not None else 0.0
+        except Exception:   # noqa: BLE001
+            return 0.0
+
+    @property
+    def tune(self) -> TuneDesk:
+        if self._tune is None:
+            self._tune = TuneDesk(self.ctl, self.tune_undo_file)
+        return self._tune
+
+    async def _tune_handler(self, ws: ServerConnection, peer: str) -> None:
+        """One laptop on /tune/ws: preview / apply / undo, while laptop access stays open."""
+        if not self.laptop_open():
+            await self._refuse(ws, CLOSE_LAPTOP, "laptop access closed")
+            return
+        if len(self._tune_clients) >= TUNE_MAX_CLIENTS:
+            await self._refuse(ws, CLOSE_BUSY, "tune page already open elsewhere")
+            return
+        self._tune_clients.add(ws)
+        bucket = _Bucket(5.0, 10.0, self._clock)
+        log.warning("tune page: %s connected (laptop access, %.0f s left)", peer, self._laptop_left())
+        sent_left = self._clock()
+
+        async def send(obj: dict[str, Any]) -> None:
+            await asyncio.wait_for(ws.send(json.dumps(obj)), self.send_timeout_s * 2.5)
+
+        try:
+            await send({"t": "hello", "v": PROTOCOL_VERSION, "build": self.build,
+                        "left_s": self._laptop_left(), **self.tune.state()})
+            async for raw in ws:
+                if not self.laptop_open():
+                    break
+                reply = await self._tune_message(peer, raw, bucket)
+                if reply is not None:
+                    await send(reply)
+                if self._clock() - sent_left > LEFT_EVERY_S:
+                    sent_left = self._clock()
+                    await send({"t": "left", "s": self._laptop_left()})
+        except (ConnectionClosed, TimeoutError, asyncio.TimeoutError):
+            pass
+        except Exception as e:   # noqa: BLE001 - a tune page failure stays with that page
+            self.stats["errors"] += 1
+            log.error("tune page %s failed: %s: %s", peer, type(e).__name__, e)
+        finally:
+            self._tune_clients.discard(ws)
+            if not self.laptop_open():
+                await self._refuse(ws, CLOSE_LAPTOP, "laptop access closed")
+            log.info("tune page: %s disconnected", peer)
+
+    async def _tune_message(self, peer: str, raw: Any, bucket: _Bucket) -> dict[str, Any] | None:
+        if not isinstance(raw, str):
+            return {"t": "err", "why": "text frames only"}
+        try:
+            msg = json.loads(raw)
+        except (ValueError, RecursionError):
+            return {"t": "err", "why": "not JSON"}
+        if not isinstance(msg, dict) or msg.get("t") not in TUNE_TYPES:
+            return {"t": "err", "why": "unknown message"}
+        t = msg["t"]
+        mid = msg.get("id") if isinstance(msg.get("id"), int) and not isinstance(msg.get("id"), bool) else None
+        if t == "ping":
+            return {"t": "pong", "id": mid}
+        if not bucket.take():
+            return {"t": "err", "id": mid, "why": "too fast"}
+        if t == "state":
+            return {"t": "state", "id": mid, "left_s": self._laptop_left(), **self.tune.state()}
+        if t == "preview":
+            return {"t": "preview", "id": mid, **self.tune.preview(msg.get("text"))}
+        if t == "apply":
+            out = await self.tune.apply(msg.get("text"))
+            log.warning("tune page %s: apply -> %s", peer,
+                        f"{len(out.get('filters') or [])} filter(s), saved {out.get('saved')}"
+                        if out.get("ok") else f"refused ({out.get('why')})")
+            return {"t": "applied", "id": mid, **out}
+        out = await self.tune.undo()
+        log.warning("tune page %s: undo -> %s", peer, "done" if out.get("ok") else out.get("why"))
+        return {"t": "undone", "id": mid, **out}
+
+    async def close_tune_pages(self) -> None:
+        """Laptop access closed: every tune page is told (4004) and dropped."""
+        for ws in list(self._tune_clients):
+            self._tune_clients.discard(ws)
+            await self._refuse(ws, CLOSE_LAPTOP, "laptop access closed")
 
     async def _refuse(self, ws: ServerConnection, code: int, reason: str) -> None:
         with contextlib.suppress(Exception):
@@ -1517,6 +1679,11 @@ class PhoneServer:
     async def _pump(self) -> None:
         while True:
             await asyncio.sleep(self.tick_s)
+            if self._tune_clients and not self.laptop_open():
+                try:
+                    await self.close_tune_pages()
+                except Exception as e:  # noqa: BLE001
+                    log.debug("closing tune pages: %s", e)
             if not self._clients:
                 continue
             try:

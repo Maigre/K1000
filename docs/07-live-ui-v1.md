@@ -1,7 +1,39 @@
 # 07 — Live UI v1: SHOW · ALIGN · SETUP (design spec)
 
+> **As built (2026-10-13).** UI v1 is built, deployed and accepted on the box (`f7aa58b-v1`).
+> Thomas's choices (**D-009**, 2026-10-12) overrode this spec where they differ, and the build
+> followed D-009. The spec below is kept as written. The operator view is `04-operator-card.md`,
+> the contract changes are `03-v0-architecture.md` §8. What the build did differently:
+>
+> | Spec (below) | As built |
+> |---|---|
+> | Chips `SUB · LS · 1 · 2 · 3 · 4 · HS`, SUB puts the balance on E3 (§0 #3, §2.6) | **No SUB chip.** Chips `LS · 1 · 2 · 3 · 4 · HS`; the balance is on ALIGN only (E2) |
+> | B3 hold on SHOW = previous band | No previous band: a B3 tap steps LS → 1 → 2 → 3 → 4 → HS and wraps; a hold does nothing on SHOW |
+> | ALIGN: Lo-Cut on/off on a B3 hold, alignment knobs live (§3) | **ALIGN E3/E4 (sub delay, Lo-Cut freq) are locked**: a turn shows `LOCKED · HOLD B3 TO EDIT` and changes nothing. A B3 hold unlocks them (`EDIT 0:30` badge, renewed by any input on ALIGN, so 30 s idle relocks; a B3 tap or leaving ALIGN relocks). Sub delay keeps its wake-up detent. Lo-Cut on/off is a SETUP item with a double-push confirm |
+> | GRAB (§2.4): freq = the PEAK, else the LOUDEST bin, else `GRAB: NO RTA`; FREQ highlighted; hint `GRAB: P3 → 2.47k · E3 TO CUT` | **Notch helper**: a free bell (gain exactly 0, the selected one first, never a shelf) always gets Q 8.65; its freq moves only to a detected PEAK (no LOUDEST fallback: `P2 · 1.00k · NO PEAK · E3 TO CUT`). A PEAK within 1/6 oct of a bell already in use selects that bell and writes nothing. The edit highlight goes on **GAIN**, hint `P3 · 2.44k · E3 TO CUT` (4 s); `NO FREE BAND` when all four bells are in use. Gain is never written |
+> | Reset all live EQ = B4 hold, twice within 5 s (§0 #8) | **SETUP › Reset live EQ** (two pushes), then **SETUP › Undo reset** (one level; until the next *audible* live-EQ edit from any surface, or 5 min; an edit that ends it says `RESET UNDO LOST`). A B4 hold on SHOW only shows `RESET LIVE EQ: IN SETUP` |
+> | SETUP gains `RTA source` PGM / MIC / OUT / OFF (§4, §5.1); kill switch `ui: {rta: false}` | **SETUP › Spectrum ON/OFF** only (default ON, decided at Friday's rig test); the source is always the program (capture side, the profile's `input_map` channels, power average). Kill switch: `spectrum: enabled: false` in k1000.yaml (no task, no second connection). MIC and OUT are not built |
+> | SETUP list: v0 + RTA source | v0's list + Reset live EQ ×2 · Undo reset · Lo-Cut ×2 · Spectrum · **Laptop access ×2** (new, not in this spec: opens CamillaGUI and SSH on the K1000 Wi-Fi for 2 h, plus the `/tune` page; `06-phone.md` §11) · Phone · Knob test |
+> | 265 bins; polled on SHOW with source ≠ OFF and engine Running | 264 bins (1/24 oct, 10 Hz–20 kHz); polled at 10 Hz on its own websocket while SHOW is displayed, Spectrum is ON, the engine is Running **or Paused**, and the device is present; the connection closes after 30 s unwanted. New frames are held for 300 ms after any knob or button event |
+> | Range: loudest hold rounded up to 6 dB + 18 dB headroom (§5.2) | **Slow tracker**: rises at once, falls 1 dB/s, no 6 dB steps (still +18 dB headroom, 66 dB deep) |
+> | PEAK: 10 dB above the median of ±1/3 oct, steady 0.7 s (§2.4) | ±**1 octave** context, enters at 10 dB, released 0.5 s after it drops below 6 dB (hysteresis), within 30 dB of the loudest bin, 40 Hz–16 kHz, persistent **1.5 s**, on a 0.25 s power average; the pointer moves only by ≥ 2 bins |
+> | PEAK ▼ + `PEAK 2.44k · B4 GRAB`; `RTA PGM` tag | A small cyan pointer + its frequency, no call-to-action text; no source tag. A grey `NO SPECTRUM` only when the engine refuses |
+> | Controller messages in a dark-amber strip on the chip row; MUTED band carries alerts (§0 #14, §2.7) | **System alerts take the status bar** (critical red, KNOBS OFFLINE full width; warning orange; info blue, e.g. RAMPING IN); a critical one is repeated over SHOW's chips when no hint is up. Hints keep the amber strip, briefly. **Persistent pills** on SHOW's bottom row: LAPTOP OPEN, LO-CUT OFF, POL INV (orange), MONO SUB, AUDITION (grey). The 0 dB line is labelled, dB labels at the right edge |
+> | No master guard beyond Patch B (§2.2 rejected a cross-knob guard) | **Master-up guard** (D-009): master up is never accelerated and rises at most +6 dB within any 2 s (`controls.master_up_guard_db`, 0 = off), the rest refused with `MASTER: SLOW DOWN`. Down is never limited |
+> | 300 ms fader ramp (doc 08) | **100 ms** for Main and the Aux faders: master and balance answer the hand; mute and unmute fade over 0.1 s |
+> | Auto-home not while a SETUP or B4 confirm is pending | Not while a SETUP confirm is pending (there is no B4 confirm); PHONE and the Knob test never go home |
+> | Phone parity (§8.1): front page = SHOW's controls; GRAB rule | The PWA keeps its own layout (MAIN: master, mute, balance, Lo-Cut; LIVE EQ) and has no spectrum. Its Lo-Cut switch and live-EQ reset go through the same Controller paths (confirm on the phone; the undo is on the box). Its "notch here" still cuts −6 dB at Q 8 at once |
+> | Cost ≈ 10 % of one core in k1000 (§6) | Measured at the acceptance (silent input, SHOW + spectrum, 60 s): k1000 **19.6 %** of one core (max 32.8 %, unexplained ~30 % spikes every ~11 s), camilladsp 4.7 %, engine load 0.98 %, 0 xruns |
+> | Knob sampler under continuous rendering: "[?] re-run the bench" (§8) | Measured: MASTER lost ~24 % of its clicks at 45 clicks/s with SHOW drawn; fixed by a 1 ms GIL switch interval and lighter saves (`08-knob-precision.md` §10, PERF-1..3). Patches A and B are applied |
+>
+> **Known after the acceptance, not fixed when this note was written:** `NO SPECTRUM` for ~5 s after
+> every engine start (CamillaDSP 5.0.0-beta.1 first answers `Insufficient data in buffer`, which
+> `rta.py` treats as a refusal), and a PEAK on a silent input (no absolute level floor: a −114 dBFS
+> noise bin near 7.3 kHz was shown, and B4 aimed at it, harmlessly).
+
 2026-10-12 evening, answering Thomas's notes on the v0 panel. Status: **design and prototype,
-nothing wired**. The engine and panel figures were measured on the box tonight, read-only.
+nothing wired** (superseded by the note above). The engine and panel figures were measured on the
+box tonight, read-only.
 
 New files:
 - `box/k1000/ui/eqgraph.py`: the curve math and the drawing.

@@ -15,7 +15,8 @@ Why it looks like this:
   the URL. E1 steps through the codes by hand: Wi-Fi, URL, and the first-time setup page
   (http://10.42.0.1/: the certificate download), for a second phone or a first install.
 - **The password is also printed** (easy-to-type alphabet, setup-ap.sh): the fallback when a
-  camera will not scan. It appears on the box screen only.
+  camera will not scan. It appears on the box screen only. While SETUP > Laptop access is open
+  it is printed on every step (a laptop cannot scan the QR), with the time left.
 - **Same language as the other pages** (pages.py): status bar, amber labels, red frame + footer
   while MUTED. NO DEVICE / ENGINE DOWN become a footer strip here instead of hiding the QR: this
   page is used during setup, when the interface may not be plugged yet.
@@ -126,6 +127,7 @@ class _Info:
     error: str = ""
     ap_clash: str = ""
     ap_kept_down: bool = False
+    laptop_left: float = 0.0        # SETUP > Laptop access open: seconds left
 
     @classmethod
     def of(cls, info: Any) -> "_Info":
@@ -242,6 +244,18 @@ def _status_lines(c: Any, inf: _Info, y: int) -> None:
 STATUS_Y = 214
 
 
+def _laptop_left(status: Any) -> float:
+    """Seconds of laptop access left (0 = closed), from the controller's status."""
+    if pages._get(status, "laptop_state", "") != "open":
+        return 0.0
+    return max(0.0, pages._num(status, "laptop_s", 0.0) or 0.0)
+
+
+def _laptop_tag(c: Any, inf: _Info, y: int) -> None:
+    _text_fit(c, (COL_X0, y), f"LAPTOP OPEN {pages.fmt_hmm(inf.laptop_left)}", 15,
+              COL_X1 - COL_X0, AMBER)
+
+
 def _body_wifi(c: Any, inf: _Info) -> None:
     x, w = COL_X0, COL_X1 - COL_X0
     c.d.text((x, 38), "1 · JOIN WI-FI", font=font(16), fill=AMBER, anchor="la")
@@ -252,6 +266,8 @@ def _body_wifi(c: Any, inf: _Info) -> None:
         _text_fit(c, (x, 150), inf.psk, 22, w, FG, face=FONT_MONO)
     else:
         _text_fit(c, (x, 152), inf.psk_error or "unknown", 13, w, ORANGE, face=pages.FONT_REG)
+    if inf.laptop_left > 0:
+        _laptop_tag(c, inf, 182)
     _status_lines(c, inf, STATUS_Y)
 
 
@@ -262,6 +278,16 @@ def _body_link(c: Any, inf: _Info, step: str, url: str, lines: list[str]) -> Non
     c.d.text((x, 64), scheme or " ", font=font(14, pages.FONT_REG), fill=DIM, anchor="la")
     _text_fit(c, (x, 82), host, 30, w, FG)
     y = 124
+    if inf.laptop_left > 0:
+        # SETUP > Laptop access is open: the password as text, for a laptop that cannot scan
+        _laptop_tag(c, inf, 122)
+        c.d.text((x, 144), "Wi-Fi password", font=font(13, pages.FONT_REG), fill=DIM, anchor="la")
+        if inf.psk:
+            _text_fit(c, (x, 160), inf.psk, 22, w, FG, face=FONT_MONO)
+        else:
+            _text_fit(c, (x, 162), inf.psk_error or "unknown", 13, w, ORANGE, face=pages.FONT_REG)
+        _status_lines(c, inf, STATUS_Y)
+        return
     for text, col in lines:
         _text_fit(c, (x, y), text, 14, w, col, face=pages.FONT_REG)
         y += 19
@@ -283,6 +309,10 @@ def _body_setup(c: Any, inf: _Info) -> None:
 def _render(info: Any, state: Any, status: Any, focus: Any, now: float | None) -> Image.Image:
     from .input_map import Focus
     inf = _Info.of(info)
+    try:
+        inf.laptop_left = max(_laptop_left(status), float(inf.laptop_left or 0.0))
+    except (TypeError, ValueError):
+        inf.laptop_left = _laptop_left(status)
     c = pages._Ctx(Focus() if focus is None else focus, time.monotonic() if now is None else now)
     muted = pages.displayed_muted(state, status)
     pages._status_bar(c, PAGE_NAME, state, status, muted)
@@ -372,6 +402,8 @@ def demo_cases() -> list[tuple[str, Any, Any, Any]]:
         ("phone_no_tls", _Info(**{**base, "qr": "url", "stations": 1, "tls": False,
                                    "url": "http://10.42.0.1:8080/"}), s, run),
         ("phone_setup", _Info(**{**base, "qr": "setup", "stations": 1}), s, run),
+        ("phone_laptop", _Info(**{**base, "qr": "url", "stations": 2, "phones": 1}), s,
+         pages.ScreenStatus(**{**run.__dict__, "laptop_s": 7140.0, "laptop_state": "open"})),
     ]
 
 

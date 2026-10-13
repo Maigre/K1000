@@ -7,6 +7,9 @@ Decisions: D-002 (Zynthian V4 + CamillaDSP), D-004 (CamillaDSP **v5.0.0-beta.1**
 build proved different is fixed in place below and listed in §7. Operator view:
 `04-operator-card.md` · M4 bring-up: `05-m4-day.md` · deploy and ops: `box/README.md`.
 
+**UI v1 (D-009), accepted on the box 2026-10-13**: the panel pages, buttons, fader ramp, master-up
+guard and the SHOW spectrum changed this contract. They are fixed in place below, and §8 lists them.
+
 ## 1. Proven hardware facts (on the box, 2026-10-12)
 
 | Item | Fact |
@@ -37,6 +40,7 @@ camilladsp.service ── sh: wait for a valid active.yml (camilladsp -c) and fo
        │
 k1000.service ── python3 -m k1000   (the control service: state, knobs, screen, persistence)
        │  writes /var/lib/k1000/state.json + /var/lib/k1000/active.yml (atomic)
+       │  UI v1: a SECOND websocket to :1234 for the SHOW spectrum only (rta.py, §8)
        │
 camillagui.service ── CamillaGUI v5 beta.2 on :5005 (phone compact view, laptop editor), same websocket
 ```
@@ -58,7 +62,7 @@ camillagui.service ── CamillaGUI v5 beta.2 on :5005 (phone compact view, lap
 | 3 | Pushes the saved state: a whole upload when the title (`K1000 <profile>`), the devices or the structure differ, else one PatchConfig of the values |
 | 4 | Parks Aux1/Aux2 at the balance and Main at the boot gain (or at the master, if lower), still muted; sets Main's marker bit |
 | 5 | **Waits until GetState reads Running**, twice, 12 ms apart (> 2 chunks). No timeout. If it has to wait: alert `NO AUDIO FLOWING · HELD MUTED`. The MUTED band says `RAMPS IN BY ITSELF · hold B2 to keep muted` throughout |
-| 6 | Unmutes, then steps Main to the saved master over `boot_ramp_s` (3 s): one step per 300 ms engine ramp, ≤ 6 dB per step, Running re-checked before each. Engine stops mid-ramp → Main muted and re-parked, the ramp restarts once audio flows |
+| 6 | Unmutes, then steps Main to the saved master over `boot_ramp_s` (3 s): one step per engine fader ramp (100 ms; 300 ms until UI v1), ≤ 6 dB per step, Running re-checked before each. Engine stops mid-ramp → Main muted and re-parked, the ramp restarts once audio flows |
 | 7 | Clears Main's marker bit |
 
 - A state saved **muted** parks Main at the master and stays muted (`READY · hold B2 to unmute`).
@@ -87,13 +91,13 @@ A mute without K1000's record is someone's decision and is never released by K10
 edits not sent yet win), so the screen and `state.json` follow the phone. What it cannot adopt is
 pushed back **only in the safe direction**:
 
-| Outside K1000 (CamillaGUI) | K1000 does | Screen (middle strip) |
+| Outside K1000 (CamillaGUI) | K1000 does | Screen (status bar, orange) |
 |---|---|---|
-| A cut or a mute: Gain `mute` flag, a Gain/Biquad gain or Volume limit below K1000's, an Aux group lowered or muted | **keeps it**, never raises or unmutes it; an Aux group lowered keeps that offset under later balance moves | `<WHAT> OUTSIDE K1000` / `N CUTS/MUTES MADE OUTSIDE K1000` |
+| A cut or a mute: Gain `mute` flag, a Gain/Biquad gain or Volume limit below K1000's, an Aux group lowered or muted | **keeps it**, never raises or unmutes it; an Aux group lowered keeps that offset under later balance moves | `<WHAT> (GUI)` / `N CUTS/MUTES (GUI)` |
 | A raise above K1000's value (incl. an Aux group raised) | pulls it down in click-safe steps (0.1 dB per Gain step, 0.5 dB Biquad, 1/12 oct freq/Q) | — (`CONFIG DRIFT (SEE LOG)` if the engine still differs after 3 identical re-sends) |
-| Structure changed (mixers, pipeline, a filter's type) | restores it: a whole upload keeping the live devices and the outside cuts, Main muted around it; second look, at most once per 30 s | `PIPELINE CHANGED OUTSIDE K1000` |
+| Structure changed (mixers, pipeline, a filter's type) | restores it: a whole upload keeping the live devices and the outside cuts, Main muted around it; second look, at most once per 30 s | `PIPELINE CHANGED (GUI)` |
 | Devices on another type, another ALSA card (resolved via `/proc/asound/<id>` → `cardN`) or another channel count, the profile's card present (e.g. a GUI page loaded while the engine was down Applies its default `hw:0` config) | uploads the profile's whole config (cuts kept), Main muted, then the boot ramp; second look, at most once per 30 s | `RESTORING ENGINE DEVICES` |
-| Any other devices difference (`target_level`, `volume_limit`, chunksize…) | nothing while audio runs (it would restart the IO); fixed at the next engine start | `ENGINE DEVICES CHANGED OUTSIDE K1000` |
+| Any other devices difference (`target_level`, `volume_limit`, chunksize…) | nothing while audio runs (it would restart the IO); fixed at the next engine start | `DEVICES CHANGED (GUI)` |
 
 ### Mute, setup actions, persistence
 
@@ -108,6 +112,10 @@ pushed back **only in the safe direction**:
 - **Persistence**: `state.json` + `active.yml`, atomic (tmp + fsync + rename), only when the content
   changed; 1 s after the last edit, at most 5 s after the first. **Edits toward silence** (operator
   mute, master lowered) are saved at once, at most every 0.25 s (measured: on disk after 0.05 s).
+  `active.yml` is dumped with libyaml (`dspconfig.YAML_DUMPER`, the same text as PyYAML's
+  pure-Python dumper) and only when the config changed: MASTER, balance and mute are faders, so
+  their saves write `state.json` alone (the 34 ms pure-Python dump in the event loop starved the
+  knob worker of the GIL, PERF-3).
   A failed write is retried after 2 / 5 / 10 s and raises `CANNOT SAVE STATE`. The first overwrite
   of `active.yml` keeps `active.yml.prev`; an unreadable `state.json` is kept as `state.json.bad`.
 
@@ -141,9 +149,11 @@ unchanged, mute included.
   driver is closed first). Knobs not open, or unhealthy for more than 1 s: alert
   `KNOBS OFFLINE · USE PHONE MUTE / BYPASS` while a phone can mute (phone servers up, SETUP › Phone
   on, the AP up), else `KNOBS OFFLINE · SOURCE DOWN / BYPASS` (B2 does nothing meanwhile).
-- Render on change only (≤ 15 fps), at least every 1 s, and the panel is rewritten every 5 s even if
-  unchanged (heals console overdraw). The meter wakes the screen only when the picture changes
-  (0.25 dB steps within −60…0 dBFS).
+- Render on change only, at least every 1 s, and the panel is rewritten every 5 s even if
+  unchanged (heals console overdraw). The frame after a knob/button event comes at ≤ 15 fps; any
+  other (meters, the SHOW spectrum) at ≤ 10 fps (UI v1: SHOW with a moving spectrum draws ~10
+  frames/s). The meter wakes the screen only when the picture changes (0.25 dB steps within
+  −60…0 dBFS), the spectrum only when its frame changes (silence wakes nothing).
 - SIGTERM: the console stops first; the screen and the knobs (B2) keep running until the
   controller's `stop()` returns; nothing is muted.
 
@@ -161,7 +171,8 @@ Logical channels after the split: **0 = Sub L, 1 = Sub R, 2 = Top L, 3 = Top R.*
 | 6 | Filter | 0…3 each | `out_trim_0`…`out_trim_3` (Gain, per physical output calibration) |
 | 7 | Mixer `output` | 4→P | profile mapping to physical outputs |
 
-- **Main fader** = master volume + mute (CamillaDSP's built-in control, ramped 300 ms), capped at
+- **Main fader** = master volume + mute (CamillaDSP's built-in control, ramped 100 ms since UI v1, 300 ms in v0;
+  `dspconfig.VOLUME_RAMP_MS`, also the Aux1/Aux2 Volume filters' `ramp_time_ms`), capped at
   0 dB by `devices.volume_limit`.
 - **Balance** macro `b` dB: Aux1 (subs) = +b/2, Aux2 (tops) = −b/2.
 - **Delays are whole samples**: K1000 writes `delay_samples × 1/48 ms` (6 digits) and never sends a
@@ -198,28 +209,52 @@ when it fits (m4: [2, 3]), else (0, 1); any input/output-map warning raises the 
 | `profiles.py` | device profiles and settings | `Profile` (name, devices, channels, format, input map, output map, `target_level`, `warnings`); `load_settings(path)`; `choose_profile(settings, state_profile) -> ProfileChoice(name, source, error)`; `load_profile(name, settings)`; `probe_alsa(device)`; `card_id` / `card_present` (`/proc` only) |
 | `dspconfig.py` | CamillaDSP v5 YAML/JSON from profile + state | `generate(profile, state) -> dict`; `to_yaml(cfg)`; `diff_ops` → `SetValue` / `Fader` / `FaderMute` / `Rebuild`; `smooth_ops` (click-safe plans); `boot_ramp_plan`; `state_from_config` (adopt); `config_drift -> Drift(devices, rebuild, fixes)`; `fader_drift`; `with_live_devices` |
 | `cdsp.py` | asyncio websocket client (v5) | `CamillaClient(url)`: `connect()`, `command(name, **fields)` (raises `CdspError`), `set_value`, `patch_config`, `set_config_yaml`, `set_fader`, `adjust_fader`, `set_fader_mute`, `get_faders`, `get_config_json`, `get_state`, `get_version`, `get_signal_levels`, `get_stop_reason`…; `on_connect` / `on_disconnect` hooks; auto-reconnect with backoff; serialised request/response |
-| `control.py` | the brain | `Controller(client, profile, state, paths, settings=, profile_choice=, boot_gain_db=, boot_ramp_s=, transform=, device_probe=)`: UI actions (`nudge`, `toggle`, `reset_live`, `set_mute`, `next_page`, `handle_event`, `b2_muted`, `set_knobs_ok`…), apply worker, persistence, boot ramp, adoption and drift policy (§2), device repair (`wrong_devices`), `Status` for the screen (engine, device_present, load, levels, clip, in_clip, muted, ramping, ready, alert, message, drift, knobs_ok); `recover_state(paths)`, `Paths`, `EngineSettings`, `marker_db` / `decode_marker` |
-| `hw/mcp23017.py` | knobs + buttons | `ZynthianControls(bus=1, addr=0x20, int_a=27, int_b=4)`; async event stream of `EncoderEvent(index, delta, ts)` and `SwitchEvent(index, kind)` with kinds `press`, `release`, `short`, `long` (fired while still held, at 800 ms); full-quadrature decoding, interrupt-driven via gpiod v2 edge events + periodic resync |
-| `ui/display.py` | framebuffer | `Framebuffer('/dev/fb0')`: `show(PIL.Image)` (RGB565 little-endian, skipped when unchanged), `invalidate()`, `unbind_console()`, `backlight(on)` |
-| `ui/pages.py` | screens | `render(page, state, status, focus) -> PIL.Image` (480×320) for `MAIN`, `LIVE`, `SETUP`, `HWTEST`. NO DEVICE > ENGINE DOWN replace the body; MUTED = red pill + frame + band (MAIN/LIVE), footer (SETUP) or tag (HWTEST), carrying the alert; CLIP / IN CLIP pills; amber `ENGINE ?` / `DEVICE ?` when unknown; a `UI ERROR` frame instead of a crash; `demo_cases()` → `docs/ui/*.png` |
+| `control.py` | the brain | `Controller(client, profile, state, paths, settings=, profile_choice=, boot_gain_db=, boot_ramp_s=, transform=, device_probe=)`: UI actions (`nudge` / `set_value` with a `source`, `toggle`, `reset_live` / `undo_reset` / `undo_left`, `notch_helper`, `set_lowcut`, `set_mute`, `next_page` / `goto_page`, `handle_event`, `b2_muted`, `set_knobs_ok`, `pills`, `alerts`, `set_system_eq`…), apply worker, persistence, boot ramp, adoption and drift policy (§2), device repair (`wrong_devices`), `Status` for the screen (engine, device_present, load, levels, clip, in_clip, muted, ramping, ready, alert, message, drift, knobs_ok); `recover_state(paths)`, `Paths`, `EngineSettings`, `marker_db` / `decode_marker` |
+| `hw/mcp23017.py` | knobs + buttons | `ZynthianControls(bus=1, addr=0x20, int_a=27, int_b=4)`; async event stream of `EncoderEvent(index, delta, ts)` and `SwitchEvent(index, kind)` with kinds `press`, `release`, `short`, `long` (fired while still held, at 800 ms); full-quadrature decoding (a click counts on landing, never on a timer; skips credited only to a knob already turning; a click from stillness faster than 2.5 ms per transition is a glitch: docs/08 §9–10), interrupt-driven via gpiod v2 edge events + periodic resync; an INT re-asserted with new levels is a busy knob, not a storm. `hw/simchip.py`: a time-driven MCP23017 + INT lines for timing tests and the knobtrace bench |
+| `ui/display.py` | framebuffer | `Framebuffer('/dev/fb0')`: `show(PIL.Image)` (only the span of changed rows is packed to RGB565 little-endian and written; skipped when unchanged), `invalidate()` (next frame written whole), `unbind_console()`, `backlight(on)` |
+| `ui/pages.py` | screens | `render(page, state, status, focus) -> PIL.Image` (480×320) for `SHOW`, `ALIGN`, `SETUP`, `HWTEST` (`PHONE` via `ui/qr.py`; v0 `MAIN`/`LIVE` = `ALIGN`/`SHOW`). UI v1 (D-009): SHOW draws the live-EQ curve (`ui/eqgraph.py`) over `status.spectrum`; system alerts (`status.alerts`) take the status bar (KNOBS OFFLINE red, full width; warnings orange; states blue), hints the amber strip; `status.pills` on SHOW. NO DEVICE > ENGINE DOWN replace the body; MUTED = red pill + frame + band (SHOW/ALIGN), footer (SETUP) or tag (HWTEST), carrying the alert; CLIP / IN CLIP pills; amber `ENGINE ?` / `DEVICE ?` when unknown; a `UI ERROR` frame instead of a crash; `demo_cases()` → `docs/ui/*.png`; `--bench` = SHOW's cost at 10 fps |
 | `ui/input_map.py` | knob/button semantics per page | `map_event(page, focus, event, cfg, muted=) -> list[Action]`; `KNOBS` table; `ControlMap.from_cfg` (k1000.yaml `controls:` encoders / pushes / buttons / reverse; anything invalid → defaults); `KNOB_CORNERS` (assumed) |
-| `__main__.py` | wiring | asyncio main; systemd-friendly logging; retries (§2); `--stdin` bench console (incl. `ev enc` / `ev sw` real knob events), `--headless`, `--no-hw`, `--test-devices`; never mutes on exit |
+| `rta.py` | the SHOW spectrum (D-009, §8) | `SpectrumTask(url, wanted=, channels=, publish=, client_factory=)`: its **own** `CamillaClient` (0.5 s command timeout), polls `GetSpectrum` at 10 Hz while `wanted()` (`Controller.spectrum_wanted`), publishes `eqgraph.RtaFrame`s to `Controller.set_spectrum`; `note_input()`; `Ballistics` (fall, slow range tracker, PEAK detector); `spectrum_request`, `parse_spectrum` |
+| `laptop.py` | SETUP › Laptop access, k1000's side (docs/06 §11) | `LaptopAccess`: `open()` / `close()` / `toggle()` (a flag in `/run/k1000`; root's `k1000-laptop.service` opens the fence), `poll()` (root's `/run/k1000-laptop/status`), `left_s()`, `pill()`; wired by `Controller.attach_laptop` |
+| `tune.py` | the `/tune` page's import (docs/06 §11) | `parse_filters(text) -> Import` (REW / EqualizerAPO / typed lines: peaking only, ≤ 8, clamped, skipped and notes listed); `plan_bands`, `curve`; `TuneDesk(ctl)`: `preview`, `apply` / `undo` through `Controller.set_system_eq` |
+| `__main__.py` | wiring | asyncio main; GIL switch interval 1 ms before any thread (`configure_gil`: the knob worker needs the GIL 3–4 times per read, PERF-1); systemd-friendly logging; retries (§2); `--stdin` bench console (incl. `ev enc` / `ev sw` real knob events), `--headless`, `--no-hw`, `--test-devices`; never mutes on exit |
 
-### Knob semantics (v0, as built)
+### Knob semantics (UI v1, D-009, as built 2026-10-13; v0 in git history)
 
 | Page | E1 | E2 | E3 | E4 |
 |---|---|---|---|---|
-| MAIN | master (0.5 dB; acceleration ×2 up, ×4 down) | balance (0.5 dB) | sub delay (0.1 ms, push = 1 sample = 1/48 ms; after 2.5 s at rest the first detent only wakes it) | Lo-Cut freq (1/12 oct, push = 1/48; ×4) |
-| LIVE | slot select (PEQ 1–4, Low shelf, High shelf; every detent counts, wraps) | frequency (1/12 oct, push = 1/48; ×4) | gain (0.5 dB) | Q (1/6 oct log steps, push = 1/24) |
+| SHOW (front) | master (0.5 dB; ×4 down, never accelerated up; master-up guard: at most +6 dB per 2 s, `controls.master_up_guard_db`) | frequency of the selected band (1/12 oct, push = 1/48; ×4) | gain of the selected band (0.5 dB, never accelerated) | Q (1/6 oct log steps, push = 1/24; shelves: slope) |
+| ALIGN | master (as on SHOW) | balance (0.5 dB) | sub delay (0.1 ms, push = 1 sample): **locked**; unlocked, the first detent after 2.5 s at rest only wakes it | Lo-Cut freq (1/12 oct, push = 1/48; ×4): **locked** |
 | SETUP | item select (clamps) | value (numeric items; push = fine) | — | — |
 
-Buttons: B1 next page MAIN → LIVE → SETUP (on press; HWTEST only via SETUP › Knob test) · B2 **mute**
-(long press, every page including HWTEST; asks for the opposite of the mute the screen shows; a short
-press shows a hint) · B3 Lo-Cut on/off (short press, **MAIN only**; elsewhere a hint) · B4 **reset live
-EQ** (**LIVE only**: a long press arms it for 5 s, a second long press resets; elsewhere a hint).
-Encoder pushes: fine mode while held; on SETUP an E1/E2 push released **without turning** selects (bool
-toggles, Knob test), and rebuild items need a second push within 5 s. HWTEST: a long press on any
-switch but B2 leaves the test. No acceleration in fine mode or after a direction change.
+Acceleration (input_map): ×1 below 20 detents/s, the knob's cap from 40, the rate taken from the
+slower of the last two intervals; a direction change or a 0.25 s pause resets it.
+
+Buttons: B1 **tap** = next page SHOW → ALIGN → SETUP (on press), **hold** = SHOW from anywhere;
+ALIGN and SETUP return to SHOW after 60 s without input (PHONE and HWTEST never). B2 **mute**
+(long press, every page including HWTEST; asks for the opposite of the mute the screen shows; a
+short press shows a hint). B3: on SHOW a tap selects the next band, LS · 1 · 2 · 3 · 4 · HS (wraps,
+no previous); on ALIGN a hold unlocks E3/E4 for 30 s (renewed by input on ALIGN, so any 30 s idle
+relocks), a tap relocks, leaving ALIGN relocks; elsewhere a hint. B4: on SHOW a tap is the **notch
+helper** (`Controller.notch_helper`: a free bell at 0 dB, the selected one first, gets Q 8.65 and
+the spectrum PEAK's frequency when there is one; a PEAK within 1/6 oct of a bell in use selects
+that bell and writes nothing; the gain is never touched; GAIN gets the edit highlight and the
+hint `P3 · 2.44k · E3 TO CUT`, or `NO FREE BAND`); a B4 hold only says the reset is in SETUP;
+elsewhere a hint. Encoder pushes: fine mode while held; on SETUP an E1/E2 push released **without
+turning** selects (bool toggles, actions, pages), and the confirmed items (rebuilds, Reset live EQ,
+Lo-Cut on/off, Laptop access) need a second push within 5 s. SETUP › Undo reset (one push)
+restores the live EQ from before the last reset until the next audible live EQ edit (a gain off
+0 dB; inaudible freq/Q moves of a flat band keep it) or 5 min; an edit that ends it shows
+`RESET UNDO LOST`. HWTEST: a long press on any switch but B2 leaves the test.
+
+Screen: system alerts take the status bar in their level's colour (critical red, KNOBS OFFLINE
+full width; warning orange; info blue; the page pill shrinks to three letters and the text is
+ellipsized below 12 px, never cut); a critical alert is repeated over SHOW's chip row when no
+hint is up. Hints are amber and brief. SHOW's persistent pills (`Controller.pills`, LAPTOP OPEN
+first) are orange when they change the sound or open the box (LAPTOP OPEN, LO-CUT OFF, POL INV)
+and grey otherwise (MONO SUB, AUDITION); below 13 px the neutral ones fold into `+N` first.
+Every master change is logged at INFO with its source (`master -19.0 -> -20.0 dB (knob)`;
+knob, phone, console, adoption).
 
 ## 5. Files on the box
 
@@ -273,3 +308,63 @@ fbcon vs the `ExecStartPre` unbind at boot (ops-1; keep cloud-init until settled
 and sub delay on MAIN (Thomas) · boot-muted policy at power-on (Thomas; today: the saved mute) ·
 pinning the M4 channel counts after Tuesday's probe · smbus → smbus2 (D-008) · the D-007 phone AP/PWA
 (not built).
+
+## 8. UI v1 (D-009, as built 2026-10-13)
+
+After using the v0 panel, Thomas decided **D-009**, the contract for this build. The design is
+`07-live-ui-v1.md` (where it differs from D-009, D-009 won; its "As built" note lists what the build
+did differently), the knob work is `08-knob-precision.md` (patches A and B), and the operator view
+is `04-operator-card.md`. Accepted on the box on 2026-10-13 (`f7aa58b-v1`: the full suite, a drill on
+the real panel, a 15-minute soak with the spectrum on, a power cycle). It settles two of §7's open
+items: the B1 page cycle, and sub delay off the front page.
+
+| Topic | v0 | UI v1 |
+|---|---|---|
+| Pages | MAIN → LIVE → SETUP (B1) | **SHOW** (front: master, the selected band's freq/gain/Q, the live-EQ curve over the program spectrum) → **ALIGN** (master and balance live; sub delay and Lo-Cut **locked**, a B3 hold unlocks them for 30 s of idle) → **SETUP**. B1 hold = SHOW; ALIGN and SETUP return to SHOW after 60 s without input (`Controller.ui_tick`). The v0 names stay aliases (`input_map.PAGE_ALIASES`) |
+| Buttons | B3 Lo-Cut on/off (MAIN); B4 reset live EQ, two long presses (LIVE) | B3: next band on SHOW, unlock on ALIGN. B4: the notch helper (`Controller.notch_helper`, never writes a gain). Reset live EQ (with a one-level `undo_reset`, kept 300 s or until the next audible live-EQ edit) and Lo-Cut on/off are SETUP items with a confirm, the same `reset_live` / `set_lowcut` paths the phone uses |
+| Fader ramp | 300 ms | **100 ms** (`dspconfig.VOLUME_RAMP_MS`): Main's `devices.volume_ramp_time_ms` and the Aux1/Aux2 Volume filters' `ramp_time_ms`. Mute and unmute fade over 100 ms, the delay-guard dip lasts 0.15 s, the boot ramp takes ~30 steps over 3 s. Main's ramp is a `devices` value, which K1000 never forces while audio runs: a deploy of this change restarts camilladsp |
+| Master up | accelerated ×2 | never accelerated, and **at most `controls.master_up_guard_db` (6 dB) within any 2 s**, counted over every `Controller.nudge` (knob, phone, console); further up-detents are refused with the hint `MASTER: SLOW DOWN` and a log line; 0 = off. Down is never limited and may accelerate ×4. The phone keeps its own rate limit on top (`06-phone.md`) |
+| Knob decoder | pause rule on a timer; acceleration from 12 det/s | patch A: a click counts on landing, never on a timer, so a resting knob emits nothing; `steps_per_detent` / `detent_ab` per encoder in `controls:`. Patch B: ×1 below 20 det/s (the slower of the last two intervals), the knob's cap from 40 det/s |
+| Spectrum | — | `rta.SpectrumTask` on its **own** engine connection (below) |
+| Screen | alerts in the MUTED band or the middle strip | system alerts in the status bar (critical red, KNOBS OFFLINE full width; warning orange; info blue); hints in the amber strip; persistent pills on SHOW (`Controller.pills`) |
+| Laptop | wired LAN only | SETUP › Laptop access and the `/tune` page (`06-phone.md` §11; root helper `k1000-laptop.service`) |
+| `state.json` | — | + `spectrum_on` (v0 ignores unknown keys, so a rollback still loads it) |
+
+**The spectrum task (`rta.py`)**
+
+- **Its own connection.** `CamillaClient` serialises every command behind one lock, and a config
+  upload holds that lock until its read-back, so a spectrum poll must never queue in front of a
+  mute. The task owns a second client (0.5 s command timeout, ping every 5 s, reconnect backoff at
+  most 2 s). When that link stalls, mute, faders and adoption do not notice. It is closed after 30 s
+  of not being wanted.
+- **When.** At 10 Hz, only while `Controller.spectrum_wanted()`: SHOW displayed, SETUP › Spectrum ON,
+  engine Running or Paused, device present. With `spectrum: enabled: false` in k1000.yaml there is no
+  task and no second connection.
+- **What.** `{"command":"GetSpectrum","value":{"side":"capture","channel":N,"min_freq":10,"max_freq":20000,"n_bins":264}}`
+  (1/24 oct) for each of the profile's `input_map` channels (m4 2, 3; dev 0, 1), combined as a power
+  average. Never `channel: null`: on the M4 it would average the mic and the spare input into the
+  program.
+- **Errors.** "No audio data available" (a fresh engine) is retried quietly. Any other refusal is
+  logged once, sets the state `unavailable` (the grey `NO SPECTRUM` tag on SHOW) and is retried
+  every 5 s. No data for 1 s clears the frame: never a frozen picture.
+- **Ballistics** (`rta.Ballistics`): bars rise at once and fall at 24 dB/s, with 3 s hold dots. The
+  display range follows the loudest bin as a slow tracker (rises at once, falls 1 dB/s, no 6 dB
+  steps). PEAK = a bin 10 dB above the median of its ±1 octave (released 0.5 s after it drops below
+  6 dB), within 30 dB of the loudest bin, between 40 Hz and 16 kHz, persistent for 1.5 s, judged on a
+  0.25 s power average; the pointer moves only when the peak moves by 2 bins.
+- **The hand first.** Every knob or button event holds new frames for 300 ms (`note_input`).
+  `Controller.set_spectrum` wakes the screen only when the frame changes, and never bumps `version`
+  (phones do not show the spectrum). Spectrum frames come at ≤ 10 fps, the frame after a knob event
+  at ≤ 15 fps (§2).
+- **Cost on the box** (silent HiFiBerry input, 60 s on SHOW): k1000 19.6 % of one core (max 32.8 %),
+  camilladsp 4.7 %, engine processing load 0.98 % (max 1.86 %), 0 xruns.
+
+**Known after the acceptance (2026-10-13; not fixed when this was written):**
+
+- CamillaDSP 5.0.0-beta.1 answers the first GetSpectrum after an engine start with
+  `InvalidRequestError: Insufficient data in buffer`. `rta.py` only treats "no audio data" as a
+  quiet retry, so this counts as a refusal: `NO SPECTRUM` and a WARNING for ~5 s after every
+  engine start (seen at the deploy and at boot, 9.7–14.6 s).
+- The PEAK detector has no absolute level floor. On a silent input a noise-floor bin (~7.3 kHz,
+  about −114 dBFS) showed as PEAK, and B4 aimed at it. That is harmless (B4 never writes a gain),
+  but between tracks the PEAK can point at noise.

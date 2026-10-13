@@ -38,7 +38,7 @@ save_config_automatically: false
 status_update_interval: 1000
 # Main fader slider: -80..0 dB, the same as RANGES["master_db"] (0 dB is also the engine's volume_limit).
 # One swipe can travel the whole slider in about half a second (+3 dB per touch event, sent every
-# 250 ms, ramped over 300 ms). AFTER Friday's gain-structure step: volume_max = show level + 6 dB,
+# 250 ms, ramped over 100 ms). AFTER Friday's gain-structure step: volume_max = show level + 6 dB,
 # volume_range = 80 + volume_max (the bottom stays at -80). Change it here and deploy (install.sh
 # overwrites the box's copy); it applies at the next page load. The Aux sliders share this range.
 volume_range: 80

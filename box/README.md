@@ -1,7 +1,8 @@
 # K1000 box: deploy and run
 
 Everything that runs on the K1000 (the Raspberry Pi 4 in the Zynthian V4 case). The design is in
-`docs/03-v0-architecture.md`, the gig plan in `docs/02-plan-to-sunday.md`.
+`docs/03-v0-architecture.md`, the gig plan in `docs/02-plan-to-sunday.md`, and the panel (UI v1,
+D-009: pages SHOW · ALIGN · SETUP, the buttons, the screen states) in `docs/04-operator-card.md`.
 
 ## What runs
 
@@ -51,6 +52,9 @@ The order at power-on:
 | `/var/log/k1000/` | `camilladsp_rCURRENT.log` + up to 50 rotated ones (every engine start rotates, and every 256 kB), `soak.log` |
 | `/opt/camillagui/` | the GUI binary; `config/` comes from `box/camillagui/`; `files/` is the GUI's empty, read-only config folder |
 | `/etc/systemd/system/{camilladsp,k1000,camillagui,k1000-console}.service` | from `box/systemd/` |
+| `/etc/systemd/system/k1000-laptop.{path,service}` | from `box/systemd/`, installed, never enabled: SETUP › Laptop access (k1000.service `Wants=` the watcher; the root unit runs `/opt/k1000/net/k1000-laptop-access.sh`) |
+| `/run/k1000/laptop-open`, `/run/k1000-laptop/status` | SETUP › Laptop access: k1000's request (its runtime directory, gone when k1000 stops) and root's answer (open until, or closed and why) |
+| `/var/lib/k1000/tune-undo.json` | the `/tune` page's undo: the system EQ the last Apply replaced |
 | `/etc/systemd/system/k1000-ap-{fence,hostapd,dnsmasq}.service`, `k1000-ap-hostapd.service.d/k1000-iface.conf` | from `box/net/`, by `net/setup-ap.sh` only (`install.sh --ap`); the drop-in binds hostapd to its interface |
 | `/etc/NetworkManager/dispatcher.d/90-k1000-ap-guard` | `net/k1000-ap-guard.sh`, by setup-ap.sh: stops the AP while another interface is in 10.42.0.0/24 (a laptop sharing on `eth0`), starts it again after; `journalctl -t k1000-ap-guard` |
 | `/etc/k1000/tls/` | the phone page's certificate: `k1000.crt`, `k1000.key`, `k1000-ca.crt` (public), root:k1000 0640 (install.sh with `K1000_TLS_DIR`; the CA's private key never comes here) |
@@ -351,12 +355,13 @@ the Friday rig test; on a no-go the AP goes fully off and the knobs carry the sh
 
 ## Laptop (and a phone on the wired LAN): CamillaGUI
 
-- CamillaGUI is reached over the wired LAN only (`eth0`); the screen does not show the box's IP.
+- CamillaGUI is reached over the wired LAN (`eth0`; the screen does not show the box's IP), or
+  over the K1000 Wi-Fi while **SETUP › Laptop access** is open (next section).
 - Phone (compact view): `http://<box-ip>:5005/gui/index.html?compactview`
   - **Levels only**: Main volume, mute and the meters. These are runtime commands, so they never
     send a config. k1000 follows the Main fader.
   - Live EQ, Lo-Cut, sub delay and the sub/top balance are on the knobs (balance = E2 on the
-    MAIN page). The phone has no sliders for them on purpose: in CamillaGUI v5 beta.2 every
+    ALIGN page). The phone has no sliders for them on purpose: in CamillaGUI v5 beta.2 every
     slider move sends the whole config as the page loaded it, which would put back old knob
     values (a feedback notch), the pre-tune system EQ, or even the old audio device.
 - **Phone rule.** The compact view has two small icons at the top, "Change to normal view" and
@@ -392,21 +397,56 @@ the Friday rig test; on a no-go the AP goes fully off and the knobs carry the sh
 - The GUI has no password and listens on every interface: anyone on the same wired network can
   change or stop the engine (the K1000 Wi-Fi cannot reach it: the fence).
 
+## Laptop at the rig: SETUP › Laptop access and the tune page
+
+At the rig the laptop has only the K1000 Wi-Fi, whose fence keeps CamillaGUI and SSH off it.
+**SETUP › Laptop access, push twice** opens both, from the K1000 Wi-Fi's subnet only, for 2 hours
+at most (`docs/06-phone.md` §11):
+
+- The row reads `OPEN 1:59`, SHOW shows the pill `LAPTOP OPEN 1:59`, and SETUP › Phone prints the
+  Wi-Fi password as text for the laptop.
+- On the laptop (joined to K1000): CamillaGUI `http://10.42.0.1:5005/gui/index.html` (the rules
+  above apply: *Fetch from DSP* first), `ssh k1000@10.42.0.1`, and the **tune page**
+  `https://10.42.0.1/tune`: paste a REW / Open Sound Meter / EqualizerAPO filter list, preview it
+  on the 8 system PEQ bands (peaking only, 8 at most, clamped and said so), **Apply** (through
+  k1000 like a knob: click-safe, saved), **Undo** (the system EQ before).
+- **One push closes it.** It closes by itself after 2 h, when k1000 stops or restarts, and at
+  every boot: nothing about it is persistent. Open connections stay until they end; new ones are
+  refused.
+- Who does what: k1000 (user k1000, no capability but port binding, so no sudo and no nft) only
+  creates `/run/k1000/laptop-open`; `k1000-laptop.path` starts the root `k1000-laptop.service`,
+  which inserts one tagged rule in the fence (`tcp 22, 5005` from 10.42.0.0/24 to 10.42.0.1 on the
+  AP interface) and removes it on every way out.
+
+```sh
+sudo /opt/k1000/net/k1000-laptop-access.sh status   # open or closed, the rule, root's status
+journalctl -t k1000-laptop -n 20                     # opened / closed (why) / refused
+systemctl status k1000-laptop.path                   # the watcher (k1000 brings it)
+```
+
+After the deploy that brings it, k1000 must restart once (between shows) before SETUP › Laptop
+access answers: install.sh says so.
+
 ## Knobs and buttons: confirm them before the rig test (OPEN)
 
 Nobody has confirmed yet which physical button is B1–B4 or which knob is E1–E4.
 `/etc/k1000/k1000.yaml` still holds the defaults, and the on-screen knob corners are assumed.
-Hold-B2 (mute) and hold-B4 (reset live EQ) are the same gesture, so a wrong map would turn the
-emergency mute into a live-EQ reset. `k1000-m4-bringup.sh` warns while the defaults are in place.
+Since UI v1 a B4 hold only shows a hint (the live-EQ reset is a SETUP item), so a B2/B4 swap can no
+longer reset the EQ, but the emergency mute would then do nothing: confirm the map before the
+speakers. `k1000-m4-bringup.sh` warns while the defaults are in place.
+
+What each button and knob does per page (SHOW · ALIGN · SETUP) is the operator card,
+`docs/04-operator-card.md`. In short: B1 tap = next page, hold = SHOW · B2 hold = mute/unmute
+(every page) · B3 = next band on SHOW, a hold unlocks sub delay and Lo-Cut on ALIGN · B4 = the
+notch helper on SHOW.
 
 1. SETUP → "Knob test" (HWTEST). Press every button and turn every knob. Note, by physical
    position, the `sw`/`enc` index each one shows.
 2. Write `controls:` in `/etc/k1000/k1000.yaml` (encoders, pushes, buttons, reverse), then
    `sudo systemctl restart k1000`. If the on-screen labels sit at the wrong corners, that is
    `KNOB_CORNERS` in `k1000/ui/input_map.py`: a code change, deployed like any other.
-3. Label the buttons on the shell: PAGE · MUTE (hold) · LO-CUT · RESET (hold).
-4. At the rig test, with program playing: hold B2, and all four Meyers mute. Check by feel that
-   B4 is not right next to it.
+3. Label the buttons on the shell: PAGE · MUTE (hold) · BAND / UNLOCK (hold) · NOTCH.
+4. At the rig test, with program playing: hold B2, and all four Meyers mute.
 
 In a terminal, the monitor needs the MCP23017 and GPIO lines, which the service holds, so stop
 the service first:
@@ -416,6 +456,19 @@ sudo systemctl stop k1000
 cd /opt/k1000 && python3 -m k1000.hw.mcp23017 --monitor        # --raw for every pin change, --selftest for the interrupt lines
 sudo systemctl start k1000
 ```
+
+## SHOW spectrum: on, off, and out
+
+The program spectrum behind SHOW's EQ curve (D-009) polls the engine on a second websocket, only
+while SHOW is displayed and SETUP › Spectrum is ON (`docs/03-v0-architecture.md` §8).
+
+- **SETUP › Spectrum** switches it at run time (saved in `state.json`). Off, SHOW draws the curve
+  alone and B4 still sets a notch up (`NO PEAK`: sweep with E2).
+- **Out entirely** (Friday's no-go, or anything odd): `spectrum: enabled: false` in
+  `/etc/k1000/k1000.yaml`, then `sudo systemctl restart k1000` between shows. No task and no second
+  connection; SETUP › Spectrum then reads `DISABLED`.
+- A grey `NO SPECTRUM` on SHOW for ~5 s after every engine start is known (CamillaDSP
+  5.0.0-beta.1's first answer, `docs/03-v0-architecture.md` §8). Longer: `journalctl -u k1000 | grep -i spectrum`.
 
 ## Soak test (overnight, and the 2-hour program run)
 
@@ -438,7 +491,10 @@ The tool writes one line every 10 s:
   `systemd-run` unit does not come back), and `journalctl --list-boots` then says when;
 - a reboot: a new `boot=` id, or `up` going down;
 - `xruns`/`xruns_all` above 0: dropout lines in the engine log (playback underruns, capture
-  overruns, stalled device, device errors). A stall counts twice (entering and leaving);
+  overruns, stalled device, device errors). A stall counts twice (entering and leaving).
+  `xruns_all` also reads the rotated engine logs, so a dropout from before the soak flags it until
+  that log rotates away: an `xruns_all` already above 0 in the first sample is older than the
+  soak, and the dropout line's timestamp in `/var/log/k1000/camilladsp_r*.log` says when;
 - restarts of camilladsp (`restarts`: a crash, or a lost device) or of k1000 (`k1000_restarts`);
 - `state` other than `Running` (`Paused` = silent input, `DOWN` = no engine websocket), k1000
   not active, Main muted, clipped samples;
@@ -459,7 +515,8 @@ The tool writes one line every 10 s:
 - **Settings:** `/etc/k1000/k1000.yaml` is never touched by install.sh. Fix it by hand, then
   `sudo systemctl restart k1000`.
 - **Sound state:** `/var/lib/k1000/state.json` holds the levels and EQ.
-  - Live EQ: on the LIVE page, hold B4 twice within 5 s.
+  - Live EQ: SETUP › Reset live EQ, push twice within 5 s. SETUP › Undo reset (one push) puts it
+    back exactly, once, until the next audible live-EQ edit or 5 min.
   - A torn `state.json` is rebuilt from `active.yml` (the bad copy is kept as `state.json.bad`) and
     comes back MUTED ("STATE REBUILT · CHECK MASTER").
   - If the state file itself is bad, stop k1000, move `state.json` away and start k1000. Next to a
@@ -484,4 +541,12 @@ every option, both backends, the subnet and Wi-Fi-client refusals, a hostapd tha
 start, the fence's caps), the hostapd unit's refusals and `net/k1000-ap-guard.sh`, all against
 fakes (no service, card, package, network or speaker is touched). `tests/test_web.py`,
 `test_qr.py` and `test_phone_wiring.py` cover the phone page, its QR codes and its wiring into
-the controller (B2 and phone mute races).
+the controller (B2 and phone mute races). `tests/test_laptop.py`, `test_tune.py` and
+`tools/tests/test_laptop_access.py` cover SETUP › Laptop access (the k1000 side, the root helper
+against a fake nft, the units, install.sh) and the `/tune` page (the parser on real REW exports,
+apply/undo through the controller). UI v1 (D-009): `tests/test_ui.py` and `test_control.py` cover
+the pages, buttons, lock, notch helper, reset/undo, master-up guard and alerts; `test_eqgraph.py`
+the curve against CamillaDSP's own biquad assertions; `test_rta.py` the spectrum task (a fake
+client, plus one engine test on the private control test port); `test_mcp23017.py` the decoder
+(including phantom detents from a resting knob) and `test_knob_timing.py` the knob worker under a
+busy GIL.

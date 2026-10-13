@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """k1000-knobtrace: what the Zynthian V4 knobs really send, and what the K1000 decoder makes of it.
 
 Why: on 2026-10-12 Thomas found the knobs "not precise". The cause can be the encoder type (2 or
@@ -10,8 +11,9 @@ Commands:
 
   capture   Opens the MCP23017 exactly like the k1000 driver (its own classes and register
             config, imported from /opt/k1000) and logs every A/B contact and switch change with a
-            timestamp: INT-driven like the driver (`--mode irq`, the default, with the screen
-            renderer running in a thread like in the service), or polled at 1 kHz (`--mode poll`).
+            timestamp: INT-driven like the driver (`--mode irq`, the default, with the v1
+            service's CPU load beside it: SHOW + spectrum, an asyncio loop thread, save chunks),
+            or polled at 1 kHz (`--mode poll`).
             `--guided` walks you through ~2 minutes of known turns ("E1: exactly 10 clicks
             clockwise") so the analysis has a ground truth, then repeats two of them polled.
             Needs k1000.service STOPPED (it owns the chip and the INT lines). The engine keeps
@@ -20,8 +22,10 @@ Commands:
             Per encoder: transitions per click, the contact states it rests on, invalid
             (double-bit) changes, bounces, turn rates, pauses between clicks, a verdict for
             steps_per_detent, and a replay of the trace through the driver's QuadratureDecoder.
-  bench     No hardware: render time of a screen frame, and how late a sleeping thread wakes up
-            while frames are rendered (the knob thread shares Python's GIL with the renderer).
+  bench     No hardware: known fast turns through the driver's REAL worker thread on a
+            time-driven MCP23017 (k1000.hw.simchip), idle and beside the v1 service's load
+            (SHOW + moving spectrum rendered in a thread, ballistics and a CPU-bound save chunk
+            in an asyncio loop thread): edge -> sample delays and clicks lost.
 
 On the box (about 2 minutes, not during a show):
 
@@ -952,53 +956,119 @@ def k1000_active() -> Optional[bool]:
 
 
 class RenderLoad(threading.Thread):
-    """The service's screen work in a thread (15 fps of MAIN + RGB565, no framebuffer write),
-    so the sampler competes for the GIL exactly like the driver's worker does in k1000."""
+    """The k1000 service's CPU work beside the knob worker, as v1 runs it (PERF-4):
 
-    def __init__(self, kind: str = "render", fps: float = 15.0) -> None:
-        super().__init__(name="knobtrace-load", daemon=True)
+    - an asyncio loop thread (like k1000's) that runs the SHOW spectrum's ballistics at 10 Hz
+      (rta.Ballistics over a moving program spectrum) and, every `save_every_s`, a CPU-bound
+      `save_ms` chunk standing in for an urgent save (MASTER going down saves every 0.25 s;
+      the pure-Python YAML dump took 34-61 ms on the Pi before PERF-3, ~13 ms after);
+    - the SHOW page with that spectrum rendered at `fps` in a to_thread worker (+ RGB565),
+      exactly as k1000's render loop hands frames to a thread.
+    `kind="busy"` (no k1000 tree): a 10 ms busy loop per frame instead. v0's MAIN at 15 fps in
+    one thread, with no loop and no spectrum, said "all is well" while the real layout lost
+    clicks: never use it as evidence of knob timing."""
+
+    def __init__(self, kind: str = "render", fps: float = 15.0, save_ms: float = 40.0,
+                 save_every_s: float = 0.25) -> None:
+        super().__init__(name="knobtrace-loop", daemon=True)
         self.kind, self.period = kind, 1.0 / fps
+        self.save_s, self.save_every_s = save_ms / 1000.0, save_every_s
         self.stop_ev = threading.Event()
         self.frames = 0
+        self.saves = 0
         self.ms: list[float] = []
-        self._draw: Optional[Callable[[], Any]] = None
+        self._draw: Optional[Callable[[Any], Any]] = None
+        self._spectrum: Optional[Callable[[float], Any]] = None
         if kind == "render":
             try:
-                from k1000.ui import display, pages  # noqa: PLC0415
-                from k1000.ui.input_map import Focus  # noqa: PLC0415
-                ok = pages.ScreenStatus(device_present=True, engine="Running",
-                                        levels=[-20.0, -20.0, -18.0, -18.0])
-                try:
-                    from k1000.state import State  # noqa: PLC0415
-                    st: Any = State()
-                except Exception:  # noqa: BLE001
-                    st = None
-                pages.warm_up()
-                self._draw = lambda: display.to_rgb565(pages.render("MAIN", st, ok, Focus()))
+                self._setup_render()
             except Exception as e:  # noqa: BLE001
                 print(f"warning: renderer unavailable ({e}): busy-loop load instead", file=sys.stderr)
                 self.kind = "busy"
         if self._draw is None:
-            def busy() -> None:
+            def busy(_frame: Any) -> None:
                 t = time.perf_counter() + 0.010
                 x = 0
                 while time.perf_counter() < t:
                     x += 1
             self._draw = busy
 
+    def _setup_render(self) -> None:
+        import numpy as np  # noqa: PLC0415
+        from k1000.ui import display, pages  # noqa: PLC0415
+        from k1000.ui.input_map import Focus  # noqa: PLC0415
+        from k1000.state import State  # noqa: PLC0415
+        try:
+            from k1000.rta import Ballistics  # noqa: PLC0415
+            bal: Any = Ballistics()
+        except Exception:  # noqa: BLE001 - an older tree: the graph's own tracker
+            from k1000.ui import eqgraph  # noqa: PLC0415
+            bal = eqgraph.Rta()
+        st = State()
+        st.master_db = -14.0
+        st.live_peq[1].freq, st.live_peq[1].gain, st.live_peq[1].q = 2520.0, -6.5, 8.0
+        first = pages.demo_spectrum(seconds=1.0)
+        freqs, base = first.freqs, np.array(first.level)
+        rng = np.random.default_rng(3)
+        foc = Focus(slot=1)
+        pages.warm_up()
+
+        def spectrum(t: float) -> Any:
+            bal.update(freqs, base + rng.normal(0, 2.0, len(base)), t)
+            return bal.frame()
+
+        def draw(frame: Any) -> Any:
+            status = pages.ScreenStatus(profile="m4", device="MOTU M4", device_present=True,
+                                        engine="Running", load=2.0, ready=True, spectrum=frame,
+                                        spectrum_state="live", clip=(False,) * 4,
+                                        levels=tuple(-14.0 + 3.0 * rng.random(4)))
+            return display.to_rgb565(pages.render("SHOW", st, status, foc))
+        self._spectrum, self._draw = spectrum, draw
+
     def run(self) -> None:
-        assert self._draw is not None
+        import asyncio  # noqa: PLC0415
+        asyncio.run(self._main())
+
+    async def _main(self) -> None:
+        import asyncio  # noqa: PLC0415
+        frame: list[Any] = [None]
+
+        async def spectrum() -> None:
+            t = 0.0
+            while self._spectrum is not None:
+                frame[0] = self._spectrum(t)
+                t += 0.1
+                await asyncio.sleep(0.1)
+
+        async def render() -> None:
+            assert self._draw is not None
+            while True:
+                t0 = time.perf_counter()
+                await asyncio.to_thread(self._draw, frame[0])
+                dt = time.perf_counter() - t0
+                self.frames += 1
+                self.ms.append(dt * 1000)
+                await asyncio.sleep(max(0.0, self.period - dt))
+
+        async def saves() -> None:
+            while self.save_s > 0:
+                await asyncio.sleep(self.save_every_s)
+                end = time.perf_counter() + self.save_s     # the GIL held, in the loop thread
+                x = 0
+                while time.perf_counter() < end:
+                    x += 1
+                self.saves += 1
+
+        tasks = [asyncio.create_task(c()) for c in (spectrum, render, saves)]
         while not self.stop_ev.is_set():
-            t0 = time.perf_counter()
-            self._draw()
-            dt = time.perf_counter() - t0
-            self.frames += 1
-            self.ms.append(dt * 1000)
-            self.stop_ev.wait(max(0.0, self.period - dt))
+            await asyncio.sleep(0.05)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     def stop(self) -> None:
         self.stop_ev.set()
-        self.join(timeout=2.0)
+        self.join(timeout=3.0)
 
 
 def _pct(xs: Sequence[float], q: float) -> float:
@@ -1406,7 +1476,8 @@ def run_capture(args: argparse.Namespace) -> int:
 # =============================================================================================
 def wake_overshoot(seconds: float, sleep_s: float = 0.002) -> list[float]:
     """How late a thread that sleeps `sleep_s` (GIL released, like gpiod's wait) gets to run
-    Python again: OS scheduling + waiting for the GIL."""
+    Python again: OS scheduling + waiting for the GIL. (Only for a tree without
+    k1000.hw.simchip: the knob worker itself is measured otherwise.)"""
     out = []
     t_end = time.perf_counter() + seconds
     while time.perf_counter() < t_end:
@@ -1416,34 +1487,86 @@ def wake_overshoot(seconds: float, sleep_s: float = 0.002) -> list[float]:
     return out
 
 
+def knob_run(drv: Any, simchip: Any, rate_cps: float, turns: int = 4, clicks: int = 12,
+             load: Optional["RenderLoad"] = None) -> dict:
+    """Known turns at `rate_cps` through the REAL ZynthianControls worker reading a time-driven
+    MCP23017 (k1000.hw.simchip), optionally beside `load` (started and stopped here). Returns
+    clicks turned/lost and the edge -> sample delays of every contact transition."""
+    chip = simchip.SimChip()
+    t = time.monotonic() + 0.6
+    windows = []
+    for k in range(turns):
+        n = clicks if k % 2 == 0 else -clicks
+        end = simchip.schedule_turn(chip, t, 0, n, rate_cps)
+        windows.append((t, end, n))
+        t = end + 0.45
+    samples: list = []
+    c = drv.ZynthianControls(bus_factory=lambda n: chip,
+                             lines_factory=lambda name, offs: simchip.SimLines(chip, *offs),
+                             on_raw=lambda lv, ch, ts: samples.append((ts, lv)), poll_ms=50)
+    if load is not None:
+        load.start()
+    try:
+        c.start(loop=None)
+        while time.monotonic() < t + 0.3:
+            time.sleep(0.05)
+    finally:
+        if load is not None:
+            load.stop()
+        c.close()
+    evs = [e for e in c._pending if isinstance(e, drv.EncoderEvent)]
+    got = [sum(e.delta for e in evs if t0 - 0.01 <= e.ts <= t1 + 0.3) for t0, t1, _n in windows]
+    lat = simchip.edge_latencies(chip.transitions, samples)
+    return {"rate_cps": rate_cps, "turned": sum(abs(w[2]) for w in windows),
+            "lost": sum(abs(w[2] - g) for w, g in zip(windows, got)), "per_turn": got,
+            "lat_ms": [x * 1000 for x in lat], "storms": c.stats.get("storms", 0),
+            "load": load.kind if load else "none", "render_frames": load.frames if load else 0,
+            "saves": load.saves if load else 0}
+
+
 def run_bench(args: argparse.Namespace) -> int:
     drv, root = load_driver(args.k1000_path)
+    switch = None
+    try:
+        from k1000.__main__ import configure_gil  # noqa: PLC0415 - as the service starts
+        switch = args.switch_ms / 1000.0 if args.switch_ms else None
+        configure_gil(*([switch] if switch else []))
+    except Exception:  # noqa: BLE001 - an older tree: Python's default
+        if args.switch_ms:
+            sys.setswitchinterval(args.switch_ms / 1000.0)
     print(f"bench (driver tree {root}, python {platform.python_version()}, "
-          f"switch interval {sys.getswitchinterval() * 1000:.1f} ms)")
-    res: dict = {}
-
-    def stats(xs: list[float]) -> str:
-        ms = [x * 1000 for x in xs]
-        return (f"avg {statistics.mean(ms):.2f} ms, p95 {_pct(ms, 0.95):.2f}, "
-                f"p99 {_pct(ms, 0.99):.2f}, max {max(ms):.2f} (n={len(ms)})")
-
-    idle = wake_overshoot(args.seconds / 2)
-    res["wake_idle"] = idle
-    print(f"  wake-up delay of a sleeping thread, nothing else running: {stats(idle)}")
-    load = RenderLoad("render" if root else "busy")
-    load.start()
-    loaded = []
-    t_th = threading.Thread(target=lambda: loaded.extend(wake_overshoot(args.seconds)), daemon=True)
-    t_th.start()
-    t_th.join()
-    load.stop()
-    res["wake_render"] = loaded
-    res["render_ms"] = load.ms
-    print(f"  screen load: {load.kind}, {load.frames} frames, "
-          f"{statistics.mean(load.ms):.1f} ms avg / {max(load.ms):.1f} max per frame (render + RGB565)")
-    print(f"  wake-up delay while frames render at 15 fps:              {stats(loaded)}")
-    print("  (the knob worker pays this after every INT edge before it can read the chip; "
-          "transitions closer together than this merge into INTCAP + GPIO)")
+          f"GIL switch interval {sys.getswitchinterval() * 1000:.1f} ms)")
+    res: dict = {"switch_ms": sys.getswitchinterval() * 1000, "runs": []}
+    try:
+        from k1000.hw import simchip  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        simchip = None
+    if drv is None or simchip is None:
+        idle = wake_overshoot(args.seconds / 2)
+        print(f"  (no k1000.hw.simchip in this tree: thread wake-up delay only, NOT the knob "
+              f"worker) idle p99 {_pct(idle, 0.99) * 1000:.2f} ms")
+        res["wake_idle"] = idle
+        if args.json:
+            Path(args.json).write_text(json.dumps(res))
+        return 0
+    rates = (45.0,) if args.quick else (25.0, 35.0, 45.0)
+    turns = 2 if args.quick else 4
+    print("  knob worker (REAL ZynthianControls) on a time-driven MCP23017 (INTCAP, INT, 0.9 ms "
+          "transfer); known turns:")
+    print(f"  {'load':40s} {'c/s':>4s} {'lost':>9s}  edge->sample p50 / p95 / p99 / max (ms)")
+    for name, mk in (("idle", lambda: None),
+                     (f"v1 SHOW + spectrum + {args.save_ms:.0f} ms save/0.25 s",
+                      lambda: RenderLoad("render" if root else "busy", save_ms=args.save_ms))):
+        for rate in rates:
+            r = knob_run(drv, simchip, rate, turns=turns, load=mk())
+            lat = r["lat_ms"]
+            print(f"  {name:40s} {rate:4.0f} {r['lost']:4d}/{r['turned']:<4d}  "
+                  f"{_pct(lat, 0.5):5.2f} / {_pct(lat, 0.95):5.2f} / {_pct(lat, 0.99):5.2f} / "
+                  f"{max(lat) if lat else 0.0:5.2f}"
+                  + (f"   ({r['render_frames']} frames, {r['saves']} saves)" if r["load"] != "none" else ""))
+            res["runs"].append({"condition": name, **r})
+    print("  (a contact transition every 5.6 ms at 45 clicks/s: samples later than two of them "
+          "merge into INTCAP + GPIO and can lose clicks)")
     if args.json:
         Path(args.json).write_text(json.dumps(res))
     return 0
@@ -1484,8 +1607,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     a.add_argument("--k1000-path", help="driver tree whose QuadratureDecoder is replayed")
     d = sub.add_parser("demo", help="analyse synthetic traces (what a 4- and a 2-transition encoder look like)")
     d.add_argument("--k1000-path")
-    b = sub.add_parser("bench", help="render time and thread wake-up delay (no hardware)")
-    b.add_argument("--seconds", type=float, default=4.0)
+    b = sub.add_parser("bench", help="the knob worker's sampling delay and lost clicks under "
+                       "the v1 service load (no hardware)")
+    b.add_argument("--seconds", type=float, default=4.0, help="(trees without simchip only)")
+    b.add_argument("--save-ms", type=float, default=40.0,
+                   help="CPU-bound chunk in the loop thread every 0.25 s (an urgent save)")
+    b.add_argument("--switch-ms", type=float, default=0.0,
+                   help="GIL switch interval (default: what the k1000 service sets)")
+    b.add_argument("--quick", action="store_true", help="45 clicks/s only, two turns")
     b.add_argument("--json")
     b.add_argument("--k1000-path")
     args = p.parse_args(list(argv) if argv is not None else None)

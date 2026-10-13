@@ -3,7 +3,9 @@
 # K1000 installer: deploys box/ onto the Raspberry Pi. Idempotent; a re-run with nothing new
 # changes nothing and ends with "0 changes". See README.md (same directory) for the full picture.
 #
-#   sudo ./install.sh             install/update files, enable the 4 units. Starts NOTHING.
+#   sudo ./install.sh             install/update files, enable the 4 units (+ the laptop-access
+#                                 watcher and its root unit: installed, never enabled; k1000
+#                                 brings the watcher). Starts NOTHING.
 #   sudo ./install.sh --start     ... then (re)start camilladsp, k1000, camillagui, k1000-console
 #                                 (audio drops ~1 s; never during a show)
 #   sudo ./install.sh --boot      ... and boot-level setup, applied at the next reboot:
@@ -45,6 +47,9 @@ APP=/opt/k1000
 PREV=/opt/k1000.prev
 GUI=/opt/camillagui
 UNITS=(camilladsp k1000 camillagui k1000-console)
+# Laptop access (docs/06-phone.md §11): the watcher, which k1000.service Wants=, and the root unit
+# it starts on the box's request. Installed here, never enabled (nothing starts them at boot).
+LAPTOP_UNITS=(k1000-laptop.path k1000-laptop.service)
 AP_UNITS=(k1000-ap-fence k1000-ap-hostapd k1000-ap-dnsmasq)   # net/: set up by net/setup-ap.sh
 # smbus2 for the knob board (D-008: python3-smbus is GPL-2.0-only), qrcode for the PHONE page's
 # join codes and hostapd for the phone's access point (D-007, net/setup-ap.sh; installed even
@@ -278,10 +283,14 @@ for f in camillagui.yml gui-config.yml; do
 done
 
 # --- 6. systemd: units, hardware watchdog --------------------------------------------------------
-RELOAD=0
+RELOAD=0 LAPTOP_NEW=0
 for u in "${UNITS[@]}"; do
   put "$SRC/systemd/$u.service" "/etc/systemd/system/$u.service" 644
   if [ $PUT_CHANGED = 1 ]; then RELOAD=1; fi
+done
+for u in "${LAPTOP_UNITS[@]}"; do
+  put "$SRC/systemd/$u" "/etc/systemd/system/$u" 644
+  if [ $PUT_CHANGED = 1 ]; then RELOAD=1; LAPTOP_NEW=1; fi
 done
 # The phone AP's units (net/, D-007) are installed, updated and applied by net/setup-ap.sh alone
 # (--ap below), which decides which of them run (backend, --down) and restarts the AP when a unit
@@ -321,6 +330,10 @@ fi
 if [ $RELOAD = 1 ]; then
   systemctl daemon-reload
   note "systemd reloaded"
+fi
+if [ $LAPTOP_NEW = 1 ] && [ $DO_START = 0 ] && systemctl is-active --quiet k1000.service \
+   && ! systemctl is-active --quiet k1000-laptop.path; then
+  note "SETUP > Laptop access works once k1000 has started again (it brings k1000-laptop.path; between shows: sudo systemctl restart k1000)"
 fi
 for u in "${UNITS[@]}"; do
   if ! systemctl is-enabled --quiet "$u.service" 2>/dev/null; then

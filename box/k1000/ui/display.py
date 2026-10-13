@@ -42,17 +42,55 @@ FB_BLANK_POWERDOWN = 4    # bl_power value meaning "off"
 _GPLEV0 = 0x34            # BCM2835/2711 GPIO level register offset in /dev/gpiomem
 
 
+def pack_rgb565(a: np.ndarray) -> np.ndarray:
+    """(rows, w, 3) uint8 RGB -> (rows, w, 2) uint8, each pixel RGB565 little-endian.
+
+    The two output bytes are packed straight from the uint8 planes (high byte RRRRRGGG, low
+    byte GGGBBBBB), never widened to 16 bits. Truncation, not rounding (what the panel shows).
+    """
+    out = np.empty(a.shape[:2] + (2,), np.uint8)
+    np.bitwise_or(a[..., 0] & 0xF8, a[..., 1] >> 5, out=out[..., 1])
+    np.bitwise_or((a[..., 1] & 0x1C) << 3, a[..., 2] >> 3, out=out[..., 0])
+    return out
+
+
 def to_rgb565(img: Image.Image) -> bytes:
     """PIL image -> RGB565 little-endian bytes (row-major, no padding).
 
-    Truncation (not rounding) matches what the panel shows and keeps it one vectorised pass:
-    ~3 ms for 480x320 on a Pi 4.
+    The same bytes as v0's uint16 formula (tested), ~40 % faster on the Pi 4: 3.6 ms instead
+    of 5.8 ms for 480x320 (measured 2026-10-13; docs/07 §6).
     """
     if img.mode != "RGB":
         img = img.convert("RGB")
-    a = np.asarray(img, dtype=np.uint16)
-    v = ((a[:, :, 0] & 0xF8) << 8) | ((a[:, :, 1] & 0xFC) << 3) | (a[:, :, 2] >> 3)
-    return v.astype("<u2").tobytes()
+    return pack_rgb565(np.asarray(img)).tobytes()
+
+
+def row_span(new: np.ndarray, old: np.ndarray | None) -> tuple[int, int] | None:
+    """(first, last + 1) of the rows (first axis) that differ between two frames; None when
+    they are identical. A missing or differently shaped `old` = every row.
+
+    Why one span and not every changed row: fbtft's deferred I/O refreshes the panel from the
+    lowest to the highest dirty line anyway (it damages the written pages), so one write of the
+    span costs the same SPI time as several, in one syscall.
+    """
+    rows = new.shape[0] if new.ndim else 0
+    if old is None or old.shape != new.shape:
+        return (0, rows) if rows else None
+    a = np.ascontiguousarray(new).reshape(rows, -1)
+    b = np.ascontiguousarray(old).reshape(rows, -1)
+    if a.dtype == np.uint8 and a.shape[1] % 8 == 0:     # compare 8 bytes at a time
+        a, b = a.view(np.uint64), b.view(np.uint64)
+    diff = np.flatnonzero((a != b).any(axis=1))
+    return (int(diff[0]), int(diff[-1]) + 1) if len(diff) else None
+
+
+def changed_rows(new: bytes, old: bytes | None, stride: int) -> tuple[int, int] | None:
+    """row_span() for two frames as bytes of `stride`-byte rows."""
+    rows = len(new) // stride if stride > 0 else 0
+    if old is None or len(old) != len(new) or rows * stride != len(new):
+        return (0, rows) if new else None
+    return row_span(np.frombuffer(new, np.uint8).reshape(rows, stride),
+                    np.frombuffer(old, np.uint8).reshape(rows, stride))
 
 
 def find_fb_device(driver: str = "fb_ili9486", sysfs: str = "/sys") -> str | None:
@@ -96,7 +134,9 @@ def read_gpio_level(pin: int, gpiomem: str = "/dev/gpiomem") -> bool | None:
 
 
 class Framebuffer:
-    """One RGB565 framebuffer. `show()` writes a whole frame in one syscall, skipping repeats.
+    """One RGB565 framebuffer. `show()` writes only the rows that changed since the last frame
+    it wrote (one span, one syscall), skipping repeats; after `invalidate()` or a reopen the next
+    frame is written whole.
 
     `sysfs`, `gpiomem` and `level_reader` are injectable so the unit tests run without hardware.
     """
@@ -119,12 +159,14 @@ class Framebuffer:
         self.backlight_lit_high = backlight_lit_high
         self._level = level_reader or (lambda pin: read_gpio_level(pin, gpiomem))
         self._fd: int | None = None
-        self._last: bytes | None = None
+        self._last: np.ndarray | None = None   # the last frame written (RGB)
         self._stride = size[0] * 2
         self._bl_inverted = False  # learnt: bl_power semantics lie (old overlay flag)
         self._error_logged = False
         self.frames_written = 0
         self.frames_skipped = 0
+        self.rows_written = 0      # panel rows sent (a full frame = size[1])
+        self.last_span: tuple[int, int] | None = None   # (first row, last row + 1) last written
 
     # -- frame output ---------------------------------------------------------------------
     def _open(self) -> int:
@@ -142,32 +184,52 @@ class Framebuffer:
         except (OSError, ValueError):
             return self.size[0] * 2
 
-    def frame_bytes(self, img: Image.Image) -> bytes:
-        """The exact bytes `show()` would write (resized if needed, padded to the stride)."""
+    def _rgb(self, img: Image.Image) -> np.ndarray:
+        """The frame as a (h, w, 3) uint8 array of the panel's size (its own copy)."""
         if img.size != self.size:
             img = img.resize(self.size)
-        data = to_rgb565(img)
-        row = self.size[0] * 2
-        if self._stride > row:  # pad each row; never seen on the ZynScreen (stride 960)
-            a = np.frombuffer(data, np.uint8).reshape(self.size[1], row)
-            pad = np.zeros((self.size[1], self._stride - row), np.uint8)
-            data = np.hstack([a, pad]).tobytes()
-        return data
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        return np.asarray(img)
+
+    def _rows_bytes(self, a: np.ndarray) -> bytes:
+        """RGB rows -> the framebuffer bytes of those rows (padded to the stride)."""
+        packed = pack_rgb565(a).reshape(a.shape[0], -1)
+        if self._stride > packed.shape[1]:  # pad each row; never seen on the ZynScreen (960)
+            pad = np.zeros((a.shape[0], self._stride - packed.shape[1]), np.uint8)
+            packed = np.hstack([packed, pad])
+        return packed.tobytes()
+
+    def frame_bytes(self, img: Image.Image) -> bytes:
+        """The exact bytes of a whole frame (resized if needed, padded to the stride)."""
+        return self._rows_bytes(self._rgb(img))
 
     def show(self, img: Image.Image) -> bool:
-        """Write `img` to the panel. True if written, False if skipped (identical) or failed."""
+        """Write `img` to the panel. True if written, False if skipped (identical) or failed.
+
+        Only the span of rows that differ from the last written frame is packed and goes out
+        (on SHOW the meter and the graph, rows ~31-254; a value edit alone ~40 rows): less
+        packing, less SPI time, so the next frame and the knobs' I2C reads share the CPU and
+        the bus less. The last frame is only replaced once the write succeeded.
+        """
         try:
             fd = self._open()
-            data = self.frame_bytes(img)
-            if data == self._last:
+            a = self._rgb(img)
+            span = row_span(a, self._last)
+            if span is None:
                 self.frames_skipped += 1
                 return False
-            view = memoryview(data)
-            off = 0
-            while off < len(view):  # fb writes are normally complete; loop just in case
-                off += os.pwrite(fd, view[off:], off)
-            self._last = data
+            data = memoryview(self._rows_bytes(a[span[0]:span[1]]))
+            base, done = span[0] * self._stride, 0
+            while done < len(data):  # fb writes are normally complete; loop just in case
+                n = os.pwrite(fd, data[done:], base + done)
+                if n <= 0:
+                    raise OSError("framebuffer write returned 0")
+                done += n
+            self._last = a
             self.frames_written += 1
+            self.rows_written += span[1] - span[0]
+            self.last_span = span
             self._error_logged = False
             return True
         except OSError as e:

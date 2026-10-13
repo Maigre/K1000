@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for tools/k1000-knobtrace.py: the analysis on synthetic traces (no hardware).
 
 The capture side needs the real MCP23017 with k1000.service stopped (docs/08-knob-precision.md);
@@ -279,3 +280,31 @@ def test_cli_help_and_demo(capsys):
     assert kt.main(["demo"]) == 0
     out = capsys.readouterr().out
     assert out.count("VERDICT") >= 2
+
+
+# ======================================================================= bench / load (PERF-4)
+def test_render_load_models_the_v1_service():
+    """The load the capture and the bench put beside the knob worker: SHOW with a moving
+    spectrum rendered in a thread, ballistics + save chunks in an asyncio loop thread."""
+    load = kt.RenderLoad("render", save_ms=5.0, save_every_s=0.05)
+    load.start()
+    import time as _t
+    _t.sleep(0.6)
+    load.stop()
+    assert not load.is_alive()
+    assert load.kind == "render" and load.frames >= 3 and load.saves >= 3 and load.ms
+
+
+def test_bench_drives_the_real_worker_on_the_sim_chip(tmp_path):
+    out = tmp_path / "bench.json"
+    prev = sys.getswitchinterval()
+    try:
+        assert kt.main(["bench", "--quick", "--save-ms", "10", "--json", str(out)]) == 0
+    finally:
+        sys.setswitchinterval(prev)
+    import json as _json
+    res = _json.loads(out.read_text())
+    assert res["switch_ms"] == 1.0 and len(res["runs"]) == 2
+    for r in res["runs"]:
+        assert r["turned"] == 24 and r["lat_ms"] and r["storms"] == 0
+    assert res["runs"][1]["load"] == "render" and res["runs"][1]["render_frames"] > 0

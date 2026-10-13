@@ -114,8 +114,8 @@ Once 4/4 is confirmed, pin it under `profiles: m4:` in `/etc/k1000/k1000.yaml`
 M4 then always gets the proven config (review finding m4-4).
 
 **target_level** (decision below). If Thomas picks 512 or 768, add `target_level: 512` (or 768) under
-`profiles: m4:`, `sudo systemctl restart k1000` (rewrites `active.yml`; the screen may show ENGINE
-DEVICES CHANGED OUTSIDE K1000), then `sudo systemctl restart camilladsp` (about 1 s of silence, then
+`profiles: m4:`, `sudo systemctl restart k1000` (rewrites `active.yml`; the screen may show
+DEVICES CHANGED (GUI)), then `sudo systemctl restart camilladsp` (about 1 s of silence, then
 the ramp). It applies at the next engine start only, never at show time.
 
 ## 6. Prove the path and the front panel (speakers off)

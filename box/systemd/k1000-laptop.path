@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# K1000 laptop access, the watcher (docs/06-phone.md §11). Installed by box/install.sh.
+#
+# SETUP > Laptop access (double push) makes the k1000 service create /run/k1000/laptop-open in its
+# own runtime directory; this unit then starts k1000-laptop.service (root), which opens CamillaGUI
+# and SSH on the K1000 Wi-Fi's fence for 2 h at most. That flag is all k1000 can do: it chooses no
+# port, address or duration (k1000-laptop-access.sh decides), and it never gains root itself
+# (k1000.service keeps CAP_NET_BIND_SERVICE as its only capability: no sudo, no nft).
+#
+# Why it looks like this:
+# - k1000.service Wants= it, so it runs whenever k1000 does; nothing enables it. Without k1000
+#   there is no /run/k1000 (the service's RuntimeDirectory), hence no flag to see.
+# - The flag lives in /run (tmpfs): a boot never starts with laptop access open.
+# - k1000-laptop.service removes the flag on every way out (its ExecStopPost), so a finished or
+#   refused opening is never triggered again by a flag left behind.
+
+[Unit]
+Description=K1000 laptop access: watch for the box's request (SETUP > Laptop access)
+Documentation=file:///opt/k1000/README.md
+
+[Path]
+PathExists=/run/k1000/laptop-open
+Unit=k1000-laptop.service

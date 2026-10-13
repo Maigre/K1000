@@ -40,6 +40,7 @@ from k1000.control import (
     marker_db, recover_state,
 )
 from k1000.hw.mcp23017 import EncoderEvent, SwitchEvent
+from k1000.ui.input_map import Toggle
 from k1000.profiles import ProfileChoice, load_profile
 from k1000.state import RANGES, State, delay_samples
 
@@ -1001,40 +1002,81 @@ def test_stop_persists_and_never_mutes(tmp_path: Path) -> None:
 
 
 # ======================================================================= UI plumbing
+def _sw_ev(i: int, kind: str) -> SwitchEvent:
+    return SwitchEvent(i, kind, time.monotonic())
+
+
+def _enc_ev(i: int, d: int) -> EncoderEvent:
+    return EncoderEvent(i, d, time.monotonic())
+
+
+def _setup_to(ctl: Controller, field: str) -> None:
+    from k1000.ui import input_map as im
+    ctl.focus.item = next(i for i, it in enumerate(im.SETUP_ITEMS) if it.field == field)
+
+
+def _push_twice(ctl: Controller) -> None:
+    for _ in range(2):
+        ctl.handle_event(_sw_ev(0, "press"))
+        ctl.handle_event(_sw_ev(0, "short"))
+
+
 def test_knob_and_button_events_through_input_map(tmp_path: Path) -> None:
+    """The v1 show, gesture by gesture (D-009): SHOW -> ALIGN -> SETUP and home."""
     async def body() -> None:
         ctl, cl = make(tmp_path, State(master_db=-20.0), playing=True)
         await boot(ctl)
-        ctl.handle_event(EncoderEvent(0, 1, time.monotonic()))        # E1 = master
+        assert ctl.page == "SHOW"
+        ctl.handle_event(_enc_ev(0, 1))                               # E1 = master
         assert ctl.state.master_db == -19.5
-        ctl.handle_event(SwitchEvent(5, "short", time.monotonic()))   # B2 short: hint only
+        ctl.handle_event(_sw_ev(5, "short"))                          # B2 short: hint only
         assert ctl.focus.hint is not None and "B2" in ctl.focus.hint
         assert ctl.state.muted is False
-        ctl.handle_event(SwitchEvent(5, "long", time.monotonic()))    # B2 long: mute
+        ctl.handle_event(_sw_ev(5, "long"))                           # B2 long: mute
         assert ctl.state.muted is True
         await until(lambda: cl.faders[0]["mute"] is True, what="mute reaches the engine")
-        ctl.handle_event(SwitchEvent(5, "long", time.monotonic()))    # B2 long again: unmute
+        ctl.handle_event(_sw_ev(5, "long"))                           # B2 long again: unmute
         await until(lambda: cl.faders[0]["mute"] is False, what="unmute")
-        ctl.handle_event(SwitchEvent(4, "press", time.monotonic()))   # B1 next page
-        assert ctl.page == "LIVE"
-        ctl.handle_event(EncoderEvent(0, 1, time.monotonic()))        # E1 on LIVE = slot select
-        ctl.handle_event(EncoderEvent(2, -2, time.monotonic()))       # E3 = gain of PEQ 2
+        ctl.handle_event(_sw_ev(6, "short"))                          # B3: next band P1 -> P2
+        assert ctl.focus.slot == 1 and ctl.focus.editing_now() == "slot"
+        ctl.handle_event(_enc_ev(2, -2))                              # E3 = gain of PEQ 2
         assert ctl.state.live_peq[1].gain == -1.0
-        ctl.handle_event(SwitchEvent(7, "long", time.monotonic()))    # B4 long: arms only
-        assert ctl.state.live_peq[1].gain == -1.0
-        assert ctl.focus.hint_now() == "HOLD B4 AGAIN TO RESET ALL LIVE EQ"
-        ctl.handle_event(SwitchEvent(7, "long", time.monotonic()))    # B4 long again: reset
-        assert ctl.state.live_peq[1].gain == 0.0
-        assert ctl.focus.hint_now() == ctl_mod.HINT_LIVE_RESET        # said on the screen
-        ctl.handle_event(SwitchEvent(6, "short", time.monotonic()))   # B3 on LIVE: hint only
-        assert ctl.state.lowcut_on is True and "MAIN" in (ctl.focus.hint_now() or "")
-        ctl.goto_page("MAIN")
-        ctl.handle_event(SwitchEvent(6, "short", time.monotonic()))   # B3 on MAIN: Lo-Cut off
+        ctl.handle_event(_sw_ev(7, "long"))                           # B4 hold: never a reset
+        assert ctl.state.live_peq[1].gain == -1.0 and "SETUP" in (ctl.focus.hint_now() or "")
+        ctl.handle_event(_sw_ev(4, "press"))                          # B1: ALIGN
+        assert ctl.page == "ALIGN"
+        hz = ctl.state.lowcut_hz
+        ctl.handle_event(_enc_ev(3, 2))                               # E4 locked: hint only
+        assert ctl.state.lowcut_hz == hz and ctl.focus.hint_now() == "LOCKED · HOLD B3 TO EDIT"
+        ctl.handle_event(_sw_ev(6, "long"))                           # B3 hold: unlock
+        assert ctl.snapshot()[2].align_locked is False
+        ctl.handle_event(_enc_ev(3, 2))
+        assert ctl.state.lowcut_hz > hz
+        ctl.handle_event(_sw_ev(4, "press"))                          # B1: SETUP (relocks ALIGN)
+        assert ctl.page == "SETUP" and ctl.snapshot()[2].align_locked is True
+        _setup_to(ctl, "lowcut_on")
+        ctl.handle_event(_sw_ev(0, "press"))
+        ctl.handle_event(_sw_ev(0, "short"))                          # first push: arms only
+        assert ctl.state.lowcut_on is True and "AGAIN" in (ctl.focus.hint_now() or "")
+        ctl.handle_event(_sw_ev(0, "press"))
+        ctl.handle_event(_sw_ev(0, "short"))                          # second push: Lo-Cut off
         assert ctl.state.lowcut_on is False
         assert ctl.focus.hint_now() == "LO-CUT OFF" and ctl.focus.editing_now() == "lowcut_on"
-        ctl.handle_event(SwitchEvent(7, "long", time.monotonic()))    # B4 off LIVE: hint only
-        assert "LIVE" in (ctl.focus.hint_now() or "")
+        _setup_to(ctl, "reset_live")
+        _push_twice(ctl)                                              # confirmed reset
+        assert ctl.state.live_peq[1].gain == 0.0
+        assert ctl.focus.hint_now() == ctl_mod.HINT_LIVE_RESET
+        assert ctl.snapshot()[2].undo_reset_s > 290
+        _setup_to(ctl, "undo_reset")
+        ctl.handle_event(_sw_ev(0, "press"))
+        ctl.handle_event(_sw_ev(0, "short"))                          # one push: undone
+        assert ctl.state.live_peq[1].gain == -1.0 and ctl.focus.hint_now() == ctl_mod.HINT_LIVE_RESTORED
+        ctl.handle_event(_sw_ev(4, "press"))                          # B1 press: SETUP -> SHOW
+        ctl.handle_event(_sw_ev(4, "press"))                          # -> ALIGN
+        ctl.handle_event(_sw_ev(4, "long"))                           # B1 hold: home
+        assert ctl.page == "SHOW"
         assert await ctl.settle(5.0)
+        assert cl.cfg["filters"]["live_peq_2"]["parameters"]["gain"] == -1.0
         await ctl.stop()
 
     run(body())
@@ -1097,9 +1139,9 @@ def test_console_commands(tmp_path: Path, capsys: pytest.CaptureFixture[str]) ->
         assert out[0].startswith("@ok") and ctl.state.master_db == -19.0
         assert ctl.state.live_peq[0].gain == -3.0
         assert out[2].startswith("@err")                      # unconfirmed setup action
-        assert ctl.state.muted is True and ctl.page == "LIVE"
+        assert ctl.state.muted is True and ctl.page == "SHOW"          # v0's LIVE = SHOW
         status = json.loads(out[5].split(" ", 1)[1])
-        assert status["engine_ready"] is True and status["page"] == "LIVE"
+        assert status["engine_ready"] is True and status["page"] == "SHOW"
         assert status["ready"] is True and status["alert"] == "" and status["in_clip"] is False
         assert out[6].startswith("@err") and out[7].startswith("@err") and stop.is_set()
         await ctl.stop()
@@ -1276,7 +1318,7 @@ def test_gui_group_mute_and_cut_are_kept_a_raise_is_pulled_down(tmp_path: Path) 
         assert cl.log[n:] == []
         assert cl.faders[1]["mute"] is True and cl.faders[2]["volume"] == -10.0
         assert {"SUBS GROUP MUTED", "TOPS GROUP -10.0 dB"} <= set(ctl.status.drift)
-        assert "OUTSIDE K1000" in ctl.status.message
+        assert "(GUI)" in ctl.status.message
         # the operator turns the balance: the macro moves, the tops cut is carried along
         ctl.nudge("balance_db", 4)                  # b = 2: Aux1 +1, Aux2 -1 (-10 under it)
         assert await ctl.settle(3.0)
@@ -1615,6 +1657,648 @@ def test_marker_encoding_round_trips() -> None:
         assert decode_marker(marker_db(g) + 2e-6) == g                # f32 read-back
     for v in (None, 0.0, -40.0, -61.7, -62.0, -60.2, float("nan"), True):
         assert decode_marker(v) is None
+
+
+# ======================================================================= UI v1 (D-009)
+class _Clock:
+    """A settable UI clock (Controller._ui_clock)."""
+
+    def __init__(self, t: float = 1000.0) -> None:
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+
+class _Frame:
+    def __init__(self, peak_hz: float | None) -> None:
+        self.peak_hz = peak_hz
+
+
+def _gain_writes(log: list[tuple[Any, ...]]) -> list[Any]:
+    return [v for i in range(1, 5) for v in sets_for(log, f"/filters/live_peq_{i}/parameters/gain")]
+
+
+def test_master_up_guard_caps_rises_per_window(tmp_path: Path) -> None:
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-30.0), playing=True)
+        await boot(ctl)
+        clk = _Clock()
+        ctl._ui_clock = clk
+        assert ctl.master_up_guard_db == 6.0 and ctl_mod.MASTER_UP_WINDOW_S == 2.0
+        for _ in range(12):                                     # +6 dB in one window: fine
+            assert ctl.nudge("master_db", 1) is not None
+            clk.t += 0.1
+        assert ctl.state.master_db == -24.0
+        assert ctl.nudge("master_db", 1) is None                # the 13th: refused, said
+        assert ctl.state.master_db == -24.0 and ctl.focus.hint_now() == ctl_mod.HINT_MASTER_SLOW
+        assert ctl.nudge("master_db", -4) == -26.0              # down: always instant
+        assert ctl.nudge("master_db", 1) is None                # down does not buy room
+        clk.t += 1.0                                            # 3 raises (1.5 dB) left the window
+        assert ctl.nudge("master_db", 4) == -24.5               # 3 of the 4 detents
+        clk.t += 10.0
+        assert ctl.nudge("master_db", 20) == -18.5              # a sweep: only the first 6 dB
+        assert ctl.focus.hint_now() == ctl_mod.HINT_MASTER_SLOW
+        # the knob path is the same (and never accelerated up)
+        clk.t += 10.0
+        for _ in range(16):
+            ctl.handle_event(EncoderEvent(0, 1, time.monotonic()))
+        assert ctl.state.master_db == -12.5
+        # a clamp at 0 dB costs only what was raised
+        ctl2, _ = make(tmp_path / "b", State(master_db=-2.0), playing=True)
+        assert ctl2.nudge("master_db", 1000) == 0.0 and ctl2.focus.hint_now() is None
+        assert await ctl.settle(5.0)
+        assert max(faders_sent(cl.log, 0)) <= -12.5
+        await ctl.stop()
+
+    run(body())
+
+
+def test_master_up_guard_is_configurable_and_reaches_the_phone(tmp_path: Path) -> None:
+    from k1000.web.server import PhoneBridge
+
+    async def body() -> None:
+        off, _ = make(tmp_path / "off", State(master_db=-40.0), playing=True,
+                      settings={"controls": {"master_up_guard_db": 0}})
+        assert off.master_up_guard_db == 0.0
+        assert off.nudge("master_db", 60) == -10.0               # off: as v0
+        assert ctl_mod.master_up_guard_db({"controls": {"master_up_guard_db": "x"}}) == 6.0
+        assert ctl_mod.master_up_guard_db({"controls": {"master_up_guard_db": True}}) == 6.0
+        assert ctl_mod.master_up_guard_db({"controls": {"master_up_guard_db": 99}}) == 24.0
+        assert ctl_mod.master_up_guard_db({}) == 6.0
+        ctl, _ = make(tmp_path / "on", State(master_db=-40.0), playing=True,
+                      settings={"controls": {"master_up_guard_db": 3}})
+        clk = _Clock()
+        ctl._ui_clock = clk
+        b = PhoneBridge(ctl, master_up_db_per_s=100.0)
+        oks = [b.apply({"t": "nudge", "f": "master_db", "d": 2})[0] for _ in range(4)]
+        assert oks == [True, True, True, False] and ctl.state.master_db == -37.0
+        assert b.apply({"t": "nudge", "f": "master_db", "d": -1})[0]
+
+    run(body())
+
+
+def test_notch_helper_takes_a_free_bell_at_the_peak_and_never_touches_gain(tmp_path: Path) -> None:
+    async def body() -> None:
+        st = State()
+        st.live_peq[0].gain = -4.0                    # P1 in use (at 250 Hz)
+        ctl, cl = make(tmp_path, st, playing=True)
+        await boot(ctl)
+        ctl.focus.slot = 2                            # P3 selected and free: preferred
+        ctl.set_spectrum(_Frame(2440.0), "live")
+        n = len(cl.log)
+        assert ctl.notch_helper() == 2
+        b = ctl.state.live_peq[2]
+        assert b.freq == 2440.0 and b.q == pytest.approx(8.651, abs=0.001) and b.gain == 0.0
+        assert ctl.focus.slot == 2 and ctl.focus.editing_now() == "live_peq.2.gain"
+        assert ctl.focus.hint_now() == "P3 · 2.44k · E3 TO CUT"
+        assert await ctl.settle(5.0)
+        assert _gain_writes(cl.log[n:]) == []         # inaudible: freq and Q only
+        assert cl.cfg["filters"]["live_peq_3"]["parameters"]["freq"] == 2440.0
+        assert ctl.state.live_peq[0].gain == -4.0
+        # the same peak again: P3 is free (gain 0) and selected -> stays there
+        assert ctl.notch_helper() == 2
+        # a peak within 1/6 octave of a bell IN USE selects it and writes nothing
+        ctl.nudge("live_peq.2.gain", -12)             # the operator cut it
+        assert await ctl.settle(5.0)
+        ctl.focus.slot = 5
+        ctl.set_spectrum(_Frame(2600.0), "live")      # log2(2600/2440) = 0.09 oct
+        before, n = ctl.state.to_dict(), len(cl.log)
+        assert ctl.notch_helper() == 2
+        assert ctl.state.to_dict() == before and ctl.focus.slot == 2
+        assert ctl.focus.hint_now() == "P3 · 2.44k · E3 TO CUT"
+        assert await ctl.settle(5.0)
+        assert nomark(cl.log[n:]) == []
+        # a peak elsewhere: the first free bell (never a shelf, even selected and flat)
+        ctl.focus.slot = 4
+        ctl.set_spectrum(_Frame(800.0), "live")
+        assert ctl.notch_helper() == 1
+        assert ctl.state.live_peq[1].freq == 800.0 and ctl.state.live_lowshelf.q == 0.707
+        await ctl.stop()
+
+    run(body())
+
+
+def test_notch_helper_without_a_peak_or_a_free_band(tmp_path: Path) -> None:
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        ctl.focus.slot = 1
+        assert ctl.notch_helper() == 1                # no spectrum: Q only, the freq stays
+        assert ctl.state.live_peq[1].freq == 1000.0 and ctl.state.live_peq[1].q == pytest.approx(8.651, abs=1e-3)
+        assert ctl.focus.hint_now() == "P2 · 1.00k · NO PEAK · E3 TO CUT"
+        ctl.set_spectrum(_Frame(3000.0), "live")
+        ctl.state.spectrum_on = False                 # SETUP > Spectrum OFF: no peak target
+        ctl.focus.slot = 3
+        assert ctl.notch_helper() == 3 and ctl.state.live_peq[3].freq == 5000.0
+        ctl.state.spectrum_on = True
+        for i in range(4):
+            ctl.set_value(f"live_peq.{i}.gain", -3.0)
+        ctl.focus.slot = 0
+        ctl.set_spectrum(_Frame(100.0), "live")       # far from every bell in use
+        before = ctl.state.to_dict()
+        assert ctl.notch_helper() is None
+        assert ctl.focus.hint_now() == ctl_mod.HINT_NO_FREE_BAND
+        assert ctl.state.to_dict() == before and ctl.focus.slot == 0
+        await ctl.stop()
+
+    run(body())
+
+
+def test_notch_helper_from_b4_on_show(tmp_path: Path) -> None:
+    async def body() -> None:
+        ctl, _ = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        ctl.set_spectrum(_Frame(125.0), "live")
+        ctl.handle_event(SwitchEvent(7, "short", time.monotonic()))
+        assert ctl.state.live_peq[0].freq == 125.0 and ctl.state.live_peq[0].gain == 0.0
+        ctl.goto_page("ALIGN")
+        ctl.set_spectrum(_Frame(4000.0), "live")
+        ctl.handle_event(SwitchEvent(7, "short", time.monotonic()))   # off SHOW: hint only
+        assert ctl.state.live_peq[0].freq == 125.0 and "SHOW" in (ctl.focus.hint_now() or "")
+        await ctl.stop()
+
+    run(body())
+
+
+def test_reset_live_keeps_a_one_level_undo(tmp_path: Path) -> None:
+    async def body() -> None:
+        st = State()
+        st.live_peq[1].freq, st.live_peq[1].gain, st.live_peq[1].q = 2520.0, -6.5, 8.0
+        st.live_highshelf.gain = 2.0
+        ctl, cl = make(tmp_path, st, playing=True)
+        await boot(ctl)
+        clk = _Clock()
+        ctl._ui_clock = clk
+        before = ctl.state.live_peq[1], ctl.state.live_highshelf
+        want = ctl_mod._live_dict(ctl.state)
+        assert ctl.undo_left() == 0.0 and ctl.undo_reset() is False
+        assert ctl.focus.hint_now() == ctl_mod.HINT_NOTHING_TO_UNDO
+        ctl.reset_live()
+        assert ctl.state.live_peq[1].gain == 0.0 and ctl.undo_left() == pytest.approx(300.0)
+        assert await ctl.settle(5.0)
+        clk.t += 299.0
+        assert ctl.undo_reset() is True
+        assert ctl_mod._live_dict(ctl.state) == want and ctl.focus.hint_now() == ctl_mod.HINT_LIVE_RESTORED
+        assert await ctl.settle(5.0)
+        p = cl.cfg["filters"]["live_peq_2"]["parameters"]
+        assert (p["freq"], p["gain"], p["q"]) == (2520.0, -6.5, 8.0)
+        assert ctl.undo_reset() is False              # one level
+        # expires after 5 min
+        ctl.reset_live()
+        clk.t += 300.0
+        assert ctl.undo_left() == 0.0 and ctl.undo_reset() is False
+        # ...and at the next live EQ edit, from anywhere
+        ctl.undo_reset()
+        ctl.state = State.from_dict({**ctl.state.to_dict(), **want})
+        ctl.reset_live()
+        ctl.nudge("live_peq.0.gain", -1)
+        assert ctl.undo_left() == 0.0
+        ctl.nudge("live_peq.0.gain", 1)               # flat again: still gone
+        assert ctl.undo_left() == 0.0
+        assert before                                 # (kept for the reader)
+        await ctl.stop()
+
+    run(body())
+
+
+def test_reset_undo_survives_inaudible_edits_and_says_when_it_is_lost(tmp_path: Path) -> None:
+    """LAS-4 / UX-2: B4 right after a mistaken reset (the reflex to find the ring again) moves a
+    free bell's Q/freq at 0 dB: inaudible, so the undo that brings the notches back stays. The
+    first audible edit (a cut) ends it, and the screen says so."""
+    async def body() -> None:
+        st = State()
+        st.live_peq[1].freq, st.live_peq[1].gain, st.live_peq[1].q = 2520.0, -6.5, 8.0
+        st.live_peq[3].freq, st.live_peq[3].gain, st.live_peq[3].q = 6300.0, -4.0, 4.0
+        ctl, cl = make(tmp_path, st, playing=True)
+        await boot(ctl)
+        clk = _Clock()
+        ctl._ui_clock = clk
+        want = ctl_mod._live_dict(ctl.state)
+        ctl.reset_live()
+        assert ctl.focus.hint_now() == ctl_mod.HINT_LIVE_RESET
+        # B4 on SHOW: no peak -> P1's Q (inaudible); then with a peak -> P1 at the peak
+        ctl.focus.slot = 0
+        assert ctl.notch_helper() == 0 and ctl.state.live_peq[0].gain == 0.0
+        assert ctl.undo_left() == pytest.approx(300.0)
+        ctl.set_spectrum(_Frame(2440.0), "live")
+        assert ctl.notch_helper() == 0 and ctl.state.live_peq[0].freq == 2440.0
+        ctl.nudge("live_peq.2.freq", 7)               # E2 / E4 on a flat band
+        ctl.nudge("live_peq.2.q", -3)
+        ctl.nudge("live_highshelf.freq", 2)
+        assert ctl.undo_left() == pytest.approx(300.0)
+        assert ctl.snapshot()[2].undo_reset_s == pytest.approx(300.0)
+        # undo: the notches from before the reset, over the inaudible moves
+        assert ctl.undo_reset() is True and ctl_mod._live_dict(ctl.state) == want
+        assert await ctl.settle(5.0)
+        p = cl.cfg["filters"]["live_peq_4"]["parameters"]
+        assert (p["freq"], p["gain"], p["q"]) == (6300.0, -4.0, 4.0)
+        # the first audible edit ends it, said on the screen
+        ctl.reset_live()
+        ctl.notch_helper()
+        ctl.nudge("live_peq.0.gain", -1)              # E3: the cut
+        assert ctl.focus.hint_now() == ctl_mod.HINT_UNDO_LOST == "RESET UNDO LOST"
+        assert ctl.undo_left() == 0.0 and ctl.undo_reset() is False
+        # an expiry is silent
+        ctl.reset_live()
+        clk.t += 300.0
+        ctl.show_hint("X")
+        assert ctl.undo_left() == 0.0 and ctl.focus.hint_now() == "X"
+        await ctl.stop()
+
+    run(body())
+
+
+def test_every_master_change_is_logged_with_its_source(tmp_path: Path, caplog) -> None:
+    """LAS-3: the 20:25 Main -19 -> -20 could not be attributed: no line said what moved it."""
+    import logging
+
+    from k1000.web.server import PhoneBridge
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-19.0), playing=True)
+        await boot(ctl)
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="k1000.control"):
+            ctl.handle_event(EncoderEvent(0, -1, time.monotonic()))         # E1 on SHOW
+            PhoneBridge(ctl).apply({"t": "nudge", "f": "master_db", "d": -2})
+            ctl.set_value("master_db", -25.0, source="console")
+            ctl.nudge("live_peq.0.gain", -1)                                # not master: no line
+            assert await ctl.settle(5.0)
+            ctl._own_fader.clear()
+            cl.faders[0]["volume"] = -26.5                                  # CamillaGUI
+            await ctl.poll_once()
+        lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("master ")]
+        assert lines == ["master -19.0 -> -19.5 dB (knob)", "master -19.5 -> -20.5 dB (phone)",
+                         "master -20.5 -> -25.0 dB (console)",
+                         "master -25.0 -> -26.5 dB (adoption)"]
+        await ctl.stop()
+
+    run(body())
+
+
+def test_phone_reset_and_lo_cut_go_through_the_box_paths(tmp_path: Path) -> None:
+    from k1000.web.server import PhoneBridge
+
+    async def body() -> None:
+        st = State()
+        st.live_peq[2].gain = -9.0
+        ctl, cl = make(tmp_path, st, playing=True)
+        await boot(ctl)
+        b = PhoneBridge(ctl)
+        assert b.apply({"t": "reset_live", "confirm": True})[0]
+        assert ctl.state.live_peq[2].gain == 0.0 and ctl.undo_left() > 0   # the box can undo it
+        assert ctl.undo_reset() and ctl.state.live_peq[2].gain == -9.0
+        assert b.apply({"t": "set", "f": "lowcut_on", "v": False})[:2] == (True, False)
+        assert ctl.state.lowcut_on is False and ctl.focus.hint_now() == "LO-CUT OFF"
+        assert "LO-CUT OFF" in ctl.snapshot()[2].pills
+        assert await ctl.settle(5.0)
+        assert cl.cfg["filters"]["top_lowcut"]["parameters"]["freq"] == 10.0     # parked, no rebuild
+        assert not any(e[0] == "config" for e in cl.log)
+        assert b.apply({"t": "set", "f": "lowcut_on", "v": True})[:2] == (True, True)
+        assert ctl.focus.hint_now().startswith("LO-CUT ON")
+        await ctl.stop()
+
+    run(body())
+
+
+def test_align_lock_relocks_when_leaving_and_after_idle(tmp_path: Path) -> None:
+    async def body() -> None:
+        ctl, _ = make(tmp_path, State(sub_delay_ms=1.0), playing=True)
+        await boot(ctl)
+        ctl.goto_page("ALIGN")
+        ctl.handle_event(SwitchEvent(6, "long", time.monotonic()))
+        snap = ctl.snapshot()[2]
+        assert snap.align_locked is False and 29.0 < snap.align_unlock_s <= 30.0
+        ctl.goto_page("SHOW")
+        ctl.goto_page("ALIGN")
+        assert ctl.snapshot()[2].align_locked is True             # leaving ALIGN relocked
+        ctl.handle_event(EncoderEvent(2, 3, time.monotonic()))
+        assert ctl.state.sub_delay_ms == 1.0
+        ctl.handle_event(SwitchEvent(6, "long", time.monotonic()))
+        ctl.focus.unlock_until = time.monotonic() - 0.01          # 30 s of idle went by
+        ctl.handle_event(EncoderEvent(2, 3, time.monotonic()))
+        assert ctl.state.sub_delay_ms == 1.0 and ctl.snapshot()[2].align_locked is True
+        await ctl.stop()
+
+    run(body())
+
+
+def test_align_and_setup_go_home_after_60_s_without_input(tmp_path: Path) -> None:
+    async def body() -> None:
+        ctl, _ = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        clk = _Clock()
+        ctl._ui_clock = clk
+        for page in ("ALIGN", "SETUP"):
+            ctl.goto_page(page)
+            clk.t += 59.0
+            ctl.ui_tick()
+            assert ctl.page == page
+            clk.t += 1.0
+            ctl.ui_tick()
+            assert ctl.page == "SHOW", page
+        ctl.goto_page("ALIGN")
+        clk.t += 50.0
+        ctl.handle_event(EncoderEvent(0, -1, time.monotonic()))   # input renews the minute
+        clk.t += 59.0
+        ctl.ui_tick()
+        assert ctl.page == "ALIGN"
+        clk.t += 1.0
+        ctl.ui_tick()
+        assert ctl.page == "SHOW"
+        for page in ("PHONE", "HWTEST", "SHOW"):                  # these stay
+            ctl.goto_page(page)
+            clk.t += 600.0
+            ctl.ui_tick()
+            assert ctl.page == page
+        ctl.goto_page("SETUP")                                    # a pending confirm holds it
+        ctl.focus.confirm, ctl.focus.confirm_until = "mono_subs", clk.t + 100.0
+        clk.t += 61.0
+        ctl.ui_tick(clk.t)
+        assert ctl.page == "SETUP"
+        await ctl.stop()
+
+    run(body())
+
+
+def test_snapshot_carries_the_v1_render_contract(tmp_path: Path) -> None:
+    async def body() -> None:
+        st = State(lowcut_on=False, sub_inverted=True, top_inverted=True, mono_subs=True,
+                   dev_audition="tops")
+        ctl, _ = make(tmp_path, st, playing=True)
+        await boot(ctl)
+        ctl.pill_sources.append(lambda: "LAPTOP OPEN 1:59")
+        ctl.pill_sources.append(lambda: None)
+        ctl.pill_sources.append(lambda: 1 / 0)                   # a broken source is skipped
+        ctl.focus.slot = 4
+        page, _state, status, focus = ctl.snapshot()
+        assert page == status.page == "SHOW"
+        assert (status.band, status.band_label, status.band_short) == (4, "LO SHELF", "LS")
+        assert status.pills == ["LAPTOP OPEN 1:59", "LO-CUT OFF", "POL INV SUB+TOP", "MONO SUB",
+                                "AUDITION TOPS"]
+        assert status.align_locked is True and status.align_unlock_s == 0.0
+        assert status.alerts == [] and status.sys_alert == "" and status.sys_alert_level == ""
+        assert status.undo_reset_s == 0.0 and status.spectrum_on is True
+        assert status.spectrum is None and status.spectrum_state == "off"
+        assert status.master_up_guard_db == 6.0
+        # alerts: KNOBS OFFLINE (red) first, then ENGINE DOWN, then a warning
+        ctl._set_message("drift", 2, "PIPELINE CHANGED (GUI)")
+        ctl.set_knobs_ok(False)
+        ctl.status.engine = "Stalled"
+        status = ctl.snapshot()[2]
+        assert status.alerts == [("critical", ctl_mod.MSG_KNOBS_OFFLINE),
+                                 ("critical", "ENGINE STALLED"),
+                                 ("warning", "PIPELINE CHANGED (GUI)")]
+        assert (status.sys_alert_level, status.sys_alert) == ("critical", ctl_mod.MSG_KNOBS_OFFLINE)
+        ctl.set_knobs_ok(True)
+        ctl.status.engine, ctl.status.device_present = None, False
+        assert [a[1] for a in ctl.snapshot()[2].alerts][:2] == ["NO DEVICE · HiFiBerry", "ENGINE DOWN"]
+        ctl.status.engine, ctl.status.device_present = "Running", True
+        ctl._set_message("ramp", 3, "RAMPING IN")
+        assert ("info", "RAMPING IN") in ctl.snapshot()[2].alerts
+        # copies are independent
+        a = ctl.snapshot()[2]
+        a.pills.append("x")
+        a.alerts.clear()
+        assert "x" not in ctl.status.pills and ctl.status.alerts
+        await ctl.stop()
+
+    run(body())
+
+
+def test_spectrum_hooks_wanted_and_publish(tmp_path: Path) -> None:
+    class FakeRta:
+        def __init__(self) -> None:
+            self.inputs = 0
+
+        def note_input(self) -> None:
+            self.inputs += 1
+
+    async def body() -> None:
+        ctl, _ = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        await ctl.poll_once()
+        ctl.rta = FakeRta()
+        assert ctl.spectrum_wanted() is True
+        v = ctl.version
+        ctl.changed.clear()
+        ctl.set_spectrum(_Frame(1234.0), "live")
+        assert ctl.version == v and ctl.changed.is_set()          # the screen only, not phones
+        snap = ctl.snapshot()[2]
+        assert snap.peak_hz == 1234.0 and snap.spectrum_state == "live" and snap.spectrum is not None
+        ctl.handle_event(EncoderEvent(1, 1, time.monotonic()))
+        assert ctl.rta.inputs == 1                                # the next frame waits for the edit
+        ctl.goto_page("ALIGN")
+        assert ctl.spectrum_wanted() is False
+        ctl.goto_page("SHOW")
+        ctl.handle_action(Toggle("spectrum_on"))
+        assert ctl.state.spectrum_on is False and ctl.focus.hint_now() == "SPECTRUM OFF"
+        assert ctl.spectrum_wanted() is False and ctl.snapshot()[2].spectrum_on is False
+        ctl.handle_action(Toggle("spectrum_on"))
+        ctl.status.engine = "Stalled"
+        assert ctl.spectrum_wanted() is False
+        ctl.status.engine = "Paused"
+        assert ctl.spectrum_wanted() is True
+        ctl.status.connected = False
+        assert ctl.spectrum_wanted() is False
+        # k1000.yaml spectrum.enabled: false
+        off, _ = make(tmp_path / "off", State(), playing=True, settings={"spectrum": {"enabled": False}})
+        assert off.spectrum_enabled is False and off.spectrum_wanted() is False
+        snap = off.snapshot()[2]
+        assert snap.spectrum_state == "disabled" and snap.spectrum_on is False
+        off.handle_action(Toggle("spectrum_on"))
+        off.handle_action(Toggle("spectrum_on"))
+        assert off.focus.hint_now() == ctl_mod.HINT_SPECTRUM_DISABLED
+        assert ctl_mod.spectrum_enabled({"spectrum": {"enabled": "no"}}) is True   # only `false`
+        await ctl.stop()
+
+    run(body())
+
+
+def _rta_frame(level: float, state_peak: float | None = None) -> Any:
+    np = pytest.importorskip("numpy")
+    from k1000.ui.eqgraph import RtaFrame
+    f = np.geomspace(10.0, 20000.0, 264)
+    return RtaFrame(f, np.full(264, float(level)), np.full(264, float(level)), -126.0, -60.0,
+                    state_peak)
+
+
+def test_identical_spectrum_frames_do_not_wake_the_screen(tmp_path: Path) -> None:
+    """Silence gives the same frame 10 times a second: it must not keep SHOW rendering at the
+    stream rate (the idle rate is ~1 frame/s). Any change of picture or state wakes it."""
+    async def body() -> None:
+        ctl, _ = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        woke = []
+        for frame, state in ((_rta_frame(-140.0), "live"),      # first frame: wakes
+                             (_rta_frame(-140.0), "live"),      # same picture (new arrays)
+                             (_rta_frame(-100.0), "live"),      # louder: wakes
+                             (_rta_frame(-100.0, 2440.0), "live"),   # a PEAK: wakes
+                             (_rta_frame(-100.0, 2440.0), "waiting"),  # state: wakes
+                             (None, "off"),                      # cleared: wakes
+                             (None, "off")):                     # still nothing: no wake
+            ctl.changed.clear()
+            v = ctl.version
+            ctl.set_spectrum(frame, state)
+            woke.append(ctl.changed.is_set())
+            assert ctl.version == v                              # never the phones' version
+        assert woke == [True, False, True, True, True, True, False]
+        assert ctl_mod._same_spectrum(object(), object()) is False
+        ctl._ui_clock = lambda: 1234.5
+        ctl.handle_event(EncoderEvent(1, 1, time.monotonic()))
+        assert ctl.last_input == 1234.5
+        await ctl.stop()
+
+    run(body())
+
+
+def test_render_loop_draws_a_moving_spectrum_at_the_stream_rate(tmp_path: Path) -> None:
+    """The spectrum (30 new frames/s here) and the meters wake the loop independently: SHOW
+    still draws at most RENDER_STREAM_FPS, from real pages.render frames with the spectrum."""
+    pytest.importorskip("PIL")
+    from k1000 import __main__ as main_mod
+
+    class FakeFb:
+        def __init__(self) -> None:
+            self.t: list[float] = []
+            self.last: Any = None
+
+        def show(self, img: Any) -> bool:
+            self.t.append(time.monotonic())
+            self.last = img
+            return True
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(), playing=True, meter_s=0.05)
+        await boot(ctl)
+
+        class FakeRta:
+            def note_input(self) -> None:
+                pass
+
+        ctl.rta = FakeRta()                     # a spectrum task is running
+        fb = FakeFb()
+        task = asyncio.get_running_loop().create_task(main_mod.render_loop(ctl, fb))
+        try:
+            await until(lambda: len(fb.t) >= 1, timeout=10.0, what="first frame")
+            await asyncio.sleep(0.3)
+            n0, t0 = len(fb.t), time.monotonic()
+            for i in range(45):
+                cl.peaks = [-20.0 + (i % 5), -18.0]
+                ctl.set_spectrum(_rta_frame(-100.0 + (i % 9)), "live")
+                await asyncio.sleep(1 / 30)
+            rate = (len(fb.t) - n0) / (time.monotonic() - t0)
+            assert 3.0 <= rate <= main_mod.RENDER_STREAM_FPS + 2, rate
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await ctl.stop()
+        from k1000.ui import pages
+        assert fb.last.size == pages.SIZE
+        g = pages.GRAPH                         # the spectrum is drawn behind the curve
+        from k1000.ui.eqgraph import STYLE
+        assert any(fb.last.getpixel((x, g[3] - 3)) == STYLE.rta_fill for x in range(60, 400, 7))
+
+    run(body())
+
+
+def test_setup_action_items_run_registered_callables(tmp_path: Path) -> None:
+    from k1000.ui.input_map import SetupAction
+
+    async def body() -> None:
+        ctl, _ = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        ran: list[str] = []
+        ctl.handle_action(SetupAction("laptop_access"))
+        assert ctl.focus.hint_now() == "LAPTOP_ACCESS: NOT AVAILABLE"
+        ctl.setup_actions["laptop_access"] = lambda: ran.append("x")
+        ctl.handle_action(SetupAction("laptop_access"))
+        ctl.setup_actions["boom"] = lambda: 1 / 0
+        ctl.handle_action(SetupAction("boom"))
+        assert ran == ["x"] and ctl.focus.hint_now() == "BOOM FAILED (SEE LOG)"
+        await ctl.stop()
+
+    run(body())
+
+
+def test_spectrum_on_is_persisted_and_old_state_files_load(tmp_path: Path) -> None:
+    async def body() -> None:
+        ctl, _ = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        ctl.toggle("spectrum_on")
+        await ctl.stop()
+        assert json.loads((tmp_path / "state.json").read_text())["spectrum_on"] is False
+        old = State().to_dict()
+        old.pop("spectrum_on")
+        assert State.from_dict(old).spectrum_on is True
+
+    run(body())
+
+
+def test_main_wiring_of_the_spectrum_and_the_v1_console(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                        capsys: pytest.CaptureFixture[str]) -> None:
+    from k1000 import __main__ as main_mod
+    from k1000.__main__ import _next_wake, run_command
+    from k1000.ui.input_map import Focus
+
+    f = Focus(unlock_until=10.4)
+    assert _next_wake(f, 10.0) == pytest.approx(0.41)            # the EDIT pill's end redraws
+    made: list[tuple[str, dict[str, Any]]] = []
+
+    class OwnClient:
+        connected = False
+
+        def __init__(self, url: str, **kw: Any) -> None:
+            made.append((url, kw))
+
+        async def connect(self, timeout: Any = None) -> bool:
+            return False
+
+        async def close(self) -> None:
+            pass
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        monkeypatch.setattr(main_mod, "CamillaClient", OwnClient)
+        task = main_mod.open_spectrum(ctl, "ws://127.0.0.1:4321")
+        assert task is not None and task.wanted == ctl.spectrum_wanted
+        assert task.publish == ctl.set_spectrum and list(task.channels()) == [0, 1]
+        await ctl.poll_once()
+        await until(lambda: made, what="its own client")
+        assert made[0][0] == "ws://127.0.0.1:4321" and made[0][1]["timeout"] <= 0.5
+        assert task.client is not cl
+        await task.stop()
+        off, _ = make(tmp_path / "off", State(), settings={"spectrum": {"enabled": False}})
+        assert main_mod.open_spectrum(off, "ws://x") is None
+        # console: notch helper and undo
+        stop = asyncio.Event()
+        ctl.set_value("live_peq.3.gain", -5.0)
+        for line in ("notch", "reset_live", "undo_reset", "undo_reset", "page ALIGN", "status"):
+            await run_command(ctl, line, stop)
+        out = [l for l in capsys.readouterr().out.splitlines() if l.startswith("@")]
+        assert out[0].startswith("@ok") and json.loads(out[0].split(" ", 1)[1])["slot"] == 0
+        assert out[2].startswith("@ok") and out[3].startswith("@err")      # one level of undo
+        assert ctl.state.live_peq[3].gain == -5.0
+        status = json.loads(out[5].split(" ", 1)[1])
+        assert status["page"] == "ALIGN" and status["align_locked"] is True
+        assert status["spectrum"] is None and status["pills"] == [] and status["alerts"] == []
+        ctl.rta = task                                            # (stopped; only its frame)
+        ctl.set_spectrum(rta_frame(), "live")
+        await run_command(ctl, "status", stop)
+        st = json.loads(capsys.readouterr().out.strip().split(" ", 1)[1])
+        assert st["spectrum"]["bins"] == 3 and st["spectrum"]["peak_hz"] == 100.0
+        await ctl.stop()
+
+    run(body())
+
+
+def rta_frame() -> Any:
+    import numpy as np
+    from k1000.ui.eqgraph import RtaFrame
+    return RtaFrame(np.array([50.0, 100.0, 200.0]), np.array([-60.0, -20.0, -60.0]), None,
+                    -84.0, -18.0, 100.0)
 
 
 # ======================================================================= engine tests
@@ -2224,7 +2908,7 @@ def test_knobs_offline_names_the_phone_mute_only_when_there_is_one(tmp_path: Pat
 def test_low_priority_notes_are_not_alerts(tmp_path: Path) -> None:
     """Drift notes (a GUI cut kept) must not replace the unmute line in the MUTED band."""
     ctl, cl = make(tmp_path, State())
-    ctl._set_message("held", 1, "TOPS GROUP -3.0 dB OUTSIDE K1000")
+    ctl._set_message("held", 1, "TOPS GROUP -3.0 dB (GUI)")
     assert ctl.status.message and ctl.status.alert == ""
     ctl._set_message("setup", 4, "APPLYING SETUP…")
     assert ctl.status.alert == "APPLYING SETUP…"
@@ -2251,6 +2935,31 @@ def test_edits_toward_silence_are_saved_at_once(tmp_path: Path) -> None:
         assert saved()["master_db"] == -15.0
         await ctl.stop()                                # ...and saved on the way out
         assert saved()["master_db"] == -13.0
+
+    run(body())
+
+
+def test_a_master_only_save_does_not_rebuild_active_yml(tmp_path: Path,
+                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    """PERF-3: MASTER is a fader, not in active.yml: its urgent saves (every 0.25 s while it
+    goes down) write the state JSON only, without dumping the YAML in the event loop."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-10.0), playing=True)
+        await boot(ctl)
+        calls = []
+        real = dc.to_yaml
+        monkeypatch.setattr(dc, "to_yaml", lambda cfg, *a: calls.append(1) or real(cfg, *a))
+        sp, ap = tmp_path / "state.json", tmp_path / "active.yml"
+        yml = ap.read_text()
+        for _ in range(5):
+            ctl.nudge("master_db", -2)
+            await asyncio.sleep(0.3)
+        await until(lambda: json.loads(sp.read_text())["master_db"] == -15.0, what="saved")
+        assert calls == [] and ap.read_text() == yml
+        ctl.nudge("live_peq.0.gain", -2)                # a config change: dumped, saved
+        await until(lambda: "gain: -1.0" in ap.read_text(), what="active.yml")
+        assert len(calls) == 1
+        await ctl.stop()
 
     run(body())
 
@@ -2638,8 +3347,9 @@ def test_console_injects_knob_events_and_highlights_nudges(tmp_path: Path,
         stop = asyncio.Event()
         await run_command(ctl, "nudge master_db 1", stop)
         assert ctl.focus.editing_now() == "master_db"
-        await run_command(ctl, "page LIVE", stop)
-        await run_command(ctl, "ev enc 0 2", stop)                  # E1 on LIVE: slot +2
+        await run_command(ctl, "page SHOW", stop)
+        await run_command(ctl, "ev sw 6 short", stop)               # B3 on SHOW: next band x2
+        await run_command(ctl, "ev sw 6 short", stop)
         assert ctl.focus.slot == 2
         await run_command(ctl, "ev sw 3 press", stop)               # E4 push held = FINE
         assert ctl.focus.held == {3}

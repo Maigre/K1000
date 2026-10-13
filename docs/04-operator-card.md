@@ -1,46 +1,46 @@
-# K1000 v0 — operator card (gig)
+# K1000 v1 — operator card (gig)
 
-From the 2026-10-12 fix-round code, deployed on the box the same evening. Ops: `box/README.md` · M4: `docs/05-m4-day.md`.
+UI v1 (D-009), accepted on the box 2026-10-13 (`f7aa58b-v1`); ops `box/README.md`. **Not v0 any more:** E1 = MASTER on SHOW too · balance on ALIGN only · B3 = next band · B4 = notch helper · reset and Lo-Cut on/off in SETUP · ALIGN's E3/E4 locked.
 
-**Positions are ASSUMED** until SETUP › Knob test: the screen draws E1 top-left, E2 bottom-left, E3 top-right, E4 bottom-right; B1–B4 = sw4–sw7, place unknown; turn directions too. Until `controls:` is confirmed, **hold-B2 (mute) and hold-B4 (reset live EQ) may be swapped**. Then fill in "Where" and label PAGE · MUTE (hold) · LO-CUT · RESET (hold).
+**Where** (SETUP › Knob test; screen: E1/E3 top, E2/E4 bottom): E1 ____ E2 ____ E3 ____ E4 ____ · B1 ____ B2 ____ B3 ____ B4 ____ · labels PAGE · MUTE · BAND/UNLOCK · NOTCH. One click = one step; only FREQ, Lo-Cut, master *down* accelerate.
 
-| Knob | Where | MAIN | LIVE EQ | SETUP |
-|---|---|---|---|---|
-| E1 | ____ | Master, 0.5 dB (−80…0) | Slot: P1–P4, LS, HS | Item |
-| E2 | ____ | Balance, 0.5 dB, + = subs up | Freq, 1/12 oct | Value |
-| E3 | ____ | Sub delay, 0.1 ms; after 2.5 s idle, 1st detent only wakes it | Gain, 0.5 dB | — |
-| E4 | ____ | Lo-Cut, tops, 1/12 oct (20–300 Hz) | Q / shelf slope | — |
-| Push | | hold + turn = fine (1 sample, 1/48 oct) | hold + turn = fine | push = select (Mono subs, Audition, Profile: twice) |
+| Knob | SHOW (front page) | ALIGN | SETUP |
+|---|---|---|---|
+| E1 | **MASTER** 0.5 dB; up ≤ +6 dB per 2 s (`SLOW DOWN`) | **MASTER**, the same | item |
+| E2 | **FREQ** of the selected band, 1/12 oct | **BALANCE** 0.5 dB, + = subs up | value |
+| E3 | **GAIN** of the selected band, 0.5 dB | sub delay 0.1 ms, **locked** | — |
+| E4 | **Q** 1/6 oct (shelves: slope) | Lo-Cut freq (tops) 1/12 oct, **locked** | — |
+| push | held + turn = fine (FREQ 1/48 oct, Q 1/24) | fine (1 sample, 1/48 oct) | select |
 
-| Button | Where | Does |
-|---|---|---|
-| B1 press | ____ | Next page: MAIN → LIVE EQ → SETUP |
-| B2 hold 1 s | ____ | **MUTE / UNMUTE**, every page (short press: hint only). Unmute fades in 0.3 s to the master shown |
-| B3 press | ____ | Lo-Cut on/off, MAIN only |
-| B4 hold 1 s, twice in 5 s | ____ | **RESET ALL LIVE EQ**, LIVE EQ only, no undo |
+| Button | Does |
+|---|---|
+| B1 | tap: next page SHOW → ALIGN → SETUP · **hold: SHOW** · ALIGN, SETUP go home after 60 s idle |
+| B2 | **hold 0.8 s: MUTE / UNMUTE**, every page, 0.1 s fade (tap: hint only) |
+| B3 | SHOW tap: **next band** LS · 1 · 2 · 3 · 4 · HS · ALIGN **hold: unlock E3/E4** for 30 s idle |
+| B4 | SHOW tap: **notch helper** · elsewhere a hint |
 
-**Emergency.** Silence: hold B2. Feedback: LIVE EQ, E1 a free slot (outlined box), E2 onto the ring, E3 cut, E4 Q up. KNOBS OFFLINE (B2 dead too): phone mute if proven Friday, else source down, bypass. Any doubt: bypass.
+**Notch in 3 gestures (SHOW): B4, E3 down, E4 up.** (1) **B4** sets a free bell (P1–P4 at 0 dB, the selected one first) to Q 8.65 (1/6 oct) and, if the cyan PEAK pointer is up, to its frequency; gain stays 0 dB (inaudible); strip `P3 · 2.44k · E3 TO CUT`. (2) **E3 down**: 12 clicks = −6 dB. (3) **E4 up** narrows (6 clicks = Q 16, max); E2 with its push held centres it. A PEAK within 1/6 oct of a bell already cutting re-selects it, writing nothing. `NO PEAK`: sweep with E2 (250 Hz → 2.5 kHz ≈ 40 clicks). `NO FREE BAND`: four bells in use. PEAK is read before the EQ; it is not a feedback detector, and on silence it can sit on noise.
+
+**ALIGN lock.** E3/E4 turned while locked: `LOCKED · HOLD B3 TO EDIT`, nothing changes. Unlocked (`EDIT 0:30`; a B3 tap relocks), the first E3 click after 2.5 s at rest only wakes sub delay; each change dips the subs briefly.
+
+**SETUP** (×2 = push twice within 5 s): Input trim · Sub/Top polarity · Top delay · Sub low-pass + freq · 4 trims · Mono subs ×2 · Audition ×2 · Profile ×2 · **Reset live EQ ×2** · **Undo reset** (`UNDO 4:58`; one level, until the next audible live-EQ edit or 5 min) · **Lo-Cut** on/off ×2 · **Spectrum** ON/OFF · **Laptop access ×2** (GUI + SSH over the K1000 Wi-Fi, 2 h, pill `LAPTOP OPEN`; one push closes) · Phone · Knob test.
+
+**Emergency.** Silence: **hold B2**. Feedback: **B1 hold, B4, E3 down**. KNOBS OFFLINE (red, full width; B2 dead): phone mute if proven Friday, else source down, bypass. Any doubt: bypass.
 
 | You see | Means → do |
 |---|---|
-| ● green RUNNING · yellow STARTING / PAUSED | processing · not yet: wait, then check source and M4 |
-| Red MUTED band: READY · hold B2 to unmute | your (or saved) mute → hold B2 when ready |
-| … RAMPS IN BY ITSELF · hold B2 to keep muted | engine restarted, fades in over ~3 s → nothing |
-| … NO AUDIO FLOWING · HELD MUTED | no audio from the M4 yet → check USB / power |
-| … SYNC FAILED / CANNOT SAVE STATE / SETTINGS | K1000 fault, audio left as is → bypass only if the sound is wrong |
-| Hint STATE REBUILT / NO SAVED STATE | state.json lost: muted, master −20 → check E1/E2, hold B2 |
-| Orange NO DEVICE | M4 gone, no audio → reseat USB / power, it ramps back. 30 s → bypass |
-| Dark red ENGINE DOWN | engine stopped → ~5 s: back muted, ramps in. Persists → bypass |
-| Red CLIP · IN CLIP pill | output full scale → master down · M4 input → source down |
-| Meter green / yellow / red | < −18 / to −6 / > −6 dBFS; Meyers limit ≈ −14 (research) |
-| Strip "… OUTSIDE K1000" | a CamillaGUI cut/mute, kept → undo it in the GUI |
-| Strip PIPELINE / DEVICES CHANGED, RESTORING | a GUI Apply, K1000 restores or leaves it → stop GUI Applies |
-| Amber ENGINE ? / DEVICE ? or UI ERROR | the screen is unsure → wait; audio never depends on it |
+| ● green RUNNING · yellow STARTING / PAUSED | processing · not yet, or silent input → source, M4 |
+| MUTED band `READY · hold B2 to unmute` | muted (by you, or saved) → hold B2 when ready |
+| `RAMPS IN BY ITSELF` (blue RAMPING IN) | engine restarted, ~3 s fade → nothing |
+| `NO AUDIO FLOWING · HELD MUTED` | no audio from the M4 → USB, power |
+| **Status bar** red · orange · blue · **amber strip** | **alert**: act · warning · a state · **hint** (your press) |
+| SHOW pills: orange · grey · `+N` | LO-CUT OFF, POL INV, LAPTOP OPEN · MONO SUB · more |
+| STATE REBUILT / NO SAVED STATE | muted, master −20 → check master, balance; hold B2 |
+| NO DEVICE (orange) · ENGINE DOWN (red) | reseat M4 · back muted in ~5 s; 30 s → bypass |
+| CLIP · IN CLIP pill · meter red (> −6 dBFS) | master down · source down; Meyers limit ≈ −14 |
+| Orange `… (GUI)`, `… CHANGED (GUI)` | CamillaGUI: cuts kept, rest restored → no Applies |
+| NO SPECTRUM · ENGINE ? · DEVICE ? · UI ERROR | ~5 s after an engine start · unsure → wait |
 
-**Power on:** Meyers OFF, source quiet → M4 on the Pi's USB, rear switch on → K1000 on; in 15–20 s ● RUNNING, "M4 · MOTU M4" → MUTED · READY (or, if saved unmuted, it ramps in by itself) → Meyers ON → hold B2, master up.
+**Power on:** Meyers OFF, source quiet → M4 on the Pi's USB, rear switch on → K1000 on; ~15 s: ● RUNNING, M4 · MOTU M4, MUTED · READY (saved unmuted: ramps in) → Meyers ON → hold B2, E1 up. **Off:** hold B2 (saved at once) → Meyers OFF → unplug K1000, M4. **M4 taped:** MONITOR, INPUT MONITOR MIX full right · MONs unlit · 48V off · GAIN 1/2 min.
 
-**Power off:** hold B2 → MUTED (saved at once: next boot comes up muted) → Meyers OFF → unplug K1000 and M4. Untested with the Meyers on (thump check Friday): keep this order.
-
-**M4 panel, taped:** MONITOR and INPUT MONITOR MIX fully clockwise · MON 1, MON 2, 3-4 unlit (lit = program to the tops past K1000 and its MUTE) · 48V off · GAIN 1/2 fully counter-clockwise.
-
-**Bypass (~1 min):** (1) source **down**; hold B2 if K1000 answers. (2) Unplug OUT1 TOP L · OUT2 TOP R · OUT3 SUB L · OUT4 SUB R at the Meyers. (3) Bypass kit as cabled before K1000: Source L → __________ · Source R → __________. (4) Source up slowly: bypass is ≈ (2 − master) dB louder, +12 dB at master −10 (research, check Friday). Lost: Lo-Cut, delay, EQ, mute.
+**Bypass (~1 min):** (1) source **down**, hold B2 if K1000 answers (2) unplug OUT1 TOP L · OUT2 TOP R · OUT3 SUB L · OUT4 SUB R at the Meyers (3) bypass kit: Source L → ______ · Source R → ______ (4) source up slowly: ≈ (2 − master) dB louder, +12 dB at master −10 (check Friday). Lost: Lo-Cut, delay, EQ, mute.

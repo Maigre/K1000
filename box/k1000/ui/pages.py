@@ -1,37 +1,59 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Screen pages for the 480x320 ZynScreen: render(page, state, status, focus) -> PIL image.
+"""Screen pages for the 480x320 ZynScreen (UI v1, D-009): render(page, state, status, focus).
+
+Pages: SHOW (the front page: master, FREQ/GAIN/Q of the selected live band, the EQ curve over
+the program spectrum), ALIGN (master, balance, sub delay, Lo-Cut; E3/E4 locked until a B3
+hold), SETUP (the list), PHONE (drawn by ui/qr.py) and HWTEST (the knob test). The v0 names
+MAIN and LIVE are aliases of ALIGN and SHOW.
 
 Design rules (why it looks like this):
-- Read at arm's length, outdoors, by someone mixing: black background, white 60 px digits,
-  amber labels, one colour per meaning (amber = edited/attention, red = mute/clip/failure).
-- The screen mirrors the knobs: each encoder's value sits in the quadrant next to its corner
-  (KNOB_CORNERS in input_map, an assumption until the physical positions are confirmed).
-- The 4-bar output meter stays in the centre on the show pages: clipping must be visible while
-  notching.
+- Read at arm's length, outdoors, by someone mixing: black background, white digits, amber
+  labels, one colour per meaning. Amber = what is being edited, and hints (brief). Red = mute,
+  clip, a critical system alert. Orange = a system warning. Cyan = the knob tags and the
+  spectrum PEAK.
+- The screen mirrors the knobs: each encoder's value sits next to its corner (KNOB_CORNERS in
+  input_map, an assumption until the physical positions are confirmed).
+- System alerts (KNOBS OFFLINE, NO DEVICE, ENGINE DOWN, CANNOT SAVE, pipeline/device fixes)
+  take the STATUS BAR in their own colour, never amber: KNOBS OFFLINE red across the whole bar,
+  other critical alerts red, warnings orange, passing states (APPLYING SETUP…, RAMPING IN)
+  blue. Hints (what the operator's own press did, 2.5 s) keep the amber strip: the chip row on
+  SHOW, the middle strip on ALIGN, the footer on SETUP. "The system has a problem" and "this is
+  what your press did" never share a place or a colour.
+- SHOW has persistent pills for every non-default system state (LO-CUT OFF, POL INV, MONO SUB,
+  AUDITION, LAPTOP OPEN…), on the bottom row between the E2 and E4 labels, where neither a hint
+  nor the MUTED band ever covers them.
+- The 4-bar output meter stays on SHOW and ALIGN: clipping must be visible while notching.
 - Overlays are derived from the status, never a page the controller must remember to show:
   NO DEVICE > ENGINE DOWN replace the body. MUTED is a red pill in the status bar plus a red
-  frame on every page; on MAIN/LIVE also a full-width red band, on SETUP a red footer (a band
-  would hide the selected row), on the Knob test a red tag.
+  frame on every page; on SHOW also a red band over the chip row and the top of the graph (the
+  0 dB line, every value, the edit box and FINE stay visible), on ALIGN the v0 band across the
+  middle, on SETUP a red footer (a band would hide the selected row), on the Knob test a tag.
 - Unknown is not OK (fail closed): a status that does not say the engine runs shows an amber
-  "ENGINE ?", one that does not say the device is present shows "DEVICE ?", never green.
-- Rendering only reads attributes (`state.master_db`, `state.live_peq[1].gain`, `status.load`),
-  and every read has a fallback, so a partial status or an older State never crashes the screen;
-  anything that still raises gives a "UI ERROR" frame (with the mute state) instead.
+  "ENGINE ?", one that does not say the device is present shows "DEVICE ?", plus a STATUS ?
+  warning; never green.
+- Rendering only reads attributes (`state.master_db`, `status.spectrum.level`, ...), and every
+  read has a fallback, so a partial status or an older State never crashes the screen; anything
+  that still raises gives a "UI ERROR" frame (with the mute state) instead.
+- Cheap enough for SHOW at 10 fps while the spectrum moves: glyphs and the graph grid are
+  cached, the curve is numpy (eqgraph), and display.Framebuffer sends only the changed rows.
 """
 from __future__ import annotations
 
 import logging
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Sequence
 
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from .input_map import (F_BALANCE, F_LOWCUT_FREQ, F_LOWCUT_ON, F_MASTER, F_SLOT, F_SUB_DELAY,
-                        KNOB_CORNERS, LIVE_SLOT_LABELS, LIVE_SLOT_SHORT, LIVE_SLOTS, PAGES,
-                        SETUP_ITEMS, Focus, knob_labels)
+from . import eqgraph as eg
+from .input_map import (A_LAPTOP, A_RESET_LIVE, A_UNDO_RESET, BAND_CYCLE, F_BALANCE, F_LOWCUT_FREQ,
+                        F_LOWCUT_ON, F_MASTER, F_SLOT, F_SPECTRUM_ON, F_SUB_DELAY, HINT_LOCKED,
+                        KNOB_CORNERS, LIVE_SLOT_LABELS, LIVE_SLOTS, SETUP_ITEMS, Focus,
+                        knob_labels, page_name)
 
 log = logging.getLogger(__name__)
 
@@ -55,10 +77,32 @@ RED = (235, 20, 20)
 BAND_RED = (200, 0, 0)
 ORANGE = (255, 120, 0)
 CYAN = (0, 200, 255)
+CUT = (255, 90, 0)                     # a live band that cuts (the v0 slot-pill colour)
+STATUS_BG = (28, 28, 28)
+INFO_BLUE = (30, 90, 180)
+PILL_BG = (60, 60, 60)
+PILL_EDGE = (190, 190, 190)
+
+# System alert levels (control.Status.alerts): fill and text colour in the status bar.
+ALERT_CRITICAL, ALERT_WARNING, ALERT_INFO = "critical", "warning", "info"
+ALERT_STYLE: dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
+    ALERT_CRITICAL: (RED, FG),
+    ALERT_WARNING: (ORANGE, BG),
+    ALERT_INFO: (INFO_BLUE, FG),
+}
+FULL_WIDTH_ALERTS: tuple[str, ...] = ("KNOBS OFFLINE",)   # D-009: red, the whole status bar
+ALERT_MIN_PX = 12                      # status-bar alert text: below this it is ellipsized
+# The page pill while a system alert is up (the alert gets the room).
+PAGE_SHORT: dict[str, str] = {"SHOW": "SHW", "ALIGN": "ALN", "SETUP": "SET", "PHONE": "PHN",
+                              "TEST": "TST"}
+# Persistent SHOW pills that change the sound or open the box: orange, and folded into '+N'
+# only after every neutral one (MONO SUB, AUDITION).
+RISKY_PILLS: tuple[str, ...] = ("LAPTOP OPEN", "LO-CUT OFF", "POL INV")
+PILL_MIN_PX = 13
 
 STATUS_H = 30
-METER_X0, METER_X1 = 206, 274          # centre column
-MID_Y0, MID_Y1 = 150, 200              # middle strip (page name / hints / MUTED band)
+METER_X0, METER_X1 = 206, 274          # ALIGN: centre column
+MID_Y0, MID_Y1 = 150, 200              # ALIGN: middle strip (hints / MUTED band)
 OVERLAYS: tuple[str, ...] = ("NO DEVICE", "ENGINE DOWN", "MUTED")
 METER_LABELS: tuple[str, ...] = ("Sub L", "Sub R", "Top L", "Top R")
 METER_FLOOR_DB = -60.0
@@ -67,13 +111,28 @@ ENGINE_DOWN_STATES = ("INACTIVE", "STALLED", "DOWN")
 ENGINE_UNKNOWN = "Unknown"             # status did not say (missing field, no status at all)
 FOOTER_H = 28                          # SETUP footer row (E2 label / hint / MUTED strip)
 
+# SHOW geometry (480 x 320; docs/07 §2.1, the mockups' constants)
+TOP_Y0 = STATUS_H                      # E1 / E3 blocks: label row, then the value box
+TOP_BOX = (51, 95)
+CHIP_Y0, CHIP_Y1 = 98, 122             # band chips LS 1 2 3 4 HS; hints take this row
+GRAPH = (0, 124, W, 254)               # x0, y0, x1, y1 (exclusive)
+BOT_Y0 = 254                           # E2 / E4 blocks: the value box, then the label row
+BOT_BOX = (255, 294)
+METER_BOX = (200, 31, 280, 96)         # compact 4-bar meter, top centre
+PILL_Y0, PILL_Y1 = 296, 315            # SHOW: persistent pills, between the bottom labels
+# MUTED on SHOW: the chip row and the graph's top (+9..+0.6 dB: live boosts stop at +6), so
+# the 0 dB line (y 162.7), the curve's cuts and every value stay visible.
+SHOW_MUTED_BAND = (CHIP_Y0, 160)
+CHIP_TEXT: dict[int, str] = {4: "LS", 0: "1", 1: "2", 2: "3", 3: "4", 5: "HS"}
+
 
 # ------------------------------------------------------------------------------------------
 # What the screen reads from the controller
 # ------------------------------------------------------------------------------------------
 @dataclass
 class ScreenStatus:
-    """The status fields the screen reads (any object with these attributes works).
+    """The status fields the screen reads (any object with these attributes works;
+    control.Status is the real one).
 
     engine: CamillaDSP GetState value ("Running", "Paused", "Inactive", "Starting", "Stalled"),
             or None when the websocket is down. Default "Unknown" -> amber "ENGINE ?".
@@ -85,10 +144,19 @@ class ScreenStatus:
     ready:  the controller is in sync with the engine (False: knob edits do not reach it yet);
             the MUTED band says READY only when the engine runs AND this is not False.
     ramping: a boot ramp is pending or running (K1000 brings Main in by itself).
-    alert:  the controller's most urgent message (APPLYING SETUP…, HELD MUTED, SYNC FAILED,
-            KNOBS OFFLINE…): also shown inside the MUTED band and on SETUP, where `message`
-            has no room.
+    alert:  the controller's most urgent message (shown inside the MUTED band).
     in_clip: the INPUT (ADC) clipped recently (latched by the controller).
+    UI v1 (D-009), same names as control.Status:
+    alerts: [(level, text)] most urgent first, for the status bar; None = derived from
+            `alert`/`message` (an older status).
+    pills:  persistent non-default states for SHOW; None = derived from the state.
+    align_unlock_s: seconds left of the ALIGN E3/E4 unlock (the EDIT pill); the focus's
+            unlock_until counts too.
+    undo_reset_s: SETUP > Undo reset, seconds left (0 = nothing to undo).
+    spectrum_on / spectrum_state / spectrum: SETUP > Spectrum, the task's state, and the
+            eqgraph.RtaFrame to draw behind the curve (None = none).
+    laptop_s / laptop_state: SETUP > Laptop access, seconds left (0 = closed) and the state
+            root reports (off = no such surface, closed, opening, open, closing, unavailable).
     The controller must set engine and device_present explicitly: the defaults are "unknown".
     """
     profile: str = ""
@@ -99,12 +167,22 @@ class ScreenStatus:
     levels: Sequence[float] = (-100.0, -100.0, -100.0, -100.0)
     clip: Sequence[bool] = (False, False, False, False)
     muted: bool | None = None
-    message: str = ""                    # one line for the middle strip (e.g. "ramping in")
+    message: str = ""                    # the controller's top message (v0 strip; now alerts)
     stop_reason: str = ""                # engine stop reason, shown on ENGINE DOWN
     ready: bool | None = None
     ramping: bool = False
     alert: str = ""
     in_clip: bool = False
+    alerts: Sequence[tuple[str, str]] | None = None
+    pills: Sequence[str] | None = None
+    align_locked: bool | None = None
+    align_unlock_s: float = 0.0
+    undo_reset_s: float = 0.0
+    spectrum_on: bool = True
+    spectrum_state: str = "off"
+    spectrum: Any = None
+    laptop_s: float = 0.0
+    laptop_state: str = "off"
 
 
 # ------------------------------------------------------------------------------------------
@@ -207,6 +285,103 @@ def overlays_for(state: Any, status: Any) -> list[str]:
     return out
 
 
+def _unknown_notice(status: Any) -> str:
+    """'STATUS ? engine · device' when the controller did not report them (fail closed)."""
+    parts = [n for n, unknown in (("engine", engine_unknown(status)),
+                                  ("device", device_present(status) is None)) if unknown]
+    return ("STATUS ? " + " · ".join(parts)) if parts else ""
+
+
+def screen_alerts(status: Any) -> list[tuple[str, str]]:
+    """The system alerts for the status bar, most urgent first, as (level, text).
+
+    `status.alerts` when the status has it (control.Status: the controller ranks them). An
+    older status (no `alerts`): its `alert` (KNOBS OFFLINE critical, else a warning) and a
+    different `message` as a warning. Either way, when nothing else is said and the engine or
+    the device state is unknown, a STATUS ? warning (fail closed)."""
+    out: list[tuple[str, str]] = []
+    raw = _get(status, "alerts", None)
+    if raw is not None and not isinstance(raw, (str, bytes)):
+        for a in _seq(raw):
+            if isinstance(a, str):
+                level, text = ALERT_WARNING, a
+            else:
+                try:
+                    level, text = str(a[0]), str(a[1])
+                except Exception:
+                    continue
+            if text:
+                out.append((level if level in ALERT_STYLE else ALERT_WARNING, text))
+    else:
+        alert = str(_get(status, "alert", "") or "")
+        msg = str(_get(status, "message", "") or "")
+        if alert:
+            full = alert.upper().startswith(FULL_WIDTH_ALERTS)
+            out.append((ALERT_CRITICAL if full else ALERT_WARNING, alert))
+        if msg and msg != alert:
+            out.append((ALERT_WARNING, msg))
+    if not out:
+        notice = _unknown_notice(status)
+        if notice:
+            out.append((ALERT_WARNING, notice))
+    return out
+
+
+def screen_pills(state: Any, status: Any) -> list[str]:
+    """SHOW's persistent pills: `status.pills` (the controller's list, in its order), or, for
+    an older status, the ones the state alone tells (LO-CUT OFF, POL INV, MONO SUB, AUDITION)."""
+    raw = _get(status, "pills", None)
+    if isinstance(raw, str):
+        return [raw] if raw else []
+    if raw is not None:
+        return [str(p) for p in _seq(raw) if p]
+    out: list[str] = []
+    if _truth(_get(state, "lowcut_on", True)) is False:
+        out.append("LO-CUT OFF")
+    inv = [n for n, f in (("SUB", "sub_inverted"), ("TOP", "top_inverted"))
+           if _truth(_get(state, f, False))]
+    if inv:
+        out.append("POL INV " + "+".join(inv))
+    if _truth(_get(state, "mono_subs", False)):
+        out.append("MONO SUB")
+    aud = _get(state, "dev_audition", "sum")
+    prof = str(_get(status, "profile", "") or _get(state, "profile", "") or "")
+    if isinstance(aud, str) and aud and aud.lower() != "sum" and prof == "dev":
+        out.append(f"AUDITION {aud.upper()}")
+    return out
+
+
+def spectrum_frame(status: Any) -> eg.RtaFrame | None:
+    """The spectrum to draw behind the curve, validated (None = draw none): SETUP > Spectrum
+    on, a frame whose freqs/level are 1-D, the same length, increasing, finite and positive.
+    A NaN level reads as silence; a bad hold or peak is dropped, never the whole graph."""
+    if _truth(_get(status, "spectrum_on", True)) is False:
+        return None
+    fr = _get(status, "spectrum", None)
+    if fr is None:
+        return None
+    try:
+        f = np.asarray(_get(fr, "freqs", None), dtype=np.float64)
+        lv = np.asarray(_get(fr, "level", None), dtype=np.float64)
+        if f.ndim != 1 or lv.shape != f.shape or len(f) < 2:
+            return None
+        if not (np.all(np.isfinite(f)) and f[0] > 0 and np.all(np.diff(f) > 0)):
+            return None
+        lv = np.where(np.isfinite(lv), lv, -140.0)
+        hold = _get(fr, "hold", None)
+        if hold is not None:
+            hold = np.asarray(hold, dtype=np.float64)
+            hold = np.where(np.isfinite(hold), hold, -140.0) if hold.shape == f.shape else None
+        lo, hi = float(_get(fr, "lo_db", -90.0)), float(_get(fr, "hi_db", -30.0))
+        if not (math.isfinite(lo) and math.isfinite(hi) and hi > lo):
+            return None
+        pk = _num(fr, "peak_hz", None)
+        pk = pk if pk is not None and pk > 0 else None
+        return eg.RtaFrame(f, lv, hold, lo, hi, pk, str(_get(fr, "source", "PGM") or "PGM"))
+    except Exception:
+        return None
+
+
 _STATUS_FIELDS = ("engine", "device_present", "muted", "levels", "clip", "load")
 _warned_shapes: set = set()
 
@@ -251,6 +426,24 @@ def _fit_size(text: str, size: int, max_w: int, face: str) -> int:
     return 10
 
 
+@lru_cache(maxsize=256)
+def _fit_ellipsis(text: str, size: int, max_w: int, min_size: int = ALERT_MIN_PX,
+                  face: str = FONT_BOLD) -> tuple[int, str]:
+    """(font size, text) that fits `max_w`: the largest size from `size` down to `min_size`,
+    and below that the text cut with an ellipsis at `min_size` (never smaller, never
+    overflowing its box)."""
+    s = size
+    while s >= min_size:
+        if _textlength(text, font(s, face)) <= max_w:
+            return s, text
+        s -= 1
+    f = font(min_size, face)
+    cut = text
+    while cut and _textlength(cut.rstrip(" ·") + "…", f) > max_w:
+        cut = cut[:-1]
+    return min_size, (cut.rstrip(" ·") + "…") if cut else ""
+
+
 @lru_cache(maxsize=2048)
 def _textlength(text: str, f: ImageFont.FreeTypeFont) -> float:
     return f.getlength(text)
@@ -261,8 +454,8 @@ def _text_mask(text: str, f: ImageFont.FreeTypeFont, anchor: str):
     """Rasterised text as an 'L' mask + its offset from the anchor point.
 
     Why: glyph rasterising is ~70 % of a frame. Most strings (labels, unchanged values) repeat
-    from frame to frame — e.g. while only the meter moves — so caching them keeps a frame well
-    under the 30 ms budget on the Pi 4.
+    from frame to frame — e.g. while only the meter or the spectrum moves — so caching them
+    keeps a frame well under budget on the Pi 4.
     """
     left, top, right, bottom = f.getbbox(text, anchor=anchor)
     mask = Image.new("L", (max(1, right - left), max(1, bottom - top)), 0)
@@ -318,6 +511,27 @@ def fmt_q(v: float | None) -> str:
     return f"{v:.1f}" if v >= 10 else f"{v:.2f}"
 
 
+def fmt_oct(q: float | None) -> str:
+    """A bell's width in octaves from its Q: 8.65 -> '1/6 oct', 1.41 -> '1.0 oct'."""
+    if q is None or q <= 0:
+        return ""
+    o = 2.0 / math.log(2.0) * math.asinh(1.0 / (2.0 * q))
+    n = 1.0 / o
+    return f"1/{n:.0f} oct" if n >= 1.5 else f"{o:.1f} oct"
+
+
+def fmt_mmss(seconds: float | None) -> str:
+    """Seconds left as m:ss, rounded UP (the last second shows 0:01, never 0:00)."""
+    s = max(0, int(math.ceil(seconds or 0.0)))
+    return f"{s // 60}:{s % 60:02d}"
+
+
+def fmt_hmm(seconds: float | None) -> str:
+    """Seconds left as h:mm, minutes rounded UP ('LAPTOP OPEN 1:59'; the last minute 0:01)."""
+    m = max(0, int(math.ceil((seconds or 0.0) / 60.0 - 1e-9)))
+    return f"{m // 60}:{m % 60:02d}"
+
+
 class _Ctx:
     """Per-frame drawing context: image, draw, time, focus snapshot."""
 
@@ -330,8 +544,26 @@ class _Ctx:
         self.editing = ed(now) if callable(ed) else None
         held = getattr(focus, "held", ())
         self.held = set(held) if held else set()
+        self.bottom_label_end: dict[str, float] = {}   # SHOW: where the bottom labels reach
 
 
+def _hint(c: _Ctx) -> str | None:
+    fn = getattr(c.focus, "hint_now", None)
+    try:
+        h = fn(c.now) if callable(fn) else None
+    except Exception:
+        return None
+    return str(h) if h else None
+
+
+def _focus_slot(focus: Any) -> int:
+    try:
+        return int(getattr(focus, "slot", 0) or 0) % len(LIVE_SLOTS)
+    except (TypeError, ValueError):
+        return 0
+
+
+# ---- v0 quadrant layout (ALIGN) ------------------------------------------------------------
 # Quadrant geometry: x range and the vertical anchors for label / value / sub-line.
 _QX = {"l": (0, METER_X0), "r": (METER_X1, W)}
 _QY = {  # (label_y, value_center_y, sub_y) ; label sits at the outer (screen) edge
@@ -345,8 +577,8 @@ def _quadrant(c: _Ctx, e: int, label: str, value: str, unit: str, sub: str,
               shift: int = 0, box_half: int = 38) -> None:
     """Draw one knob's quadrant: 'E1 MASTER' at the corner, big value, unit + sub-line.
 
-    `shift` moves the value towards the screen edge (frees room for the LIVE slot pills);
-    `box_half` is the half-height of the edit highlight.
+    `shift` moves the value towards the screen edge; `box_half` is the half-height of the edit
+    highlight.
     """
     corner = KNOB_CORNERS[e]
     vpos, hpos = corner[0], corner[1]
@@ -364,11 +596,20 @@ def _quadrant(c: _Ctx, e: int, label: str, value: str, unit: str, sub: str,
     else:
         d.text((x1 - pad, label_y), tag, font=ftag, fill=CYAN, anchor="ra")
         d.text((x1 - pad - 30, label_y - 2), label, font=flab, fill=AMBER, anchor="ra")
-    # value (highlighted while being edited; B3 toggling the Lo-Cut highlights its frequency)
+    # value (highlighted while being edited; switching the Lo-Cut highlights its frequency)
     edited = field_key is not None and (c.editing == field_key or (
         field_key == F_LOWCUT_FREQ and c.editing == F_LOWCUT_ON))
     fine = e in c.held
     box = (x0 + 4, val_cy - box_half, x1 - 4, val_cy + box_half)
+    fs = _fit(d, sub, 18, (x1 - x0) - 2 * pad, FONT_REG) if sub else None
+    if sub and fs is not None:
+        # the edit box stops short of the sub-line ('≈ 0.81 m' under SUB DELAY), never half
+        # over it: grey on amber, cut in two
+        _l, st, _r, sb = d.textbbox(((x0 + x1) / 2, sub_y), sub, font=fs, anchor="mm")
+        if vpos == "t":
+            box = (box[0], box[1], box[2], min(box[3], st - 3))
+        else:
+            box = (box[0], max(box[1], sb + 3), box[2], box[3])
     if edited:
         d.rounded_rectangle(box, radius=8, fill=AMBER)
     fg = BG if edited else (DIM if dim else FG)
@@ -391,41 +632,59 @@ def _quadrant(c: _Ctx, e: int, label: str, value: str, unit: str, sub: str,
     if fine:   # at the box's outer edge (top or bottom): the MUTED band never covers it
         fy, fa = (box[1] + 4, "ra") if vpos == "t" else (box[3] - 4, "rd")
         d.text((box[2] - 6, fy), "FINE", font=font(14), fill=BG if edited else CYAN, anchor=fa)
-    if sub:
-        fs = _fit(d, sub, 18, (x1 - x0) - 2 * pad, FONT_REG)
+    if sub and fs is not None:
         d.text(((x0 + x1) / 2, sub_y), sub, font=fs, fill=DIM, anchor="mm")
 
 
-def _status_bar(c: _Ctx, page: str, state: Any, status: Any, muted: bool) -> None:
-    """[PAGE] [MUTED] profile · device ........ ● ENGINE  DSP load%
+# ---- status bar ----------------------------------------------------------------------------
+def _full_width(alert: tuple[str, str]) -> bool:
+    return alert[0] == ALERT_CRITICAL and alert[1].upper().startswith(FULL_WIDTH_ALERTS)
 
-    Unknown engine -> amber "ENGINE ?"; unknown device -> amber "... ?": never a healthy look
-    for something nobody reported.
+
+def _pill(c: _Ctx, x: float, text: str, fill, fg, outline=None) -> float:
+    """A status-bar pill at x; returns the x after it (with a 6 px gap)."""
+    d = c.d
+    fp = font(16)
+    w = int(d.textlength(text, font=fp)) + 12
+    d.rounded_rectangle((x, 4, x + w, STATUS_H - 5), radius=4, fill=fill,
+                        outline=outline, width=2 if outline else 1)
+    d.text((x + w / 2, STATUS_H // 2), text, font=fp, fill=fg, anchor="mm")
+    return x + w + 6
+
+
+def _status_bar(c: _Ctx, page: str, state: Any, status: Any, muted: bool) -> None:
+    """[PAGE] [MUTED] [IN CLIP] [CLIP] profile · device | alert ...... ● ENGINE  DSP load%
+
+    A system alert (status.alerts[0]) takes the profile/device place in its level's colour
+    (critical red, warning orange, info blue; never amber, which is the hints'), and the right
+    side shrinks to the engine dot (plus the state when it is not RUNNING). KNOBS OFFLINE takes
+    the whole bar, red. Unknown engine -> amber "ENGINE ?"; unknown device -> amber "... ?":
+    never a healthy look for something nobody reported.
     """
     d = c.d
     cy = STATUS_H // 2
-    d.rectangle((0, 0, W, STATUS_H - 1), fill=(28, 28, 28))
-    name = {"LIVE": "LIVE EQ", "HWTEST": "TEST"}.get(page, page)
-    fp = font(16)
-    pw = int(d.textlength(name, font=fp)) + 12
-    d.rounded_rectangle((4, 4, 4 + pw, STATUS_H - 5), radius=4, fill=FG)
-    d.text((4 + pw / 2, cy), name, font=fp, fill=BG, anchor="mm")
-    lx = 4 + pw + 6
-    if muted:   # on every page, whatever the body shows
-        mw = int(d.textlength("MUTED", font=fp)) + 12
-        d.rounded_rectangle((lx, 4, lx + mw, STATUS_H - 5), radius=4, fill=BAND_RED)
-        d.text((lx + mw / 2, cy), "MUTED", font=fp, fill=FG, anchor="mm")
-        lx += mw + 6
-    # A latched clip, readable at arm's length (the meter's clip boxes are 12 px): CLIP = an
+    alerts = screen_alerts(status)
+    top = alerts[0] if alerts else None
+    full = top is not None and _full_width(top)
+    d.rectangle((0, 0, W, STATUS_H - 1), fill=RED if full else STATUS_BG)
+    name = {"LIVE": "SHOW", "MAIN": "ALIGN", "HWTEST": "TEST"}.get(page, page)
+    if top is not None:          # the alert gets the room: the page in 3 letters
+        name = PAGE_SHORT.get(name, name[:3])
+    lx = _pill(c, 4, name, FG, BG)
+    if muted:   # on every page, whatever the body shows (outlined on a red bar)
+        lx = _pill(c, lx, "MUTED", BAND_RED, FG, FG if full else None)
+    if full:
+        assert top is not None
+        room = W - 8 - lx
+        size, text = _fit_ellipsis(top[1], 18, int(room))
+        d.text((lx + room / 2, cy), text, font=font(size), fill=FG, anchor="mm")
+        return
+    # A latched clip, readable at arm's length (the meter's clip boxes are small): CLIP = an
     # output reached full scale, IN CLIP = the input ADC did (no K1000 knob fixes that one).
-    pills = [t for t, on in (("IN CLIP", _truth(_get(status, "in_clip", None))),
-                             ("CLIP", any(bool(_truth(v)) for v in _seq(_get(status, "clip", None)))))
-             if on]
-    for t in pills:
-        cw = int(d.textlength(t, font=fp)) + 12
-        d.rounded_rectangle((lx, 4, lx + cw, STATUS_H - 5), radius=4, fill=RED)
-        d.text((lx + cw / 2, cy), t, font=fp, fill=FG, anchor="mm")
-        lx += cw + 6
+    for t, on in (("IN CLIP", _truth(_get(status, "in_clip", None))),
+                  ("CLIP", any(bool(_truth(v)) for v in _seq(_get(status, "clip", None))))):
+        if on:
+            lx = _pill(c, lx, t, RED, FG)
     # right side first, so the left text gets whatever room is left
     engine = engine_state(status)
     if engine is None:
@@ -435,17 +694,29 @@ def _status_bar(c: _Ctx, page: str, state: Any, status: Any, muted: bool) -> Non
     else:
         eng = engine.upper()
         col = GREEN if eng == "RUNNING" else (YELLOW if eng in ("PAUSED", "STARTING") else RED)
-    load = _num(status, "load", None)
     x = W - 8
-    if load is not None:
-        right = f"{load:.1f}%"
-        d.text((x, cy), right, font=font(17), fill=FG, anchor="rm")
-        x -= int(d.textlength(right, font=font(17))) + 4
-        d.text((x, cy + 1), "DSP", font=font(12), fill=DIM, anchor="rm")
-        x -= 38
-    d.text((x, cy), eng, font=_fit(d, eng, 17, 150), fill=col, anchor="rm")
-    x -= int(d.textlength(eng, font=_fit(d, eng, 17, 150))) + 8
+    if top is None:
+        load = _num(status, "load", None)
+        if load is not None:
+            right = f"{load:.1f}%"
+            d.text((x, cy), right, font=font(17), fill=FG, anchor="rm")
+            x -= int(d.textlength(right, font=font(17))) + 4
+            d.text((x, cy + 1), "DSP", font=font(12), fill=DIM, anchor="rm")
+            x -= 38
+    if top is None or eng != "RUNNING":
+        fe = _fit(d, eng, 17, 150)
+        d.text((x, cy), eng, font=fe, fill=col, anchor="rm")
+        x -= int(d.textlength(eng, font=fe)) + 8
     d.ellipse((x - 12, cy - 6, x, cy + 6), fill=col)
+    x -= 12
+    if top is not None:
+        fill, fg = ALERT_STYLE.get(top[0], ALERT_STYLE[ALERT_WARNING])
+        x1 = x - 8
+        if x1 - lx > 24:
+            d.rounded_rectangle((lx, 3, x1, STATUS_H - 4), radius=4, fill=fill)
+            size, text = _fit_ellipsis(top[1], 17, int(x1 - lx - 10))
+            d.text(((lx + x1) / 2, cy), text, font=font(size), fill=fg, anchor="mm")
+        return
     profile = str(_get(status, "profile", "") or _get(state, "profile", "") or "?")
     device = str(_get(status, "device", "") or "")
     present = device_present(status)
@@ -456,7 +727,7 @@ def _status_bar(c: _Ctx, page: str, state: Any, status: Any, muted: bool) -> Non
         left = profile.upper() + (f" · {device}" if device else "")
         lcol = FG if present else ORANGE
     lx += 2
-    room = x - 20 - lx
+    room = x - 8 - lx
     # Pills (MUTED, CLIP...) come first; the profile text shrinks, then loses the device name,
     # then goes: it never overprints the engine state.
     for text in (left, left.split(" · ")[0]):
@@ -466,8 +737,21 @@ def _status_bar(c: _Ctx, page: str, state: Any, status: Any, muted: bool) -> Non
             break
 
 
+# ---- meters --------------------------------------------------------------------------------
+def _level(levels: list, i: int) -> float:
+    lv = levels[i] if i < len(levels) else None
+    try:
+        lv = float(lv) if lv is not None else METER_FLOOR_DB
+    except (TypeError, ValueError):
+        return METER_FLOOR_DB
+    return lv if math.isfinite(lv) else METER_FLOOR_DB
+
+
+_METER_ZONES = ((METER_FLOOR_DB, -18.0, GREEN), (-18.0, -6.0, YELLOW), (-6.0, 0.0, RED))
+
+
 def _meter(c: _Ctx, status: Any, y0: int = STATUS_H + 8, y1: int = H - 30) -> None:
-    """4 vertical peak bars (Sub L, Sub R, Top L, Top R), -60..0 dBFS, clip box on top."""
+    """ALIGN: 4 vertical peak bars (Sub L, Sub R, Top L, Top R), -60..0 dBFS, clip box on top."""
     d = c.d
     levels = _seq(_get(status, "levels", None))     # numpy arrays welcome (no `x or ()`)
     clips = _seq(_get(status, "clip", None))
@@ -486,17 +770,10 @@ def _meter(c: _Ctx, status: Any, y0: int = STATUS_H + 8, y1: int = H - 30) -> No
         d.line((METER_X0 + 4, yt, METER_X1 - 4, yt), fill=FAINT)
     for i in range(4):
         xi = int(x + i * (bw + gap)) + (3 if i >= 2 else 0) - 1
-        lv = levels[i] if i < len(levels) else None
-        try:
-            lv = float(lv) if lv is not None else METER_FLOOR_DB
-        except (TypeError, ValueError):
-            lv = METER_FLOOR_DB
-        if not math.isfinite(lv):
-            lv = METER_FLOOR_DB
+        lv = _level(levels, i)
         d.rectangle((xi, top, xi + bw - 1, y1), fill=BAR_BG)
         if lv > METER_FLOOR_DB:
-            for lo, hi, col in ((METER_FLOOR_DB, -18.0, GREEN), (-18.0, -6.0, YELLOW),
-                                (-6.0, 0.0, RED)):
+            for lo, hi, col in _METER_ZONES:
                 if lv <= lo:
                     break
                 d.rectangle((xi, y_of(min(lv, hi)), xi + bw - 1, y_of(lo)), fill=col)
@@ -516,102 +793,359 @@ def _meter(c: _Ctx, status: Any, y0: int = STATUS_H + 8, y1: int = H - 30) -> No
     d.text((cx_top, y1 + 13), "L R", font=font(11), fill=FAINT, anchor="ma")
 
 
-def _unknown_notice(status: Any) -> str:
-    """'STATUS ? engine · device' when the controller did not report them (fail closed)."""
-    parts = [n for n, unknown in (("engine", engine_unknown(status)),
-                                  ("device", device_present(status) is None)) if unknown]
-    return ("STATUS ? " + " · ".join(parts)) if parts else ""
+def _mini_meter(c: _Ctx, status: Any) -> None:
+    """SHOW: the same 4 bars (Sub L R, Top L R) compacted into METER_BOX, top centre."""
+    d = c.d
+    x0, y0, x1, y1 = METER_BOX
+    levels = _seq(_get(status, "levels", None))
+    clips = _seq(_get(status, "clip", None))
+    bw, gap, pair = 12, 3, 9
+    total = 4 * bw + 2 * gap + pair
+    bx = (x0 + x1) / 2 - total / 2
+    top, bot = y0 + 9, y1 - 13
+
+    def y_of(db: float) -> float:
+        db = max(METER_FLOOR_DB, min(0.0, db))
+        return bot - (bot - top) * (db - METER_FLOOR_DB) / -METER_FLOOR_DB
+
+    for i in range(4):
+        xi = int(bx + i * (bw + gap) + (pair - gap if i >= 2 else 0))
+        lv = _level(levels, i)
+        d.rectangle((xi, top, xi + bw - 1, bot), fill=BAR_BG)
+        if lv > METER_FLOOR_DB:
+            for lo, hi, col in _METER_ZONES:
+                if lv <= lo:
+                    break
+                d.rectangle((xi, y_of(min(lv, hi)), xi + bw - 1, y_of(lo)), fill=col)
+        clipped = bool(_truth(clips[i])) if i < len(clips) else False
+        if clipped:
+            d.rectangle((xi - 1, y0, xi + bw, y0 + 6), fill=RED)
+        else:
+            d.rectangle((xi, y0, xi + bw - 1, y0 + 6), outline=FAINT)
+    fl = font(11)
+    d.text((bx + bw + gap / 2, bot + 2), "SUB", font=fl, fill=DIM, anchor="ma")
+    d.text((bx + 3 * bw + 2 * gap + pair - gap / 2 + 0.5 * gap, bot + 2), "TOP", font=fl,
+           fill=DIM, anchor="ma")
 
 
 def _middle(c: _Ctx, status: Any = None) -> None:
-    """Middle strip: a hint toast, else the controller's one-line message (e.g. 'ramping in'),
-    else a notice when the engine/device state is unknown."""
+    """ALIGN's middle strip: a hint (amber, brief). System alerts are in the status bar."""
     d = c.d
     cy = (MID_Y0 + MID_Y1) // 2
-    msg = str(_get(status, "message", "") or "")
-    hint_fn = getattr(c.focus, "hint_now", None)
-    hint = hint_fn(c.now) if callable(hint_fn) else None
-    text = hint or msg or _unknown_notice(status)
-    if text:
-        d.rectangle((0, cy - 18, W, cy + 18), fill=AMBER if hint else (60, 50, 0))
-        d.text((W // 2, cy), text, font=_fit(d, text, 24, W - 20), fill=BG if hint else YELLOW,
+    hint = _hint(c)
+    if hint:
+        d.rectangle((0, cy - 18, W, cy + 18), fill=AMBER)
+        d.text((W // 2, cy), hint, font=_fit(d, hint, 24, W - 20), fill=BG, anchor="mm")
+
+
+# ------------------------------------------------------------------------------------------
+# SHOW
+# ------------------------------------------------------------------------------------------
+def _block(c: _Ctx, e: int, label: str, value: str, unit: str, field_key: str | None, *,
+           size: int = 44, dim: bool = False, tag: str = "", tag_hot: bool = False) -> None:
+    """One encoder's block on SHOW: 'E1 MASTER' on the outer edge, the value in a box next to
+    its knob (amber while edited, FINE while its push is held). `tag` (the band's name) sits
+    next to the label, amber-filled right after the band changed."""
+    corner = KNOB_CORNERS[e]
+    top = corner[0] == "t"
+    left = corner[1] == "l"
+    if top:
+        x0, x1 = (0, METER_BOX[0] - 4) if left else (METER_BOX[2] + 4, W)
+        label_y, (by0, by1) = TOP_Y0 + 3, TOP_BOX
+    else:
+        x0, x1 = (0, W // 2 - 2) if left else (W // 2 + 2, W)
+        label_y, (by0, by1) = H - 23, BOT_BOX
+    d = c.d
+    pad = 10
+    ftag, flab, fx = font(16), font(20), font(16)
+    lab_col = DIM if dim else AMBER
+    lw = d.textlength(label, font=flab)
+    if left:
+        d.text((x0 + pad, label_y), f"E{e + 1}", font=ftag, fill=CYAN, anchor="la")
+        d.text((x0 + pad + 30, label_y - 2), label, font=flab, fill=lab_col, anchor="la")
+        end = x0 + pad + 30 + lw
+        if tag:
+            tx = end + 8
+            tw = d.textlength(tag, font=fx)
+            if tag_hot:
+                d.rounded_rectangle((tx - 4, label_y - 2, tx + tw + 4, label_y + 16), radius=3,
+                                    fill=AMBER)
+            d.text((tx, label_y), tag, font=fx, fill=BG if tag_hot else FG, anchor="la")
+            end = tx + tw
+        if not top:
+            c.bottom_label_end["l"] = end
+    else:
+        d.text((x1 - pad, label_y), f"E{e + 1}", font=ftag, fill=CYAN, anchor="ra")
+        d.text((x1 - pad - 30, label_y - 2), label, font=flab, fill=lab_col, anchor="ra")
+        end = x1 - pad - 30 - lw
+        if tag:
+            tw = d.textlength(tag, font=fx)
+            tx = end - 8
+            if tag_hot:
+                d.rounded_rectangle((tx - tw - 4, label_y - 2, tx + 4, label_y + 16), radius=3,
+                                    fill=AMBER)
+            d.text((tx, label_y), tag, font=fx, fill=BG if tag_hot else FG, anchor="ra")
+            end = tx - tw
+        if not top:
+            c.bottom_label_end["r"] = end
+    cy = (by0 + by1) // 2
+    edited = field_key is not None and c.editing == field_key
+    fine = e in c.held
+    if edited:
+        d.rounded_rectangle((x0 + 4, by0, x1 - 4, by1), radius=8, fill=AMBER)
+    fg = BG if edited else (DIM if dim else FG)
+    funit = font(18)
+    unit_w = int(d.textlength(unit, font=funit)) + 6 if unit else 0
+    # FINE has its own column at the box's right edge (the value and its unit stay left of it)
+    # and sits at the box's top, clear of the unit's baseline row.
+    fine_w = int(d.textlength("FINE", font=font(14))) + 16 if fine else 0
+    room = (x1 - x0) - fine_w
+    fval = _fit(d, value, size, room - 16 - unit_w)
+    vw = d.textlength(value, font=fval)
+    vx = x0 + (room - (vw + unit_w)) / 2
+    d.text((vx, cy), value, font=fval, fill=fg, anchor="lm")
+    if unit:
+        d.text((vx + vw + 6, cy + 13), unit, font=funit, fill=BG if edited else DIM, anchor="ls")
+    if fine:
+        d.text((x1 - 10, by0 + 4), "FINE", font=font(14), fill=BG if edited else CYAN, anchor="ra")
+
+
+def _chips(c: _Ctx, sel: int, bands: Sequence[eg.Band]) -> None:
+    """LS · 1 · 2 · 3 · 4 · HS (B3's order): the selected band amber, a band in use outlined in
+    its cut (orange) / boost (green) colour, an idle band faint."""
+    d = c.d
+    n, gap = len(BAND_CYCLE), 4
+    w = (W - 8 - gap * (n - 1)) / n
+    for k, slot in enumerate(BAND_CYCLE):
+        bx0 = round(4 + k * (w + gap))
+        bx1 = round(4 + k * (w + gap) + w)
+        box = (bx0, CHIP_Y0, bx1, CHIP_Y1)
+        g = bands[slot].gain if slot < len(bands) else 0.0
+        active = abs(g) >= 0.05
+        acol = CUT if g < 0 else GREEN
+        label = CHIP_TEXT.get(slot, "?")
+        cxy = ((bx0 + bx1) / 2, (CHIP_Y0 + CHIP_Y1) / 2)
+        if slot == sel:
+            d.rounded_rectangle(box, radius=4, fill=AMBER)
+            d.text(cxy, label, font=font(20), fill=BG, anchor="mm")
+        else:
+            d.rounded_rectangle(box, radius=4, outline=acol if active else FAINT,
+                                width=2 if active else 1)
+            d.text(cxy, label, font=font(20), fill=acol if active else DIM, anchor="mm")
+
+
+def _peak_label(c: _Ctx, geo: dict[str, Any], rta: eg.RtaFrame | None) -> None:
+    """The PEAK's frequency next to its cyan pointer (D-009: a pointer and a frequency, no
+    call to action), on a black patch so it reads over the spectrum."""
+    x = geo.get("peak_x")
+    if rta is None or not rta.peak_hz or x is None:
+        return
+    d = c.d
+    t = fmt_hz(rta.peak_hz)
+    f = font(16)
+    tw = d.textlength(t, font=f)
+    tx = x + 10 if x + 10 + tw <= W - 6 else x - 10 - tw
+    y0 = GRAPH[1] + 1
+    d.rectangle((tx - 3, y0, tx + tw + 3, y0 + 14), fill=BG)
+    d.text((tx, y0 + 7), t, font=f, fill=CYAN, anchor="lm")
+
+
+def _spectrum_tag(c: _Ctx, status: Any, rta: eg.RtaFrame | None) -> None:
+    """Says so when the spectrum is switched on but the engine does not give one."""
+    if rta is not None or _truth(_get(status, "spectrum_on", True)) is False:
+        return
+    if str(_get(status, "spectrum_state", "") or "") != "unavailable":
+        return
+    c.d.text((W - 8, GRAPH[1] + 4), "NO SPECTRUM", font=font(13), fill=DIM, anchor="ra")
+
+
+def _risky_pill(text: str) -> bool:
+    return str(text).upper().startswith(RISKY_PILLS)
+
+
+def pill_layout(pills: Sequence[str], room: float, gap: int = 6) -> tuple[list[str], list[str], int]:
+    """(pills shown, pills folded into '+N', font size) for SHOW's pill row `room` px wide:
+    shrink from 14 to PILL_MIN_PX, then fold the last neutral pill, and a risky one only when
+    no neutral one is left."""
+    shown, folded, size = [str(p) for p in pills], [], 14
+    while True:
+        f = font(size)
+        labels = shown + ([f"+{len(folded)}"] if folded else [])
+        total = sum(_textlength(p, f) + 12 for p in labels) + gap * (len(labels) - 1)
+        if total <= room or not shown:
+            return shown, folded, size
+        if size > PILL_MIN_PX:
+            size -= 1
+            continue
+        k = next((i for i in range(len(shown) - 1, -1, -1) if not _risky_pill(shown[i])),
+                 len(shown) - 1)
+        folded.append(shown.pop(k))
+
+
+def _pills_row(c: _Ctx, pills: Sequence[str], x0: float, x1: float) -> None:
+    """Persistent pills centred between x0 and x1 on SHOW's bottom row, in the controller's
+    order. A pill that changes the sound or opens the box (RISKY_PILLS: LAPTOP OPEN, LO-CUT
+    OFF, POL INV) is orange (outline and text); MONO SUB (Thomas's normal state) and AUDITION
+    stay grey. They shrink to PILL_MIN_PX, then fold into a '+N' pill: the last neutral ones
+    first, a risky one only when no neutral one is left (LAPTOP OPEN, first, folds last). The
+    '+N' is orange when it hides a risky pill."""
+    if not pills or x1 - x0 < 40:
+        return
+    d = c.d
+    gap = 6
+    room = x1 - x0
+    shown, folded, size = pill_layout(pills, room)
+    f = font(size)
+    labels = shown + ([f"+{len(folded)}"] if folded else [])
+    widths = [d.textlength(p, font=f) + 12 for p in labels]
+    total = sum(widths) + gap * (len(widths) - 1)
+    if not labels or total > room:
+        return
+    x = x0 + (room - total) / 2
+    for p, w in zip(labels, widths):
+        risky = _risky_pill(p) if not p.startswith("+") else any(map(_risky_pill, folded))
+        if risky:
+            d.rounded_rectangle((x, PILL_Y0, x + w, PILL_Y1), radius=4, fill=BG, outline=ORANGE,
+                                width=2)
+        else:
+            d.rounded_rectangle((x, PILL_Y0, x + w, PILL_Y1), radius=4, fill=PILL_BG,
+                                outline=PILL_EDGE)
+        d.text((x + w / 2, (PILL_Y0 + PILL_Y1) / 2 + 1), p, font=f, fill=ORANGE if risky else FG,
                anchor="mm")
+        x += w + gap
+
+
+def _strip(c: _Ctx, text: str, fill=AMBER, fg=BG) -> None:
+    """A hint (amber) over SHOW's chip row: the marker and the GAIN label still say the band.
+    A critical system alert takes it in its own colour when no hint is up (_page_show)."""
+    d = c.d
+    d.rectangle((0, CHIP_Y0, W, CHIP_Y1), fill=fill)
+    size, text = _fit_ellipsis(text, 20, W - 16)
+    d.text((W // 2, (CHIP_Y0 + CHIP_Y1) // 2 + 1), text, font=font(size), fill=fg, anchor="mm")
+
+
+def _page_show(c: _Ctx, state: Any, status: Any) -> None:
+    """SHOW: E1 MASTER, E2/E3/E4 = FREQ/GAIN/Q of the selected band, chips, meter, and the
+    live-EQ curve (the engine's own biquads, eqgraph) over the program spectrum."""
+    slot = _focus_slot(c.focus)
+    bands = eg.live_bands(state)
+    rta = spectrum_frame(status)
+    # the graph first, so the blocks, chips and strips draw over its edges
+    geo = eg.draw_graph(c.img, GRAPH, bands, slot, rta)
+    _peak_label(c, geo, rta)
+    _spectrum_tag(c, status, rta)
+    _chips(c, slot, bands)
+    labels = knob_labels("SHOW")
+    base = LIVE_SLOTS[slot]
+    _block(c, 0, labels[0], fmt_db(_num(state, F_MASTER)), "dB", F_MASTER, size=44)
+    _mini_meter(c, status)
+    _block(c, 2, labels[2], fmt_db(_num(state, base + ".gain")), "dB", base + ".gain", size=44,
+           tag=LIVE_SLOT_LABELS[slot], tag_hot=c.editing == F_SLOT)
+    _block(c, 1, labels[1], fmt_hz(_num(state, base + ".freq")), "Hz", base + ".freq", size=40)
+    q = _num(state, base + ".q")
+    if slot < 4:
+        _block(c, 3, labels[3], fmt_q(q), fmt_oct(q), base + ".q", size=40)
+    else:     # shelves: the same knob is the slope (a Q of 0.4..1.5)
+        _block(c, 3, "SLOPE", fmt_q(q), "Q", base + ".q", size=40)
+    lx = c.bottom_label_end.get("l", 110.0) + 12
+    rx = c.bottom_label_end.get("r", W - 70.0) - 12
+    _pills_row(c, screen_pills(state, status), lx, rx)
+    hint = _hint(c)
+    if hint:
+        _strip(c, hint)
+    else:
+        # A critical system alert (KNOBS OFFLINE and its instruction, CANNOT SAVE...) is also
+        # said here, big enough for arm's length, in its own colour (never amber: the hints').
+        # Warnings stay in the status bar only: some last a whole gig (a cut kept from
+        # CamillaGUI) and would hide the band chips for it.
+        crit = [a for a in screen_alerts(status) if a[0] == ALERT_CRITICAL]
+        if crit:
+            fill, fg = ALERT_STYLE[ALERT_CRITICAL]
+            _strip(c, crit[0][1], fill, fg)
 
 
 # ------------------------------------------------------------------------------------------
-# Pages
+# ALIGN
 # ------------------------------------------------------------------------------------------
-def _page_main(c: _Ctx, state: Any, status: Any) -> None:
+def align_unlock_left(c: _Ctx, status: Any) -> float:
+    """Seconds left of ALIGN's E3/E4 unlock: the status's figure or the focus's own deadline,
+    whichever says more (0 = locked)."""
+    s = _num(status, "align_unlock_s", 0.0) or 0.0
+    fn = getattr(c.focus, "unlock_left", None)
+    try:
+        f = float(fn(c.now)) if callable(fn) else 0.0
+    except Exception:
+        f = 0.0
+    if _truth(_get(status, "align_locked", None)) is True and f <= 0.0:
+        return 0.0
+    return max(0.0, s, f)
+
+
+def _lock_badge(c: _Ctx, left_s: float) -> None:
+    """Between E3 (SUB DELAY) and E4 (LO-CUT), in their column: LOCKED (grey, how to unlock)
+    or EDIT m:ss (amber, the unlock's countdown)."""
+    d = c.d
+    corner3, corner4 = KNOB_CORNERS[2][1], KNOB_CORNERS[3][1]
+    x0, x1 = _QX[corner3] if corner3 == corner4 else (0, W)
+    cx, cy = (x0 + x1) / 2, (MID_Y0 + MID_Y1) // 2 - 5
+    if left_s > 0:
+        t, f = f"EDIT {fmt_mmss(left_s)}", font(20)
+        tw = d.textlength(t, font=f)
+        d.rounded_rectangle((cx - tw / 2 - 10, cy - 15, cx + tw / 2 + 10, cy + 15), radius=6,
+                            fill=AMBER)
+        d.text((cx, cy), t, font=f, fill=BG, anchor="mm")
+    else:
+        t = "LOCKED · HOLD B3"
+        f = _fit(d, t, 16, (x1 - x0) - 30)
+        tw = d.textlength(t, font=f)
+        d.rounded_rectangle((cx - tw / 2 - 9, cy - 13, cx + tw / 2 + 9, cy + 13), radius=6,
+                            outline=DIM, width=2)
+        d.text((cx, cy), t, font=f, fill=DIM, anchor="mm")
+
+
+def _page_align(c: _Ctx, state: Any, status: Any) -> None:
+    """ALIGN: E1 MASTER and E2 BALANCE live; E3 SUB DELAY and E4 LO-CUT dimmed while locked
+    (a B3 hold unlocks them for 30 s of idle: the EDIT badge counts it down). Lo-Cut on/off
+    is a SETUP item now: said here, not offered."""
     master = _num(state, F_MASTER)
     bal = _num(state, F_BALANCE)
     sd = _num(state, F_SUB_DELAY)
-    lc_on = bool(_get(state, "lowcut_on", True))
+    lc_on = _truth(_get(state, "lowcut_on", True)) is not False
     lc = _num(state, F_LOWCUT_FREQ)
-    labels = knob_labels("MAIN")
+    left = align_unlock_left(c, status)
+    locked = left <= 0.0
+    labels = knob_labels("ALIGN")
     _quadrant(c, 0, labels[0], fmt_db(master), "dB", "", F_MASTER)
-    if bal is None or abs(bal) < 0.05:
-        bsub = "subs = tops"
-    else:
-        bsub = f"subs {bal / 2:+.1f} · tops {-bal / 2:+.1f}"
+    bsub = "subs = tops" if bal is None or abs(bal) < 0.05 else \
+        f"subs {bal / 2:+.1f} · tops {-bal / 2:+.1f}"
     _quadrant(c, 1, labels[1], fmt_db(bal), "dB", bsub, F_BALANCE)
-    _quadrant(c, 2, labels[2], fmt_ms(sd), "ms",
-              f"≈ {sd * 0.343:.2f} m" if sd is not None else "", F_SUB_DELAY)
+    _quadrant(c, 2, labels[2], fmt_ms(sd), "ms", f"≈ {sd * 0.343:.2f} m" if sd is not None else "",
+              F_SUB_DELAY, dim=locked)
     if lc_on:
-        _quadrant(c, 3, labels[3], fmt_hz(lc), "Hz", "12 dB/oct · B3 off", F_LOWCUT_FREQ)
+        _quadrant(c, 3, labels[3], fmt_hz(lc), "Hz", "tops · 12 dB/oct", F_LOWCUT_FREQ, dim=locked)
     else:
-        _quadrant(c, 3, labels[3], "OFF", "", f"{fmt_hz(lc)} Hz · B3 on", F_LOWCUT_FREQ,
+        _quadrant(c, 3, labels[3], "OFF", "", f"{fmt_hz(lc)} Hz · on/off in SETUP", F_LOWCUT_FREQ,
                   dim=True)
     _meter(c, status)
+    _lock_badge(c, left)
     _middle(c, status)
 
 
-def _slot_band(state: Any, slot: int) -> tuple[float | None, float | None, float | None]:
-    base = LIVE_SLOTS[slot]
-    return (_num(state, base + ".freq"), _num(state, base + ".gain"), _num(state, base + ".q"))
-
-
-def _page_live(c: _Ctx, state: Any, status: Any) -> None:
-    slot = int(getattr(c.focus, "slot", 0) or 0) % len(LIVE_SLOTS)
-    freq, gain, q = _slot_band(state, slot)
-    base = LIVE_SLOTS[slot]
-    labels = knob_labels("LIVE")
-    _quadrant(c, 0, labels[0], LIVE_SLOT_LABELS[slot], "", "", F_SLOT, value_size=40,
-              shift=12, box_half=26)
-    _slot_pills(c, state, slot)
-    _quadrant(c, 1, labels[1], fmt_hz(freq), "Hz", "", base + ".freq")
-    _quadrant(c, 2, labels[2], fmt_db(gain), "dB", "", base + ".gain")
-    _quadrant(c, 3, labels[3], fmt_q(q), "", "shelf slope" if slot >= 4 else "", base + ".q")
-    _meter(c, status)
-    _middle(c, status)
-
-
-def _slot_pills(c: _Ctx, state: Any, sel: int) -> None:
-    """Six small boxes under the slot name: filled = band is active (gain != 0)."""
-    d = c.d
-    x0, x1 = _QX[KNOB_CORNERS[0][1]]
-    vpos = KNOB_CORNERS[0][0]
-    y = 114 if vpos == "t" else 182          # between the slot name and the middle strip
-    n = len(LIVE_SLOTS)
-    pw, gap = 28, 4
-    sx = x0 + ((x1 - x0) - (n * pw + (n - 1) * gap)) / 2
-    for i in range(n):
-        _, g, _ = _slot_band(state, i)
-        active = g is not None and abs(g) >= 0.05
-        bx = sx + i * (pw + gap)
-        box = (bx, y, bx + pw, y + 24)
-        if active:
-            d.rectangle(box, fill=(255, 90, 0) if (g or 0) < 0 else GREEN)
-        if i == sel:
-            d.rectangle((box[0] - 2, box[1] - 2, box[2] + 2, box[3] + 2), outline=FG, width=2)
-        else:
-            d.rectangle(box, outline=FAINT)
-        d.text(((box[0] + box[2]) / 2, y + 12), LIVE_SLOT_SHORT[i], font=font(13),
-               fill=BG if active else DIM, anchor="mm")
-
-
-def _setup_value(state: Any, item) -> str:
+# ------------------------------------------------------------------------------------------
+# SETUP
+# ------------------------------------------------------------------------------------------
+def _setup_value(state: Any, item, status: Any = None) -> str:
     if item.kind == "page":
         return "PUSH ▸"
+    if item.kind == "action":
+        if item.field == A_UNDO_RESET:
+            left = _num(status, "undo_reset_s", 0.0) or 0.0
+            return f"UNDO {fmt_mmss(left)}" if left > 0 else "—"
+        if item.field == A_LAPTOP:
+            return _laptop_value(status)
+        return "PUSH ×2" if getattr(item, "confirm", False) else "PUSH ▸"
+    if item.field == F_SPECTRUM_ON and _get(status, "spectrum_state", "") == "disabled":
+        return "DISABLED"
     v = _get(state, item.field, None)
     if v is None:
         return "--"
@@ -632,6 +1166,31 @@ def _setup_value(state: Any, item) -> str:
     return f"{fmt_db(fv)} dB"
 
 
+def _laptop_value(status: Any) -> str:
+    """SETUP > Laptop access: 'OPEN 1:59' (a push closes), 'OPENING…', 'PUSH ×2', 'N/A'."""
+    left = _num(status, "laptop_s", 0.0) or 0.0
+    state = _get(status, "laptop_state", "off")
+    if state == "open" and left > 0:
+        return f"OPEN {fmt_hmm(left)}"
+    if state == "opening":
+        return "OPENING…"
+    if state == "closing":
+        return "CLOSING…"
+    if state in ("off", "unavailable"):
+        return "N/A"
+    return "PUSH ×2"
+
+
+def _setup_unavailable(item, status: Any) -> bool:
+    """A row with nothing to do right now (Undo reset with no undo, Laptop access without its
+    surface): its label is dimmed."""
+    if item.kind == "action" and item.field == A_UNDO_RESET:
+        return not (_num(status, "undo_reset_s", 0.0) or 0.0) > 0
+    if item.kind == "action" and item.field == A_LAPTOP:
+        return _get(status, "laptop_state", "off") in ("off", "unavailable")
+    return item.field == F_SPECTRUM_ON and _get(status, "spectrum_state", "") == "disabled"
+
+
 def _page_setup(c: _Ctx, state: Any, status: Any) -> None:
     d = c.d
     labels = knob_labels("SETUP")
@@ -648,7 +1207,10 @@ def _page_setup(c: _Ctx, state: Any, status: Any) -> None:
             d.text((W - 10, y), f"E{e + 1}", font=font(16), fill=CYAN, anchor="ra")
             d.text((W - 40, y - 2), lab, font=font(20), fill=AMBER, anchor="ra")
     d.text((W - 10, H - 22), "push = select", font=font(16, FONT_REG), fill=DIM, anchor="ra")
-    sel = max(0, min(len(SETUP_ITEMS) - 1, int(getattr(c.focus, "item", 0) or 0)))
+    try:
+        sel = max(0, min(len(SETUP_ITEMS) - 1, int(getattr(c.focus, "item", 0) or 0)))
+    except (TypeError, ValueError):
+        sel = 0
     conf_fn = getattr(c.focus, "confirm_now", None)
     confirm = conf_fn(c.now) if callable(conf_fn) else None
     d.text((W - 10, STATUS_H + 4), f"{sel + 1}/{len(SETUP_ITEMS)}", font=font(18), fill=DIM,
@@ -665,12 +1227,13 @@ def _page_setup(c: _Ctx, state: Any, status: Any) -> None:
         pending = is_sel and confirm == item.field
         if is_sel:
             d.rectangle((4, y, W - 4, y + row_h - 3), fill=RED if pending else AMBER)
-        fg = FG if pending else (BG if is_sel else FG)
-        d.text((14, y + row_h // 2 - 1), item.label, font=font(20, FONT_REG if not is_sel
-                                                               else FONT_BOLD),
-               fill=fg, anchor="lm")
-        val = "PUSH AGAIN" if pending else _setup_value(state, item)
-        vcol = fg if is_sel else (AMBER if item.kind == "rebuild" else FG)
+        fg = FG if pending else (BG if is_sel else (DIM if _setup_unavailable(item, status) else FG))
+        d.text((14, y + row_h // 2 - 1), item.label,
+               font=font(20, FONT_BOLD if is_sel else FONT_REG), fill=fg, anchor="lm")
+        val = "PUSH AGAIN" if pending else _setup_value(state, item, status)
+        vcol = fg if is_sel else (AMBER if item.kind == "rebuild" else fg)
+        if not is_sel and item.field == A_LAPTOP and val.startswith("OPEN "):
+            vcol = AMBER                       # a gate open in the fence: never quiet
         d.text((W - 14, y + row_h // 2 - 1), val, font=font(20), fill=vcol, anchor="rm")
     # scroll marks
     if first > 0:
@@ -678,19 +1241,16 @@ def _page_setup(c: _Ctx, state: Any, status: Any) -> None:
     if first + rows < len(SETUP_ITEMS):
         yb = y0 + rows * row_h
         d.polygon([(W // 2 - 8, yb), (W // 2 + 8, yb), (W // 2, yb + 8)], fill=DIM)
-    hint_fn = getattr(c.focus, "hint_now", None)
-    hint = hint_fn(c.now) if callable(hint_fn) else None
-    alert = str(_get(status, "alert", "") or "")
+    hint = _hint(c)
     if hint:
         d.rectangle((0, H - FOOTER_H, W, H), fill=AMBER)
         d.text((W // 2, H - FOOTER_H // 2), hint, font=_fit(d, hint, 20, W - 20), fill=BG,
                anchor="mm")
-    elif alert:   # e.g. APPLYING SETUP… on the page that triggers rebuilds
-        d.rectangle((0, H - FOOTER_H, W, H), fill=(60, 50, 0))
-        d.text((W // 2, H - FOOTER_H // 2), alert, font=_fit(d, alert, 20, W - 20),
-               fill=YELLOW, anchor="mm")
 
 
+# ------------------------------------------------------------------------------------------
+# HWTEST (unchanged from v0)
+# ------------------------------------------------------------------------------------------
 def _page_hwtest(c: _Ctx, state: Any, status: Any) -> None:
     d = c.d
     hw = getattr(c.focus, "hw", None)
@@ -733,6 +1293,9 @@ def _page_hwtest(c: _Ctx, state: Any, status: Any) -> None:
            fill=FG if last else DIM, anchor="mm")
 
 
+# ------------------------------------------------------------------------------------------
+# Overlays
+# ------------------------------------------------------------------------------------------
 def _overlay_no_device(c: _Ctx, state: Any, status: Any) -> None:
     d = c.d
     d.rectangle((0, STATUS_H, W, H), fill=(40, 18, 0))
@@ -781,8 +1344,7 @@ def _mute_hint(c: _Ctx, state: Any, status: Any) -> tuple[str | None, str]:
       KNOBS OFFLINE…) says why, instead of READY;
     - READY only when the engine RUNS (not Paused/Starting) and the controller is in sync.
     """
-    hint_fn = getattr(c.focus, "hint_now", None)
-    hint = hint_fn(c.now) if callable(hint_fn) else None
+    hint = _hint(c)
     engine = engine_state(status)
     running = engine is not None and engine.upper() == "RUNNING"
     if _truth(_get(status, "ramping", None)) and _truth(_get(state, "muted", None)) is False:
@@ -795,17 +1357,36 @@ def _mute_hint(c: _Ctx, state: Any, status: Any) -> tuple[str | None, str]:
     return hint, ("READY · hold B2 to unmute" if ready else "hold B2 to unmute")
 
 
-def _overlay_muted(c: _Ctx, state: Any, status: Any, page: str = "MAIN") -> None:
+def _band_text(c: _Ctx, y0: int, y1: int, big: int, line1: int, line2: int, small: str) -> None:
+    """MUTED (big) at the left of a red band, the hint / unmute line(s) at its right."""
+    d = c.d
+    cy = (y0 + y1) // 2
+    left = 16 if big < 50 else 20
+    d.text((left, cy), "MUTED", font=font(big), fill=FG, anchor="lm")
+    fx = left + int(d.textlength("MUTED", font=font(big))) + 14
+    parts = small.split(" · ", 1)
+    if len(parts) == 2:
+        d.text((W - 14, cy - 12), parts[0], font=_fit(d, parts[0], line1, W - fx - 14), fill=FG,
+               anchor="rm")
+        d.text((W - 14, cy + 13), parts[1], font=_fit(d, parts[1], line2, W - fx - 14, FONT_REG),
+               fill=FG, anchor="rm")
+    else:
+        d.text((W - 14, cy), small, font=_fit(d, small, 20, W - fx - 14), fill=FG, anchor="rm")
+
+
+def _overlay_muted(c: _Ctx, state: Any, status: Any, page: str = "ALIGN") -> None:
     """MUTED, impossible to miss but never hiding what is being edited.
 
-    MAIN / LIVE: full-width red band across the middle + red frame (the band only covers the
-    middle strip and the bottom sub-lines; values, edit boxes and FINE stay visible).
-    SETUP: red frame + red footer strip (a band would cover the selected row and its
+    SHOW: a red band over the chip row and the graph's top (+9..+0.6 dB, where live boosts
+    stop), so the 0 dB line, the cuts, every value, the edit box and FINE stay visible.
+    ALIGN (and the v0 names): the v0 full-width band across the middle strip and the bottom
+    sub-lines. SETUP: red frame + red footer strip (a band would cover the selected row and its
     'PUSH AGAIN'); an active hint takes the footer for its 2.5 s. HWTEST: frame + red tag.
     """
     d = c.d
     d.rectangle((0, STATUS_H, W - 1, H - 1), outline=BAND_RED, width=4)
     hint, unmute = _mute_hint(c, state, status)
+    page = page_name(page)
     if page == "SETUP":
         if not hint:
             d.rectangle((0, H - FOOTER_H, W, H), fill=BAND_RED)
@@ -822,32 +1403,27 @@ def _overlay_muted(c: _Ctx, state: Any, status: Any, page: str = "MAIN") -> None
         d.text(((box[0] + box[2]) / 2, (box[1] + box[3]) / 2), "MUTED", font=font(20),
                fill=FG, anchor="mm")
         return
+    if page == "SHOW":
+        y0, y1 = SHOW_MUTED_BAND
+        d.rectangle((0, y0, W, y1), fill=BAND_RED)
+        _band_text(c, y0, y1, 44, 22, 18, hint or unmute)
+        return
     y0, y1 = MID_Y0 - 10, MID_Y1 + 22   # covers the sub-lines whole, never half a line
     d.rectangle((0, y0, W, y1), fill=BAND_RED)
-    cy = (y0 + y1) // 2
-    d.text((20, cy), "MUTED", font=font(56), fill=FG, anchor="lm")
-    small = hint or unmute
-    fx = 20 + int(d.textlength("MUTED", font=font(56))) + 14
-    lines = small.split(" · ", 1)
-    if len(lines) == 2:
-        d.text((W - 16, cy - 13), lines[0], font=_fit(d, lines[0], 22, W - fx - 16), fill=FG,
-               anchor="rm")
-        d.text((W - 16, cy + 14), lines[1], font=_fit(d, lines[1], 18, W - fx - 16, FONT_REG),
-               fill=FG, anchor="rm")
-    else:
-        d.text((W - 16, cy), small, font=_fit(d, small, 20, W - fx - 16), fill=FG, anchor="rm")
+    _band_text(c, y0, y1, 56, 22, 18, hint or unmute)
 
 
-_PAGES = {"MAIN": _page_main, "LIVE": _page_live, "SETUP": _page_setup, "HWTEST": _page_hwtest}
+_PAGES = {"SHOW": _page_show, "ALIGN": _page_align, "SETUP": _page_setup, "HWTEST": _page_hwtest}
 
 
 def render(page: str, state: Any, status: Any = None, focus: Any = None,
            now: float | None = None, phone: Any = None) -> Image.Image:
-    """Render `page` (MAIN, LIVE, SETUP, HWTEST, PHONE) with status-driven overlays -> 480x320 RGB.
+    """Render `page` (SHOW, ALIGN, SETUP, HWTEST, PHONE; MAIN/LIVE = ALIGN/SHOW) with the
+    status-driven overlays -> 480x320 RGB. The spectrum comes in `status.spectrum`.
 
     PHONE is drawn by ui/qr.py from `phone` (web.PhoneScreenInfo; None = nothing known yet).
 
-    Never raises: unknown page -> MAIN, missing fields -> '--' / '?', no status -> everything
+    Never raises: unknown page -> SHOW, missing fields -> '--' / '?', no status -> everything
     unknown (amber), and any unexpected error -> a 'UI ERROR' frame that still shows MUTED.
     """
     try:
@@ -861,7 +1437,8 @@ def render(page: str, state: Any, status: Any = None, focus: Any = None,
 
 
 def _render(page: Any, state: Any, status: Any, focus: Any, now: float | None) -> Image.Image:
-    page = page if isinstance(page, str) and page in _PAGES else "MAIN"
+    page = page_name(page)
+    page = page if isinstance(page, str) and page in _PAGES else "SHOW"
     _check_status_shape(status)
     focus = Focus() if focus is None else focus
     now = time.monotonic() if now is None else now
@@ -918,25 +1495,84 @@ def _error_frame(state: Any, status: Any, exc: Exception) -> Image.Image:
 
 
 def warm_up() -> float:
-    """Load fonts and fill the text cache once (call at service start); returns ms spent.
+    """Load fonts, fill the text cache and rasterise the graph grid once (call at service
+    start); returns ms spent.
 
     Why: the first frame costs ~40 ms on the Pi 4 (font files + glyph rasterising), over the
-    30 ms budget; every later frame is ~3-5 ms render + ~6 ms RGB565 conversion.
+    budget; later SHOW frames are a few ms of render plus the RGB565 packing.
     """
     t0 = time.perf_counter()
-    ok = ScreenStatus(device_present=True, engine="Running")
+    ok = ScreenStatus(device_present=True, engine="Running", spectrum=demo_spectrum(seconds=0.5),
+                      spectrum_state="live")
     for page in _PAGES:
         render(page, None, ok, Focus())
         render(page, None, ScreenStatus(device_present=True, engine="Running", muted=True),
                Focus())
     for ov in (ScreenStatus(device_present=False), ScreenStatus(engine=None), ScreenStatus()):
-        render("MAIN", None, ov, Focus())
+        render("SHOW", None, ov, Focus())
     return (time.perf_counter() - t0) * 1000
 
 
 # ------------------------------------------------------------------------------------------
-# Demo states + snapshots:  python3 -m k1000.ui.pages <outdir>
+# Demo states + snapshots:  python3 -m k1000.ui.pages <outdir>   |   --bench [N]
 # ------------------------------------------------------------------------------------------
+def demo_spectrum(ring_hz: float | None = 2440.0, seconds: float = 3.0, seed: int = 7,
+                  level_db: float = -30.0) -> eg.RtaFrame | None:
+    """A program-like spectrum shaped as GetSpectrum gives it (1/24 octave, 10 Hz-20 kHz,
+    peak-of-band dBFS), passed through the spectrum task's own ballistics (rta.Ballistics) at
+    10 frames/s, with an optional narrow ring that persists long enough to be a PEAK."""
+    try:
+        from ..rta import MAX_FREQ, MIN_FREQ, N_BINS, Ballistics
+        bal: Any = Ballistics()
+    except Exception:          # pages must render without the spectrum module too
+        MIN_FREQ, MAX_FREQ, N_BINS = 10.0, 20000.0, 264
+        bal = eg.Rta()
+    rng = np.random.default_rng(seed)
+    n = int(N_BINS)
+    f = MIN_FREQ * (MAX_FREQ / MIN_FREQ) ** (np.arange(n) / (n - 1))
+    lf = np.log2(f / 1000.0)
+    base = (level_db - 3.0 * lf - 4.0 * np.maximum(0, -lf - 3.2) ** 2
+            + 5.0 * np.exp(-((np.log2(f / 70.0)) ** 2) / 0.5)
+            - 10.0 * np.maximum(0, np.log2(f / 12000.0)) ** 2)
+    for k in range(max(1, int(seconds * 10))):
+        m = base + rng.normal(0, 2.0, n) + 3.0 * np.sin(k / 3.0 + lf * 2)
+        if ring_hz:
+            ring_db = float(np.interp(math.log2(ring_hz / 1000.0), lf, base)) + 16.0
+            m = np.maximum(m, ring_db - 240.0 * np.abs(np.log2(f / ring_hz)))
+        bal.update(f, m, k * 0.1)
+    return bal.frame()
+
+
+def _setup_index(field: str) -> int:
+    return next((i for i, it in enumerate(SETUP_ITEMS) if it.field == field), 0)
+
+
+def demo_notch(state: Any, peak_hz: float, slot: int) -> tuple[Any, Any]:
+    """(state, focus) after a B4 tap on SHOW with `slot` selected and the spectrum's PEAK at
+    `peak_hz`, from the REAL Controller.notch_helper (no engine: nothing is sent), so the
+    picture shows what the box does. The hint and the edit highlight are kept on for the
+    snapshot."""
+    from pathlib import Path
+
+    from ..control import Controller, Paths
+    from ..profiles import load_profile
+
+    class _Peak:
+        peak_hz = 0.0
+
+    ctl = Controller(None, load_profile("dev", {}, probe=False), state.copy(),
+                     Paths(Path("/nonexistent/k1000-demo/state.json"),
+                           Path("/nonexistent/k1000-demo/active.yml")))
+    fr = _Peak()
+    fr.peak_hz = float(peak_hz)
+    ctl.set_spectrum(fr, "live")
+    ctl.focus.slot = slot
+    ctl.notch_helper(now=0.0)
+    focus = ctl.focus
+    focus.hint_until = focus.edit_until = float("inf")
+    return ctl.state, focus
+
+
 def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
     """(name, page, state, status, focus) for every page and overlay, with representative data.
 
@@ -944,69 +1580,130 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
     is exactly what is tested.
     """
     from ..state import State  # local import: pages must render without state.py too
+    from .input_map import HwTestLog
 
     inf = float("inf")
     s = State()
-    s.master_db, s.balance_db, s.sub_delay_ms, s.lowcut_hz = -12.5, 3.0, 2.35, 120.0
+    s.master_db, s.balance_db, s.sub_delay_ms, s.lowcut_hz = -14.0, 3.0, 2.35, 112.0
     s.live_peq[1].freq, s.live_peq[1].gain, s.live_peq[1].q = 2520.0, -6.5, 8.0
-    s.live_peq[3].gain = -3.0
+    s.live_peq[3].freq, s.live_peq[3].gain, s.live_peq[3].q = 6300.0, -3.0, 4.0
     s.live_lowshelf.gain = 2.0
+    spec = demo_spectrum()
+    plain = demo_spectrum(ring_hz=None)
+    peak = spec.peak_hz if spec is not None and spec.peak_hz else 2440.0
     run = ScreenStatus(profile="m4", device="MOTU M4", device_present=True, engine="Running",
-                       load=7.4, levels=(-14.0, -15.5, -9.0, -2.5), clip=(False, False, False, True),
-                       ready=True)
-    edit = Focus(editing=F_MASTER, edit_until=inf)
-    live = Focus(slot=1, editing="live_peq.1.gain", edit_until=inf, held={1})
-    setup = Focus(item=3)
-    from .input_map import HwTestLog
+                       load=2.0, levels=(-14.0, -15.5, -9.0, -12.5), clip=(False,) * 4,
+                       ready=True, spectrum=spec, spectrum_state="live")
+
+    def with_(base: ScreenStatus, **kw: Any) -> ScreenStatus:
+        return ScreenStatus(**{**base.__dict__, **kw})
+
+    run_plain = with_(run, spectrum=plain)
+    run_clip = with_(run, levels=(-14.0, -15.5, -9.0, -2.5), clip=(False, False, False, True))
+    muted = State.from_dict({**s.to_dict(), "muted": True})
+    run_muted = with_(run, muted=True)
+    # B4 (the real notch helper): with no bell in use within 1/6 oct of the PEAK (P2 is at
+    # 1 kHz here), P3 (selected, free) goes to the PEAK at Q 8.65, gain 0; with P2 cutting at
+    # 2.52k (0.05 oct from the PEAK) it selects P2 and writes nothing.
+    away = State.from_dict(s.to_dict())
+    away.live_peq[1].freq = 1000.0
+    notch, notch_focus = demo_notch(away, peak, 2)
+    renotch, renotch_focus = demo_notch(s, peak, 2)
+    pills = State.from_dict({**s.to_dict(), "lowcut_on": False, "sub_inverted": True,
+                             "mono_subs": True})
+    lc_off = State.from_dict({**s.to_dict(), "lowcut_on": False})
+    dev = ScreenStatus(profile="dev", device="HiFiBerry", device_present=True, engine="Running",
+                       load=0.1, ready=True, laptop_state="closed")
+    dev_muted = with_(dev, muted=True)
+    knobs = "KNOBS OFFLINE · USE PHONE MUTE / BYPASS"
     hw = HwTestLog(enc_count=[3, -2, 0, 7], sw_down=[False, False, False, False, False, True,
                                                      False, False],
                    sw_last=["short", "", "", "", "", "long", "", ""], last="sw5 press  = B2")
     hwf = Focus(hw=hw)
-    lc_off = State.from_dict({**s.to_dict(), "lowcut_on": False, "master_db": -80.0,
-                              "balance_db": -12.0, "sub_delay_ms": 50.0})
-    muted = State.from_dict({**s.to_dict(), "muted": True})
-    dev = ScreenStatus(profile="dev", device="HiFiBerry", device_present=True, engine="Paused",
-                       load=0.1, ready=True)
-    dev_muted = ScreenStatus(profile="dev", device="HiFiBerry", device_present=True,
-                             engine="Running", load=0.1, muted=True, ready=True)
-    run_muted = ScreenStatus(**{**run.__dict__, "muted": True})
+    reset_i, undo_i = _setup_index(A_RESET_LIVE), _setup_index(A_UNDO_RESET)
+    laptop_i = _setup_index(A_LAPTOP)
+    dev_open = with_(dev, laptop_state="open", laptop_s=7140.0,
+                     pills=["MONO SUB", "LAPTOP OPEN 1:59"])
+    mono_i = _setup_index("mono_subs")
     return [
-        ("main", "MAIN", s, run, Focus()),
-        ("main_edit", "MAIN", s, run, edit),
-        ("main_extreme", "MAIN", lc_off, dev, Focus()),
-        ("live", "LIVE", s, run, live),
-        ("live_slot", "LIVE", s, run, Focus(slot=4, editing=F_SLOT, edit_until=inf)),
-        ("setup", "SETUP", s, dev, setup),
-        ("setup_confirm", "SETUP", s, dev, Focus(item=10, confirm="mono_subs", confirm_until=inf,
+        # SHOW: the front page
+        ("show", "SHOW", s, run, Focus(slot=1)),
+        ("show_edit_fine", "SHOW", s, run_clip, Focus(slot=1, editing="live_peq.1.freq",
+                                                      edit_until=inf, held={1})),
+        ("show_notch", "SHOW", notch, run, notch_focus),
+        ("show_notch_reselect", "SHOW", renotch, run, renotch_focus),
+        ("show_band", "SHOW", s, run_plain, Focus(slot=2, editing=F_SLOT, edit_until=inf)),
+        ("show_shelf", "SHOW", s, run_plain, Focus(slot=4, editing="live_lowshelf.gain",
+                                                   edit_until=inf)),
+        ("show_flat_spectrum_off", "SHOW", State(), with_(run, spectrum=None, spectrum_on=False,
+                                                          spectrum_state="off"), Focus(slot=4)),
+        ("show_no_spectrum", "SHOW", s, with_(run, spectrum=None, spectrum_state="unavailable"),
+         Focus(slot=1)),
+        # the controller's order (LAPTOP OPEN first); too many to fit: MONO SUB folds first
+        ("show_pills", "SHOW", pills, with_(run, pills=["LAPTOP OPEN 1:59", "LO-CUT OFF",
+                                                         "POL INV SUB", "MONO SUB"]), Focus(slot=1)),
+        ("show_pills_two", "SHOW", lc_off, with_(run, pills=["LO-CUT OFF", "MONO SUB"]),
+         Focus(slot=1)),
+        ("hint", "SHOW", s, run, Focus(slot=1, editing=F_MASTER, edit_until=inf,
+                                       hint="MASTER: SLOW DOWN", hint_until=inf)),
+        ("input_clip", "SHOW", s, with_(run, in_clip=True), Focus(slot=1)),
+        ("alert_warning", "SHOW", s, with_(run, alerts=[("warning", "PIPELINE CHANGED (GUI)")],
+                                           message="PIPELINE CHANGED (GUI)"), Focus(slot=1)),
+        ("muted", "SHOW", muted, run_muted, Focus(slot=1)),
+        ("muted_fine", "SHOW", muted, run_muted, Focus(slot=1, editing="live_peq.1.q",
+                                                       edit_until=inf, held={3})),
+        # K1000 holds Main before its own boot ramp: not 'READY · hold B2 to unmute'
+        ("muted_ramp_hold", "SHOW", s, with_(run, engine="Starting", muted=True, ramping=True,
+                                             ready=False, levels=(-100.0,) * 4, clip=(False,) * 4,
+                                             alerts=[("info", "RAMPING IN")], spectrum=None),
+         Focus(slot=1)),
+        ("knobs_offline", "SHOW", muted, with_(run_muted, alert=knobs, message=knobs,
+                                               alerts=[("critical", knobs)]), Focus(slot=1)),
+        # unmuted: the critical alert is said again over the chip row, big, in red
+        ("knobs_offline_live", "SHOW", s, with_(run, alert=knobs, message=knobs,
+                                                alerts=[("critical", knobs)]), Focus(slot=1)),
+        # the most crowded status bar: muted, CLIP latched, a warning (ellipsized, never cut)
+        ("alert_crowded", "SHOW", muted, with_(run_muted, levels=run_clip.levels, clip=run_clip.clip,
+                                               in_clip=True,
+                                               alerts=[("warning", "DEVICES CHANGED (GUI)")],
+                                               message="DEVICES CHANGED (GUI)"), Focus(slot=1)),
+        ("unknown_status", "SHOW", s, ScreenStatus(profile="m4", device="MOTU M4"), Focus(slot=1)),
+        ("no_device", "SHOW", s, ScreenStatus(profile="m4", device="MOTU M4",
+                                              device_present=False, engine=None,
+                                              alerts=[("critical", "NO DEVICE · MOTU M4")]),
+         Focus()),
+        ("engine_down", "SHOW", s, ScreenStatus(profile="m4", device="MOTU M4", engine=None,
+                                                alerts=[("critical", "ENGINE DOWN")]), Focus()),
+        # ALIGN
+        ("align", "ALIGN", s, run, Focus()),
+        ("align_locked_turn", "ALIGN", s, run, Focus(hint=HINT_LOCKED, hint_until=inf)),
+        ("align_unlocked", "ALIGN", s, with_(run, align_locked=False, align_unlock_s=27.4),
+         Focus(editing=F_SUB_DELAY, edit_until=inf)),
+        ("align_lowcut_off", "ALIGN", lc_off, run, Focus()),
+        ("align_muted", "ALIGN", muted, run_muted, Focus()),
+        # SETUP
+        ("setup", "SETUP", s, dev, Focus(item=reset_i)),
+        ("setup_reset_confirm", "SETUP", s, dev, Focus(item=reset_i, confirm=A_RESET_LIVE,
+                                                       confirm_until=inf,
+                                                       hint="PUSH AGAIN TO RESET ALL LIVE EQ",
+                                                       hint_until=inf)),
+        ("setup_undo", "SETUP", s, with_(dev, undo_reset_s=287.0), Focus(item=undo_i)),
+        ("setup_confirm", "SETUP", s, dev, Focus(item=mono_i, confirm="mono_subs",
+                                                 confirm_until=inf,
                                                  hint="PUSH AGAIN TO APPLY (MAY CLICK)",
                                                  hint_until=inf)),
-        ("setup_muted", "SETUP", muted, dev_muted, Focus(item=10, confirm="mono_subs",
+        ("setup_muted", "SETUP", muted, dev_muted, Focus(item=mono_i, confirm="mono_subs",
                                                          confirm_until=inf)),
+        ("setup_applying", "SETUP", s, with_(dev, alert="APPLYING SETUP…", message="APPLYING SETUP…",
+                                             alerts=[("info", "APPLYING SETUP…")]),
+         Focus(item=mono_i)),
+        ("setup_laptop_confirm", "SETUP", s, dev,
+         Focus(item=laptop_i, confirm=A_LAPTOP, confirm_until=inf,
+               hint="PUSH AGAIN: LAPTOP ACCESS FOR 2 H", hint_until=inf)),
+        ("setup_laptop_open", "SETUP", s, dev_open, Focus(item=laptop_i - 1)),
+        # Knob test
         ("hwtest", "HWTEST", s, run, hwf),
         ("hwtest_muted", "HWTEST", muted, run_muted, hwf),
-        ("muted", "MAIN", muted, run, Focus()),
-        ("muted_fine", "LIVE", muted, run_muted, Focus(slot=1, editing="live_peq.1.q",
-                                                       edit_until=inf, held={3})),
-        ("unknown_status", "MAIN", s, ScreenStatus(profile="m4", device="MOTU M4"), Focus()),
-        ("no_device", "MAIN", s, ScreenStatus(profile="m4", device="MOTU M4",
-                                              device_present=False, engine=None), Focus()),
-        ("engine_down", "MAIN", s, ScreenStatus(profile="m4", device="MOTU M4", engine=None),
-         Focus()),
-        ("hint", "MAIN", s, run, Focus(hint="HOLD B2 TO MUTE / UNMUTE", hint_until=inf)),
-        # K1000 holds Main before its own boot ramp: not 'READY · hold B2 to unmute'
-        ("muted_ramp_hold", "MAIN", s, ScreenStatus(**{**run.__dict__, "engine": "Starting",
-                                                       "muted": True, "ramping": True,
-                                                       "ready": False, "levels": (-100.0,) * 4,
-                                                       "clip": (False,) * 4}), Focus()),
-        ("setup_applying", "SETUP", s, ScreenStatus(**{**dev.__dict__, "engine": "Running",
-                                                       "alert": "APPLYING SETUP…",
-                                                       "message": "APPLYING SETUP…"}),
-         Focus(item=10)),
-        ("knobs_offline", "LIVE", muted, ScreenStatus(**{**run_muted.__dict__,
-                                                         "alert": "KNOBS OFFLINE · USE PHONE MUTE / BYPASS",
-                                                         "message": "KNOBS OFFLINE · USE PHONE MUTE / BYPASS"}),
-         Focus(slot=1)),
-        ("input_clip", "LIVE", s, ScreenStatus(**{**run.__dict__, "in_clip": True}), live),
     ]
 
 
@@ -1023,7 +1720,125 @@ def snapshot(outdir: str) -> list[tuple[str, float]]:
     return out
 
 
+def bench(n: int = 300, fps: float = 10.0, fb_path: str | None = None) -> dict[str, float]:
+    """SHOW as the box runs it with the spectrum on: every frame a fresh spectrum (the task's
+    ballistics), moving meters, render, then Framebuffer.show (changed rows packed to RGB565
+    and written to `fb_path`; default a temporary file: the live panel is never touched).
+    Prints ms percentiles and the full-frame packer against v0's converter, then paces `n`
+    frames at `fps` twice (with and without the ballistics) and reports this process's CPU as
+    % of one core."""
+    import os
+    import tempfile
+
+    from .display import Framebuffer, to_rgb565
+    try:
+        from ..rta import Ballistics
+        bal: Any = Ballistics()
+    except Exception:
+        bal = eg.Rta()
+    from ..state import State
+    s = State()
+    s.master_db = -14.0
+    s.live_peq[1].freq, s.live_peq[1].gain, s.live_peq[1].q = 2520.0, -6.5, 8.0
+    s.live_peq[3].freq, s.live_peq[3].gain = 6300.0, -3.0
+    s.live_lowshelf.gain = 2.0
+    rng = np.random.default_rng(1)
+    first = demo_spectrum(seconds=2.0)
+    assert first is not None
+    f = first.freqs
+    base = np.array(first.level)
+    tmp = None
+    if fb_path is None:
+        tmp = tempfile.NamedTemporaryFile(prefix="k1000-fb-", delete=False)
+        tmp.write(b"\0" * (W * H * 2))
+        tmp.close()
+        fb_path = tmp.name
+    fb = Framebuffer(fb_path, sysfs="/nonexistent")
+    foc = Focus(slot=1)
+    t = 10.0
+
+    fixed = demo_spectrum(seconds=2.0)
+
+    def frame(i: int, spectrum: bool = True) -> tuple[float, float, float]:
+        nonlocal t
+        t0 = time.perf_counter()
+        if spectrum:
+            bal.update(f, base + rng.normal(0, 2.0, len(base)), t)
+            fr = bal.frame()
+        else:
+            fr = fixed
+        t1 = time.perf_counter()
+        st = ScreenStatus(profile="m4", device="MOTU M4", device_present=True, engine="Running",
+                          load=2.0, levels=tuple(-14.0 + 3.0 * rng.random(4)), ready=True,
+                          clip=(False,) * 4, spectrum=fr, spectrum_state="live", pills=[], alerts=[])
+        img = render("SHOW", s, st, foc, now=t)
+        t2 = time.perf_counter()
+        fb.show(img)
+        t3 = time.perf_counter()
+        t += 1.0 / fps
+        return (t1 - t0) * 1000, (t2 - t1) * 1000, (t3 - t2) * 1000
+
+    for i in range(15):            # warm-up: fonts, glyphs, grid layer
+        frame(i)
+    rows = [frame(i) for i in range(n)]
+
+    def p(v: Sequence[float]) -> str:
+        v = sorted(v)
+        return f"med {v[len(v) // 2]:6.2f}  p95 {v[int(len(v) * 0.95)]:6.2f}  max {v[-1]:6.2f} ms"
+
+    cols = list(zip(*rows))
+    tot = [a + b + c for a, b, c in rows]
+    print(f"spectrum ballistics       {p(cols[0])}")
+    print(f"SHOW render               {p(cols[1])}")
+    print(f"Framebuffer.show          {p(cols[2])}  (changed rows packed + written; "
+          f"last span {fb.last_span})")
+    print(f"per frame, all            {p(tot)}")
+    img = render("SHOW", s, ScreenStatus(device_present=True, engine="Running", spectrum=fixed),
+                 foc, now=t)
+
+    def v0(im: Image.Image) -> bytes:
+        a = np.asarray(im, dtype=np.uint16)
+        w = ((a[:, :, 0] & 0xF8) << 8) | ((a[:, :, 1] & 0xFC) << 3) | (a[:, :, 2] >> 3)
+        return w.astype("<u2").tobytes()
+
+    for name, fn in (("RGB565 v0 (uint16), full", v0), ("RGB565 packer, full", to_rgb565)):
+        ts = []
+        for _ in range(60):
+            t0 = time.perf_counter()
+            fn(img)
+            ts.append((time.perf_counter() - t0) * 1000)
+        print(f"{name:26s}{p(ts[10:])}")
+    out = {"render_ms": sorted(cols[1])[len(cols[1]) // 2],
+           "frame_ms": sorted(tot)[len(tot) // 2]}
+    # paced runs: what one core spends at `fps`
+    period = 1.0 / fps
+    for label, spectrum in (("moving spectrum: ballistics + render + show", True),
+                            ("still spectrum, meters moving: render + show", False)):
+        w0 = fb.rows_written, fb.frames_written
+        c0, t0 = time.process_time(), time.monotonic()
+        nxt = t0
+        for i in range(n):
+            frame(i, spectrum)
+            nxt += period
+            delay = nxt - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+        cpu = (time.process_time() - c0) / max(1e-9, time.monotonic() - t0) * 100.0
+        rows_pf = (fb.rows_written - w0[0]) / max(1, fb.frames_written - w0[1])
+        print(f"paced {fps:.0f} fps x {n}, {label}: {cpu:.1f} % of one core "
+              f"({rows_pf:.0f} rows written per frame)")
+        out[f"cpu_pct_{'all' if spectrum else 'render'}"] = cpu
+    fb.close()
+    if tmp is not None:
+        os.unlink(fb_path)
+    return out
+
+
 if __name__ == "__main__":
     import sys
-    for n, ms in snapshot(sys.argv[1] if len(sys.argv) > 1 else "."):
-        print(f"{n:14s} {ms:6.1f} ms")
+    args = sys.argv[1:]
+    if args and args[0] == "--bench":
+        bench(int(args[1]) if len(args) > 1 else 300)
+    else:
+        for n, ms in snapshot(args[0] if args else "."):
+            print(f"{n:24s} {ms:6.1f} ms")

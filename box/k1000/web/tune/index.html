@@ -1,0 +1,61 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="K1000 tune: import a REW / Open Sound Meter / EqualizerAPO filter list into the system EQ">
+<title>K1000 tune</title>
+<link rel="icon" href="/icons/icon-192.png" type="image/png">
+<link rel="stylesheet" href="/tune/tune.css">
+<script src="/tune/tune.js" defer></script>
+</head>
+<body>
+<header id="bar">
+  <div class="brand">K1000 · TUNE</div>
+  <div id="link" class="chip bad"><i></i><span>NO LINK</span></div>
+  <div id="left" class="left"></div>
+</header>
+
+<main>
+  <section class="col">
+    <h2>1 · Paste the filter list</h2>
+    <p class="dim">REW: <em>File › Export › Export filter settings as text</em>, open the file, copy
+      everything. EqualizerAPO / AutoEQ: the <code>Filter</code> lines. Open Sound Meter: type the
+      filters as <code>Filter 1: ON PK Fc 125 Hz Gain -4.0 dB Q 5.00</code> (or
+      <code>125 Hz -4 dB Q 5</code>), one per line. A list with <code>Filter</code> lines reads
+      only those: its other lines (REW's notes and header) are listed as ignored.</p>
+    <textarea id="text" spellcheck="false" autocomplete="off"
+      placeholder="Filter  1: ON  PK       Fc   125.0 Hz  Gain  -4.00 dB  Q  5.000"></textarea>
+    <div class="row">
+      <button id="preview" disabled>Preview</button>
+      <span id="parsed" class="dim"></span>
+    </div>
+    <div id="error" class="msg bad" hidden></div>
+    <div id="skipped" class="msg warn" hidden></div>
+    <div id="notes" class="msg note" hidden></div>
+  </section>
+
+  <section class="col">
+    <h2>2 · Preview on the 8 system bands</h2>
+    <svg id="graph" viewBox="0 0 640 260" preserveAspectRatio="none" role="img"
+         aria-label="System EQ: now (grey) and after the import (amber)"></svg>
+    <div class="legend"><span class="now">— now</span><span class="new">— after the import</span></div>
+    <table id="bands">
+      <thead><tr><th>Band</th><th>Now</th><th>After the import</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="row">
+      <button id="apply" class="go" disabled>Apply to the system EQ</button>
+      <button id="undo" disabled>Undo</button>
+    </div>
+    <div id="result" class="msg" hidden></div>
+    <p class="dim">Apply goes through K1000 like a knob: values clamped to the system ranges,
+      click-safe steps (about a second), saved on the box. Undo puts back the system EQ the last
+      Apply replaced. This page works only while <b>SETUP › Laptop access</b> is open on the box
+      (2 h at most).</p>
+  </section>
+</main>
+</body>
+</html>

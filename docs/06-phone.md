@@ -19,7 +19,8 @@ carry the show.
 - **5 GHz channel 36, country FR**; 2.4 GHz (`--band bg`, channel 6) is the documented fallback.
   Thomas stands up to ~10 m from the box.
 - **The phone may unmute**, with the stale-unmute protection (`mute_seq`, §2). **SSH and
-  CamillaGUI are unreachable from the AP** (the fence, §1).
+  CamillaGUI are unreachable from the AP** (the fence, §1), except while **SETUP › Laptop
+  access** is open: 2 hours at most, for the Friday tune's laptop (§11).
 - **A Friday no-go means the AP fully off** (§9), not just the page, and it stays off: later
   `install.sh --ap` / `bootstrap.sh` runs keep it down until `setup-ap.sh --up`.
 - **The AP never shares its subnet** (§1): while another interface holds a 10.42.0.x address (a
@@ -53,7 +54,8 @@ carry the show.
   (443) and its plain fallback (8080), with at most 16 open connections per phone and 64 in all
   to those ports (the k1000 process's sockets are the knobs' too; it also has `LimitNOFILE=4096`).
   Never CamillaGUI (:5005, no authentication: it could undo knob work and lift the volume limit),
-  rpcbind, or SSH (unless `--ssh on`). Nothing on the AP is routed anywhere, and the AP address
+  rpcbind, or SSH (unless `--ssh on`), except during **SETUP › Laptop access** (§11): then
+  CamillaGUI and SSH from the AP's own subnet, for 2 hours at most, never across a reboot. Nothing on the AP is routed anywhere, and the AP address
   10.42.0.1 is unreachable from `eth0` (only that address: an `eth0` network that happens to be
   10.42.0.0/24 too keeps working). The hostapd unit **requires** the fence: it refuses to start
   without its table, and stopping the fence takes the AP down.
@@ -88,14 +90,14 @@ carry the show.
 
 Screens: `docs/ui/phone_wifi.png` (step 1), `phone_url.png` (step 2), `phone_setup.png` (first
 time), `phone_connected.png` (muted box, one phone connected), `phone_off.png`, `phone_ap_down.png`,
-`phone_no_tls.png`.
+`phone_no_tls.png`; with SETUP › Laptop access open, `phone_laptop.png` (the password as text, §11).
 
 ## 2. What the phone does (v0)
 
 | Page | Controls |
 |---|---|
 | **MAIN** | Master: −6 / −1 / −½ / +½ / +1 dB steps (never an absolute jump). Balance subs↔tops ±½/±1. Lo-Cut on/off + frequency (±1/12 oct, ±⅓ oct) |
-| **LIVE EQ** | The 6 live bands (PEQ 1–4, low shelf, high shelf) on a 20 Hz–20 kHz log graph with the summed curve. **Drag a dot** = frequency + gain. **Long-press empty space = "notch here"**: the first flat PEQ band goes there at −6 dB, Q 8, and **stays under the finger**: keep it down and slide to tune it. Per band: FREQ ±1/12, ±⅓ oct · GAIN ±½, ±3 dB · Q ½× (wide) / − / + / 2× (narrow) · hold = band flat. **Reset live EQ** with a confirm |
+| **LIVE EQ** | The 6 live bands (PEQ 1–4, low shelf, high shelf) on a 20 Hz–20 kHz log graph with the summed curve. **Drag a dot** = frequency + gain. **Long-press empty space = "notch here"**: the first flat PEQ band goes there at −6 dB, Q 8, and **stays under the finger**: keep it down and slide to tune it. Per band: FREQ ±1/12, ±⅓ oct · GAIN ±½, ±3 dB · Q ½× (wide) / − / + / 2× (narrow) · hold = band flat. **Reset live EQ** with a confirm (the box's own reset: SETUP › Undo reset brings it back until the next EQ cut or 5 minutes) |
 | Always | **Hold to mute** (0.6 s; unmute needs 1.2 s), the 4 output meters (~10 Hz, clip boxes), engine state, NO DEVICE / ENGINE DOWN / the box's messages, external changes (drift) |
 
 Not on the phone in v0 (setup-class, refused by the box): profile, mono subs, delays, polarity,
@@ -258,6 +260,10 @@ PHONE page's third QR (**FIRST TIME**, `http://10.42.0.1/`). Back to the portal,
 | New Wi-Fi password wanted | `sudo /opt/k1000/net/setup-ap.sh --new-password` (every phone scans the QR again) |
 | SSH to the box over K1000 | Fenced off by default: `sudo /opt/k1000/net/setup-ap.sh --ssh on` (or use `eth0`, not with a laptop sharing on 10.42.0.x: §1) |
 | Certificate expiry | The leaf is valid until **2029-01-14**; the box logs a warning 60 days before. Re-sign it on mgr-ran (`secrets/k1000-ca/README.txt`) |
+| Laptop on K1000 cannot open CamillaGUI or `/tune` | SETUP › Laptop access must say `OPEN h:mm` (§11). Closed: push twice. It closes by itself after 2 h and when k1000 restarts: open it again |
+| SETUP › Laptop access says `NO ANSWER` | The root watcher is not running: `systemctl status k1000-laptop.path` (k1000 brings it; after a deploy, k1000 must have restarted once). `journalctl -t k1000-laptop` |
+| SETUP › Laptop access says `NO WI-FI FENCE` | The AP and its fence are not set up (`setup-ap.sh`): there is no K1000 Wi-Fi to open. Use the wired LAN |
+| Laptop cannot scan the Wi-Fi QR | While laptop access is open, the PHONE page prints the Wi-Fi password on every step |
 
 ## 8. Notes and limits
 
@@ -282,7 +288,7 @@ Wire protocol (JSON over `/ws`): box → phone `hello` (ranges, bands, build), `
 `muted`, `hold`, `mute_seq`), `m` (meters), `ack`/`err`, `bye` (code 4002 too many phones, 4003
 phone off), `pong`; phone → box `nudge {f, d, fine}`, `set {f, v}` (live EQ values, `lowcut_on`),
 `band {s, f, g, q}`, `notch {hz, s}`, `mute {on, seq}` (seq: unmute only), `reset_live
-{confirm: true}`, `ping`.
+{confirm: true}`, `ping`. The laptop's tune page has its own socket, `/tune/ws` (§11).
 
 ## 9. Friday rig-test checklist (go/no-go for Sunday)
 
@@ -304,7 +310,13 @@ phone off), `pong`; phone → box `nudge {f, d, fine}`, `set {f, v}` (live EQ va
 9. Turn the phone's Wi-Fi off mid-show: nothing changes in the sound.
 10. SETUP › Phone off: the phone says OFF and controls nothing; on again: it reconnects.
 11. `sudo systemctl restart k1000`: audio unchanged, the page reconnects by itself.
-12. From the phone, `http://10.42.0.1:5005/` (CamillaGUI) does **not** load (the fence).
+12. From the phone, `http://10.42.0.1:5005/` (CamillaGUI) does **not** load (the fence), with
+    SETUP › Laptop access closed.
+13. **Laptop access** (§11): SETUP › Laptop access, push twice → `OPEN 2:00` and the SHOW pill
+    `LAPTOP OPEN 2:00`. The laptop joins K1000 with the password the PHONE page now prints, opens
+    `http://10.42.0.1:5005/gui/index.html` (CamillaGUI), `https://10.42.0.1/tune`, and `ssh
+    k1000@10.42.0.1`. Paste a REW filter list on `/tune`: preview, Apply, Undo. One push on
+    SETUP › Laptop access closes it: CamillaGUI no longer loads (a reload of `/tune` says closed).
 
 All pass → phone **on** for Sunday. Any fail → phone **fully off** for Sunday, knobs only:
 
@@ -322,6 +334,26 @@ With the phone off, the box's KNOBS OFFLINE alert says `SOURCE DOWN / BYPASS` in
 `USE PHONE MUTE / BYPASS`: it names the phone mute only while there is one to use.
 
 ## 10. Test record (2026-10-12, before integration)
+
+- **Laptop access + /tune** (2026-10-13, §11), in the repo: `box/tests/test_laptop.py` (the k1000
+  side following root's status file: opening, refusals, no answer, the 2 h end, k1000's runtime
+  directory gone; the SETUP double push and single-push close through the real Controller; the
+  pill, hints, SETUP/PHONE pictures; `/tune` and `/tune/ws` refused while closed, preview/apply/
+  undo while open, every tune page dropped with 4004 when it closes, phone frames still capped
+  at 1 KB), `box/tests/test_tune.py` (the parser on real REW V4.00/V5.19/V5.20 exports and
+  EqualizerAPO lines; 12 filters refused; clamps listed; decimal commas; BW → Q equal to the
+  digital Peaking/Bandwidth filter; apply/undo through the real Controller, engine and disk),
+  `box/tools/tests/test_laptop_access.py` (the root helper against a fake nft shaped like the
+  box's ruleset: one rule at the head of the fence's input chain, closed by the box, by time, by
+  k1000 stopping, by a unit stop, by the fence going; put back after a fence reload; refusals
+  before any rule; the units and install.sh). On the box, never touching the live fence (its
+  hash checked before and after): the helper with the **real nft 1.1.3** and **real packets**
+  in two throwaway network namespaces (closed: 5005/22/8000 blocked, 443 open; open: 5005 and
+  22 open from 10.42.0.50, 8000 still blocked, 5005 from 10.43.0.5 blocked; a fence reload →
+  the rule back within 1 s; closed again: blocked); the path → service flow under the real
+  systemd with transient units carrying `k1000-laptop.service`'s exact sandbox (request, close
+  from k1000, stop of the unit, a start without request skipped, a refusal without a trigger
+  loop); `systemd-analyze verify` of the three units; `systemd-analyze security`: 3.5 OK.
 
 - Unit tests `box/tests/test_web.py` + `test_qr.py` + `test_phone_wiring.py`: the bridge against the real Controller over an in-memory engine (mute generation and
   races, a stalled downlink, hostile numbers), the servers in-process (static files, Origin,
@@ -364,3 +396,94 @@ With the phone off, the box's KNOBS OFFLINE alert says `SOURCE DOWN / BYPASS` in
 - **Not yet proven on hardware:** the AP itself on the Pi's wlan0 (5 GHz AP mode on brcmfmac), a
   real Android phone (QR join, CA install, *Sign in to network*, the install prompt), range, the
   hostapd backend. That is what the Friday checklist is for.
+
+## 11. Friday tune: SETUP › Laptop access and the `/tune` page (2026-10-13)
+
+Thomas approved it on 2026-10-12 (night), for the gig build. At the rig the laptop reaches the box
+only over the K1000 Wi-Fi (there is no house network, and a laptop sharing its connection on the
+`eth0` cable takes the AP down: §1), and the fence keeps CamillaGUI and SSH away from the Wi-Fi.
+Laptop access opens exactly those two, for a while.
+
+**On the box:** SETUP › **Laptop access**, push twice (`PUSH AGAIN: LAPTOP ACCESS FOR 2 H`). The
+row then reads `OPEN 1:59` (hours:minutes left), SHOW carries the pill `LAPTOP OPEN 1:59`, and
+the PHONE page prints the Wi-Fi password on every step (a laptop cannot scan the QR). **One push
+closes it** (the safe direction needs no confirm). It also closes by itself:
+
+- after **2 hours** (counted on the boot clock: a clock set by NTP mid-show changes nothing);
+- when **k1000 stops or restarts** (its runtime directory, where the request lives, goes with it);
+- at **boot**: nothing about it is persistent (the rule is never in the fence file, the request
+  lives in `/run`);
+- when the fence goes (the AP is down anyway).
+
+Closing refuses **new** connections at once; a connection already open (an SSH session, the
+GUI's open socket) stays until it ends, as the fence keeps established connections.
+
+**What it opens:** one nftables rule at the head of the fence's input chain (table
+`inet k1000_ap`), tagged `k1000-laptop-access`:
+
+```
+iifname "wlan0" ip saddr 10.42.0.0/24 ip daddr 10.42.0.1 tcp dport { 22, 5005 } ct state new accept
+```
+
+SSH and CamillaGUI, from the K1000 Wi-Fi's own subnet to the box's AP address. Nothing else: not
+other ports, not the box's `eth0` address over the Wi-Fi, nothing routed. A fence reloaded while
+open (`setup-ap.sh` re-run) gets the rule back within 10 s. The phones on the K1000 Wi-Fi reach
+the same two ports meanwhile: open it for the tune, close it after.
+
+**Least privilege.** The k1000 service runs as user k1000 with `CAP_NET_BIND_SERVICE` as its only
+capability, so it cannot touch a firewall and cannot use sudo at all (sudo needs capabilities its
+bounding set removed): the blanket sudo of the k1000 login user is never involved. Instead:
+
+| Piece | Runs as | Does |
+|---|---|---|
+| `k1000` (`laptop.LaptopAccess`) | k1000 | creates or removes `/run/k1000/laptop-open` (its own `RuntimeDirectory`); reads root's status |
+| `k1000-laptop.path` | systemd | starts `k1000-laptop.service` when the flag exists; k1000.service `Wants=` it (never enabled) |
+| `k1000-laptop.service` | root, sandboxed | `/opt/k1000/net/k1000-laptop-access.sh run`: inserts the rule, writes `/run/k1000-laptop/status`, keeps it while the flag stands (2 h at most); `ExecStopPost` removes the rule and the flag on every way out. Capabilities `CAP_NET_ADMIN` + `CAP_DAC_OVERRIDE` only, read-only system, no devices or kernel knobs; `ConditionPathExists=` the flag, `Requisite=`/`PartOf=` k1000; no `[Install]` |
+
+The request carries nothing: ports, subnet and duration are the root script's. Its lines:
+`journalctl -t k1000-laptop`; what is open now: `sudo /opt/k1000/net/k1000-laptop-access.sh status`.
+
+**The laptop, step by step:**
+
+1. SETUP › Laptop access, push twice. SETUP › Phone: the Wi-Fi password is printed.
+2. Join **K1000** with that password.
+3. CamillaGUI: `http://10.42.0.1:5005/gui/index.html` (press *Fetch from DSP* before editing:
+   `box/README.md`, "Laptop"). SSH: `ssh k1000@10.42.0.1`.
+4. Or the **tune page**: `https://10.42.0.1/tune` (the laptop needs the K1000 CA like the phone,
+   §3; or accept the browser's warning once).
+5. Done: one push on SETUP › Laptop access.
+
+**The tune page** (`/tune`, served by k1000 next to the phone page; `403 laptop access is closed`
+while it is closed, every open tune page dropped the moment it closes). It needs the phone
+servers (`phone: enabled: true` in k1000.yaml) but not SETUP › Phone: phone control off does not
+close it, and laptop access never turns phone control on.
+
+- Paste a filter list. **REW**: *File › Export › Export filter settings as text*, then the
+  file's whole text (the header is ignored). **EqualizerAPO / AutoEQ**: the `Filter` lines.
+  **Open Sound Meter** has no filter export we know of: type its filters as
+  `Filter 1: ON PK Fc 125 Hz Gain -4.0 dB Q 5.00` or `125 Hz -4 dB Q 5`, one per line.
+- **A list with `Filter` lines reads only those.** Its other lines (REW's header and its free-text
+  `Notes:`, comments) are never filters, even when they carry a frequency, a gain and a Q: such a
+  line is listed in the notes as ignored. REW's header keys (`Notes:`, `Equaliser:`, `Dated:`,
+  `Room EQ`, `Filter Settings file`) are never read as filters. The free form
+  (`125 Hz -4 dB Q 5`) is read only in a hand-typed list that has no `Filter` line at all.
+- **Preview** on the 8 system PEQ bands: the curve now (grey) and after (amber), computed like
+  the engine (CamillaDSP's biquads at 48 kHz), and a band table (`docs/ui/tune_preview.png`). The filters go on bands 1..n in
+  the list's order; the other bands become flat (0 dB at their home frequency).
+- **Peaking only.** Shelves, pass filters, notches, all-pass, GraphicEQ and OFF filters are
+  listed as skipped, never approximated; a 0 dB filter (REW writes `-0.00`) is skipped too.
+- **More than 8 peaking filters: refused whole**, with the message (re-run the EQ with 8 at most).
+- **Clamped to the system ranges** (20 Hz–20 kHz, −20…+10 dB, Q 0.3–16) and each clamp listed.
+- Read as well: REW's older `PA … BW/60` lines, EqualizerAPO's `BW Oct` (converted to the Q of
+  the same digital filter), `kHz`, decimal commas (a French REW), a web page's Unicode minus.
+  `Preamp` is ignored (said so): set the level with the master.
+- **Apply** (with a confirm): the box reads the text again itself (the page's preview is never
+  trusted) and sets the 8 bands through the Controller like a knob: clamped, click-safe parameter
+  steps (about a second), saved on the box at once. **Undo** puts back the system EQ the last
+  Apply replaced (one level; kept in `/var/lib/k1000/tune-undo.json`, so a k1000 restart does not
+  lose it).
+
+The socket, `/tune/ws` (Origin checked like `/ws`, 2 pages at most, 5 messages/s): page → box
+`preview {text}`, `apply {text}`, `undo`, `state`, `ping`; box → page `hello` (the system EQ now,
+its curve, the undo, `left_s`), `preview`, `applied` (`saved`), `undone`, `left`, `err`, `bye`
+(4004: laptop access closed; 4002: two pages already).

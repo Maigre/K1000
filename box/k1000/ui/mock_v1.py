@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Mockups of the v1 live UI (docs/07-live-ui-v1.md), drawn with pages.py's own helpers.
 
     python3 -m k1000.ui.mock_v1 docs/ui/v1        # the PNGs the spec shows

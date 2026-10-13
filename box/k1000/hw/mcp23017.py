@@ -12,13 +12,18 @@ Hardware (proven on the box, see docs/03-v0-architecture.md section 1):
 Decoding reference: zynthian/zyncoder, branch `oram` (commit cbd93aa1), zyncoder.c
 `update_zyncoder()` + `valid_quadrant_states[]`: it keeps a 2-transition history and emits +/-1
 only on the last transition of a complete quadrature cycle back into the rest state
-(long_history 0xd4 = CW, 0xe8 = CCW), i.e. **4 transitions per detent**, CW = A changes first.
-That is our default (`steps_per_detent=4`); 2 and 1 are configurable.
+(long_history 0xd4 = CW, 0xe8 = CCW), i.e. **4 transitions per detent**, CW = A changes first
+(older zyncoder: ZYNCODER_TICKS_PER_RETENT 4). That is our default (`steps_per_detent=4`); 2 and
+1 are configurable per encoder (k1000.yaml `controls: steps_per_detent`), and
+box/tools/k1000-knobtrace.py measures which one the knobs need.
 
-Deviation from zyncoder, on purpose: zyncoder assumes the rest state is "both contacts open"
-(A=B=1). On this box the idle levels are enc0 AB=00, enc1 11, enc2 11, enc3 10 (stable over
-5858 reads), so a fixed rest state would mis-count. We **anchor** each decoder on its observed
-idle state and re-anchor when the knob sits still on a state we did not expect (self-healing).
+Detent (rest) state: like zyncoder, a detent is "both contacts open" (AB=11) by default, per
+encoder in k1000.yaml `controls: detent_ab` (docs/08-knob-precision.md). The v0 driver anchored
+each decoder on the level read at start instead (the box once idled at enc0 AB=00, enc1 11, enc2
+11, enc3 10; all four read 11 after use on 2026-10-12) and re-anchored after any 0.3 s pause off
+that state: a finger pausing at the top of a click then made the click count twice, a very slow
+turn counted late. Now a pause never counts by itself; a mis-set detent re-learns itself only
+after three long (>= 1 s) rests in a row on the same other state (QuadratureDecoder).
 
 Interrupt storms (proven on the box): while a pin is in compare-to-DEFVAL mode and mismatched, the
 real chip re-asserts INT right after every clearing read (2 fresh falling edges per INTF..GPIO block
@@ -144,6 +149,11 @@ Event = Union[EncoderEvent, SwitchEvent]
 # Quadrature decoding (pure, unit-tested)
 # ---------------------------------------------------------------------------------------------
 _INV = 2  # marker: both bits changed between samples (a skipped state, direction unknown)
+# A click that starts from stillness and whose transitions come faster than this (on average,
+# leave -> arrival) is a contact glitch, never a hand: 2.5 ms per transition = 100 clicks/s at
+# 4 transitions per click; the fastest spins measured are ~45 clicks/s, and a first click from
+# stillness is slower still. QuadratureDecoder._arrive.
+GLITCH_STEP_S = 0.0025
 # index = prev_state << 2 | cur_state, state = A << 1 | B (1 = high).
 # CW (+1) cycle from the open/open rest: 11 -> 01 -> 00 -> 10 -> 11 (A leads, as in zyncoder).
 _QSTEP = (0, -1, +1, _INV,
@@ -156,33 +166,81 @@ class QuadratureDecoder:
     """Full-quadrature state-table decoder for one encoder.
 
     Every valid transition adds +/-1 to an accumulator; a skipped state (both bits flipped) adds
-    +/-2 in the direction we were already going (or the direction of the last step if it was
-    recent), so a fast spin that outruns the I2C sampling still counts. Detents are emitted when
-    the encoder arrives at a rest state, rounded (half away from zero) to `steps_per_detent`, so
+    +/-2 in the direction we were already going, if the knob really moved within `infer_s`, so
+    a fast spin that outruns the I2C sampling still counts. Detents are emitted the moment the
+    encoder arrives in a rest state, rounded (half away from zero) to `steps_per_detent`, so
     contact bounce (x -> y -> x) nets to zero and never emits.
 
+    "Really moved" means the knob was already turning in that direction BEFORE this excursion
+    off the detent: a counted transition within `infer_s` before it left the rest state (a
+    spin: the previous click had just landed), or two counted steps that way since it left
+    (|acc| >= 2). The excursion's own first transition is not evidence: with interrupts, INTCAP
+    holds the first edge of anything, a glitch included, so a glitch whose first sample has one
+    contact flipped (11 -> 01 -> 10 -> 11, INTCAP 01 then GPIO 10 in one read) must not lend
+    its own edge to the skip that follows. Cost: the first click of a turn from stillness whose
+    first or second transition is skipped is lost (never more than that click; the next one
+    leaves the detent while moving).
+
+    A skip without such a move is not attributed: on a knob at rest it is a glitch that takes
+    both contacts at once. Its true size is +2 or -2, so the decoder is *lost* by half a click
+    until the knob is back on a rest state; that arrival counts the smaller of the two readings
+    (it never invents a detent) and re-syncs. Without this, a 2 ms glitch on a resting knob
+    emitted a detent: 11 -> 00 -> 01 -> 11 gave -1, 11 -> 00 -> 10 -> 11 gave +1, 11 -> 00 -> 11
+    gave one step in the direction of the knob's last turn (the glitch itself counted as
+    "recent"), and 11 -> 01 -> 10 -> 11 gave +1 (its first edge counted as a recent move).
+
     Rest states: spd=4 -> {anchor}; spd=2 -> {anchor, anchor^3}; spd=1 -> every state. The anchor
-    starts as the idle state and is re-learned when the knob sits still for `idle_s` on a
-    non-rest state (an anchor learned off-detent heals itself on the next real detent).
+    is `rest`, the AB state of a detent (a property of the encoder: 3 = both contacts open), or
+    with rest=None the state at reset().
+
+    A pause never counts by itself. A knob still for `idle_s` off a rest state is a finger between
+    two clicks: nothing is emitted, except from 3/4 of the way (spd 4: a lost last transition,
+    or a worn contact reading one quarter-step off at its detent), and then the remainder is kept
+    so that click is not counted again when the knob moves on. With `learn_rests` the anchor
+    moves to a state the knob has rested on for `learn_s` that many times in a row, with no stop
+    on a rest state between: a mis-set `rest` heals itself; a finger hovering between clicks,
+    which stops on a detent in between, never moves it.
     """
 
     def __init__(self, steps_per_detent: int = 4, state: int = 3, now: float = 0.0,
-                 idle_s: float = 0.3, infer_s: float = 0.1) -> None:
+                 idle_s: float = 0.3, infer_s: float = 0.1, rest: Optional[int] = None,
+                 learn_rests: int = 0, learn_s: float = 1.0,
+                 glitch_s: float = GLITCH_STEP_S) -> None:
         if steps_per_detent not in (1, 2, 4):
             raise ValueError("steps_per_detent must be 1, 2 or 4")
         self.spd = steps_per_detent
         self.idle_s = idle_s
         self.infer_s = infer_s
-        self.invalid = 0  # skipped states we could not attribute a direction to
+        self.rest = None if rest is None else rest & 3
+        self.learn_rests = max(0, int(learn_rests))
+        self.learn_s = max(idle_s, learn_s)
+        self.glitch_s = max(0.0, float(glitch_s))
+        self.invalid = 0     # skipped states we could not attribute a direction to
+        self.glitches = 0    # clicks from stillness too fast for a hand: not counted
+        self.relearned = 0   # anchor moves by learn_rests
+        self.half_rests = 0  # rests in a row half a detent apart (a 2-transition encoder at spd 4?)
         self.reset(state, now)
 
     def reset(self, state: int, now: float = 0.0) -> None:
-        """Adopt `state` as the current (and anchor) position without emitting anything."""
+        """Adopt `state` as the current position without emitting anything. The anchor is `rest`
+        (configured or learned), else `state`."""
         self.state = state & 3
-        self.anchor = self.state
+        self.anchor = self.state if self.rest is None else self.rest
         self.acc = 0
         self.last_change = now
         self.last_dir = 0
+        self._settled = True              # nothing to decide until the knob moves
+        self._vote = False                # a learn vote is due at last_change + learn_s
+        self._cand: Optional[int] = None  # learn: the state voted for, and how many times
+        self._cand_n = 0
+        self._moved = 0                   # net quarter-steps since the last stop (half_rests)
+        self._last_stop = self.state
+        self._lost = False                # an unattributable skip since the last rest (+-2 unknown)
+        self._moved_at = now              # time of the last real (counted) transition
+        self._entry_dir = 0               # direction the knob was ALREADY turning when it left
+        #                                   the last rest state (0: it left from stillness)
+        self._still = False               # it left the last rest state from stillness
+        self._left_at = now               # when it left the last rest state
 
     def is_rest(self, state: int) -> bool:
         if self.spd == 1:
@@ -196,42 +254,142 @@ class QuadratureDecoder:
         state &= 3
         if state == self.state:
             return 0
-        step = _QSTEP[(self.state << 2) | state]
-        prev_change, self.last_change = self.last_change, now
+        prev = self.state
+        step = _QSTEP[(prev << 2) | state]
+        recent = bool(self.last_dir) and now - self._moved_at <= self.infer_s
+        self.last_change = now
         self.state = state
+        self._settled, self._vote = False, False
         if step == _INV:
-            if self.acc:
-                step = 2 if self.acc > 0 else -2
-            elif self.last_dir and now - prev_change <= self.infer_s:
-                step = 2 * self.last_dir
+            d = self._skip_dir(prev, recent)
+            if d:
+                step = 2 * d
             else:
                 self.invalid += 1
+                self._entry_dir = 0   # nothing about this excursion is a known turn any more
+                if self.is_rest(prev):            # it left the detent from stillness
+                    self._still, self._left_at = True, now
+                if self.spd == 1:     # every state is emitted at once: nothing to put right
+                    return 0
+                if self.is_rest(state):
+                    if self._lost:    # a second jump of unknown sign: nothing to trust, re-sync
+                        self.acc, self._lost = 0, False
+                        return 0
+                    if self.spd == 4:     # from half a click off back onto a detent: +-2
+                        self._lost = True
+                        return self._arrive(now)
+                self._lost = True
                 return 0
+        sign = 1 if step > 0 else -1
+        if self.is_rest(prev):
+            # Leaving a detent: was the knob already turning this way (a spin), or is this the
+            # first edge of something from stillness (a turn starting, or a glitch)?
+            self._entry_dir = sign if (recent and self.last_dir == sign) else 0
+            self._still, self._left_at = not recent, now
         self.acc += step
-        self.last_dir = 1 if step > 0 else -1
+        self._moved += step
+        self.last_dir = sign
+        self._moved_at = now
         if self.is_rest(state):
-            return self._flush()
+            return self._arrive(now)
+        return 0
+
+    def _arrive(self, now: float) -> int:
+        """On a rest state: the detents completed (see _flush), unless the click started from
+        stillness and came faster than a hand turns (`glitch_s` per transition: a contact glitch
+        whose dips and releases are staggered, e.g. 11 -> 01 -> 00 -> 10 -> 11 within 2 ms, is a
+        valid quadrature cycle; only its speed tells it from a click). Then nothing counts, and
+        the next excursion is from stillness too."""
+        n = self._flush()
+        if (n and self._still and self.spd > 1
+                and now - self._left_at < (self.spd - 1) * self.glitch_s):
+            self.glitches += 1
+            self.last_dir = 0
+            return 0
+        return n
+
+    def _skip_dir(self, prev: int, recent: bool) -> int:
+        """The direction to credit a skipped state (both contacts changed) to, 0 = none.
+        Only a knob already turning that way before this excursion off the detent: see the
+        class docstring. The excursion's own first edge never counts as that evidence."""
+        if not recent:
+            return 0
+        if self.is_rest(prev):              # the skip leaves the detent: a spin, or nothing
+            return self.last_dir
+        if abs(self.acc) >= 2:              # two counted steps that way since it left
+            return 1 if self.acc > 0 else -1
+        d = self._entry_dir
+        if d and (self.acc == 0 or (self.acc > 0) == (d > 0)):
+            return d
         return 0
 
     def _flush(self) -> int:
         acc, self.acc = self.acc, 0
-        n = (abs(acc) + self.spd // 2) // self.spd
+        if self._lost:
+            # +-2 transitions unaccounted for: the reading closer to zero, rounded down
+            if abs(acc) < 2:          # spd 2: back on the detent the jump landed on, still lost
+                return 0
+            self._lost = False
+            n = (abs(acc) - 2) // self.spd
+        else:
+            n = (abs(acc) + self.spd // 2) // self.spd
         return n if acc > 0 else -n
 
     def deadline(self) -> Optional[float]:
         """When settle() has work to do (None = nothing pending)."""
-        if self.spd == 1 or (self.acc == 0 and self.is_rest(self.state)):
+        if self.spd == 1:
             return None
-        return self.last_change + self.idle_s
+        if not self._settled:
+            return self.last_change + self.idle_s
+        if self._vote:
+            return self.last_change + self.learn_s
+        return None
 
     def settle(self, now: float) -> int:
-        """Knob still for idle_s off a rest state: it is in a detent we did not know -> adopt it."""
-        d = self.deadline()
-        if d is None or now < d:
-            return 0
-        n = self._flush()
-        self.anchor = self.state
+        """Call at deadline(): the knob has been still. Returns detents to emit (rarely any)."""
+        n = 0
+        if not self._settled:
+            if now < self.last_change + self.idle_s:
+                return 0
+            self._settled = True
+            n = self._stopped()
+            self._vote = bool(self.learn_rests) and not self.is_rest(self.state)
+        if self._vote and now >= self.last_change + self.learn_s:
+            self._vote = False
+            self._learn(self.state)
         return n
+
+    def _stopped(self) -> int:
+        n = 0
+        if self.is_rest(self.state):
+            self._cand, self._cand_n = None, 0      # a stop on a known detent confirms the anchor
+        elif not self._lost:                        # lost: 3/4 might be 1/4; wait for a rest
+            mag = (abs(self.acc) + self.spd // 4) // self.spd   # spd 4: only from 3/4
+            n = mag if self.acc > 0 else -mag
+            self.acc -= n * self.spd
+        # A 2-transition encoder decoded at spd 4 stops alternately on the anchor and anchor^3,
+        # two transitions apart. A finger pausing at the top of every click looks the same, so
+        # this only feeds a log hint (ZynthianControls), never the decoding.
+        if self.spd == 4 and abs(self._moved) == 2 and self.state == self._last_stop ^ 3:
+            self.half_rests += 1
+        elif self._moved:
+            self.half_rests = 0
+        self._last_stop, self._moved = self.state, 0
+        return n
+
+    def _learn(self, state: int) -> None:
+        if state == self._cand:
+            self._cand_n += 1
+        else:
+            self._cand, self._cand_n = state, 1
+        if self._cand_n >= self.learn_rests:
+            self.anchor = state
+            if self.rest is not None:
+                self.rest = state                  # survives reset() (I2C fault re-seeds)
+            self.acc = 0                           # this click was counted on the old anchor
+            self._lost = False
+            self._cand, self._cand_n = None, 0
+            self.relearned += 1
 
 
 # ---------------------------------------------------------------------------------------------
@@ -339,6 +497,73 @@ class Accelerator:
             return ev.delta
         rate = abs(ev.delta) / max(ev.ts - last[0], 0.002)
         return ev.delta * accel_multiplier(rate, self.low, self.high, self.max_mult)
+
+
+# ---------------------------------------------------------------------------------------------
+# Encoder options (k1000.yaml `controls:`), per physical encoder enc0..enc3
+# ---------------------------------------------------------------------------------------------
+DetentRef = Union[int, str, None]
+DEFAULT_DETENT = "11"    # both contacts open (zyncoder's rest; all four knobs read it 2026-10-12)
+HALF_REST_HINT = 8       # QuadratureDecoder.half_rests that earns one log line per encoder
+
+
+def parse_detent(v: DetentRef) -> Optional[int]:
+    """'11' / '01' (A then B, 1 = open) or 0..3 -> AB state; 'idle' or None -> None (the level at
+    start, the v0 behaviour). Raises ValueError otherwise."""
+    if v is None:
+        return None
+    if isinstance(v, int) and not isinstance(v, bool):
+        if 0 <= v <= 3:
+            return v
+        raise ValueError(f"detent_ab {v!r}: want '11', '10', '01', '00' or 'idle'")
+    t = str(v).strip().lower()
+    if t == "idle":
+        return None
+    if len(t) == 2 and set(t) <= {"0", "1"}:
+        return int(t[0]) << 1 | int(t[1])
+    raise ValueError(f"detent_ab {v!r}: want '11', '10', '01', '00' or 'idle'")
+
+
+def _per_encoder(v: object, n: int, name: str) -> list:
+    if isinstance(v, (list, tuple)):
+        if len(v) != n:
+            raise ValueError(f"{name}: {n} values expected, got {len(v)}")
+        return list(v)
+    return [v] * n
+
+
+def steps_per_detent_list(v: object, n: int) -> tuple[int, ...]:
+    """1, 2 or 4, or one of those per encoder -> n values. Raises ValueError."""
+    vals = _per_encoder(v, n, "steps_per_detent")
+    if any(isinstance(x, bool) or x not in (1, 2, 4) for x in vals):
+        raise ValueError("steps_per_detent must be 1, 2 or 4")
+    return tuple(int(x) for x in vals)
+
+
+def detent_list(v: object, n: int) -> tuple[Optional[int], ...]:
+    """A detent_ab value, or one per encoder -> n AB states (None = idle). Raises ValueError."""
+    return tuple(parse_detent(x) for x in _per_encoder(v, n, "detent_ab"))
+
+
+def controls_options(cfg: object) -> dict:
+    """ZynthianControls keyword arguments from the k1000.yaml dict (`controls:` section):
+    steps_per_detent (1, 2 or 4, or a list per physical encoder) and detent_ab ('11'... or
+    'idle', or a list). Lenient like input_map.ControlMap.from_cfg: an invalid value is logged
+    and its default kept, so a typo never leaves the box without knobs."""
+    sec = cfg.get("controls") if isinstance(cfg, dict) else None
+    if not isinstance(sec, dict):
+        return {}
+    n = len(DEFAULT_ENCODERS)
+    out: dict = {}
+    for key, check in (("steps_per_detent", steps_per_detent_list), ("detent_ab", detent_list)):
+        if key not in sec:
+            continue
+        try:
+            check(sec[key], n)
+            out[key] = sec[key]
+        except (TypeError, ValueError) as e:
+            log.error("k1000.yaml controls.%s ignored (%s): using the default", key, e)
+    return out
 
 
 # ---------------------------------------------------------------------------------------------
@@ -495,7 +720,10 @@ class ZynthianControls:
     def __init__(self, bus: int = 1, addr: int = 0x20, int_a: int = 27, int_b: int = 4,
                  encoders: Sequence[tuple[PinRef, PinRef]] = DEFAULT_ENCODERS,
                  switches: Sequence[PinRef] = DEFAULT_SWITCHES, long_ms: float = 800, *,
-                 debounce_ms: float = 10, poll_ms: float = 50, steps_per_detent: int = 4,
+                 debounce_ms: float = 10, poll_ms: float = 50,
+                 steps_per_detent: "int | Sequence[int]" = 4,
+                 detent_ab: "DetentRef | Sequence[DetentRef]" = DEFAULT_DETENT,
+                 learn_rests: int = 3,
                  idle_ms: float = 300, gpiochip: str = "/dev/gpiochip0", use_irq: bool = True,
                  bus_factory: Callable[[int], SMBusLike] = _default_bus,
                  lines_factory: Optional[Callable[[str, Sequence[int]], IntLines]] = None,
@@ -508,9 +736,8 @@ class ZynthianControls:
         used = [p for ab in self.encoder_pins for p in ab] + self.switch_pins
         if len(set(used)) != len(used):
             raise ValueError("an MCP23017 pin is assigned twice in encoders/switches")
-        if steps_per_detent not in (1, 2, 4):
-            raise ValueError("steps_per_detent must be 1, 2 or 4")
-        self.steps_per_detent = steps_per_detent
+        self.steps_per_detent = steps_per_detent_list(steps_per_detent, len(self.encoder_pins))
+        self.detent_ab = detent_list(detent_ab, len(self.encoder_pins))
         self.long_s = _clamp(long_ms, 200, 5000) / 1000.0
         self.debounce_s = _clamp(debounce_ms, 1, 50) / 1000.0
         self.poll_s = _clamp(poll_ms, 5, 1000) / 1000.0
@@ -523,11 +750,14 @@ class ZynthianControls:
         self.on_raw = on_raw
 
         now = clock()
-        self._decoders = [QuadratureDecoder(steps_per_detent, 3, now, self.idle_s)
-                          for _ in self.encoder_pins]
+        self._decoders = [QuadratureDecoder(spd, 3, now, self.idle_s, rest=rest,
+                                            learn_rests=learn_rests)
+                          for spd, rest in zip(self.steps_per_detent, self.detent_ab)]
+        self._hinted: set[int] = set()        # encoders whose half-rest hint was logged
         self._switches = [SwitchDebouncer(self.debounce_s, self.long_s, False, now)
                           for _ in self.switch_pins]
         self.levels = 0xFFFF  # last sampled B<<8|A pin levels
+        self._moved_mask = 0  # pins that changed in the current read (_service: busy vs stuck)
         self.healthy = False
         self.irq = False
         self.stats: dict[str, int] = collections.defaultdict(int)
@@ -820,10 +1050,19 @@ class ZynthianControls:
 
     def _service(self, reread: bool = True) -> bool:
         """Read (clears INTA/INTB) and feed the decoders; with `reread`, repeat while an INT line
-        stays low. Returns True if an INT line is still asserted afterwards (stuck).
-        A sample read with the pull-ups off is never decoded (see _config_alarm)."""
+        stays low. Returns True if an INT line is still asserted afterwards AND the last read
+        brought no new level on that line's port (stuck). A sample read with the pull-ups off
+        is never decoded (see _config_alarm).
+
+        A knob spun fast re-asserts INT right after each clearing read, with a new level every
+        time: that is a busy line, not a stuck one, and the next edge wakes the worker at once.
+        Calling it stuck sent ordinary fast turns into storm polling (5 ms, one read per pass)
+        in the middle of the spin, where the sampling gaps lost whole clicks (PERF-2). A wedged
+        line, or a corrupted INTCON re-asserting on a level that does not move, still brings
+        no new level: stuck. A chattering contact is the edge-flood detector's (STORM_EDGES)."""
         assert self._chip is not None
-        stuck = False
+        low: list[int] = []
+        moved = 0
         for _ in range(self.MAX_REREADS if reread else 1):
             with self._i2c_lock:
                 gppu, st = self._chip.read_guarded()
@@ -832,12 +1071,24 @@ class ZynthianControls:
                 # sample dropped. Repaired chip: _reseed adopted fresh levels. Corrupted read:
                 # the next edge/poll re-reads (a lost quadrature state is inferred by the decoder)
                 self._config_alarm(gppu)
-                stuck = False
+                low = []
                 break
+            self._moved_mask = 0
             self._ingest(st, self._clock())
-            stuck = self._lines is not None and not all(self._lines.levels().values())
-            if not stuck:
+            moved = self._moved_mask
+            low = ([off for off, v in self._lines.levels().items() if not v]
+                   if self._lines is not None else [])
+            if not low:
                 break
+        # Each line still low is stuck unless ITS port brought a new level on the last read
+        # (a knob on port B turning must not hide a wedged INTA) AND the line fell again since
+        # (a fresh edge is queued: the next wait returns at once). A line wedged low makes no
+        # edge, even with a knob turning on its port: stuck, storm polling, as before.
+        stuck = any(not moved & (0x00FF if off == self.int_a else 0xFF00) for off in low)
+        if low and not stuck and not self._lines.wait(0):
+            stuck = True
+        if low and not stuck:
+            self.stats["int_busy"] += 1
         if stuck:
             self.stats["int_stuck"] += 1
         self._tick(self._clock())
@@ -858,6 +1109,7 @@ class ZynthianControls:
         changed = sample ^ self.levels
         if not changed:
             return
+        self._moved_mask |= changed
         self.levels = sample
         if self.on_raw is not None:
             try:
@@ -867,9 +1119,15 @@ class ZynthianControls:
         for i, (pa, pb) in enumerate(self.encoder_pins):
             if changed & ((1 << pa) | (1 << pb)):
                 dec = self._decoders[i]
-                inv = dec.invalid
+                inv, gl = dec.invalid, dec.glitches
                 d = dec.update((((sample >> pa) & 1) << 1) | ((sample >> pb) & 1), now)
                 self.stats["invalid_transitions"] += dec.invalid - inv
+                if dec.glitches != gl:
+                    self.stats["glitches"] += 1
+                    n = self.stats["glitches"]
+                    if n <= 5 or n % 100 == 0:   # the journal can tell a phantom from a hand
+                        log.info("enc%d: a click from stillness faster than a hand was ignored "
+                                 "(contact glitch #%d)", i, n)
                 if d:
                     self._emit(EncoderEvent(i, d, now))
         for i, p in enumerate(self.switch_pins):
@@ -879,9 +1137,19 @@ class ZynthianControls:
 
     def _tick(self, now: float) -> None:
         for i, dec in enumerate(self._decoders):
+            learned = dec.relearned
             d = dec.settle(now)
             if d:
                 self._emit(EncoderEvent(i, d, now))
+            if dec.relearned != learned:
+                self.stats["detents_learned"] += 1
+                log.warning("enc%d: detent learned at AB=%s after %d long rests there "
+                            "(set controls.detent_ab to keep it)", i,
+                            f"{dec.anchor:02b}", dec.learn_rests)
+            if dec.half_rests >= HALF_REST_HINT and i not in self._hinted:
+                self._hinted.add(i)
+                log.warning("enc%d: %d stops in a row half a click apart: does it need "
+                            "steps_per_detent 2? (box/tools/k1000-knobtrace.py)", i, dec.half_rests)
         for i, sw in enumerate(self._switches):
             for kind in sw.tick(now):
                 self._emit(SwitchEvent(i, kind, now))
@@ -1097,7 +1365,7 @@ async def _monitor(args: argparse.Namespace) -> int:
 
     controls = ZynthianControls(args.bus, args.addr, args.int_a, args.int_b,
                                 long_ms=args.long_ms, steps_per_detent=args.steps_per_detent,
-                                use_irq=not args.no_irq, on_raw=on_raw)
+                                detent_ab=args.detent_ab, use_irq=not args.no_irq, on_raw=on_raw)
     bursts = _Bursts(controls.encoder_pins)
     try:
         controls.open()                   # levels known, worker not yet running
@@ -1191,6 +1459,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     p.add_argument("--raw", action="store_true", help="also print every raw pin change")
     p.add_argument("--duration", type=float, default=0.0, help="stop after N seconds (0 = until Ctrl-C)")
     p.add_argument("--steps-per-detent", type=int, choices=(1, 2, 4), default=4)
+    p.add_argument("--detent-ab", default=DEFAULT_DETENT,
+                   help="AB levels at a detent: 11 (default), 10, 01, 00, or idle (level at start)")
     p.add_argument("--long-ms", type=float, default=800.0)
     p.add_argument("--bus", type=int, default=1)
     p.add_argument("--addr", type=lambda s: int(s, 0), default=0x20)

@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# K1000 laptop access (docs/06-phone.md §11). Installed by box/install.sh; started only by
+# k1000-laptop.path when the k1000 service asks (SETUP > Laptop access). Never enabled.
+#
+# While it runs, the AP fence lets SSH (22) and CamillaGUI (5005) through from the K1000 Wi-Fi's
+# own subnet (10.42.0.0/24) to the AP address: the Friday tune's laptop, which can reach the box
+# over that Wi-Fi only. /opt/k1000/net/k1000-laptop-access.sh inserts one tagged rule in the
+# fence's table and removes it again.
+#
+# Why it looks like this:
+# - Closed by itself: after 2 h (the script, on the boot clock; RuntimeMaxSec is the backstop),
+#   when the flag goes (the box closed it, or k1000 stopped: systemd removes /run/k1000 with that
+#   service), when the fence goes, and on ANY stop of this unit: ExecStopPost always removes the
+#   rule and the flag, a failed start or a kill included. PartOf= stops it with k1000.
+# - Never persistent: no [Install] section (nothing starts it at boot), the rule exists only in
+#   the running ruleset (/etc/k1000/ap-fence.nft never holds it), the flag lives in /run.
+# - ConditionPathExists: a start without a standing request (a k1000 restart propagated by
+#   PartOf=, a hand-typed start) opens nothing. Requisite= (not Requires=): it never starts k1000.
+# - Least privilege for a root job: CAP_NET_ADMIN (nft) and CAP_DAC_OVERRIDE (removing the flag
+#   from k1000's directory) are its only capabilities; read-only system except its own status
+#   directory and /run/k1000; only netlink and unix sockets; no devices, kernel knobs, modules or
+#   namespaces. It needs the host's network namespace (that is where the fence is), so no
+#   PrivateNetwork. Checked on the box with this exact sandbox in a transient unit.
+# - RuntimeDirectoryPreserve: the "closed, and why" status stays readable for the box screen.
+
+[Unit]
+Description=K1000 laptop access (CamillaGUI + SSH from the K1000 Wi-Fi, 2 h at most)
+Documentation=file:///opt/k1000/README.md
+ConditionPathExists=/run/k1000/laptop-open
+Requisite=k1000.service
+PartOf=k1000.service
+After=k1000.service k1000-ap-fence.service
+
+[Service]
+Type=simple
+ExecStart=/bin/sh /opt/k1000/net/k1000-laptop-access.sh run
+ExecStopPost=/bin/sh /opt/k1000/net/k1000-laptop-access.sh close
+RuntimeMaxSec=7260
+TimeoutStopSec=10
+SyslogIdentifier=k1000-laptop
+RuntimeDirectory=k1000-laptop
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_DAC_OVERRIDE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=-/run/k1000
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+UMask=0022

@@ -22,11 +22,16 @@
 # - LimitNOFILE=4096 (default 1024): the phone servers' sockets come out of the same pool as the
 #   state file, the engine websocket and the knob bus. The AP fence already caps the page's ports
 #   (16 connections per phone, 64 in all); this is the margin behind it.
+# - RuntimeDirectory=k1000 (/run/k1000, k1000's own, removed whenever this service stops) and
+#   Wants= k1000-laptop.path: SETUP > Laptop access creates /run/k1000/laptop-open there and the
+#   root watcher opens the fence for the Friday tune's laptop (docs/06-phone.md §11). k1000 itself
+#   gains nothing: the bounding set above leaves it no way to root (no sudo, no nft). k1000
+#   stopping removes the directory, so the opening closes with it.
 
 [Unit]
 Description=K1000 control service (knobs, screen, state)
 Documentation=file:///opt/k1000/README.md
-Wants=camilladsp.service k1000-console.service
+Wants=camilladsp.service k1000-console.service k1000-laptop.path
 After=camilladsp.service
 StartLimitIntervalSec=0
 
@@ -45,6 +50,8 @@ Restart=always
 RestartSec=1
 TimeoutStopSec=5
 LimitNOFILE=4096
+RuntimeDirectory=k1000
+RuntimeDirectoryMode=0755
 
 [Install]
 WantedBy=multi-user.target

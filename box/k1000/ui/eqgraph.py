@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The live-EQ graph of the SHOW page: exact filter curves, a log-frequency axis, RTA ballistics
 and the PIL drawing of the graph area (grid, RTA behind, curve, band markers).
 
@@ -388,11 +389,18 @@ class GraphStyle:
     label_hz: tuple[tuple[float, str], ...] = ((50.0, "50"), (100.0, "100"), (200.0, "200"),
                                                (500.0, "500"), (1000.0, "1k"), (2000.0, "2k"),
                                                (5000.0, "5k"), (10000.0, "10k"))
-    label_db: tuple[tuple[float, str], ...] = ((6.0, "+6"), (-6.0, "-6"), (-12.0, "-12"))
+    # D-009: the 0 dB line is labelled, and the dB labels sit at the RIGHT edge (the top octave
+    # is where the program and the markers are least), each with a black outline so it reads
+    # over the spectrum. Each label sits just under its line, so a flat curve never covers it.
+    label_db: tuple[tuple[float, str], ...] = ((6.0, "+6"), (0.0, "0 dB"), (-6.0, "-6"),
+                                               (-12.0, "-12"))
+    label_db_right: bool = True
+    label_outline: int = 2            # px of black around the dB labels (1 for the Hz labels)
     bg: tuple[int, int, int] = (0, 0, 0)
     grid: tuple[int, int, int] = (44, 44, 44)
     zero: tuple[int, int, int] = (110, 110, 110)
     label: tuple[int, int, int] = (120, 120, 120)
+    label_db_fill: tuple[int, int, int] = (185, 185, 185)
     rta_fill: tuple[int, int, int] = (0, 52, 78)
     rta_edge: tuple[int, int, int] = (20, 120, 165)
     rta_hold: tuple[int, int, int] = (90, 130, 150)     # dots, every `hold_every` columns
@@ -405,7 +413,8 @@ class GraphStyle:
     cut: tuple[int, int, int] = (255, 90, 0)            # the v0 slot-pill colours
     boost: tuple[int, int, int] = (40, 220, 70)
     idle: tuple[int, int, int] = (150, 150, 150)
-    peak: tuple[int, int, int] = (255, 220, 0)
+    peak: tuple[int, int, int] = (0, 200, 255)          # D-009: a small CYAN pointer
+    peak_line: bool = False           # the mockups' dashed line down the graph (off: a pointer)
     curve_w: int = 3
     marker_r: int = 10
     idle_r: int = 9
@@ -439,12 +448,19 @@ def _grid_layer(w: int, h: int, style: GraphStyle) -> tuple[Image.Image, Image.I
     dr.line((0, y0, w - 1, y0), fill=style.zero)
     dm.line((0, y0, w - 1, y0), fill=255)
     f = _font(style.label_size, False)
+    out1 = min(1, style.label_outline)
     for hz, t in style.label_hz:
-        dr.text((fa.x(hz) + 3, h - 2), t, font=f, fill=style.label, anchor="ld")
-        dm.text((fa.x(hz) + 3, h - 2), t, font=f, fill=255, anchor="ld")
+        xy = (fa.x(hz) + 3, h - 2)
+        dr.text(xy, t, font=f, fill=style.label, anchor="ld", stroke_width=out1, stroke_fill=(0, 0, 0))
+        dm.text(xy, t, font=f, fill=255, anchor="ld", stroke_width=out1, stroke_fill=255)
+    fb = _font(style.label_size, True)
     for db, t in style.label_db:
-        dr.text((3, da.y(db) + 2), t, font=f, fill=style.label, anchor="la")
-        dm.text((3, da.y(db) + 2), t, font=f, fill=255, anchor="la")
+        y = round(da.y(db)) + 2 + style.label_outline
+        xy, anchor = ((w - 3 - style.label_outline, y), "ra") if style.label_db_right else ((3, y), "la")
+        dr.text(xy, t, font=fb, fill=style.label_db_fill, anchor=anchor,
+                stroke_width=style.label_outline, stroke_fill=(0, 0, 0))
+        dm.text(xy, t, font=fb, fill=255, anchor=anchor, stroke_width=style.label_outline,
+                stroke_fill=255)
     return rgb, mask
 
 
@@ -534,13 +550,15 @@ def draw_graph(img: Image.Image, box: tuple[int, int, int, int], bands: Sequence
     yc = da.y(curve_db(bands, fs))
     d.line(list(zip(xs.tolist(), yc.tolist())), fill=style.curve if eq_in else style.curve_out,
            width=style.curve_w, joint="curve")
-    # 6. PEAK marker (persistent narrow peak of the RTA)
+    # 6. PEAK pointer (persistent narrow peak of the RTA): a small triangle on the top edge;
+    #    the caller writes its frequency next to it (geo["peak_x"])
     peak_x = None
     if rta is not None and rta.peak_hz:
-        peak_x = fa.x(rta.peak_hz)
+        peak_x = min(x1 - 8.0, max(x0 + 7.0, fa.x(rta.peak_hz)))
         d.polygon([(peak_x - 7, y0 + 1), (peak_x + 7, y0 + 1), (peak_x, y0 + 11)], fill=style.peak)
-        for yy in range(y0 + 13, y1 - 1, 6):          # dashed: it is a pointer, not a curve
-            d.line((peak_x, yy, peak_x, min(y1 - 1, yy + 2)), fill=style.peak, width=1)
+        if style.peak_line:
+            for yy in range(y0 + 13, y1 - 1, 6):      # dashed: it is a pointer, not a curve
+                d.line((peak_x, yy, peak_x, min(y1 - 1, yy + 2)), fill=style.peak, width=1)
     # 7. bands in use, then the selected one on top
     for i in [i for i in live if i != selected and abs(bands[i].gain) >= 0.05]:
         mx, my = place(i, style.marker_r)

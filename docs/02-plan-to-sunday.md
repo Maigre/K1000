@@ -49,21 +49,38 @@ in L/R ─ trim ─ System PEQ (8 bands) ─ Live EQ (4 peaking/notch @0 dB + lo
 
 **Knobs (Zynthian):**
 
+UI v1 (D-009, accepted on the box 2026-10-13; it replaced the v0 MAIN / LIVE EQ pages, which are in
+git history). The gig card is `docs/04-operator-card.md`.
+
 | Page | E1 | E2 | E3 | E4 |
 |---|---|---|---|---|
-| MAIN | master | sub↔top balance | sub delay (after 2.5 s at rest the first detent only wakes it) | top Lo-Cut freq |
-| LIVE EQ | slot select | frequency (push = fine) | gain | Q |
+| SHOW (front) | master | frequency of the selected band (push = fine) | gain of the selected band | Q |
+| ALIGN | master | sub↔top balance | sub delay: **locked** (after the unlock, the first detent after 2.5 s at rest only wakes it) | top Lo-Cut freq: **locked** |
+| SETUP | item | value | — | — |
 
-Buttons (as built after the 2026-10-12 integration round; the gig card is `docs/04-operator-card.md`):
-- B1 next page
-- B2 mute / unmute (long press), every page
-- B3 Lo-Cut on/off, MAIN only
-- B4 reset live EQ, LIVE only: two long presses within 5 s
+- Master up is never accelerated and rises at most +6 dB per 2 s (`MASTER: SLOW DOWN`; k1000.yaml
+  `controls.master_up_guard_db`, 0 = off). Down is always instant.
+- SHOW draws the live-EQ curve (computed from the engine's own filters) over the program spectrum,
+  with a cyan PEAK pointer when one stands out.
 
-The screen shows the current page in large type, plus mute/clip state.
+Buttons:
+- B1 tap: next page SHOW → ALIGN → SETUP; hold: SHOW from anywhere. ALIGN and SETUP return to SHOW
+  after 60 s idle.
+- B2 mute / unmute (long press, 0.8 s), every page.
+- B3 on SHOW: next band, LS · 1 · 2 · 3 · 4 · HS (wraps). On ALIGN, a hold unlocks E3/E4 for 30 s of
+  idle.
+- B4 on SHOW: the notch helper. A free bell (at 0 dB) gets a notch Q (1/6 oct) and the PEAK's
+  frequency; its gain is never touched, so it is inaudible until E3 cuts.
+- SETUP holds what used to be on buttons: Reset live EQ (two pushes, then a one-level Undo reset),
+  Lo-Cut on/off (two pushes), and the new Spectrum ON/OFF and Laptop access.
 
-**Phone:** CamillaGUI's compact view in the Android browser for levels. The full editor runs on a
-laptop for the system EQ at the tune.
+The screen shows the current page, plus mute/clip state. System alerts take the status bar; hints
+are a brief amber strip.
+
+**Phone:** K1000's own phone page over the box's Wi-Fi (D-007, `docs/06-phone.md`; go/no-go on
+Friday). CamillaGUI's full editor runs on a laptop for the system EQ at the tune: at the rig, over
+the K1000 Wi-Fi while SETUP › Laptop access is open (2 h), where the `https://10.42.0.1/tune` page
+also takes a pasted REW filter list.
 
 **Safety:**
 - Boots **muted** and ramps to the last saved levels.
@@ -90,9 +107,10 @@ processing:
 
 ### Doesn't (after Sunday)
 
-Spectrum and suggest-notch (v5), a read-only root, an output mute relay, a presets UI, and a final
-enclosure. (The box's own Wi‑Fi AP + phone PWA moved forward on 2026-10-12, D-007, gated by a
-go/no-go at the Friday rig test.)
+A read-only root, an output mute relay, a presets UI, and a final enclosure. (Moved forward: the
+box's own Wi‑Fi AP + phone PWA on 2026-10-12, D-007, gated by a go/no-go at the Friday rig test; the
+SHOW spectrum and the B4 notch helper on 2026-10-12, D-009, the spectrum behind a SETUP switch
+decided at the Friday rig test.)
 
 ## 4. Schedule (rev 2 — after Thomas's answers of 2026-10-12)
 
@@ -115,7 +133,8 @@ label K1000's outputs. Any doubt during the gig means re-patching in a minute.
 ## 6. Test protocol (Friday or Saturday)
 
 0. **Before the speakers**: the Knob test is done and `controls:` confirmed (SETUP › Knob test,
-   `box/README.md`); hold B2 mutes all four Meyers, and B4 is not next to B2 by feel. The M4 front
+   `box/README.md`), the buttons labelled PAGE · MUTE · BAND/UNLOCK · NOTCH; hold B2 mutes all four
+   Meyers (a B4 press in its place is harmless since UI v1, but it does not mute). The M4 front
    panel is taped (MONITOR and INPUT MONITOR MIX fully clockwise, MON buttons unlit). Phone: go/no-go
    on the own-AP PWA (D-007); if no-go, the AP fully off (`setup-ap.sh --down` + `phone: enabled:
    false`, `docs/06-phone.md` §9; SETUP › Phone alone leaves the Wi-Fi on the air) and the knobs
@@ -128,16 +147,36 @@ label K1000's outputs. Any doubt during the gig means re-patching in a minute.
    listen. Note the result in `ROADMAP.md`.
 3. **Gain structure**: noise at −20 dBFS. Check the M4 meters, and that the Meyer limit LEDs stay
    dark at the expected show level.
-4. **Sub alignment**:
+4. **Sub alignment** (ALIGN, hold B3 to unlock E3 = sub delay; the polarity flips and top delay are
+   in SETUP):
    - Stacked under the tops: 0 ms, same polarity (Meyer's design).
    - Off-plane by ≥ 1.5 m: delay the nearer element by distance ÷ 343 m/s.
    - Check with the mic for the fullest sum around 80–100 Hz, and try the polarity flip.
-5. **Lo-Cut**: A/B on program. Default on when the subs are present.
-6. **System EQ**: measure with the mic (REW or Open Sound Meter on the laptop). Keep to a few broad
-   cuts, then save.
-7. **Live drill**: place a notch from the knobs in under 10 s, then reset live (LIVE page, hold B4
-   twice).
-8. **Two-hour program run**, then read the xrun log.
+5. **Lo-Cut**: A/B on program with SETUP › Lo-Cut (two pushes each way; SHOW shows a `LO-CUT OFF`
+   pill while it is off); the frequency is E4 on ALIGN after a B3 hold. Default on when the subs are
+   present.
+6. **System EQ**: the laptop joins the K1000 Wi-Fi and SETUP › Laptop access opens CamillaGUI and SSH
+   for 2 h (two pushes; the PHONE page prints the Wi-Fi password meanwhile). Measure with the mic (REW
+   or Open Sound Meter), then paste the filter list at `https://10.42.0.1/tune` (preview on the 8
+   system bands, Apply = saved, Undo), or use CamillaGUI at `http://10.42.0.1:5005` (Fetch from DSP
+   first). Keep to a few broad cuts. One push closes Laptop access when done.
+7. **Notch drill with B4** (SHOW): make a steady peak in the program at low level (a sine from the
+   source, e.g. 1–3 kHz, or a held note) and wait for the cyan PEAK pointer. Then B4 (a free bell
+   lands on it at Q 8.65, nothing audible), E3 down 12 clicks (−6 dB: the tone drops), E4 up to
+   narrow: under 10 s. B4 again must re-select that bell and write nothing. Also try B4 with no peak
+   (`NO PEAK`, sweep with E2). Then SETUP › Reset live EQ (two pushes) and Undo reset (it must come
+   back exactly), and reset again for the show.
+8. **Spectrum ON/OFF** (D-009 leaves it to this test; SETUP › Spectrum, saved). Keep it ON only if,
+   with real program at the rig: the graph reads well in that light and at that angle; the PEAK
+   pointer is steady on music and B4 lands where the ear says (on silence between tracks it can sit
+   on noise: known since the 2026-10-13 acceptance); the knobs feel the same with it ON and OFF (a
+   fast E2 sweep, E1 master); Thursday's soak with it ON was clean. Otherwise OFF. If anything at all
+   is odd, take it out entirely: `spectrum: enabled: false` in `/etc/k1000/k1000.yaml`, then
+   `sudo systemctl restart k1000` between shows (no second engine connection; SETUP › Spectrum then
+   reads DISABLED). B4 still works without it (`NO PEAK`: sweep with E2). Note the decision in
+   `ROADMAP.md`.
+9. **Two-hour program run**, then read the xrun log (`k1000-soak.sh --summary`; an `xruns_all`
+   already above 0 at the first sample comes from an older engine log, `box/README.md` § Soak test).
 
 ## 7. Blocking on Thomas (today)
 

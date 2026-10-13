@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """k1000.ui.eqgraph: the SHOW page's EQ curve must be the engine's sound, and cheap to draw.
 
 Reference values: the RBJ analytic points (a peak reads its gain at f0, a shelf half its gain
@@ -302,6 +303,28 @@ def test_draw_graph_puts_markers_where_the_bands_are():
     # nothing drawn outside the box
     assert img.crop((0, 0, 480, BOX[1])).getbbox() is None
     assert img.crop((0, BOX[3], 480, 320)).getbbox() is None
+
+
+def test_peak_is_a_small_cyan_pointer_and_the_db_scale_is_labelled_at_the_right():
+    """D-009: the PEAK is a small cyan pointer (the frequency is written by the page), not a
+    line down the graph; the 0 dB line is labelled; the dB labels sit at the right edge with a
+    black outline, so they read over the spectrum."""
+    img = Image.new("RGB", (480, 320))
+    geo = eg.draw_graph(img, BOX, demo_bands(), 1, demo_rta().frame())
+    a = np.asarray(img)
+    cyan = (a == np.array(eg.STYLE.peak, np.uint8)).all(axis=2)
+    x = int(round(geo["peak_x"]))
+    assert eg.STYLE.peak == (0, 200, 255) and not eg.STYLE.peak_line
+    assert cyan[BOX[1]:BOX[1] + 12, x - 8:x + 9].sum() > 20
+    assert cyan[BOX[1] + 13:BOX[3]].sum() == 0
+    fill = np.array(eg.STYLE.label_db_fill, np.uint8)
+    for db in (6.0, 0.0, -6.0, -12.0):
+        y = round(geo["daxis"].y(db))
+        box = a[y + 2:y + 20, 420:478]
+        assert (box == fill).all(axis=2).sum() > 8, db           # the label
+        assert (box == 0).all(axis=2).sum() > 30, db             # its outline (and black)
+    left = a[BOX[1]:BOX[3], 0:30]                                # nothing at the left edge
+    assert (left == fill).all(axis=2).sum() == 0
 
 
 def test_draw_graph_extremes_and_no_rta():
