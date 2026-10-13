@@ -49,7 +49,8 @@ soak ran 1 h 34 min, clean (06:28-08:02), and is stopped. The PEAK now survives 
 - [ ] **8.** Hold B3 → `EDIT 0:30`. After a 3 s rest, one E3 click only wakes it
   (`SUB DELAY · TURN AGAIN TO CHANGE`); 10 more → 1.00 ms (the subs dip at each change); back to
   0.00. E3 with its push held → `FINE`, one sample (0.02 ms). E4 12 clicks slowly → one octave
-  (≈ 224 Hz); back to 112. *Claude:* the values.
+  (≈ 224 Hz); then to 100 Hz, the Sunday default (D-010; from 112, two clicks down). *Claude:* the
+  values.
 - [ ] **9.** ALIGN untouched 30 s, turn E4 → locked again. Hold B3, then tap B3 →
   `SUB DELAY + LO-CUT LOCKED` at once.
 
@@ -129,16 +130,17 @@ sudo systemctl start k1000
   `throttled`, then one output at a time and the cables labelled.
 - [ ] **27.** §5: profile `m4`; SHOW with program in LINE IN 3/4 → the spectrum back by itself
   within seconds of the engine switch. *Claude:* the k1000 journal lines; `NO SPECTRUM`.
-- [ ] **28.** §6 (its Knob test is step 3), §7, §8 → Mono subs and the Lo-Cut set back after §6.
+- [ ] **28.** §6 (its Knob test is step 3), §7, §8 → Mono subs back ON and the Lo-Cut back to
+  100 Hz after §6.
 - [ ] **29.** §9: the 1 h soak (`k1000-soak-m4`); meanwhile §11, tape and label → `--summary`
   says `clean`.
-- [ ] **30.** §12: the facts and the decisions (`target_level`, output mapping, Mono subs for
-  Sunday). *Claude:* all of §12.
+- [ ] **30.** §12: the facts (the decisions are taken: D-010, `target_level` 512 is set).
+  *Claude:* all of §12, and `grep target_level /var/lib/k1000/active.yml` on `m4`.
 
 ## I. End of the day
 
 - [ ] **31.** Live EQ flat (SETUP › Reset live EQ). ALIGN as found: balance 0.0, sub delay 0.00,
-  Lo-Cut ON at 112 Hz. Mono subs as decided, Spectrum ON, Laptop access closed, Phone control as
+  Lo-Cut ON at 100 Hz. Mono subs ON, Spectrum ON, Laptop access closed, Phone control as
   decided → SHOW: a flat curve, no orange pill.
 - [ ] **32.** **Hold B2** → `READY · hold B2 to unmute`. Leave it on, on `eth0`, the M4 plugged
   and taped: Claude needs it Wednesday (freeze) and Thursday (soak). To switch off instead: hold

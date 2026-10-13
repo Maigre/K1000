@@ -121,7 +121,7 @@ UPA-1P's 12″ so the tops limit later, and leaves the low end to the subs.
 | Setting | Where it comes from |
 |---|---|
 | **160 Hz, 12 dB/oct** | Meyer's LD-2 line driver had a Mid-Hi Lo-Cut at exactly this: the historical practice for this pair |
-| **100 Hz** | K1000's default (on) |
+| **100 Hz** | K1000's default (on); the Sunday choice (D-010) |
 
 A/B it on program with the subs running: SETUP › Lo-Cut switches it on and off (two pushes; the
 phone's Lo-Cut switch, with a confirm, is handier while walking the room). ALIGN E4, unlocked with

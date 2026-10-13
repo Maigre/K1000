@@ -115,10 +115,12 @@ Once 4/4 is confirmed, pin it under `profiles: m4:` in `/etc/k1000/k1000.yaml`
 (`capture_channels: 4`, `playback_channels: 4`), then `sudo systemctl restart k1000`. A late-plugged
 M4 then always gets the proven config (review finding m4-4).
 
-**target_level** (decision below). If Thomas picks 512 or 768, add `target_level: 512` (or 768) under
-`profiles: m4:`, `sudo systemctl restart k1000` (rewrites `active.yml`; the screen may show
-DEVICES CHANGED (GUI)), then `sudo systemctl restart camilladsp` (about 1 s of silence, then
-the ramp). It applies at the next engine start only, never at show time.
+**target_level**: 512 (D-010) is already under `profiles: m4:` in `/etc/k1000/k1000.yaml`, so the
+first engine start on the M4 uses it. Check `grep target_level /var/lib/k1000/active.yml` → 512
+once the profile is `m4`. To change it (768 after an underrun): edit it there,
+`sudo systemctl restart k1000` (rewrites `active.yml`; the screen may show DEVICES CHANGED (GUI)),
+then `sudo systemctl restart camilladsp` (about 1 s of silence, then the ramp). It applies at the
+next engine start only, never at show time.
 
 ## 6. Prove the path and the front panel (speakers off)
 
@@ -157,7 +159,7 @@ for n in ("GetCaptureSignalPeakSince","GetPlaybackSignalPeakSince"):
 If out1/2 read lower than out3/4 with MONITOR fully clockwise, write the difference down; do not
 trim yet (Friday's mic tune sets the output trims).
 
-End of the step: SETUP › Mono subs back ON if that is the choice for Sunday (two pushes).
+End of the step: SETUP › Mono subs back ON (two pushes): the Sunday setting (D-010).
 
 ## 7. Levels
 
@@ -198,7 +200,7 @@ sudo systemctl stop k1000-soak-m4
 ```
 
 Expect `xruns=0`, `rate` about 48000, `restarts` flat, `throttled=0x0`. Thursday night: the overnight
-soak at the gig `target_level`, again with its own unit and log (`k1000-soak-thu`, `soak-thu.log`).
+soak at the gig `target_level` (512, D-010), again with its own unit and log (`k1000-soak-thu`, `soak-thu.log`).
 
 ## 10. Knob test (required; do it before §6)
 
@@ -236,6 +238,9 @@ then print both (`tools/make-print.sh`). Knob labels drawn at the wrong screen c
 | The decisions below | Thomas |
 
 ## Decisions for Thomas
+
+Answered 2026-10-13 (D-010): mapping kept (out1/2 tops, out3/4 subs), `target_level` 512, the
+source and cables are Thomas's, Mono subs ON. Firmware and power remain as below.
 
 | Question | Recommendation (M4 review) |
 |---|---|

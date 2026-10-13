@@ -67,18 +67,8 @@ gantt
    throttling) on the M4 with the gig `target_level`, PSU and closed case.
 3. **Fri 16 — rig test go/no-go**, item by item:
    - K1000 in the chain at all. If no-go, the bypass, which is the old direct cabling.
-   - Live UI v1. If no-go, redeploy the last v0-UI commit, `f7aa58b` (MAIN/LIVE/SETUP, phone
-     wired; it reads UI v1's `state.json`: unknown keys are ignored). **Not `/opt/k1000.prev`**: it
-     holds a UI v1 build (`f7aa58b-v1`). From the repo checkout on the laptop, between shows (about
-     1 s of silence, then the ramp):
-
-     ```sh
-     rm -rf /tmp/k1000-v0 && mkdir -p /tmp/k1000-v0 && git archive f7aa58b box | tar -x -C /tmp/k1000-v0
-     rsync -a --delete --rsync-path="sudo rsync" /tmp/k1000-v0/box/ k1000:/opt/k1000-src/
-     ssh k1000 "sudo K1000_REVISION=f7aa58b-v0 /opt/k1000-src/install.sh --start"
-     ```
-
-     Then print the v0 card: `git show f7aa58b:docs/04-operator-card.md`.
+   - Live UI v1. If no-go, the bypass: it is the only fallback (D-010); no software fallback to
+     the v0 UI. `/opt/k1000.prev` is the rollback for a bad deploy only.
    - The phone. If no-go, the AP goes fully off and the knobs carry the show.
 4. **Sun 18 — gig.** Afterwards, note what was touched, missed or failed.
 
@@ -86,11 +76,11 @@ gantt
 
 | Stream | State | Next |
 |---|---|---|
-| v0 control service | done (`ca742e7`); on the box it is now UI v1 (`167776b-polish`) | the v0 fallback is `f7aa58b` (gate 3) |
+| v0 control service | done (`ca742e7`); on the box it is now UI v1 (`c49f006`) | no software fallback: the bypass (D-010) |
 | Integration round | done: drills, five-lens review, 42 fixes, re-accepted; power-cut drill done Tue 13 (no sync: state files byte-identical, boot 10.4 s) | Friday: Thomas pulls the plug once at show level (item 11) |
 | Lite OS (D-006) | done: the box converged to Lite (`k1000-lean.sh`, 972 desktop packages out), console guard, cloud-init off; `bootstrap.sh` checked on a fresh-card container | the spare card (Thu) |
 | Phone (D-007) | wired into main (`f7aa58b`); AP up on the box on **hostapd** with PMF off (NetworkManager's AP on the Pi's chip drops older Android clients), captive DNS off, 5 GHz | Thomas: CA, join by QR, PWA install (`docs/06-phone.md`); go/no-go Friday |
-| Live UI v1 (Thomas, 12/10) | accepted on the box Tue 13 (D-009) and deployed: `167776b` + polish `8e86ddb` | Thomas at the bench today; freeze Wed evening; spectrum ON/OFF decided Friday |
+| Live UI v1 (Thomas, 12/10) | accepted on the box Tue 13 (D-009) and deployed: `167776b` + polish `8e86ddb` | Thomas at the bench today; freeze Wed evening; spectrum ON for Sunday (D-010), checked Friday |
 | Knobs | corners confirmed; a click counts exactly one step (10 clicks = +10); fast-turn fix in UI v1 | the buttons: Knob test → `controls:` (the box still holds the defaults) |
 | Licence (D-008) | GPL-3.0-or-later, `LICENSE` in the repo; smbus2 and SPDX headers done | — |
 | User documentation (Thomas, 12/10) | written: `docs/manual` 00–09, quick start, operator card; claim-checked against the code | Thomas fills in the card's Where line and the bypass patch, then prints |
@@ -171,7 +161,7 @@ Progress:
 | 12 | Print the operator card (redrawn for UI v1 if it goes); pack the bypass kit, labelled, its patch written on the card | Sat 17 |
 
 Friday itself is `docs/02` §6: thump check, gain structure (Meyer limit LEDs, then the phone's
-ceiling = show level + 6 dB), sub alignment, Lo-Cut A/B (160 vs 100 Hz), system EQ, live drill,
+ceiling = show level + 6 dB), sub alignment, Lo-Cut at 100 Hz (D-010; 160 only if the tops limit early), system EQ, live drill,
 2-hour run.
 
 ## Phase 2 — Live-correction UI v1 · *pulled forward in part, 2026-10-12*

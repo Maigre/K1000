@@ -24,7 +24,7 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   mixers (bulk) — the A&H CQ-18T stays the ready-made fallback.
 - **Decision**: **DIY v0** for the 2026-10-18 gig — Thomas, 2026-10-12.
 
-## D-003 — Audio interface: MOTU M4 · proposed 2026-10-12
+## D-003 — Audio interface: MOTU M4 · decided 2026-10-12
 
 - **Why**: bus-powered metal box, ESS DAC, LCD meters on all I/O, Linux-proven, 2 line in + mic with
   phantom at once, €289. Alternative: Focusrite Scarlett 4i4 Gen 4.
@@ -35,7 +35,8 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   wins on bus power (no 2nd brick on a Pi 4), LCD meters on all I/O, and price; the Scarlett wins on
   input headroom (+22 dBu) and full routing/mixer control from Linux (`scarlett2`). Recommendation
   holds: **M4**, checked before buying (all 4 outs, scratch-free pots, solid USB-C, firmware version).
-- **Decision**: *pending Thomas.*
+- **Decision**: Thomas, 2026-10-12: the ~€150 M4, picked up Tue 13 with the checks above. Confirmed
+  as the Sunday interface in D-010.
 
 ## D-004 — Engine for v0: CamillaDSP v5 beta · decided 2026-10-12
 
@@ -195,3 +196,31 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   - System alerts get their own place and colour, apart from hints.
 - **Gate**: accepted on the box by the Wednesday 14 evening freeze, otherwise Sunday runs v0. Thursday's
   soak runs v1 with the spectrum on.
+
+## D-010 — Sunday settings, and the bypass as the only fallback · decided 2026-10-13
+
+- **Ask**: the open questions in the morning brief after the night build (Thomas, 2026-10-13).
+- **Decided by Thomas**:
+  - **Mono subs ON** (L+R sum into both subs). It is a saved setting, already ON on the box; the
+    M4-day output test turns it off for its own check and back on.
+  - **The bypass is the only fallback.** No software fallback to the v0 UI (`f7aa58b`): if K1000
+    misbehaves at the rig test or the gig, the bypass cabling goes in. `/opt/k1000.prev` stays the
+    rollback for a bad deploy only.
+  - **Spectrum ON** for Sunday (D-009 had left it to Friday's test). Friday checks it, and turns it
+    off only if something is actually wrong.
+  - **Top Lo-Cut default 100 Hz**, 12 dB/oct (already the code default). Goal: keep the sub-bass the
+    UPA-1P cannot use out of it without thinning its low end. 160 Hz (the LD-2 practice) stays a
+    Friday option only if the tops limit early. A 12 dB/oct cut at 100 Hz is −3 dB at 100 Hz and
+    about −5 dB at 80 Hz, so it does hand the bottom octave to the subs: check the sum there with
+    the mic (docs/02 step 4).
+  - Output mapping: no preference, so the recommendation stands: out1/2 tops, out3/4 subs.
+  - Licence: GPL-3.0-or-later (D-008) confirmed.
+  - `CLAUDE.md` stays in the public repo.
+  - No mobile data needed on the phone at the gig. Changing the box password can wait (SSH is
+    key-only).
+- **Decided by Claude** (Thomas: "I don't know"): **M4 `target_level` 512 frames** (~10.7 ms) in
+  `profiles: m4:`. Sunday is DJ/program only, so the extra 5 ms of latency costs nothing, and the
+  margin against a USB underrun is worth more. It is set in the repo's `box/etc/k1000.yaml` and on the
+  box's `/etc/k1000/k1000.yaml`; it takes effect at the first engine start on the M4. Thursday's
+  overnight soak runs at 512. Go to 768 if the M4-day soak shows an underrun. Go back to 256 only if
+  live mics with stage monitors ever join.

@@ -46,7 +46,7 @@ profiles:
     input_map: [2, 3]
     output_map: [TopL, TopR, SubL, SubR]
     probe: true
-    target_level: 256
+    target_level: 512            # D-010: margin over USB; DJ/program only
 
 controls:
   encoders: [0, 1, 2, 3]
@@ -109,7 +109,7 @@ One section per profile. Every key is optional: a missing key keeps the built-in
 | `input_map` | `[L, R]`: the capture channels (0-based) that carry the program | `[0, 1]` | `[2, 3]` = LINE IN 3 and 4 |
 | `output_map` | One entry per physical output, in order: which logical channel it carries. `SubL`, `SubR`, `TopL`, `TopR` (or 0–3) | (not used: `dev` has an audition mixer) | `[TopL, TopR, SubL, SubR]` = out1 Top L, out2 Top R, out3 Sub L, out4 Sub R |
 | `probe` | `true` / `false` | `false` (the HiFiBerry is never opened by the probe) | `true` |
-| `target_level` | Frames, 64–1536 | 256 | 256 |
+| `target_level` | Frames, 64–1536 | 256 | 512 (D-010; the code default is 256) |
 
 Details:
 
@@ -129,7 +129,8 @@ Details:
   routed nowhere) raises the alert `k1000.yaml ROUTING FIXED UP (SEE LOG)`. The journal says what
   was fixed.
 - **`target_level`** is the playback buffer CamillaDSP keeps, in frames (256 = 5.3 ms at 48 kHz).
-  A USB interface may need more margin against dropouts (512 or 768). Values outside 64–1536 are
+  A USB interface may need more margin against dropouts: the shipped `m4` value is 512 (~10.7 ms),
+  768 if a soak still shows an underrun. Values outside 64–1536 are
   clamped with a warning. It is an engine device setting, so it applies **at the next engine
   start** only, never at show time ([§9](#9-what-needs-a-restart)).
 - **`dev` only:** the 4 logical outputs are folded onto the HiFiBerry's 2. SETUP › Audition (dev)

@@ -26,6 +26,7 @@ profiles:
     input_map: [2, 3]            # program L, R = M4 line inputs 3-4 (0-based capture channels)
     output_map: [TopL, TopR, SubL, SubR]   # physical out1..out4 <- logical channel
     probe: true
+    target_level: 512            # playback buffer, frames (~10.7 ms): margin over USB; DJ/program only (D-010)
 
 # Physical -> logical controls (MCP23017 indices, see docs/03-v0-architecture.md §1).
 # UNCONFIRMED DEFAULTS until SETUP > Knob test (HWTEST) on the box has identified every button

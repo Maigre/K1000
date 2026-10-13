@@ -156,7 +156,7 @@ label K1000's outputs. Any doubt during the gig means re-patching in a minute.
    - Check with the mic for the fullest sum around 80–100 Hz, and try the polarity flip.
 5. **Lo-Cut**: A/B on program with SETUP › Lo-Cut (two pushes each way; SHOW shows a `LO-CUT OFF`
    pill while it is off); the frequency is E4 on ALIGN after a B3 hold. Default on when the subs are
-   present.
+   present, at 100 Hz (D-010); 160 Hz only if the tops limit early.
 6. **System EQ**: the laptop joins the K1000 Wi-Fi and SETUP › Laptop access opens CamillaGUI and SSH
    for 2 h (two pushes; the PHONE page prints the Wi-Fi password meanwhile). Measure with the mic (REW
    or Open Sound Meter), then paste the filter list at `https://10.42.0.1/tune` (preview on the 8
@@ -172,15 +172,15 @@ label K1000's outputs. Any doubt during the gig means re-patching in a minute.
    (`NO PEAK`: E3 down first, about −6 dB, then sweep E2 until the tone drops; at 0 dB the sweep is
    silent). Then SETUP › Reset live EQ (two pushes) and Undo reset (it must come
    back exactly), and reset again for the show.
-8. **Spectrum ON/OFF** (D-009 leaves it to this test; SETUP › Spectrum, saved). Keep it ON only if,
-   with real program at the rig: the graph reads well in that light and at that angle; the PEAK
+8. **Spectrum** (ON for Sunday, D-010; SETUP › Spectrum, saved). Check, with real program at the
+   rig: the graph reads well in that light and at that angle; the PEAK
    pointer is steady on music, B4 lands where the ear says, and the pointer goes when the program
    stops (fixed after the 2026-10-13 acceptance: no PEAK under −80 dBFS, nor with the program under
    −60 dBFS RMS; if quiet real program never gets a pointer, lower `spectrum.peak_floor_db` /
    `program_floor_db` in k1000.yaml, then restart k1000); after an engine start the picture comes
    back by itself within a few seconds, with no grey `NO SPECTRUM` and nothing new in
    `journalctl -u k1000 | grep -i spectrum` (also fixed); the knobs feel the same with it ON and
-   OFF (a fast E2 sweep, E1 master); Thursday's soak with it ON was clean. Otherwise OFF. If
+   OFF (a fast E2 sweep, E1 master); Thursday's soak with it ON was clean. If one of these fails, OFF. If
    anything at all is odd, take it out entirely: `spectrum: enabled: false` in `/etc/k1000/k1000.yaml`, then
    `sudo systemctl restart k1000` between shows (no second engine connection; SETUP › Spectrum then
    reads DISABLED). B4 still works without it (`NO PEAK`: E3 down first, then sweep E2). Note the decision in
