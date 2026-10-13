@@ -5,16 +5,16 @@ then the M4 ([05-m4-day.md](05-m4-day.md)). **Meyers off all day.** Each step: w
 you should see. *Claude:* what to send when it differs (a photo of the screen always helps).
 Commands run on the box (`ssh k1000@<box>`).
 
-**What changed overnight.** Live UI v1 (D-009) runs on the box, deployed at 06:10 as
-`167776b-polish`. **SHOW** is the front page: E1 MASTER, E2/E3/E4 the FREQ/GAIN/Q of the selected
+**What changed overnight.** Live UI v1 (D-009) runs on the box, deployed at 08:03 as
+`c49f006`. **SHOW** is the front page: E1 MASTER, E2/E3/E4 the FREQ/GAIN/Q of the selected
 band, the program spectrum behind the EQ curve with a cyan PEAK pointer. **ALIGN** holds balance,
 sub delay and Lo-Cut, E3/E4 locked behind a B3 hold. **SETUP** adds Reset live EQ with a 5-minute
 undo, Spectrum, Laptop access (CamillaGUI, SSH, the `/tune` REW import) and PHONE. B3 steps the
 band, B4 is the notch helper. The knob decoder counts a click when the knob lands, never on a
 timer, drops a resting knob's glitches and no longer loses clicks on fast turns (harness-measured;
 your hands decide). The K1000 Wi-Fi and the phone page are up, unproven with a real phone. The
-power-cut drill passed (boot 10.4 s; the clock came back 3.5 min behind: no battery clock). Not
-on the box yet: a fix that keeps the PEAK through a B1 hold on SHOW (step 15 works either way).
+power-cut drill passed (boot 10.4 s; the clock came back 3.5 min behind: no battery clock). The
+soak ran 1 h 34 min, clean (06:28-08:02), and is stopped. The PEAK now survives a B1 hold on SHOW.
 
 | SHOW | after B4 | ALIGN, locked | SETUP, undo | Knob test |
 |---|---|---|---|---|
@@ -22,11 +22,11 @@ on the box yet: a fix that keeps the PEAK through a B1 hold on SHOW (step 15 wor
 
 ## A. Start (profile `dev`)
 
-- [ ] **1.** `systemctl is-active k1000-soak`. If `active`:
-  `/opt/k1000/tools/k1000-soak.sh --summary /var/log/k1000/soak-night.log`, then
-  `sudo systemctl stop k1000-soak` → `inactive`, or `clean`. *Claude:* the summary.
-- [ ] **2.** `cat /opt/k1000/REVISION; grep '^profile' /etc/k1000/k1000.yaml` → `167776b-polish`
-  (newer if Claude deployed this morning), `profile: dev`. *Claude:* both lines.
+- [ ] **1.** `systemctl is-active k1000-soak` → `inactive` (Claude stopped it at 08:02; the summary,
+  `/opt/k1000/tools/k1000-soak.sh --summary /var/log/k1000/soak-night.log`, says `clean`). If
+  `active`: run the summary, then `sudo systemctl stop k1000-soak`. *Claude:* the summary.
+- [ ] **2.** `cat /opt/k1000/REVISION; grep '^profile' /etc/k1000/k1000.yaml` → `c49f006`
+  (newer if Claude deployed since), `profile: dev`. *Claude:* both lines.
 - [ ] **3.** **Buttons first:** the Knob test, `controls:`, the k1000 restart and the checks of
   [05 §10](05-m4-day.md); label the shell PAGE · MUTE · BAND/UNLOCK · NOTCH → B1–B4 as §10
   lists, every knob **+** clockwise. *Claude:* the map (position → `sw`/`enc`).
