@@ -467,8 +467,17 @@ while SHOW is displayed and SETUP › Spectrum is ON (`docs/03-v0-architecture.m
 - **Out entirely** (Friday's no-go, or anything odd): `spectrum: enabled: false` in
   `/etc/k1000/k1000.yaml`, then `sudo systemctl restart k1000` between shows. No task and no second
   connection; SETUP › Spectrum then reads `DISABLED`.
-- A grey `NO SPECTRUM` on SHOW for ~5 s after every engine start is known (CamillaDSP
-  5.0.0-beta.1's first answer, `docs/03-v0-architecture.md` §8). Longer: `journalctl -u k1000 | grep -i spectrum`.
+- After an engine start the spectrum comes back by itself within a few seconds: its link
+  reconnects (back-off up to 2 s) and waits for the engine to read `Running`, then CamillaDSP
+  5.0.0-beta.1's analyser fills its buffer in well under a second (`Insufficient data in buffer`,
+  retried quietly every 0.4 s; fixed after the 2026-10-13 acceptance, which saw `NO SPECTRUM` for
+  ~5 s). A grey `NO SPECTRUM` now means the engine really refused (or was still warming up after
+  10 s, or gave no data for 30 s of warm-up answers): `journalctl -u k1000 | grep -i spectrum`.
+- **No PEAK on silence** (fixed after the acceptance, where a −114 dBFS noise bin was a PEAK): the
+  cyan pointer needs the peak bin at `spectrum.peak_floor_db` (−80 dBFS) or above and the program's
+  capture RMS at `spectrum.program_floor_db` (−60 dBFS) or above, both in `/etc/k1000/k1000.yaml`
+  (built-in defaults when absent; −140 turns a gate off; restart k1000 after a change). On the
+  silent bench input there is no pointer and B4 says `NO PEAK`.
 
 ## Soak test (overnight, and the 2-hour program run)
 
@@ -477,6 +486,16 @@ sudo systemd-run --unit=k1000-soak --uid=k1000 /opt/k1000/tools/k1000-soak.sh
 tail -f /var/log/k1000/soak.log
 /opt/k1000/tools/k1000-soak.sh --summary      # in the morning: "clean", or what needs a look (exit 1)
 sudo systemctl stop k1000-soak                # "not loaded" = it had already ended: a reboot?
+```
+
+`soak.log` is only ever appended to, and `--summary` judges everything from its first sample to
+its last. Give each run its own log, or the window spans both runs (the night between them
+included). For the 2-hour program run:
+
+```sh
+sudo systemd-run --unit=k1000-soak-2h --uid=k1000 -E K1000_SOAK_LOG=/var/log/k1000/soak-2h.log \
+  /opt/k1000/tools/k1000-soak.sh
+/opt/k1000/tools/k1000-soak.sh --summary /var/log/k1000/soak-2h.log
 ```
 
 The tool writes one line every 10 s:
@@ -490,11 +509,13 @@ The tool writes one line every 10 s:
 - the soak stopped: the last sample is long before now, or there is a gap. A reboot ends it (a
   `systemd-run` unit does not come back), and `journalctl --list-boots` then says when;
 - a reboot: a new `boot=` id, or `up` going down;
-- `xruns`/`xruns_all` above 0: dropout lines in the engine log (playback underruns, capture
-  overruns, stalled device, device errors). A stall counts twice (entering and leaving).
-  `xruns_all` also reads the rotated engine logs, so a dropout from before the soak flags it until
-  that log rotates away: an `xruns_all` already above 0 in the first sample is older than the
-  soak, and the dropout line's timestamp in `/var/log/k1000/camilladsp_r*.log` says when;
+- dropouts during the soak (playback underruns, capture overruns, stalled device, device
+  errors; a stall counts twice, entering and leaving): engine log lines in
+  `/var/log/k1000/camilladsp_r*.log` dated from the first sample to the last one (+ 3 intervals,
+  at least 60 s), and any rise of `xruns`/`xruns_all` between samples. A dropout from before the
+  soak (an older engine run's rotated log; an `xruns_all` already above 0 at the first sample) is
+  printed as a `note:` with its time, never as a failure (fixed after the 2026-10-13 acceptance,
+  whose summary exited 1 on an underrun from the night before);
 - restarts of camilladsp (`restarts`: a crash, or a lost device) or of k1000 (`k1000_restarts`);
 - `state` other than `Running` (`Paused` = silent input, `DOWN` = no engine websocket), k1000
   not active, Main muted, clipped samples;

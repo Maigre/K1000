@@ -30,10 +30,11 @@ real chip re-asserts INT right after every clearing read (2 fresh falling edges 
 read). Any persistent condition (corrupted INTCON, a chattering contact) would therefore turn the
 edge -> read loop into a CPU spin; the worker detects it and degrades to 5 ms polling instead.
 
-Config guard (audio safety): B2 long = mute toggle and B4 long = reset live EQ, so a chip that lost
-its configuration must never be able to fake a long press. If the expander alone resets (a VDD
-glitch shorter than the gap between reads gives no I2C error), its pull-ups turn off and the
-switch inputs float, possibly low. So every service read starts at GPPUA (8 bytes instead of 6,
+Config guard (audio safety): B2 long = mute toggle on every page (UI v1, D-009: the only LONG that
+changes audio; a B4 hold only shows a hint, the live-EQ reset is a confirmed SETUP item), so a chip
+that lost its configuration must never be able to fake a long press. If the expander alone resets
+(a VDD glitch shorter than the gap between reads gives no I2C error), its pull-ups turn off and
+the switch inputs float, possibly low. So every service read starts at GPPUA (8 bytes instead of 6,
 about +0.2 ms): a sample taken without pull-ups is never ingested, the chip is re-verified and
 re-configured, and every switch is re-seeded (held ones suppressed until released). Any other
 corruption is caught by the full config verify every VERIFY_S (0.25 s), kept below
@@ -972,7 +973,7 @@ class ZynthianControls:
     def _verify_period(self) -> float:
         """VERIFY_S, but always shorter than (long_s - debounce_s) / 2: a corruption the per-read
         pull-up check cannot see (IPOL, IODIR...) is repaired, and every switch re-seeded, before
-        a press it faked could become a LONG (mute / reset live EQ)."""
+        a press it faked could become a LONG (B2: a mute toggle)."""
         return max(0.02, min(self.VERIFY_S, (self.long_s - self.debounce_s) / 2))
 
     def _run(self) -> None:

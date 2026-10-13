@@ -29,9 +29,10 @@ profiles:
 
 # Physical -> logical controls (MCP23017 indices, see docs/03-v0-architecture.md §1).
 # UNCONFIRMED DEFAULTS until SETUP > Knob test (HWTEST) on the box has identified every button
-# and knob by physical position (README "Knobs and buttons"). Hold-B2 = MUTE and hold-B4 = RESET
-# LIVE EQ are the same gesture: a wrong `buttons` order swaps them. Fix them here, then restart
-# k1000, and label the buttons on the shell.
+# and knob by physical position (README "Knobs and buttons"). UI v1 (D-009): hold-B2 = MUTE on
+# every page; B4 tap = the notch helper on SHOW (a B4 hold only says RESET LIVE EQ: IN SETUP).
+# A wrong `buttons` order moves MUTE to another button. Fix them here, then restart k1000, and
+# label the buttons on the shell.
 # Keys as read by k1000/ui/input_map.py (ControlMap.from_cfg); invalid entries -> these defaults.
 controls:
   encoders: [0, 1, 2, 3]         # E1..E4 = physical encoder index
@@ -52,8 +53,13 @@ controls:
 # ~10 times a second only while SHOW is displayed and SETUP > Spectrum is ON. `enabled: false`
 # removes it entirely (no second connection; SETUP > Spectrum then says so): the gig no-go
 # switch if Friday's rig test shows anything odd. Restart k1000 after a change.
+# No PEAK pointer (and B4 keeps its NO PEAK case) unless the peak bin reaches `peak_floor_db`
+# (dBFS on the engine's peak-bin scale: 0 = a full-scale sine) AND the program's capture RMS
+# (input_map channels, last 0.5 s) reaches `program_floor_db`. -140 turns a gate off.
 spectrum:
   enabled: true
+  peak_floor_db: -80.0
+  program_floor_db: -60.0
 
 engine:
   url: ws://127.0.0.1:1234

@@ -120,7 +120,7 @@ the ramp). It applies at the next engine start only, never at show time.
 
 ## 6. Prove the path and the front panel (speakers off)
 
-Phone tone generator, moderate level, into **LINE IN 3 only**. K1000 Main at −20 dB (E1, MAIN).
+Phone tone generator, moderate level, into **LINE IN 3 only**. K1000 master at −20 dB (E1 on SHOW).
 Peak reader (2 s window per call):
 
 ```sh

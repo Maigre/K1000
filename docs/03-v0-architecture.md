@@ -214,7 +214,7 @@ when it fits (m4: [2, 3]), else (0, 1); any input/output-map warning raises the 
 | `ui/display.py` | framebuffer | `Framebuffer('/dev/fb0')`: `show(PIL.Image)` (only the span of changed rows is packed to RGB565 little-endian and written; skipped when unchanged), `invalidate()` (next frame written whole), `unbind_console()`, `backlight(on)` |
 | `ui/pages.py` | screens | `render(page, state, status, focus) -> PIL.Image` (480×320) for `SHOW`, `ALIGN`, `SETUP`, `HWTEST` (`PHONE` via `ui/qr.py`; v0 `MAIN`/`LIVE` = `ALIGN`/`SHOW`). UI v1 (D-009): SHOW draws the live-EQ curve (`ui/eqgraph.py`) over `status.spectrum`; system alerts (`status.alerts`) take the status bar (KNOBS OFFLINE red, full width; warnings orange; states blue), hints the amber strip; `status.pills` on SHOW. NO DEVICE > ENGINE DOWN replace the body; MUTED = red pill + frame + band (SHOW/ALIGN), footer (SETUP) or tag (HWTEST), carrying the alert; CLIP / IN CLIP pills; amber `ENGINE ?` / `DEVICE ?` when unknown; a `UI ERROR` frame instead of a crash; `demo_cases()` → `docs/ui/*.png`; `--bench` = SHOW's cost at 10 fps |
 | `ui/input_map.py` | knob/button semantics per page | `map_event(page, focus, event, cfg, muted=) -> list[Action]`; `KNOBS` table; `ControlMap.from_cfg` (k1000.yaml `controls:` encoders / pushes / buttons / reverse; anything invalid → defaults); `KNOB_CORNERS` (assumed) |
-| `rta.py` | the SHOW spectrum (D-009, §8) | `SpectrumTask(url, wanted=, channels=, publish=, client_factory=)`: its **own** `CamillaClient` (0.5 s command timeout), polls `GetSpectrum` at 10 Hz while `wanted()` (`Controller.spectrum_wanted`), publishes `eqgraph.RtaFrame`s to `Controller.set_spectrum`; `note_input()`; `Ballistics` (fall, slow range tracker, PEAK detector); `spectrum_request`, `parse_spectrum` |
+| `rta.py` | the SHOW spectrum (D-009, §8) | `SpectrumTask(url, wanted=, channels=, publish=, client_factory=)`: its **own** `CamillaClient` (0.5 s command timeout), polls `GetSpectrum` at 10 Hz while `wanted()` (`Controller.spectrum_wanted`), publishes `eqgraph.RtaFrame`s to `Controller.set_spectrum`; `note_input()`; `Ballistics` (fall, slow range tracker, PEAK detector with its level floor and program gate); `peak_floors(settings)`, `spectrum_request`, `parse_spectrum`, `program_level` |
 | `laptop.py` | SETUP › Laptop access, k1000's side (docs/06 §11) | `LaptopAccess`: `open()` / `close()` / `toggle()` (a flag in `/run/k1000`; root's `k1000-laptop.service` opens the fence), `poll()` (root's `/run/k1000-laptop/status`), `left_s()`, `pill()`; wired by `Controller.attach_laptop` |
 | `tune.py` | the `/tune` page's import (docs/06 §11) | `parse_filters(text) -> Import` (REW / EqualizerAPO / typed lines: peaking only, ≤ 8, clamped, skipped and notes listed); `plan_bands`, `curve`; `TuneDesk(ctl)`: `preview`, `apply` / `undo` through `Controller.set_system_eq` |
 | `__main__.py` | wiring | asyncio main; GIL switch interval 1 ms before any thread (`configure_gil`: the knob worker needs the GIL 3–4 times per read, PERF-1); systemd-friendly logging; retries (§2); `--stdin` bench console (incl. `ev enc` / `ev sw` real knob events), `--headless`, `--no-hw`, `--test-devices`; never mutes on exit |
@@ -343,28 +343,43 @@ items: the B1 page cycle, and sub delay off the front page.
 - **What.** `{"command":"GetSpectrum","value":{"side":"capture","channel":N,"min_freq":10,"max_freq":20000,"n_bins":264}}`
   (1/24 oct) for each of the profile's `input_map` channels (m4 2, 3; dev 0, 1), combined as a power
   average. Never `channel: null`: on the M4 it would average the mic and the spare input into the
-  program.
-- **Errors.** "No audio data available" (a fresh engine) is retried quietly. Any other refusal is
-  logged once, sets the state `unavailable` (the grey `NO SPECTRUM` tag on SHOW) and is retried
-  every 5 s. No data for 1 s clears the frame: never a frozen picture.
+  program. Then `{"command":"GetCaptureSignalRmsSince","value":0.5}` on the same connection: the
+  program's level for the PEAK's program gate.
+- **Errors.** A fresh engine first answers "No audio data available" (the call starts its
+  analyser), then "Insufficient data in buffer" until one FFT is buffered: the analyser warming up,
+  retried quietly every 0.4 s (state `waiting`: no picture, no `NO SPECTRUM`, nothing logged). Still
+  warming up 10 s after its first such answer, it counts as a refusal ("No audio data" again after
+  another answer is an engine restart and starts the 10 s again, but 30 s of warm-up answers on one
+  link without data is a refusal whatever). Any other refusal is logged
+  once, sets the state `unavailable` (the grey `NO SPECTRUM` tag on SHOW) and is retried every 5 s.
+  No data for 1 s clears the frame: never a frozen picture.
 - **Ballistics** (`rta.Ballistics`): bars rise at once and fall at 24 dB/s, with 3 s hold dots. The
   display range follows the loudest bin as a slow tracker (rises at once, falls 1 dB/s, no 6 dB
   steps). PEAK = a bin 10 dB above the median of its ±1 octave (released 0.5 s after it drops below
   6 dB), within 30 dB of the loudest bin, between 40 Hz and 16 kHz, persistent for 1.5 s, judged on a
-  0.25 s power average; the pointer moves only when the peak moves by 2 bins.
+  0.25 s power average; the pointer moves only when the peak moves by 2 bins. **Never on silence**:
+  the peak bin must reach `spectrum.peak_floor_db` (default −80 dBFS on the engine's peak-bin scale,
+  0 = a full-scale sine; kept down to −84 once shown) and the program must be present: the
+  `input_map` channels' capture RMS over 0.5 s at `spectrum.program_floor_db` or above (default −60
+  dBFS, kept down to −63). When the program stops, the PEAK goes 0.5 s after its gate closes, and B4
+  is its `NO PEAK` case. Scales measured on the box (a private engine's SignalGenerator): white noise
+  at −25 dBFS RMS reads −56…−50 dBFS per bin (63 Hz…16 kHz), at −45 RMS −76…−70; a −20 dBFS sine
+  peaks at −20.6. The bench's silent HiFiBerry input reads −95…−108 dBFS RMS, its noise-floor tone
+  about −114. An engine that refuses the RMS command leaves the level floor alone in charge.
 - **The hand first.** Every knob or button event holds new frames for 300 ms (`note_input`).
   `Controller.set_spectrum` wakes the screen only when the frame changes, and never bumps `version`
   (phones do not show the spectrum). Spectrum frames come at ≤ 10 fps, the frame after a knob event
   at ≤ 15 fps (§2).
 - **Cost on the box** (silent HiFiBerry input, 60 s on SHOW): k1000 19.6 % of one core (max 32.8 %),
-  camilladsp 4.7 %, engine processing load 0.98 % (max 1.86 %), 0 xruns.
+  camilladsp 4.7 %, engine processing load 0.98 % (max 1.86 %), 0 xruns. Measured at the
+  acceptance, before the program gate added its one small RMS call per poll (not re-measured).
 
-**Known after the acceptance (2026-10-13; not fixed when this was written):**
+**Found at the acceptance (2026-10-13), fixed after it** (k1000 code only: deploy with
+`install.sh` without `--start`, then `sudo systemctl restart k1000`; the engine keeps playing):
 
-- CamillaDSP 5.0.0-beta.1 answers the first GetSpectrum after an engine start with
-  `InvalidRequestError: Insufficient data in buffer`. `rta.py` only treats "no audio data" as a
-  quiet retry, so this counts as a refusal: `NO SPECTRUM` and a WARNING for ~5 s after every
-  engine start (seen at the deploy and at boot, 9.7–14.6 s).
-- The PEAK detector has no absolute level floor. On a silent input a noise-floor bin (~7.3 kHz,
-  about −114 dBFS) showed as PEAK, and B4 aimed at it. That is harmless (B4 never writes a gain),
-  but between tracks the PEAK can point at noise.
+- *`NO SPECTRUM` and a WARNING for ~5 s after every engine start* (seen at the deploy and at boot,
+  9.7–14.6 s): CamillaDSP 5.0.0-beta.1's `InvalidRequestError: Insufficient data in buffer` counted
+  as a refusal. It is now a warm-up answer, retried quietly every 0.4 s (Errors, above).
+- *PEAK on a silent input*: a noise-floor bin (~7.3 kHz, about −114 dBFS) showed as PEAK and B4 aimed
+  at it. The level floor and the program gate (Ballistics, above) now keep the PEAK off silence and
+  off the gaps between tracks.

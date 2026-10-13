@@ -168,15 +168,21 @@ label K1000's outputs. Any doubt during the gig means re-patching in a minute.
    back exactly), and reset again for the show.
 8. **Spectrum ON/OFF** (D-009 leaves it to this test; SETUP › Spectrum, saved). Keep it ON only if,
    with real program at the rig: the graph reads well in that light and at that angle; the PEAK
-   pointer is steady on music and B4 lands where the ear says (on silence between tracks it can sit
-   on noise: known since the 2026-10-13 acceptance); the knobs feel the same with it ON and OFF (a
-   fast E2 sweep, E1 master); Thursday's soak with it ON was clean. Otherwise OFF. If anything at all
-   is odd, take it out entirely: `spectrum: enabled: false` in `/etc/k1000/k1000.yaml`, then
+   pointer is steady on music, B4 lands where the ear says, and the pointer goes when the program
+   stops (fixed after the 2026-10-13 acceptance: no PEAK under −80 dBFS, nor with the program under
+   −60 dBFS RMS; if quiet real program never gets a pointer, lower `spectrum.peak_floor_db` /
+   `program_floor_db` in k1000.yaml, then restart k1000); after an engine start the picture comes
+   back by itself within a few seconds, with no grey `NO SPECTRUM` and nothing new in
+   `journalctl -u k1000 | grep -i spectrum` (also fixed); the knobs feel the same with it ON and
+   OFF (a fast E2 sweep, E1 master); Thursday's soak with it ON was clean. Otherwise OFF. If
+   anything at all is odd, take it out entirely: `spectrum: enabled: false` in `/etc/k1000/k1000.yaml`, then
    `sudo systemctl restart k1000` between shows (no second engine connection; SETUP › Spectrum then
    reads DISABLED). B4 still works without it (`NO PEAK`: sweep with E2). Note the decision in
    `ROADMAP.md`.
-9. **Two-hour program run**, then read the xrun log (`k1000-soak.sh --summary`; an `xruns_all`
-   already above 0 at the first sample comes from an older engine log, `box/README.md` § Soak test).
+9. **Two-hour program run**, then read the xrun log (`k1000-soak.sh --summary`: only dropouts
+   inside the run count; older ones are printed as a `note:`). Give the run its own log
+   (`-E K1000_SOAK_LOG=/var/log/k1000/soak-2h.log`, then `--summary` on that file): appended to
+   Thursday's `soak.log`, its window would span both runs (`box/README.md` § Soak test).
 
 ## 7. Blocking on Thomas (today)
 

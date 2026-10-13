@@ -567,10 +567,16 @@ def _soak_line(ts, **kw):
     return ts + " " + " ".join(f"{k}={v}" for k, v in base.items())
 
 
-def _summary(tmp: Path, lines: list[str], now: str):
+def _summary(tmp: Path, lines: list[str], now: str, engine_logs: dict[str, str] | None = None):
+    """--summary on these soak lines; `engine_logs`: name -> text of the engine logs beside it
+    (none by default: the box's real /var/log/k1000 is never read by a test)."""
     log = tmp / "s.log"
     log.write_text("\n".join(lines) + "\n")
-    env = dict(os.environ, K1000_SOAK_NOW=now)
+    logs = tmp / "cdsp"
+    logs.mkdir(exist_ok=True)
+    for name, text in (engine_logs or {}).items():
+        (logs / name).write_text(text)
+    env = dict(os.environ, K1000_SOAK_NOW=now, K1000_CDSP_LOG=str(logs / "camilladsp.log"))
     return subprocess.run(["sh", str(SOAK), "--summary", str(log)], env=env, capture_output=True,
                           text=True, timeout=20)
 
@@ -604,11 +610,65 @@ def test_soak_summary_flags_xruns_restarts_mute_and_power(tmp_path):
     r = _summary(tmp_path, lines, "2026-10-15T23:00:25+02:00")
     assert r.returncode == 1
     out = r.stdout
-    for needle in ("xruns reached 1", "xruns_all reached 3", "xruns_all went DOWN",
+    for needle in ("xruns rose by 1", "xruns_all rose by 3", "xruns_all went DOWN",
                    "camilladsp.service restarted 2 times", "k1000.service restarted 1 times",
                    "Main muted in 1 samples", "throttled: 0x50000", "1 samples not Running",
                    "k1000.service not active in 1 samples"):
         assert needle in out, (needle, out)
+
+
+# The acceptance's case (2026-10-13): one underrun in the previous engine run's rotated log,
+# hours before the soak; every sample carries xruns_all=1.
+OLD_RUN = ("2026-10-12 22:16:47.157237 INFO  [camilladsp] <src/bin.rs:463> CamillaDSP version 5.0.0-beta.1\n"
+           "2026-10-12 22:37:52.631549 WARN  [camilladsp::alsa_backend::device] "
+           "<src/alsa_backend/device.rs:126> PB: Prepare playback after buffer underrun\n"
+           "2026-10-13 04:16:58.999831 INFO  [camilladsp::alsa_backend::device] "
+           "<src/alsa_backend/device.rs:1046> Capture stopped\n")
+LIVE_RUN = ("2026-10-13 04:59:15.339777 INFO  [camilladsp] <src/bin.rs:463> CamillaDSP version 5.0.0-beta.1\n"
+            "2026-10-13 04:59:15.525352 INFO  [camilladsp::alsa_backend::device] "
+            "<src/alsa_backend/device.rs:133> PB: Starting playback from Prepared state\n")
+
+
+def test_soak_summary_ignores_a_dropout_from_before_the_soak(tmp_path):
+    lines = [_soak_line(f"2026-10-13T05:00:{s:02d}+02:00", xruns_all="1", up=str(100 + s))
+             for s in (0, 10, 20, 30)]
+    r = _summary(tmp_path, lines, "2026-10-13T05:00:35+02:00",
+                 {"camilladsp_r2026-10-12_22-16-47.log": OLD_RUN, "camilladsp_rCURRENT.log": LIVE_RUN})
+    assert r.returncode == 0, r.stdout
+    assert "clean" in r.stdout and "ATTENTION" not in r.stdout
+    assert ("note: engine logs: 1 dropout line(s) from before the soak, not counted (latest at "
+            "2026-10-12 22:37:52: PB: Prepare playback after buffer underrun)") in r.stdout
+    assert "note: xruns_all=1 already at the first sample" in r.stdout
+
+
+def test_soak_summary_flags_engine_dropouts_inside_the_soak_only(tmp_path):
+    lines = [_soak_line("2026-10-13T05:00:00+02:00", xruns_all="1"),
+             _soak_line("2026-10-13T05:00:10+02:00", xruns_all="1"),
+             _soak_line("2026-10-13T05:00:20+02:00", xruns="1", xruns_all="2"),
+             _soak_line("2026-10-13T05:00:30+02:00", xruns="1", xruns_all="3")]
+    live = LIVE_RUN + ("2026-10-13 05:00:15.123456 WARN  [camilladsp::alsa_backend::device] "
+                       "<src/alsa_backend/device.rs:126> PB: Prepare playback after buffer underrun\n"
+                       "2026-10-13 07:12:00.000001 WARN  [camilladsp::alsa_backend::device] "
+                       "<src/alsa_backend/device.rs:126> PB: Prepare playback after buffer underrun\n")
+    r = _summary(tmp_path, lines, "2026-10-13T05:00:35+02:00",
+                 {"camilladsp_r2026-10-12_22-16-47.log": OLD_RUN, "camilladsp_rCURRENT.log": live,
+                  # an undated line takes its file name's time (05:00:25): inside, so it counts
+                  "camilladsp_r2026-10-13_05-00-25.log": "Capture: read overrun\n"})
+    assert r.returncode == 1, r.stdout
+    out = r.stdout
+    assert ("engine logs: 2 dropout line(s) during the soak, first at 2026-10-13 05:00:15: "
+            "PB: Prepare playback after buffer underrun") in out
+    assert "xruns rose by 1" in out and "xruns_all rose by 2" in out
+    assert "note: engine logs: 1 dropout line(s) from before the soak, not counted" in out
+    assert ("note: engine logs: 1 dropout line(s) after the soak's last sample, not counted "
+            "(first at 2026-10-13 07:12:00") in out
+
+
+def test_soak_summary_without_engine_logs_says_so(tmp_path):
+    lines = [_soak_line(f"2026-10-15T23:00:{s:02d}+02:00", up=str(100 + s)) for s in (0, 10)]
+    r = _summary(tmp_path, lines, "2026-10-15T23:00:15+02:00")
+    assert r.returncode == 0, r.stdout
+    assert "note: no engine log at" in r.stdout and "dropouts judged on the samples only" in r.stdout
 
 
 def test_soak_summary_old_log_format_still_reads(tmp_path):

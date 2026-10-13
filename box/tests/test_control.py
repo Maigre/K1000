@@ -2269,7 +2269,13 @@ def test_main_wiring_of_the_spectrum_and_the_v1_console(tmp_path: Path, monkeypa
         await until(lambda: made, what="its own client")
         assert made[0][0] == "ws://127.0.0.1:4321" and made[0][1]["timeout"] <= 0.5
         assert task.client is not cl
+        assert task.ballistics.peak_floor_db == -80.0 and task.program_floor_db == -60.0
         await task.stop()
+        tuned, _ = make(tmp_path / "tuned", State(),
+                        settings={"spectrum": {"peak_floor_db": -72.5, "program_floor_db": -55}})
+        task2 = main_mod.open_spectrum(tuned, "ws://x")     # k1000.yaml's PEAK floors reach it
+        assert task2.ballistics.peak_floor_db == -72.5 and task2.program_floor_db == -55.0
+        await task2.stop()
         off, _ = make(tmp_path / "off", State(), settings={"spectrum": {"enabled": False}})
         assert main_mod.open_spectrum(off, "ws://x") is None
         # console: notch helper and undo

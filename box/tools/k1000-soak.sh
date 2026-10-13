@@ -27,6 +27,11 @@
 # Usage:   k1000-soak.sh [--once]          sample (every 10 s, or once)
 #          k1000-soak.sh --summary [LOG]   read a soak log: samples, gaps, reboots, xruns,
 #                                          restarts, mute, heat; exits 1 if anything needs a look
+#   --summary judges dropouts on the soak window only: the engine log lines (live + rotated)
+#   dated from the first sample to the last one (+ 3 intervals, at least 60 s), and the rise of
+#   xruns/xruns_all between samples. A dropout from before the soak (an older engine run's
+#   rotated log, xruns_all already above 0 at the first sample) is printed as a note, never as a
+#   failure. Engine log times are local; they are read in the first sample's UTC offset.
 #   run it detached, as k1000, so it survives the SSH session:
 #     sudo systemd-run --unit=k1000-soak --uid=k1000 /opt/k1000/tools/k1000-soak.sh
 #     sudo systemctl stop k1000-soak          # when done ("not loaded" = it had ended: a reboot?)
@@ -58,7 +63,7 @@ export K1000_SOAK_MODE="$MODE"
 
 exec python3 -I - <<'PY'
 import glob, json, os, re, subprocess, sys, time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 MODE = os.environ.get("K1000_SOAK_MODE", "run")
 WS = os.environ.get("K1000_WS", "ws://127.0.0.1:1234")
@@ -73,6 +78,8 @@ UPTIME = os.environ.get("K1000_SOAK_UPTIME", "/proc/uptime")
 # device is stalled", "Entering stalled state", "PlaybackError"...): a capture-side dropout must
 # count too, or a soak with USB hiccups would report zero.
 PATTERN = re.compile(rb"underrun|overrun|xrun|stalled|PlaybackError|CaptureError", re.IGNORECASE)
+# An engine log line starts with its local time: "2026-10-12 22:37:52.631549 WARN  [...] <...> text".
+LINE_TS = re.compile(rb"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})")
 
 # camilladsp -o X.log with --log_rotate_size writes X_rCURRENT.log and keeps X_r<date>.log files.
 stem, ext = os.path.splitext(CDSP_LOG)
@@ -228,6 +235,67 @@ def hms(seconds):
     return f"{seconds // 3600}h{seconds % 3600 // 60:02d}m{seconds % 60:02d}s"
 
 
+def dropout_lines(path):
+    """[(local naive datetime or None, text)] for each dropout line of one engine log. A line
+    without its own time takes the last time above it, else the file name's (camilladsp names a
+    rotated log after its first line: X_r2026-10-12_22-16-47.log); None when neither exists."""
+    last = None
+    m = re.search(r"_r(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})", os.path.basename(path))
+    if m:
+        try:
+            last = datetime.strptime(f"{m.group(1)} {m.group(2)}:{m.group(3)}:{m.group(4)}",
+                                     "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            last = None
+    out = []
+    try:
+        with open(path, "rb") as f:
+            for raw in f:
+                t = LINE_TS.match(raw)
+                if t:
+                    try:
+                        last = datetime.strptime((t.group(1) + b" " + t.group(2)).decode(),
+                                                 "%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        pass
+                if PATTERN.search(raw):
+                    text = raw.decode("utf-8", "replace").strip()
+                    if "> " in text and "<src/" in text:        # drop the module and source spot
+                        text = text.split("> ", 1)[1]
+                    out.append((last, text[:120]))
+    except OSError:
+        return None
+    return out
+
+
+def engine_dropouts(start, end):
+    """The engine logs' dropout lines split by the soak window [start, end] (aware datetimes):
+    (before, during, after, files read). Undated lines count as during (never hidden)."""
+    before, during, after = [], [], []
+    files = sorted(glob.glob(ALL_LOGS))
+    read = 0
+    for path in files:
+        lines = dropout_lines(path)
+        if lines is None:
+            continue
+        read += 1
+        for t, text in lines:
+            at = t.replace(tzinfo=start.tzinfo) if t is not None else None
+            if at is not None and at < start:
+                before.append((at, text))
+            elif at is not None and at > end:
+                after.append((at, text))
+            else:
+                during.append((at, text))
+    for group in (before, during, after):
+        group.sort(key=lambda x: (x[0] is None, x[0] or start))
+    return before, during, after, read
+
+
+def when(t):
+    return t.strftime("%Y-%m-%d %H:%M:%S") if t is not None else "an undated line"
+
+
 def summary():
     """Read the soak log and say plainly what needs a look. Returns 1 if anything does."""
     rows = []
@@ -249,6 +317,7 @@ def summary():
         print(f"{OUT}: no samples")
         return 1
     issues = []
+    notes = []          # information: printed, never a failure
     now = os.environ.get("K1000_SOAK_NOW")
     now = datetime.fromisoformat(now) if now else datetime.now().astimezone()
     first, last = rows[0][0], rows[-1][0]
@@ -290,12 +359,35 @@ def summary():
     def series(key):
         return [(ts, num(kv.get(key))) for ts, kv in rows if num(kv.get(key)) is not None]
 
+    # Dropouts: only what happened inside the soak window counts. The samples' counters already
+    # hold every older dropout line at the first sample (xruns_all reads the rotated logs too), so
+    # only their rises count; the engine logs themselves are read by date.
     for key in ("xruns", "xruns_all"):
         s = series(key)
-        if s and max(v for _t, v in s) > 0:
-            t_first = next(t for t, v in s if v > 0)
-            issues.append(f"{key} reached {int(max(v for _t, v in s))} (first at {t_first.isoformat()}): "
-                          "read the engine logs in /var/log/k1000")
+        if not s:
+            continue
+        rises = [(t2, b - a) for (_t, a), (t2, b) in zip(s, s[1:]) if b > a]
+        if rises:
+            issues.append(f"{key} rose by {int(sum(d for _t, d in rises))} during the soak (first at "
+                          f"{rises[0][0].isoformat()}): read the engine logs in /var/log/k1000")
+        if s[0][1] > 0:
+            notes.append(f"{key}={int(s[0][1])} already at the first sample: dropouts from before the "
+                         "soak, not counted")
+    end = last + timedelta(seconds=max(60.0, 3 * INTERVAL))
+    before, during, after, read = engine_dropouts(first, end)
+    if not read:
+        notes.append(f"no engine log at {ALL_LOGS}: dropouts judged on the samples only")
+    if during:
+        t0, text = during[0]
+        issues.append(f"engine logs: {len(during)} dropout line(s) during the soak, first at {when(t0)}: {text}")
+    if before:
+        t0, text = before[-1]
+        notes.append(f"engine logs: {len(before)} dropout line(s) from before the soak, not counted "
+                     f"(latest at {when(t0)}: {text})")
+    if after:
+        t0, text = after[0]
+        notes.append(f"engine logs: {len(after)} dropout line(s) after the soak's last sample, not "
+                     f"counted (first at {when(t0)}: {text})")
     s = series("xruns_all")
     if any(b < a for (_t, a), (_t2, b) in zip(s, s[1:])):
         issues.append("xruns_all went DOWN: rotated engine logs were deleted (many engine restarts?)")
@@ -330,12 +422,15 @@ def summary():
     if thr:
         issues.append(f"throttled: {', '.join(thr)} (bit 0 = under-voltage now, bit 16 = since boot)")
 
+    for n in notes:
+        print(f"note: {n}")
     if issues:
         print(f"ATTENTION ({len(issues)}):")
         for i in issues:
             print(f"  - {i}")
         return 1
-    print("clean: no gap, no reboot, no xrun, no restart, no clip, never muted, no throttling")
+    print("clean: no gap, no reboot, no xrun during the soak, no restart, no clip, never muted, "
+          "no throttling")
     return 0
 
 

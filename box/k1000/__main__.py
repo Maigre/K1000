@@ -503,16 +503,20 @@ def open_spectrum(ctl: Controller, url: str) -> Any:
         log.info("spectrum disabled in k1000.yaml: no spectrum task")
         return None
     try:
-        from .rta import COMMAND_TIMEOUT_S, SpectrumTask
+        from .rta import COMMAND_TIMEOUT_S, Ballistics, SpectrumTask, peak_floors
 
         def client(u: str) -> Any:
             # Its OWN client: never the controller's (a poll must not queue before a mute).
             return CamillaClient(u, timeout=COMMAND_TIMEOUT_S, ping_interval=5.0,
                                  backoff_max=2.0, fader_max_db=FADER_CEILING_DB)
 
+        # No PEAK on silence: k1000.yaml spectrum.peak_floor_db / program_floor_db.
+        peak_floor, program_floor = peak_floors(ctl.settings)
         task = SpectrumTask(url, wanted=ctl.spectrum_wanted,
                             channels=lambda: list(getattr(ctl.profile, "input_map", ()) or ()),
-                            publish=ctl.set_spectrum, client_factory=client)
+                            publish=ctl.set_spectrum, client_factory=client,
+                            ballistics=Ballistics(peak_floor_db=peak_floor),
+                            program_floor_db=program_floor)
         task.start()
         return task
     except Exception as e:   # noqa: BLE001

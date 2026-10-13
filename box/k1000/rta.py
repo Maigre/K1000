@@ -17,11 +17,16 @@ Why it is shaped like this:
   and R: m4 2,3; dev 0,1), one call per channel, combined as a POWER average
   (`eqgraph.combine_power`). Never `channel: null`: on the M4 it averages the waveforms of the
   mic and the spare input into the program.
-- **Robust to the engine.** A fresh engine answers "No audio data available" to its first
-  call (the call itself starts the analyser): retried quietly. A link down or restarting: the
-  frame is cleared after STALE_S without data (never a frozen picture), and polling resumes by
-  itself when the client reconnects. A refusal (a channel out of range on a wrong profile):
-  logged once, state "unavailable", retried every RETRY_BAD_S.
+- **Robust to the engine.** A fresh engine answers its first calls with "No audio data
+  available" (the call itself starts the analyser), then "Insufficient data in buffer" until
+  its ring buffer holds one FFT (CamillaDSP 5.0.0-beta.1, spectrum.rs): the analyser warming
+  up, retried quietly every WARMUP_RETRY_S (state "waiting": no picture, no NO SPECTRUM, no
+  log). Only if it is still warming up after WARMUP_GRACE_S does it count as a refusal ("No
+  audio data" again after another answer is an engine restart: the grace starts again; but
+  WARMUP_CAP_S of warm-up answers on one link with no data is a refusal whatever). A link
+  down or restarting: the frame is cleared after STALE_S without data (never a frozen picture),
+  and polling resumes by itself when the client reconnects. A refusal (a channel out of range
+  on a wrong profile): logged once, state "unavailable", retried every RETRY_BAD_S.
 - **The hand comes first.** `note_input()` (every knob/button event) holds the publishing of
   new frames for PAUSE_AFTER_INPUT_S: the first frame after a knob event is the knob's edit,
   not a spectrum redraw. Polling and the ballistics continue meanwhile.
@@ -31,6 +36,15 @@ Why it is shaped like this:
   around it, not buried (within LOUD_DB of the loudest), persistent PERSIST_S, with hysteresis
   (kept while EXIT_DB above, released after RELEASE_S below, the pointer moves only when the
   peak moves by MOVE_BINS bins). It says PEAK, never FEEDBACK: a held note looks the same.
+- **No PEAK on silence.** Two absolute gates on top of the relative ones: the peak bin must
+  stand at `peak_floor_db` or above (k1000.yaml `spectrum.peak_floor_db`, default -80 dBFS on
+  the engine's peak-bin scale: 0 = a full-scale sine; kept down to FLOOR_EXIT_DB below it), and
+  the program must be present: the program channels' capture RMS over the last PROGRAM_WINDOW_S
+  (GetCaptureSignalRmsSince, on this same connection) at `program_floor_db` or above
+  (`spectrum.program_floor_db`, default -60 dBFS, PROGRAM_HYST_DB of hysteresis). A silent input
+  (the bench HiFiBerry reads -95..-108 dBFS RMS, its noise-floor bins about -114) shows no
+  PEAK; when the program stops, a shown PEAK goes after RELEASE_S like any other lost peak.
+  An engine that cannot say the RMS leaves the level floor alone in charge (logged once).
 
 Frames are `eqgraph.RtaFrame` objects built fresh for every publish (their arrays are never
 written again), so the render thread may keep one while the next is computed.
@@ -59,12 +73,67 @@ COMMAND_TIMEOUT_S = 0.5      # a stuck engine drops this link quickly (the clien
 PAUSE_AFTER_INPUT_S = 0.3
 STALE_S = 1.0                # wanted but no fresh data this long: the frame is cleared
 RETRY_BAD_S = 5.0            # after a refusal (wrong channel): try again this often
+WARMUP_RETRY_S = 0.4         # the analyser warming up: ask again this often, quietly
+WARMUP_GRACE_S = 10.0        # still warming up after this long: a refusal (logged, NO SPECTRUM)
+WARMUP_CAP_S = 3 * WARMUP_GRACE_S   # no data this long through warm-up answers, whatever restarted
+                                    # the grace: a refusal (only data, a link drop or not wanted
+                                    # reset it; a "No audio data" answer does not)
 IDLE_CLOSE_S = 30.0          # not wanted this long: the second connection is closed
-NO_DATA = "no audio data"    # the engine's answer before its analyser has data (any case)
+# The engine's answers while its analyser warms up (any case; CamillaDSP 5.0.0-beta.1
+# spectrum.rs): before the first call set the sticky "requested" flag, and until the ring
+# buffer holds one FFT length (8192 frames at 48 kHz, 171 ms) after it.
+WARMUP_ANSWERS = ("no audio data", "insufficient data", "sample rate not available")
 FLOOR_DB = -140.0
+PEAK_FLOOR_DB = -80.0        # no PEAK below this (dBFS, the engine's peak-bin scale)
+PROGRAM_FLOOR_DB = -60.0     # no PEAK unless the program's capture RMS reaches this (dBFS)
+PROGRAM_WINDOW_S = 0.5       # the RMS window (GetCaptureSignalRmsSince)
+PROGRAM_HYST_DB = 3.0        # program present: kept down to PROGRAM_FLOOR_DB - this
+FLOOR_RANGE = (-140.0, -20.0)   # k1000.yaml values outside this -> the default
 
 # States (Controller.status.spectrum_state)
 OFF, WAITING, LIVE, UNAVAILABLE = "off", "waiting", "live", "unavailable"
+
+
+def peak_floors(settings: Any) -> tuple[float, float]:
+    """k1000.yaml `spectrum.peak_floor_db` and `spectrum.program_floor_db` (dBFS) ->
+    (peak floor, program floor). A missing, non-numeric or out-of-FLOOR_RANGE value -> its
+    default (PEAK_FLOOR_DB, PROGRAM_FLOOR_DB); FLOOR_RANGE's bottom (-140) turns a gate off."""
+    sec = settings.get("spectrum") if isinstance(settings, dict) else None
+    sec = sec if isinstance(sec, dict) else {}
+    out = []
+    for key, default in (("peak_floor_db", PEAK_FLOOR_DB), ("program_floor_db", PROGRAM_FLOOR_DB)):
+        v = sec.get(key, default)
+        ok = isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) \
+            and FLOOR_RANGE[0] <= float(v) <= FLOOR_RANGE[1]
+        if not ok and key in sec:
+            log.warning("k1000.yaml spectrum.%s = %r: not a level in %g..%g dBFS; using %g", key, v,
+                        FLOOR_RANGE[0], FLOOR_RANGE[1], default)
+        out.append(float(v) if ok else default)
+    return out[0], out[1]
+
+
+def is_warmup(err: Any) -> bool:
+    """Is this engine refusal the analyser warming up (WARMUP_ANSWERS), not a real refusal?"""
+    text = str(err).lower()
+    return any(a in text for a in WARMUP_ANSWERS)
+
+
+def program_level(value: Any, channels: Iterable[int]) -> float | None:
+    """GetCaptureSignalRmsSince's value (dB per capture channel) -> the loudest program
+    channel's RMS, or None when the reply says nothing about them (not a list, empty, out of
+    range). A null or non-finite level (serde writes -inf as null) is digital silence."""
+    if not isinstance(value, (list, tuple)):
+        return None
+    got: list[float] = []
+    for c in channels:
+        if not 0 <= c < len(value):
+            continue
+        v = value[c]
+        if v is None:
+            got.append(-math.inf)
+        elif isinstance(v, (int, float)) and not isinstance(v, bool) and not math.isnan(v):
+            got.append(float(v))
+    return max(got) if got else None
 
 
 def spectrum_request(channel: int, n_bins: int = N_BINS) -> dict[str, Any]:
@@ -101,7 +170,10 @@ class Ballistics:
     the loudest level (20 Hz..20 kHz) + `headroom_db`, as a slow tracker (rises at once, falls
     `scale_fall_db_s`), clamped to `top_range`; bottom = top - `span_db`. peak: see the module
     docstring; detected on a short power average (`avg_tau_s`) so one noisy frame neither
-    starts nor ends a peak.
+    starts nor ends a peak. `peak_floor_db`: no peak whose (averaged) bin is below it; a shown
+    one is kept down to FLOOR_EXIT_DB under it. `update(..., program=False)` (the program is
+    absent): no new peak, and a shown one is released after RELEASE_S; None = unknown (only
+    the level floor gates).
     """
 
     ENTER_DB = 10.0
@@ -113,14 +185,18 @@ class Ballistics:
     TRACK_BINS = 2           # a peak (or a candidate) is the same one within this many bins
     MOVE_BINS = 2            # the pointer moves only when the peak moved this far
     SEARCH = (40.0, 16000.0)
+    FLOOR_EXIT_DB = 4.0      # a shown peak is kept down to peak_floor_db - this (hysteresis)
 
     def __init__(self, *, fall_db_s: float = 24.0, hold_s: float = 3.0, span_db: float = 66.0,
                  headroom_db: float = 18.0, scale_fall_db_s: float = 1.0,
                  top_range: tuple[float, float] = (-60.0, 18.0), avg_tau_s: float = 0.25,
-                 display: tuple[float, float] = (20.0, 20000.0)) -> None:
+                 display: tuple[float, float] = (20.0, 20000.0),
+                 peak_floor_db: float = PEAK_FLOOR_DB) -> None:
         self.fall_db_s, self.hold_s, self.span_db = fall_db_s, hold_s, span_db
         self.headroom_db, self.scale_fall_db_s = headroom_db, scale_fall_db_s
         self.top_range, self.avg_tau_s, self.display = top_range, avg_tau_s, display
+        self.peak_floor_db = float(peak_floor_db)
+        self.program: bool | None = None                # the last update's program gate
         self.reset()
 
     def reset(self) -> None:
@@ -137,7 +213,8 @@ class Ballistics:
         self._lost: float | None = None                 # when the tracked peak fell below EXIT
 
     # ------------------------------------------------------------------ update
-    def update(self, freqs: Any, mags: Any, now: float) -> None:
+    def update(self, freqs: Any, mags: Any, now: float, program: bool | None = None) -> None:
+        self.program = program
         f = np.asarray(freqs, dtype=np.float64)
         m = np.maximum(np.asarray(mags, dtype=np.float64), FLOOR_DB)
         if self.freqs is None or self.level is None or len(f) != len(self.freqs) \
@@ -185,11 +262,13 @@ class Ballistics:
             self._cand = self._peak = self._shown = self._lost = None
             return
         loud = m >= float(np.max(m[inside])) - self.LOUD_DB
+        heard = self.program is not False     # the program is present (or nobody can tell)
         if self._peak is not None:            # a shown peak: kept while EXIT_DB above (hysteresis)
             lo = max(0, self._peak - self.TRACK_BINS)
             hi = min(n, self._peak + self.TRACK_BINS + 1)
             j = lo + int(np.argmax(prom[lo:hi]))
-            if prom[j] >= self.EXIT_DB and loud[j] and inside[j]:
+            if heard and prom[j] >= self.EXIT_DB and loud[j] and inside[j] \
+                    and m[j] >= self.peak_floor_db - self.FLOOR_EXIT_DB:
                 self._peak, self._lost = j, None
                 if self._shown is None or abs(j - self._shown) >= self.MOVE_BINS:
                     self._shown = j
@@ -200,8 +279,8 @@ class Ballistics:
                 return
             self._peak = self._shown = self._lost = None
             self._cand = None
-        ok = inside & loud & (prom >= self.ENTER_DB)
-        if not ok.any():
+        ok = inside & loud & (prom >= self.ENTER_DB) & (m >= self.peak_floor_db)
+        if not heard or not ok.any():
             self._cand = None
             return
         i = int(np.argmax(np.where(ok, prom, -np.inf)))
@@ -240,8 +319,9 @@ class SpectrumTask:
 
     `channels()`: the capture channels of the program (read on every poll: a profile switch is
     followed). `client_factory(url)` builds the task's OWN client (a CamillaClient surface:
-    connect(timeout), connected, command(name, value=...), close()). Never raises out of its
-    loop; `stop()` cancels it and closes the client.
+    connect(timeout), connected, command(name, value=...), close()). `program_floor_db`: the
+    program gate of the PEAK (module docstring); the level floor is the ballistics'
+    `peak_floor_db`. Never raises out of its loop; `stop()` cancels it and closes the client.
     """
 
     def __init__(self, url: str, *, wanted: Callable[[], bool], channels: Callable[[], Iterable[int]],
@@ -249,7 +329,8 @@ class SpectrumTask:
                  client_factory: Callable[[str], Any] | None = None, rate_hz: float = RATE_HZ,
                  n_bins: int = N_BINS, clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], Any] = asyncio.sleep,
-                 ballistics: Ballistics | None = None) -> None:
+                 ballistics: Ballistics | None = None,
+                 program_floor_db: float = PROGRAM_FLOOR_DB) -> None:
         self.url = url
         self.wanted = wanted
         self.channels = channels
@@ -260,6 +341,8 @@ class SpectrumTask:
         self._clock = clock
         self._sleep = sleep
         self.ballistics = ballistics or Ballistics()
+        self.program_floor_db = float(program_floor_db)
+        self.program_db: float | None = None     # the program's capture RMS at the last poll
         self.client: Any = None
         self.state = OFF
         self.frame: RtaFrame | None = None       # the last frame published
@@ -270,6 +353,10 @@ class SpectrumTask:
         self._last_wanted = -math.inf
         self._retry_at = -math.inf
         self._pending = False                    # data computed but not published (pause)
+        self._warm_since: float | None = None    # first warm-up answer of this run of them
+        self._warm_fresh = False                 # the last answer was "no audio data"
+        self._warm_first: float | None = None    # first warm-up answer since data / a new link
+        self._program = False                    # the program gate's last verdict
         self._logged: set[Any] = set()
 
     # ------------------------------------------------------------------ lifecycle
@@ -314,6 +401,7 @@ class SpectrumTask:
         except Exception:   # noqa: BLE001
             want = False
         if not want:
+            self._warm_since = self._warm_first = None
             if self.state != OFF or self.frame is not None:
                 self._clear(OFF)
             if self.client is not None and now - self._last_wanted >= IDLE_CLOSE_S:
@@ -323,9 +411,12 @@ class SpectrumTask:
         if self.state == OFF:
             self._set_state(WAITING)
         if now < self._retry_at:
+            if self.client is not None and not getattr(self.client, "connected", False):
+                self._warm_since = self._warm_first = None   # the link dropped: a new warm-up
             return
         client = await self._ensure_client()
         if client is None or not getattr(client, "connected", False):
+            self._warm_since = self._warm_first = None   # a new link (engine restart): new warm-up
             self._no_data(now)
             return
         chans = sorted({int(c) for c in self.channels()})
@@ -337,11 +428,13 @@ class SpectrumTask:
             try:
                 value = await client.command("GetSpectrum", value=spectrum_request(ch, self.n_bins))
             except CdspUnavailable:
+                self._warm_since = self._warm_first = None
                 self._no_data(now)
                 return
             except CdspError as e:
-                if NO_DATA in str(e).lower():
-                    self._no_data(now)           # a fresh engine: the call started the analyser
+                if is_warmup(e):                 # a fresh engine: the analyser fills its buffer
+                    fresh = WARMUP_ANSWERS[0] in str(e).lower()      # "no audio data": restarted
+                    self._warming(now, f"channel {ch}: {e}", fresh=fresh)
                     return
                 self._refused(now, f"channel {ch}: {e}")
                 return
@@ -350,10 +443,12 @@ class SpectrumTask:
                 self._refused(now, f"channel {ch}: unusable reply")
                 return
             spectra.append(parsed)
+        self._warm_since, self._warm_fresh, self._warm_first = None, False, None
+        program = await self._program_present(client, chans)
         freqs = spectra[0][0]
         mags = [m for f, m in spectra if len(f) == len(freqs)]
         combined = mags[0] if len(mags) == 1 else combine_power(*mags)
-        self.ballistics.update(freqs, combined, now)
+        self.ballistics.update(freqs, combined, now, program=program)
         self.polls += 1
         self._last_data = now
         self._set_state(LIVE)
@@ -362,6 +457,31 @@ class SpectrumTask:
             self._publish_now()
 
     # ------------------------------------------------------------------ helpers
+    async def _program_present(self, client: Any, chans: list[int]) -> bool | None:
+        """The PEAK's program gate: the program channels' capture RMS over PROGRAM_WINDOW_S at
+        `program_floor_db` or above (PROGRAM_HYST_DB of hysteresis). None = cannot tell (the
+        engine refused the command, or said nothing about these channels): the level floor
+        alone then gates the PEAK. `program_floor_db` at FLOOR_RANGE's bottom: the gate is off
+        (None, and the level is not asked; digital silence reads -inf, below any floor)."""
+        if self.program_floor_db <= FLOOR_RANGE[0]:
+            self.program_db = None
+            return None
+        try:
+            value = await client.command("GetCaptureSignalRmsSince", value=PROGRAM_WINDOW_S)
+        except CdspUnavailable:
+            return None
+        except CdspError as e:
+            self._log_once(("program", str(e)), logging.WARNING, "spectrum: no program level (%s): "
+                           "PEAK gated by its level floor only", e)
+            return None
+        db = program_level(value, chans)
+        self.program_db = db
+        if db is None:
+            return None
+        floor = self.program_floor_db - (PROGRAM_HYST_DB if self._program else 0.0)
+        self._program = db >= floor
+        return self._program
+
     async def _ensure_client(self) -> Any:
         if self.client is None:
             try:
@@ -411,6 +531,27 @@ class SpectrumTask:
     def _no_data(self, now: float) -> None:
         if now - self._last_data >= STALE_S:
             self._clear(WAITING)
+
+    def _warming(self, now: float, why: str, fresh: bool = False) -> None:
+        """The analyser warming up (WARMUP_ANSWERS): no log, no NO SPECTRUM, asked again in
+        WARMUP_RETRY_S. Still warming up WARMUP_GRACE_S after its first such answer: a refusal.
+        `fresh` ("No audio data available": an engine that has not started its analyser yet)
+        after any other answer is an engine restart: the grace starts again. Whatever restarted
+        it, WARMUP_CAP_S of warm-up answers on one link with no data in between is a refusal
+        too (an engine alternating its answers would otherwise never be one)."""
+        if self._warm_since is None or (fresh and not self._warm_fresh):
+            self._warm_since = now
+        if self._warm_first is None:
+            self._warm_first = now
+        self._warm_fresh = fresh
+        if now - self._warm_since >= WARMUP_GRACE_S:
+            self._refused(now, f"{why}, still after {WARMUP_GRACE_S:g} s")
+            return
+        if now - self._warm_first >= WARMUP_CAP_S:
+            self._refused(now, f"{why}, no data for {WARMUP_CAP_S:g} s")
+            return
+        self._retry_at = now + WARMUP_RETRY_S
+        self._no_data(now)
 
     def _refused(self, now: float, why: str) -> None:
         self._log_once(("refused", why), logging.WARNING, "spectrum unavailable (%s); retrying "

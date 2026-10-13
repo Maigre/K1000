@@ -1066,7 +1066,7 @@ def test_int_held_low_does_not_spin_the_service_loop():
 
 # ---------------------------------------------------------------------------------------------
 # Config guard: an expander reset or a corrupted config must never fake a press or a LONG
-# (B2 long = mute toggle, B4 long = reset live EQ). Review finding 1 (major) + finding 2.
+# (B2 long = mute toggle; v0 also had B4 long = reset live EQ). Review finding 1 (major) + finding 2.
 # ---------------------------------------------------------------------------------------------
 ALL_SW_LOW = 0xFFFF & ~sum(1 << p for p in SW)
 

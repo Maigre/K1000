@@ -426,7 +426,7 @@ PANEL=$(cat <<'EOF'
   Phones .................. down     Rear power switch . on, taped
   Program ................. rear LINE IN 3 (L) and 4 (R), balanced TRS
   USB ..................... short USB-C to USB-A cable, Pi black (USB 2) port, strain-relieved
-  K1000 knobs ............. Main (E1, MAIN page) at -20 dB or lower before any program
+  K1000 knobs ............. Master (E1, SHOW page) at -20 dB or lower before any program
 EOF
 )
 

@@ -305,7 +305,7 @@ phone off), `pong`; phone → box `nudge {f, d, fine}`, `set {f, v}` (live EQ va
    the distance where NO LINK appears. **10 m must hold** (Thomas's working distance). Pick the
    band for Sunday (5 GHz ch 36 by default, `--band bg` if 2.4 GHz holds better).
 7. Ring a monitor/feedback test: **long-press "notch here"** at the ringing frequency and slide
-   it onto the ring without lifting; the box's LIVE page shows the band.
+   it onto the ring without lifting; the box's SHOW page shows the cut on its EQ curve.
 8. Scan the Wi-Fi QR from 50 cm: note whether it worked first time.
 9. Turn the phone's Wi-Fi off mid-show: nothing changes in the sound.
 10. SETUP › Phone off: the phone says OFF and controls nothing; on again: it reconnects.

@@ -19,7 +19,7 @@ UI v1 (D-009), accepted on the box 2026-10-13 (`f7aa58b-v1`); ops `box/README.md
 | B3 | SHOW tap: **next band** LS · 1 · 2 · 3 · 4 · HS · ALIGN **hold: unlock E3/E4** for 30 s idle |
 | B4 | SHOW tap: **notch helper** · elsewhere a hint |
 
-**Notch in 3 gestures (SHOW): B4, E3 down, E4 up.** (1) **B4** sets a free bell (P1–P4 at 0 dB, the selected one first) to Q 8.65 (1/6 oct) and, if the cyan PEAK pointer is up, to its frequency; gain stays 0 dB (inaudible); strip `P3 · 2.44k · E3 TO CUT`. (2) **E3 down**: 12 clicks = −6 dB. (3) **E4 up** narrows (6 clicks = Q 16, max); E2 with its push held centres it. A PEAK within 1/6 oct of a bell already cutting re-selects it, writing nothing. `NO PEAK`: sweep with E2 (250 Hz → 2.5 kHz ≈ 40 clicks). `NO FREE BAND`: four bells in use. PEAK is read before the EQ; it is not a feedback detector, and on silence it can sit on noise.
+**Notch in 3 gestures (SHOW): B4, E3 down, E4 up.** (1) **B4** sets a free bell (P1–P4 at 0 dB, the selected one first) to Q 8.65 (1/6 oct) and, if the cyan PEAK pointer is up, to its frequency; gain stays 0 dB (inaudible); strip `P3 · 2.44k · E3 TO CUT`. (2) **E3 down**: 12 clicks = −6 dB. (3) **E4 up** narrows (6 clicks = Q 16, max); E2 with its push held centres it. A PEAK within 1/6 oct of a bell already cutting re-selects it, writing nothing. `NO PEAK`: sweep with E2 (250 Hz → 2.5 kHz ≈ 40 clicks). `NO FREE BAND`: four bells in use. PEAK is read before the EQ; it is not a feedback detector, and never on silence.
 
 **ALIGN lock.** E3/E4 turned while locked: `LOCKED · HOLD B3 TO EDIT`, nothing changes. Unlocked (`EDIT 0:30`; a B3 tap relocks), the first E3 click after 2.5 s at rest only wakes sub delay; each change dips the subs briefly.
 
@@ -39,7 +39,7 @@ UI v1 (D-009), accepted on the box 2026-10-13 (`f7aa58b-v1`); ops `box/README.md
 | NO DEVICE (orange) · ENGINE DOWN (red) | reseat M4 · back muted in ~5 s; 30 s → bypass |
 | CLIP · IN CLIP pill · meter red (> −6 dBFS) | master down · source down; Meyers limit ≈ −14 |
 | Orange `… (GUI)`, `… CHANGED (GUI)` | CamillaGUI: cuts kept, rest restored → no Applies |
-| NO SPECTRUM · ENGINE ? · DEVICE ? · UI ERROR | ~5 s after an engine start · unsure → wait |
+| NO SPECTRUM · ENGINE ? · DEVICE ? · UI ERROR | engine refuses it: sound fine, Spectrum OFF · unsure → wait |
 
 **Power on:** Meyers OFF, source quiet → M4 on the Pi's USB, rear switch on → K1000 on; ~15 s: ● RUNNING, M4 · MOTU M4, MUTED · READY (saved unmuted: ramps in) → Meyers ON → hold B2, E1 up. **Off:** hold B2 (saved at once) → Meyers OFF → unplug K1000, M4. **M4 taped:** MONITOR, INPUT MONITOR MIX full right · MONs unlit · 48V off · GAIN 1/2 min.
 

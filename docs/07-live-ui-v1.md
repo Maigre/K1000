@@ -16,8 +16,8 @@
 > | SETUP list: v0 + RTA source | v0's list + Reset live EQ ×2 · Undo reset · Lo-Cut ×2 · Spectrum · **Laptop access ×2** (new, not in this spec: opens CamillaGUI and SSH on the K1000 Wi-Fi for 2 h, plus the `/tune` page; `06-phone.md` §11) · Phone · Knob test |
 > | 265 bins; polled on SHOW with source ≠ OFF and engine Running | 264 bins (1/24 oct, 10 Hz–20 kHz); polled at 10 Hz on its own websocket while SHOW is displayed, Spectrum is ON, the engine is Running **or Paused**, and the device is present; the connection closes after 30 s unwanted. New frames are held for 300 ms after any knob or button event |
 > | Range: loudest hold rounded up to 6 dB + 18 dB headroom (§5.2) | **Slow tracker**: rises at once, falls 1 dB/s, no 6 dB steps (still +18 dB headroom, 66 dB deep) |
-> | PEAK: 10 dB above the median of ±1/3 oct, steady 0.7 s (§2.4) | ±**1 octave** context, enters at 10 dB, released 0.5 s after it drops below 6 dB (hysteresis), within 30 dB of the loudest bin, 40 Hz–16 kHz, persistent **1.5 s**, on a 0.25 s power average; the pointer moves only by ≥ 2 bins |
-> | PEAK ▼ + `PEAK 2.44k · B4 GRAB`; `RTA PGM` tag | A small cyan pointer + its frequency, no call-to-action text; no source tag. A grey `NO SPECTRUM` only when the engine refuses |
+> | PEAK: 10 dB above the median of ±1/3 oct, steady 0.7 s (§2.4) | ±**1 octave** context, enters at 10 dB, released 0.5 s after it drops below 6 dB (hysteresis), within 30 dB of the loudest bin, 40 Hz–16 kHz, persistent **1.5 s**, on a 0.25 s power average; the pointer moves only by ≥ 2 bins. **Never on silence** (added after the acceptance): the peak bin ≥ −80 dBFS (`spectrum.peak_floor_db`) and the program's capture RMS ≥ −60 dBFS (`spectrum.program_floor_db`) |
+> | PEAK ▼ + `PEAK 2.44k · B4 GRAB`; `RTA PGM` tag | A small cyan pointer + its frequency, no call-to-action text; no source tag. A grey `NO SPECTRUM` only when the engine refuses (its warm-up answers after a start are not refusals) |
 > | Controller messages in a dark-amber strip on the chip row; MUTED band carries alerts (§0 #14, §2.7) | **System alerts take the status bar** (critical red, KNOBS OFFLINE full width; warning orange; info blue, e.g. RAMPING IN); a critical one is repeated over SHOW's chips when no hint is up. Hints keep the amber strip, briefly. **Persistent pills** on SHOW's bottom row: LAPTOP OPEN, LO-CUT OFF, POL INV (orange), MONO SUB, AUDITION (grey). The 0 dB line is labelled, dB labels at the right edge |
 > | No master guard beyond Patch B (§2.2 rejected a cross-knob guard) | **Master-up guard** (D-009): master up is never accelerated and rises at most +6 dB within any 2 s (`controls.master_up_guard_db`, 0 = off), the rest refused with `MASTER: SLOW DOWN`. Down is never limited |
 > | 300 ms fader ramp (doc 08) | **100 ms** for Main and the Aux faders: master and balance answer the hand; mute and unmute fade over 0.1 s |
@@ -26,10 +26,12 @@
 > | Cost ≈ 10 % of one core in k1000 (§6) | Measured at the acceptance (silent input, SHOW + spectrum, 60 s): k1000 **19.6 %** of one core (max 32.8 %, unexplained ~30 % spikes every ~11 s), camilladsp 4.7 %, engine load 0.98 %, 0 xruns |
 > | Knob sampler under continuous rendering: "[?] re-run the bench" (§8) | Measured: MASTER lost ~24 % of its clicks at 45 clicks/s with SHOW drawn; fixed by a 1 ms GIL switch interval and lighter saves (`08-knob-precision.md` §10, PERF-1..3). Patches A and B are applied |
 >
-> **Known after the acceptance, not fixed when this note was written:** `NO SPECTRUM` for ~5 s after
-> every engine start (CamillaDSP 5.0.0-beta.1 first answers `Insufficient data in buffer`, which
-> `rta.py` treats as a refusal), and a PEAK on a silent input (no absolute level floor: a −114 dBFS
-> noise bin near 7.3 kHz was shown, and B4 aimed at it, harmlessly).
+> **Found at the acceptance, fixed after it:** `NO SPECTRUM` for ~5 s after every engine start
+> (CamillaDSP 5.0.0-beta.1 answers `Insufficient data in buffer` while its analyser fills: now a
+> quiet retry every 0.4 s, a refusal only after 10 s), and a PEAK on a silent input (a −114 dBFS
+> noise bin near 7.3 kHz was shown and B4 aimed at it: now the level floor and the program gate
+> above, so B4 says `NO PEAK` on silence and between tracks). `03-v0-architecture.md` §8 has the
+> details and the measured scales.
 
 2026-10-12 evening, answering Thomas's notes on the v0 panel. Status: **design and prototype,
 nothing wired** (superseded by the note above). The engine and panel figures were measured on the

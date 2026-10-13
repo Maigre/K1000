@@ -498,7 +498,8 @@ def smooth_ops(old_state: State, new_state: State, *, max_db_step: float = 0.5,
     at most `max_steps` of them. Delay and polarity changes are wrapped in a mute
     of their group fader (Aux1 subs / Aux2 tops): mute, wait the ramp, write, unmute. Fader ops
     go first (the engine ramps them). A Rebuild is returned as-is (a setup action: mute Main
-    around it). Typical use: B3 Lo-Cut toggle, B4 reset live, and coalesced knob moves.
+    around it). Typical use: SETUP › Lo-Cut on/off, SETUP › Reset live EQ (and its undo), and
+    coalesced knob moves.
 
     A guarded plan cut short between its mute and unmute (task cancel, websocket drop, k1000
     crash) leaves a group muted with the engine still running. So: send
