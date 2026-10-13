@@ -23,7 +23,7 @@ phone (D-007) is `docs/06-phone.md`.
 The order at power-on:
 
 1. The engine starts **muted at −40 dB** from `/var/lib/k1000/active.yml`.
-2. k1000 connects to the engine, checks the config and, unless the state was saved muted, unmutes and ramps Main up to the saved level over about 3 s (saved muted: it stays muted, `READY · hold B2 to unmute`).
+2. k1000 connects to the engine, checks the config and, unless the state was saved muted, unmutes and ramps Main up to the saved level over about 3 s (saved muted: it stays muted, `READY · hold B4 to unmute`).
 3. The phone/laptop GUI comes up next to them.
 
 - If `active.yml` is missing or broken, the engine waits for a valid one, with no websocket
@@ -52,8 +52,8 @@ The order at power-on:
 | `/var/log/k1000/` | `camilladsp_rCURRENT.log` + up to 50 rotated ones (every engine start rotates, and every 256 kB), the soak logs (`soak*.log`, one per run) |
 | `/opt/camillagui/` | the GUI binary; `config/` comes from `box/camillagui/`; `files/` is the GUI's empty, read-only config folder |
 | `/etc/systemd/system/{camilladsp,k1000,camillagui,k1000-console}.service` | from `box/systemd/` |
-| `/etc/systemd/system/k1000-laptop.{path,service}` | from `box/systemd/`, installed, never enabled: SETUP › Laptop access (k1000.service `Wants=` the watcher; the root unit runs `/opt/k1000/net/k1000-laptop-access.sh`) |
-| `/run/k1000/laptop-open`, `/run/k1000-laptop/status` | SETUP › Laptop access: k1000's request (its runtime directory, gone when k1000 stops) and root's answer (open until, or closed and why) |
+| `/etc/systemd/system/k1000-laptop.{path,service}` | from `box/systemd/`, installed, never enabled: SETUP › PHONE › Laptop access (k1000.service `Wants=` the watcher; the root unit runs `/opt/k1000/net/k1000-laptop-access.sh`) |
+| `/run/k1000/laptop-open`, `/run/k1000-laptop/status` | SETUP › PHONE › Laptop access: k1000's request (its runtime directory, gone when k1000 stops) and root's answer (open until, or closed and why) |
 | `/var/lib/k1000/tune-undo.json` | the `/tune` page's undo: the system EQ the last Apply replaced |
 | `/etc/systemd/system/k1000-ap-{fence,hostapd,dnsmasq}.service`, `k1000-ap-hostapd.service.d/k1000-iface.conf` | from `box/net/`, by `net/setup-ap.sh` only (`install.sh --ap`); the drop-in binds hostapd to its interface |
 | `/etc/NetworkManager/dispatcher.d/90-k1000-ap-guard` | `net/k1000-ap-guard.sh`, by setup-ap.sh: stops the AP while another interface is in 10.42.0.0/24 (a laptop sharing on `eth0`), starts it again after; `journalctl -t k1000-ap-guard` |
@@ -61,7 +61,7 @@ The order at power-on:
 | `/etc/k1000/ap.psk` | the K1000 Wi-Fi password (generated once by setup-ap.sh, root:k1000 0640; shown only on the box screen) |
 | `/etc/k1000/ap.info`, `hostapd.conf`, `ap.env`, `ap-dnsmasq.conf`, `ap-fence.nft` | setup-ap.sh's choices (no secret; `state=down` after a no-go) and the files it generates (`hostapd.conf` is 0600: it holds the password) |
 | `/etc/NetworkManager/dnsmasq-shared.d/k1000.conf`, `/etc/NetworkManager/conf.d/k1000-ap-unmanaged.conf` | the AP's DNS (portal off by default), and `wlan0` left to hostapd |
-| `/var/lib/k1000/phone.json` | SETUP › Phone on/off, kept across restarts |
+| `/var/lib/k1000/phone.json` | SETUP › PHONE › Phone on/off, kept across restarts |
 | `/etc/systemd/system.conf.d/50-k1000-watchdog.conf` | `RuntimeWatchdogSec=15` |
 | `/etc/systemd/journald.conf.d/50-k1000-journal.conf` | journal on the SD card, 32 MB cap (applies at the next reboot) |
 | `/etc/modules-load.d/k1000.conf` | `i2c-dev` at boot: `/dev/i2c-1`, the knob board (install.sh `--boot`) |
@@ -333,7 +333,7 @@ sudo /opt/k1000/tools/k1000-m4-bringup.sh --tone --i-have-turned-the-speakers-of
     (GAIN 1 fully counter-clockwise, 48V off, MON 1 unlit), a tone in LINE IN 3, K1000 Main at
     −20 dB. Capture index 0 should read within about 0.5 dB of playback index N−1, and out 1 the
     same as out 3. Input 1 is not in the program, so nothing feeds back.
-  - **Leak test** (MON MIX fully clockwise blocks direct monitoring): K1000 muted (hold B2), the
+  - **Leak test** (MON MIX fully clockwise blocks direct monitoring): K1000 muted (hold B4), the
     tone in LINE IN 3, the loop on out 1, then press 3-4. Capture index 0 must stay at the floor.
     Turning MON MIX counter-clockwise makes it rise: that is the raw program going past K1000
     and its mute. Put MON MIX back fully clockwise and 3-4 off.
@@ -347,7 +347,7 @@ for n in ("GetCaptureSignalPeakSince","GetPlaybackSignalPeakSince"):
 
 ## Phone: K1000's own page (D-007)
 
-The phone joins the box's own Wi-Fi "K1000" (QR on SETUP › Phone) and opens
+The phone joins the box's own Wi-Fi "K1000" (QR on SETUP › PHONE › Phone) and opens
 `https://10.42.0.1/`: K1000's page, served by the k1000 service, driving the same controller as
 the knobs. Everything about it (the AP, the fence, the certificate, the one-time phone setup, the
 mute rules, troubleshooting, the Friday go/no-go) is in **`docs/06-phone.md`**. It is gated by
@@ -357,7 +357,7 @@ the Friday rig test; on a no-go the AP goes fully off and the knobs carry the sh
 ## Laptop (and a phone on the wired LAN): CamillaGUI
 
 - CamillaGUI is reached over the wired LAN (`eth0`; the screen does not show the box's IP), or
-  over the K1000 Wi-Fi while **SETUP › Laptop access** is open (next section).
+  over the K1000 Wi-Fi while **SETUP › PHONE › Laptop access** is open (next section).
 - Phone (compact view): `http://<box-ip>:5005/gui/index.html?compactview`
   - **Levels only**: Main volume, mute and the meters. These are runtime commands, so they never
     send a config. k1000 follows the Main fader.
@@ -401,10 +401,10 @@ the Friday rig test; on a no-go the AP goes fully off and the knobs carry the sh
 ## Laptop at the rig: SETUP › Laptop access and the tune page
 
 At the rig the laptop has only the K1000 Wi-Fi, whose fence keeps CamillaGUI and SSH off it.
-**SETUP › Laptop access, push twice** opens both, from the K1000 Wi-Fi's subnet only, for 2 hours
+**SETUP › PHONE › Laptop access, push twice** opens both, from the K1000 Wi-Fi's subnet only, for 2 hours
 at most (`docs/06-phone.md` §11):
 
-- The row reads `OPEN 1:59`, SHOW shows the pill `LAPTOP OPEN 1:59`, and SETUP › Phone prints the
+- The row reads `OPEN 1:59`, SHOW shows the pill `LAPTOP OPEN 1:59`, and SETUP › PHONE › Phone prints the
   Wi-Fi password as text for the laptop.
 - On the laptop (joined to K1000): CamillaGUI `http://10.42.0.1:5005/gui/index.html` (the rules
   above apply: *Fetch from DSP* first), `ssh k1000@10.42.0.1`, and the **tune page**
@@ -434,30 +434,31 @@ The knobs are confirmed: on 2026-10-12 Thomas checked on the box that each knob 
 on-screen corner (E1 top-left, E2 bottom-left, E3 top-right, E4 bottom-right) and that 10 clicks
 read +10. Nobody has confirmed yet which physical button is B1–B4, and `/etc/k1000/k1000.yaml`
 still holds the defaults.
-Since UI v1 a B4 hold only shows a hint (the live-EQ reset is a SETUP item), so a B2/B4 swap can no
-longer reset the EQ, but the emergency mute would then do nothing: confirm the map before the
-speakers. `k1000-m4-bringup.sh` warns while the defaults are in place.
+A B3 hold only shows a hint (the live-EQ reset is a SETUP item), so a swapped map cannot reset the
+EQ, but the emergency mute (a B4 hold, D-013) would then land on another button and do nothing:
+confirm the map before the speakers. `k1000-m4-bringup.sh` warns while the defaults are in place.
 
 What each button and knob does per page (SHOW · ALIGN · SETUP) is the operator card,
-`docs/04-operator-card.md`. In short: B1 tap = next page, hold = SHOW · B2 hold = mute/unmute
-(every page) · B3 = next band on SHOW, a hold unlocks the delay and Lo-Cut on ALIGN · B4 = the
-notch helper on SHOW. ALIGN's E3 DELAY (D-011) is one setting for both sides: clockwise from 0
-delays the subs (`SUBS LATER`), anticlockwise the tops (`TOPS LATER`); it writes `sub_delay_ms`
-or `top_delay_ms` and zeroes the other (SETUP has no Top delay any more). The Lo-Cut moves 2 Hz a
-click (1 Hz with the push).
+`docs/04-operator-card.md`. In short (D-013): B1 tap = SHOW ↔ ALIGN (SETUP → SHOW), hold = SETUP ·
+B2 = next band on SHOW, a hold unlocks the delay and Lo-Cut on ALIGN · B3 = the notch helper on SHOW
+· B4 hold = mute/unmute (every page). ALIGN's E3 DELAY (D-011) is one setting for both sides:
+clockwise from 0 delays the subs (`SUBS LATER`), anticlockwise the tops (`TOPS LATER`); it writes
+`sub_delay_ms` or `top_delay_ms` and zeroes the other (SETUP has no Top delay any more). The Lo-Cut
+moves 2 Hz a click (1 Hz with the push).
 
-1. SETUP → "Knob test" (HWTEST). Press every button and turn every knob. Note, by physical
-   position, the `sw`/`enc` index each one shows.
+1. SETUP › BOX › Knob test (HWTEST). Press every button and turn every knob. Note, by physical
+   position, the `sw`/`enc` index each one shows, and the name the code gives it (`= B1` … `= B4`:
+   sw4–sw7 by default).
 2. Write `controls:` in `/etc/k1000/k1000.yaml` (encoders, pushes, buttons, reverse), then
    `sudo systemctl restart k1000`. If the on-screen labels ever sit at the wrong corners (another
    shell), that is `KNOB_CORNERS` in `k1000/ui/input_map.py`: a code change, deployed like any other.
-3. Label the buttons on the shell: PAGE · MUTE (hold) · BAND / UNLOCK (hold) · NOTCH. The knobs
-   can carry a sticker too (E1 top-left, E2 bottom-left, E3 top-right, E4 bottom-right): the
-   screen's own E1–E4 tags are then redundant. The key `ui.knob_tags` in
-   `/etc/k1000/k1000.yaml` sets them: `dim` (small grey, the default), `off` (none; the labels
-   take the corners) or `bright` (cyan, v1 as first deployed). A box whose k1000.yaml predates the
-   key has no `ui:` section and shows `dim`. To change it, add the section at the end of the file,
-   two lines, the second indented by two spaces, and restart k1000:
+3. Label the buttons on the shell as the Knob test names them: B1 PAGE · B2 BAND / UNLOCK (hold) ·
+   B3 NOTCH · B4 MUTE (hold) (D-013). The knobs can carry a sticker too (E1 top-left, E2
+   bottom-left, E3 top-right, E4 bottom-right): the screen's own E1–E4 tags are then redundant. The
+   key `ui.knob_tags` in `/etc/k1000/k1000.yaml` sets them: `dim` (small grey, the default), `off`
+   (none; the labels take the corners) or `bright` (cyan, v1 as first deployed). A box whose
+   k1000.yaml predates the key has no `ui:` section and shows `dim`. To change it, add the section
+   at the end of the file, two lines, the second indented by two spaces, and restart k1000:
 
    ```yaml
    ui:
@@ -466,7 +467,7 @@ click (1 Hz with the push).
 
    On one line it is `ui: {knob_tags: off}`; `ui: knob_tags: off` does not parse, and a k1000.yaml
    that does not parse loses every setting but `profile:` (the screen says `SETTINGS: …`).
-4. At the rig test, with program playing: hold B2, and all four Meyers mute.
+4. At the rig test, with program playing: hold B4, and all four Meyers mute.
 
 In a terminal, the monitor needs the MCP23017 and GPIO lines, which the service holds, so stop
 the service first:
@@ -480,14 +481,14 @@ sudo systemctl start k1000
 ## SHOW spectrum: on, off, and out
 
 The program spectrum behind SHOW's EQ curve (D-009) polls the engine on a second websocket, only
-while SHOW is displayed and SETUP › Spectrum is ON (`docs/03-v0-architecture.md` §8).
+while SHOW is displayed and SETUP › LIVE EQ › Spectrum is ON (`docs/03-v0-architecture.md` §8).
 
-- **SETUP › Spectrum** switches it at run time (saved in `state.json`). Off, SHOW draws the curve
-  alone and B4 still sets a notch up (`NO PEAK`: E3 down first, about −6 dB, then sweep E2 until
-  the ring drops; at 0 dB the sweep is silent).
+- **SETUP › LIVE EQ › Spectrum** switches it at run time (saved in `state.json`; E2 chooses, a push
+  sets). Off, SHOW draws the curve alone and B3 still sets a notch up (`NO PEAK`: E3 down first,
+  about −6 dB, then sweep E2 until the ring drops; at 0 dB the sweep is silent).
 - **Out entirely** (Friday's no-go, or anything odd): `spectrum: enabled: false` in
   `/etc/k1000/k1000.yaml`, then `sudo systemctl restart k1000` between shows. No task and no second
-  connection; SETUP › Spectrum then reads `DISABLED`.
+  connection; SETUP › LIVE EQ › Spectrum then reads `DISABLED` (read-only).
 - After an engine start the spectrum comes back by itself within a few seconds: its link
   reconnects (back-off up to 2 s) and waits for the engine to read `Running`, then CamillaDSP
   5.0.0-beta.1's analyser fills its buffer in well under a second (`Insufficient data in buffer`,
@@ -498,7 +499,7 @@ while SHOW is displayed and SETUP › Spectrum is ON (`docs/03-v0-architecture.m
   cyan pointer needs the peak bin at `spectrum.peak_floor_db` (−80 dBFS) or above and the program's
   capture RMS at `spectrum.program_floor_db` (−60 dBFS) or above, both in `/etc/k1000/k1000.yaml`
   (built-in defaults when absent; −140 turns a gate off; restart k1000 after a change). On the
-  silent bench input there is no pointer and B4 says `NO PEAK`.
+  silent bench input there is no pointer and B3 says `NO PEAK`.
 
 ## Soak test (overnight, and the 2-hour program run)
 
@@ -566,13 +567,13 @@ The tool writes one line every 10 s:
 - **Settings:** `/etc/k1000/k1000.yaml` is never touched by install.sh. Fix it by hand, then
   `sudo systemctl restart k1000`.
 - **Sound state:** `/var/lib/k1000/state.json` holds the levels and EQ.
-  - Live EQ: SETUP › Reset live EQ, push twice within 5 s. SETUP › Undo reset (one push) puts it
+  - Live EQ: SETUP › LIVE EQ › Reset live EQ, push twice within 5 s. Undo reset (one push) puts it
     back exactly, once, until the next audible live-EQ edit or 5 min.
   - A torn `state.json` is rebuilt from `active.yml` (the bad copy is kept as `state.json.bad`) and
     comes back MUTED ("STATE REBUILT · CHECK MASTER").
   - If the state file itself is bad, stop k1000, move `state.json` away and start k1000. Next to a
     K1000 `active.yml` it comes up on defaults and stays MUTED ("NO SAVED STATE · CHECK MASTER").
-    Check the master, then hold B2. An engine that is already playing is adopted unchanged.
+    Check the master, then hold B4. An engine that is already playing is adopted unchanged.
 - **The show itself:** the bypass kit. Re-patch the source straight into the Meyers
   (`docs/02-plan-to-sunday.md` §5).
 
@@ -592,8 +593,8 @@ every option, both backends, the subnet and Wi-Fi-client refusals, a hostapd tha
 start, the fence's caps), the hostapd unit's refusals and `net/k1000-ap-guard.sh`, all against
 fakes (no service, card, package, network or speaker is touched). `tests/test_web.py`,
 `test_qr.py` and `test_phone_wiring.py` cover the phone page, its QR codes and its wiring into
-the controller (B2 and phone mute races). `tests/test_laptop.py`, `test_tune.py` and
-`tools/tests/test_laptop_access.py` cover SETUP › Laptop access (the k1000 side, the root helper
+the controller (B4 and phone mute races). `tests/test_laptop.py`, `test_tune.py` and
+`tools/tests/test_laptop_access.py` cover SETUP › PHONE › Laptop access (the k1000 side, the root helper
 against a fake nft, the units, install.sh) and the `/tune` page (the parser on real REW exports,
 apply/undo through the controller). UI v1 (D-009): `tests/test_ui.py` and `test_control.py` cover
 the pages, buttons, lock, notch helper, reset/undo, master-up guard and alerts; `test_eqgraph.py`

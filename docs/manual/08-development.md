@@ -20,7 +20,7 @@ this chapter is the map and the working habits.
 | `box/README.md` | The ops reference on the box |
 | `box/etc/k1000.yaml` | The settings template |
 | `box/k1000/` | The Python package: the control service |
-| `box/systemd/` | `camilladsp`, `k1000`, `camillagui`, `k1000-console` units, and `k1000-laptop.path` / `k1000-laptop.service` (SETUP › Laptop access) |
+| `box/systemd/` | `camilladsp`, `k1000`, `camillagui`, `k1000-console` units, and `k1000-laptop.path` / `k1000-laptop.service` (SETUP › PHONE › Laptop access) |
 | `box/net/` | The phone's access point: `setup-ap.sh`, its units, its DNS files, the subnet guard `k1000-ap-guard.sh`, and `k1000-laptop-access.sh` (the root side of Laptop access) |
 | `box/overlays/k1000-zynscreen.dts` | The screen's device-tree overlay (GPL-2.0) |
 | `box/camillagui/` | CamillaGUI's config for K1000 |
@@ -38,7 +38,7 @@ this chapter is the map and the working habits.
 | `dspconfig.py` | CamillaDSP v5 config from profile + state; click-safe change plans; drift detection |
 | `cdsp.py` | The asyncio websocket client for CamillaDSP v5 |
 | `rta.py` | The SHOW spectrum: `GetSpectrum` on its own second websocket, the ballistics and the PEAK detector |
-| `laptop.py` | SETUP › Laptop access, the k1000 side: asks root through a flag in `/run/k1000`, follows root's status |
+| `laptop.py` | SETUP › PHONE › Laptop access, the k1000 side: asks root through a flag in `/run/k1000`, follows root's status |
 | `tune.py` | The `/tune` page's filter-list parser (REW, EqualizerAPO, typed lines) and its apply/undo |
 | `hw/mcp23017.py` | The knob and button driver (MCP23017 + gpiod interrupts, the quadrature decoder) |
 | `hw/simchip.py` | A real-time simulated MCP23017, for the knob timing test and the knob trace's bench |
@@ -66,14 +66,14 @@ SHOW is on screen and Spectrum is ON, so a spectrum poll never queues in front o
 - **Audio never depends on the UI.** If k1000 dies, the engine keeps playing as it was. If the
   engine restarts, it comes up muted and k1000 ramps it in once audio flows.
 - **A fixed-slot pipeline.** Every filter exists from boot; every show-time action is a parameter
-  write or a ramped fader, never a pipeline rebuild. Mono subs, the profile and the dev audition
-  are the only rebuilds, and they are SETUP actions with a confirm.
+  write or a ramped fader, never a pipeline rebuild. Mono L+R, the profile and the dev audition
+  are the only rebuilds, and they are SETUP actions with a confirm (chosen with E2, set by a push).
 - **One state, every surface.** Knobs, phone and CamillaGUI edit the same engine. K1000 adopts what
   it owns, keeps any cut or mute made outside it, and pulls raises back down. It never releases a
   mute it did not make (the Aux4 marker records what it holds).
 
 Details: `docs/03-v0-architecture.md` §2–§3. Why it is built this way: D-002 (architecture), D-004
-(CamillaDSP v5 beta), D-005/D-006 (Pi OS Lite), D-007 (phone), D-009 (UI v1) in
+(CamillaDSP v5 beta), D-005/D-006 (Pi OS Lite), D-007 (phone), D-009 (UI v1), D-013 (buttons, SETUP) in
 [`DECISIONS.md`](../../DECISIONS.md).
 
 ## Running the tests
@@ -153,14 +153,14 @@ PYTHONPATH=/opt/k1000 python3 -m k1000 --settings ~/bench/k1000.yaml \
 | `set <field> <json value> [confirm]` | Set a value (`confirm` for setup actions) |
 | `toggle <field> [confirm]` | Flip a switch, or the next choice |
 | `mute on\|off\|toggle` | Main mute |
-| `reset_live`, `undo_reset` | Live EQ flat (SETUP › Reset live EQ); put it back (SETUP › Undo reset) |
-| `notch` | The notch helper, as B4 on SHOW |
+| `reset_live`, `undo_reset` | Live EQ flat (SETUP › LIVE EQ › Reset live EQ); put it back (SETUP › LIVE EQ › Undo reset) |
+| `notch` | The notch helper, as B3 on SHOW |
 | `page <SHOW\|ALIGN\|SETUP\|HWTEST\|PHONE>`, `next_page` | Change page (the v0 names `MAIN` and `LIVE` still mean ALIGN and SHOW) |
-| `laptop open\|close\|status` | SETUP › Laptop access |
+| `laptop open\|close\|status` | SETUP › PHONE › Laptop access |
 | `hint <text>` | Show a hint |
 | `phone on\|off\|toggle\|status` | Phone control (needs the phone server: drop `--no-phone`) |
 | `ev enc <0-3> <detents>` | A physical encoder event, through the `controls:` map |
-| `ev sw <0-7> <press\|release\|short\|long>` | A physical switch event (B2 by default is `sw 5`: `press` then `long` = hold B2) |
+| `ev sw <0-7> <press\|release\|short\|long>` | A physical switch event (B4, the mute, is `sw 7` by default: `press` then `long` = hold B4) |
 | `save`, `settle` | Save now; wait until the engine has everything |
 | `help`, `quit` | — |
 
@@ -184,7 +184,7 @@ links in the same commit.
 **Monitor** (what each physical control sends):
 
 ```sh
-sudo systemctl stop k1000            # it owns the chip; audio keeps playing, B2 does nothing meanwhile
+sudo systemctl stop k1000            # it owns the chip; audio keeps playing, B4 does nothing meanwhile
 cd /opt/k1000 && python3 -m k1000.hw.mcp23017 --monitor       # --raw: every pin change; --selftest: the interrupt lines
 sudo systemctl start k1000
 ```

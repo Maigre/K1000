@@ -477,14 +477,14 @@ class PhoneBridge:
     **Mute generation.** Every state message carries `mute_seq`, a number that moves whenever the
     mute the box shows changes and whenever any surface asks for a mute. A phone sends the
     `seq` it saw when the finger went down, and an UNMUTE is applied only if nothing about the
-    mute changed since: an emergency mute made meanwhile (B2, another phone) is never undone by
+    mute changed since: an emergency mute made meanwhile (B4, another phone) is never undone by
     someone who was looking at the old state. A MUTE is always applied. The Controller's own
-    generation (`Controller.mute_view()`, WIRING.md) is preferred, because it also sees B2; the
+    generation (`Controller.mute_view()`, WIRING.md) is preferred, because it also sees B4; the
     bridge keeps its own (displayed-mute changes + mutes applied here) when it is absent.
 
-    **What a hold means** (`hold` in the state) follows B2: `Controller.b2_muted()` when the
+    **What a hold means** (`hold` in the state) follows B4: `Controller.b2_muted()` when the
     Controller has it. While K1000 itself holds Main muted on its way in (a boot ramp, a setup
-    guard) and nobody muted, the box screen says "ramps in by itself · hold B2 to keep muted":
+    guard) and nobody muted, the box screen says "ramps in by itself · hold B4 to keep muted":
     the phone's hold then MUTES too (keeps it muted), never unmutes into an engine that is not
     processing yet.
     """
@@ -510,7 +510,7 @@ class PhoneBridge:
         return smuted if isinstance(smuted, bool) else bool(getattr(st, "muted", False))
 
     def _hold_unmutes(self, displayed: bool) -> bool:
-        """True when a mute hold means UNMUTE (B2's rule, Controller.b2_muted() when present)."""
+        """True when a mute hold means UNMUTE (B4's rule, Controller.b2_muted() when present)."""
         bm = getattr(self.ctl, "b2_muted", None)
         return bool(bm()) if callable(bm) else displayed
 
@@ -661,7 +661,7 @@ class PhoneBridge:
         if seq != gen:
             return False, shown, "MUTE CHANGED meanwhile: unmute refused, look and hold again"
         if not unmutes:
-            if shown:   # K1000 itself holds Main muted (boot ramp / setup guard): B2's rule
+            if shown:   # K1000 itself holds Main muted (boot ramp / setup guard): B4's rule
                 return False, True, "K1000 brings the sound in by itself: nothing to unmute"
             return True, False, ""
         return True, self._apply_mute(False), ""

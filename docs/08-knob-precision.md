@@ -98,7 +98,7 @@ Replayed on the same synthetic traces (rows asserted in the tests):
 ## 4. The trace: what Thomas runs (about 2 minutes)
 
 Not during a show. While k1000 is stopped, the engine keeps playing at its current settings and
-its faders do not move (proven by the drills). **B2 MUTE does nothing until k1000 is started
+its faders do not move (proven by the drills). **B4 MUTE does nothing until k1000 is started
 again**, so keep the source down or the Meyers off if in doubt. The panel shows K1000's stop frame.
 
 ```sh

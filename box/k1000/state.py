@@ -241,7 +241,7 @@ class State:
         return State.from_dict(self.to_dict())
 
     def live_reset(self) -> "State":
-        """A copy with the live EQ layer (4 PEQ + 2 shelves) back to defaults: the B4 action."""
+        """A copy with the live EQ layer (4 PEQ + 2 shelves) back to defaults: SETUP › LIVE EQ › Reset live EQ."""
         s = self.copy()
         s.live_peq = default_live_peq()
         s.live_lowshelf = default_lowshelf()

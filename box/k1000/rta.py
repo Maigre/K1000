@@ -13,9 +13,9 @@ Why it is shaped like this:
   (`wanted()`: SHOW displayed, SETUP > Spectrum ON, engine Running/Paused, device present).
   Not wanted for IDLE_CLOSE_S: the connection is closed too. Not wanted for KEEP_S or more:
   no frame is kept, so a stale spectrum is never drawn when SHOW comes back. Shorter than
-  KEEP_S (a B1 hold on SHOW passes through ALIGN for 0.8 s): nothing is polled, but the frame,
-  the ballistics and the PEAK stay, so B4 right after the hold still finds the PEAK instead of
-  waiting ~2 s for it to build again.
+  KEEP_S (a quick B1 tap to ALIGN and back): nothing is polled, but the frame, the ballistics
+  and the PEAK stay, so B3 right after still finds the PEAK instead of waiting ~2 s for it to
+  build again.
 - **The program, not the room.** Capture side, the profile's `input_map` channels (program L
   and R: m4 2,3; dev 0,1), one call per channel, combined as a POWER average
   (`eqgraph.combine_power`). Never `channel: null`: on the M4 it averages the waveforms of the
@@ -83,8 +83,8 @@ WARMUP_CAP_S = 3 * WARMUP_GRACE_S   # no data this long through warm-up answers,
                                     # reset it; a "No audio data" answer does not)
 IDLE_CLOSE_S = 30.0          # not wanted this long: the second connection is closed
 KEEP_S = 1.5                 # not wanted for less than this: the picture and the PEAK are kept
-                             # (a B1 hold on SHOW: its press shows ALIGN, its long fires 0.8 s
-                             # later and shows SHOW again; B4 right after must still see the PEAK)
+                             # (a quick B1 tap to ALIGN and back to SHOW: B3 right after must
+                             # still see the PEAK)
 # The engine's answers while its analyser warms up (any case; CamillaDSP 5.0.0-beta.1
 # spectrum.rs): before the first call set the sticky "requested" flag, and until the ring
 # buffer holds one FFT length (8192 frames at 48 kHz, 171 ms) after it.

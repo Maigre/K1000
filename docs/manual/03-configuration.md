@@ -15,7 +15,7 @@ work ([§10](#10-the-state-files)).
 - **Lenient.** A bad value never stops the box: it falls back to its default (or is clamped into
   its range). For `profile`, `profiles`, `phone`, `spectrum`, `ui` and the knob keys
   `steps_per_detent` and `detent_ab` the journal says so (`journalctl -u k1000`). The rest of `controls`, `engine`
-  and `paths` fall back **silently**: check the knobs on SETUP › Knob test.
+  and `paths` fall back **silently**: check the knobs on SETUP › BOX › Knob test.
   A file that does not parse at all raises the alert `SETTINGS: …` on the screen; every key then
   takes its default, except the `profile:` line, which is still read on its own, so a typo
   elsewhere does not lose the gig pin.
@@ -85,7 +85,7 @@ phone:
 
 | Key | Values | Default | Meaning |
 |---|---|---|---|
-| `profile` | `dev` or `m4` (case ignored) | none | **The pin.** With it, SETUP › Profile cannot switch the profile (hint `PROFILE PINNED IN k1000.yaml`) |
+| `profile` | `dev` or `m4` (case ignored) | none | **The pin.** With it, SETUP › BOX › Profile cannot switch the profile (hint `PROFILE PINNED IN k1000.yaml`) |
 
 | `profile:` line | Profile that runs |
 |---|---|
@@ -110,13 +110,13 @@ One section per profile. Every key is optional: a missing key keeps the built-in
 | `capture_channels`, `playback_channels` | A whole number, or `null` | 2, 2 | `null` = probe the device (assumed 4 when it cannot be probed) |
 | `capture_format`, `playback_format` | `S16_LE`, `S24_3_LE`, `S24_4_LE`, `S32_LE`, `F32_LE`, `F64_LE`, or `null` | `S32_LE` | `null` = CamillaDSP picks (S32_LE first) |
 | `input_map` | `[L, R]`: the capture channels (0-based) that carry the program | `[0, 1]` | `[2, 3]` = LINE IN 3 and 4 |
-| `output_map` | One entry per physical output, in order: which logical channel it carries. `SubL`, `SubR`, `TopL`, `TopR` (or 0–3) | (not used: `dev` has an audition mixer) | `[TopL, TopR, SubL, SubR]` = out1 Top L, out2 Top R, out3 Sub L, out4 Sub R. The Sunday patch (D-012) feeds both subs from out3 (Mono subs ON makes out3 = out4 = the L+R sum); out4 is spare |
+| `output_map` | One entry per physical output, in order: which logical channel it carries. `SubL`, `SubR`, `TopL`, `TopR` (or 0–3) | (not used: `dev` has an audition mixer) | `[TopL, TopR, SubL, SubR]` = out1 Top L, out2 Top R, out3 Sub L, out4 Sub R. The Sunday patch (D-012) feeds both subs from out3 (SETUP › SUBS › Mono L+R ON makes out3 = out4 = the L+R sum); out4 is spare |
 | `probe` | `true` / `false` | `false` (the HiFiBerry is never opened by the probe) | `true` |
 | `target_level` | Frames, 64–1536 | 256 | 512 (D-010; the code default is 256) |
 
 Details:
 
-- **Probing** (`probe: true`) runs when k1000 starts and on a SETUP › Profile switch. It reads
+- **Probing** (`probe: true`) runs when k1000 starts and on a SETUP › BOX › Profile switch. It reads
   what the device accepts with `aplay`/`arecord --dump-hw-params`, or from
   `/proc/asound/<card>/stream0` when the engine holds the device. It sets the channel counts. A
   channel count you set that the device refuses is replaced by the device's maximum, with a
@@ -136,7 +136,7 @@ Details:
   768 if a soak still shows an underrun. Values outside 64–1536 are
   clamped with a warning. It is an engine device setting, so it applies **at the next engine
   start** only, never at show time ([§9](#9-what-needs-a-restart)).
-- **`dev` only:** the 4 logical outputs are folded onto the HiFiBerry's 2. SETUP › Audition (dev)
+- **`dev` only:** the 4 logical outputs are folded onto the HiFiBerry's 2. SETUP › BOX › Audition (dev)
   picks `sum` (each side = top + sub at −6 dB each), `tops` or `subs`.
 
 The fixed parts, not configurable: 48 kHz, chunk size 256, no rate adjustment, Main capped at 0 dB
@@ -153,7 +153,7 @@ switches 0–7 (0–3 are the encoder pushes, 4–7 the buttons on the V4).
 |---|---|---|---|
 | `encoders` | 4 distinct numbers, 0–3 | `[0, 1, 2, 3]` | E1, E2, E3, E4 = these physical encoders |
 | `pushes` | 4 numbers, 0–7 | `[0, 1, 2, 3]` | The push of E1…E4 = these switches |
-| `buttons` | 4 numbers, 0–7 | `[4, 5, 6, 7]` | B1, B2, B3, B4 = these switches |
+| `buttons` | 4 numbers, 0–7 | `[4, 5, 6, 7]` | B1, B2, B3, B4 = these switches. Their roles are fixed in the code (D-013): **B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE** |
 | `reverse` | 4 × `true`/`false` (or 0/1) | all `false` | Flip an encoder's direction |
 | `steps_per_detent` | `1`, `2` or `4`, one number for all or a list of 4 (per **physical** encoder `enc0`…`enc3`) | `[4, 4, 4, 4]` | Contact transitions per click of the encoder |
 | `detent_ab` | `"11"`, `"10"`, `"01"`, `"00"` or `"idle"`, one value or a list of 4 (per physical encoder) | `["11", "11", "11", "11"]` | The A/B contact levels when the knob rests on a click (`"11"` = both open; `"idle"` = whatever they read at start) |
@@ -162,13 +162,14 @@ switches 0–7 (0–3 are the encoder pushes, 4–7 the buttons on the V4).
 - `pushes` and `buttons` together must name 8 different switches.
 - Anything invalid in `encoders`, `pushes`, `buttons` or `reverse` (wrong length, a duplicate, a
   string, a float) silently falls back to the **default** for that key. Check the result on
-  SETUP › Knob test. An invalid `steps_per_detent` or `detent_ab` keeps its default and logs
+  SETUP › BOX › Knob test. An invalid `steps_per_detent` or `detent_ab` keeps its default and logs
   `k1000.yaml controls.… ignored`. An unreadable `master_up_guard_db` means 6.
-- **Find the map with SETUP › Knob test**: press every button and turn every knob, note the
+- **Find the map with SETUP › BOX › Knob test**: press every button and turn every knob, note the
   `sw`/`enc` index shown for each physical position, write them here, restart k1000. Until this is
-  done, **MUTE may sit on another button**: a wrong `buttons` order moves the hold-B2 mute
-  elsewhere (a hold on the button that is really B4 only says `RESET LIVE EQ: IN SETUP`, and
-  nothing mutes). Label the buttons on the shell once the map is right.
+  done, **MUTE may sit on another button**: a wrong `buttons` order moves the hold-B4 mute
+  elsewhere (a hold on the button that is really B3 only says `RESET LIVE EQ: IN SETUP`, one on B2
+  at most unlocks ALIGN, and nothing mutes). The Knob test names each switch's role (`= B1` … `= B4`):
+  label the buttons on the shell from it once the map is right.
 - **`steps_per_detent` and `detent_ab`** describe the encoders themselves. The defaults suit the
   Zynthian V4's knobs. For another encoder, record a trace with `k1000-knobtrace.py capture
   --guided` ([chapter 8](08-development.md#the-knob-tools)): it prints the `controls:` lines to
@@ -219,19 +220,20 @@ ui:
 The program spectrum behind SHOW's EQ curve, and its PEAK pointer ([chapter 4 §3.1](04-usage.md#31-the-curve-and-the-spectrum)).
 K1000 reads it from CamillaDSP (`GetSpectrum`, capture side, the profile's `input_map` channels) on
 a second websocket of its own, about 10 times a second, only while SHOW is on screen and
-SETUP › Spectrum is ON.
+SETUP › LIVE EQ › Spectrum is ON.
 
 | Key | Values | Default | Meaning |
 |---|---|---|---|
-| `enabled` | `true` / `false` | `true` | `false` removes the spectrum entirely: no task, no second engine connection; SETUP › Spectrum reads `DISABLED`. The no-go switch if the spectrum misbehaves on your box. Only a real `false` turns it off |
+| `enabled` | `true` / `false` | `true` | `false` removes the spectrum entirely: no task, no second engine connection; SETUP › LIVE EQ › Spectrum reads `DISABLED`. The no-go switch if the spectrum misbehaves on your box. Only a real `false` turns it off |
 | `peak_floor_db` | −140 … −20 dBFS | −80 | No PEAK unless the peak band reaches this level (the engine's scale: 0 = a full-scale sine) |
 | `program_floor_db` | −140 … −20 dBFS | −60 | No PEAK unless the program's RMS (its two input channels, the last 0.5 s) reaches this level, with 3 dB of hysteresis. So no PEAK on silence or between tracks |
 
 - **−140 turns a gate off.** A value outside −140 … −20, or not a number, falls back to the
   default with one warning line in the journal.
-- With no PEAK, B4's notch helper sets a band up at its own frequency (`NO PEAK`).
-- **SETUP › Spectrum** (ON/OFF) is not configuration: it is saved in `state.json` (`spectrum_on`)
-  and only stops the polling and the picture. `enabled: false` here is the stronger switch.
+- With no PEAK, B3's notch helper sets a band up at its own frequency (`NO PEAK`).
+- **SETUP › LIVE EQ › Spectrum** (ON/off) is not configuration: it is saved in `state.json`
+  (`spectrum_on`) and only stops the polling and the picture. `enabled: false` here is the stronger
+  switch: the row then reads `DISABLED` and cannot be changed.
 
 ## 8. `phone`
 
@@ -254,9 +256,9 @@ others are optional.
 | `plain_port` | 0–65535 | 8080 | The page over plain HTTP. 0 = off |
 | `plain_app` | `fallback`, `always`, `off` | `fallback` | `fallback` = the plain page only when no certificate is installed |
 | `tls_dir` | a path | `/etc/k1000/tls` | `k1000.crt`, `k1000.key`, `k1000-ca.crt` |
-| `ssid`, `iface`, `band` | text | `K1000`, `wlan0`, (from `ap.info`) | Labels for SETUP › Phone. The access point itself is set by `setup-ap.sh` |
+| `ssid`, `iface`, `band` | text | `K1000`, `wlan0`, (from `ap.info`) | Labels for SETUP › PHONE › Phone. The access point itself is set by `setup-ap.sh` |
 | `psk_file`, `ap_info_file` | paths | `/etc/k1000/ap.psk`, `/etc/k1000/ap.info` | Written by `setup-ap.sh` |
-| `state_file` | a path | `/var/lib/k1000/phone.json` | SETUP › Phone on/off, kept across restarts |
+| `state_file` | a path | `/var/lib/k1000/phone.json` | SETUP › PHONE › Phone on/off, kept across restarts |
 | `extra_origins` | a list | none | More web origins the page accepts (development) |
 
 Invalid values fall back to their defaults with one warning line in the journal.
@@ -269,7 +271,7 @@ interface holds an address in 10.42.0.0/24 (a laptop on the Ethernet cable shari
 with NetworkManager's default), the access point stays down. Share on another subnet, e.g.
 10.43.0.1/24.
 
-Laptop access (SETUP › Laptop access, [chapter 4 §5.1](04-usage.md#51-laptop-access-and-the-tune-page))
+Laptop access (SETUP › PHONE › Laptop access, [chapter 4 §5.1](04-usage.md#51-laptop-access-and-the-tune-page))
 has no key here either: its ports (22, 5005), subnet and 2 h limit are the root helper's
 (`box/net/k1000-laptop-access.sh`). The `/tune` page needs the phone servers (`enabled: true`).
 
@@ -296,7 +298,7 @@ All in `/var/lib/k1000/`, owned by the `k1000` user, written by the k1000 servic
 | `state.json.bad` | A copy of an unreadable `state.json`, kept for a post-mortem | When k1000 finds one at start |
 | `active.yml` | The CamillaDSP config K1000 generated from the state. **The engine boots from it** | With `state.json` |
 | `active.yml.prev` | The previous `active.yml`: the config the engine had booted from | At k1000's start, only when the `active.yml` it regenerates differs from the one on disk (for example after an update, a `k1000.yaml` change or a hand edit of `state.json`). Not on an ordinary restart, and never again until k1000's next start |
-| `phone.json` | SETUP › Phone on/off | When toggled |
+| `phone.json` | SETUP › PHONE › Phone on/off | When toggled |
 | `tune-undo.json` | The system EQ the last `/tune` Apply replaced (its one-level undo) | At each Apply; removed by Undo |
 
 A failed write is retried after 2, 5 and 10 s and raises `CANNOT SAVE STATE` on the screen.
@@ -330,25 +332,25 @@ Logical outputs, wherever four values appear: 0 Sub L, 1 Sub R, 2 Top L, 3 Top R
 | Field | Range | Default | Set from |
 |---|---|---|---|
 | `master_db` | −80 … 0 dB, 0.5 dB steps | −20 | E1 on SHOW and ALIGN, phone |
-| `muted` | bool | false | Hold B2, phone |
+| `muted` | bool | false | Hold B4, phone |
 | `balance_db` | −12 … +12 dB, + = subs up | 0 | ALIGN E2, phone. Subs get +b/2, tops −b/2 |
-| `input_trim_db` | −24 … +12 dB | 0 | SETUP |
-| `mono_subs` | bool | false | SETUP (rebuilds the pipeline: two pushes). Both subs get (L+R) at −6 dB each |
-| `sub_inverted`, `top_inverted` | bool | false | SETUP |
+| `input_trim_db` | −24 … +12 dB | 0 | SETUP › INPUT › Trim |
+| `mono_subs` | bool | false | SETUP › SUBS › Mono L+R (rebuilds the pipeline: chosen with E2, set by a push). Both subs get (L+R) at −6 dB each |
+| `sub_inverted`, `top_inverted` | bool | false | SETUP › SUBS › Polarity, TOPS › Polarity |
 | `sub_delay_ms` | 0 … 50 ms | 0 | ALIGN E3 (unlocked): DELAY clockwise of 0, `SUBS LATER` |
 | `top_delay_ms` | 0 … 50 ms | 0 | ALIGN E3 (unlocked): DELAY anticlockwise of 0, `TOPS LATER` |
-| `lowcut_on` | bool | **true** | SETUP › Lo-Cut (two pushes), phone (with a confirm) |
+| `lowcut_on` | bool | **true** | SETUP › TOPS › Lo-Cut (chosen with E2, set by a push), phone (with a confirm) |
 | `lowcut_hz` | 20 … 300 Hz, 2 Hz steps (push: 1 Hz) | 100 | ALIGN E4 (unlocked), phone. Tops only, 12 dB/oct |
-| `sub_lowpass_on` | bool | false | SETUP |
-| `sub_lowpass_hz` | 40 … 250 Hz | 120 | SETUP. Subs only, 12 dB/oct |
+| `sub_lowpass_on` | bool | false | SETUP › SUBS › Low-pass |
+| `sub_lowpass_hz` | 40 … 250 Hz | 120 | SETUP › SUBS › Low-pass freq. Subs only, 12 dB/oct |
 | `sys_peq` | 8 bands: freq 20 Hz–20 kHz, gain −20 … +10 dB, Q 0.3–16 | flat at 63, 125, 250, 500, 1k, 2k, 4k, 8k Hz, Q 1 | The laptop: the `/tune` page or CamillaGUI ([chapter 5](05-tuning.md#7-system-eq)) |
-| `live_peq` | 4 bands: freq 20 Hz–20 kHz, gain −20 … **+6** dB, Q 0.3–16 | flat at 250, 1k, 2.5k, 5k Hz, Q 4 | SHOW (E2–E4, B4), phone |
+| `live_peq` | 4 bands: freq 20 Hz–20 kHz, gain −20 … **+6** dB, Q 0.3–16 | flat at 250, 1k, 2.5k, 5k Hz, Q 4 | SHOW (E2–E4, B3), phone |
 | `live_lowshelf` | freq 30–1000 Hz, gain −12 … +6 dB, Q 0.4–1.5 | 120 Hz, flat, Q 0.707 | SHOW, phone |
 | `live_highshelf` | freq 1–16 kHz, gain −12 … +6 dB, Q 0.4–1.5 | 8 kHz, flat, Q 0.707 | SHOW, phone |
-| `out_trim_db` | 4 × −24 … +6 dB | 0 | SETUP (Trim Sub L … Top R) |
-| `profile` | `dev`, `m4` | `dev` | SETUP › Profile (unless pinned) |
-| `dev_audition` | `sum`, `tops`, `subs` | `sum` | SETUP (profile `dev` only) |
-| `spectrum_on` | bool | true | SETUP › Spectrum. The screen only: it never touches the engine config |
+| `out_trim_db` | 4 × −24 … +6 dB | 0 | SETUP › SUBS › Trim L, Trim R, TOPS › Trim L, Trim R |
+| `profile` | `dev`, `m4` | `dev` | SETUP › BOX › Profile (read-only while pinned) |
+| `dev_audition` | `sum`, `tops`, `subs` | `sum` | SETUP › BOX › Audition (dev) (profile `dev` only) |
+| `spectrum_on` | bool | true | SETUP › LIVE EQ › Spectrum. The screen only: it never touches the engine config |
 
 "Off" for the Lo-Cut and the sub low-pass is a frequency move (10 Hz and 20 kHz), never a pipeline
 change. Delays are applied in whole samples at 48 kHz.

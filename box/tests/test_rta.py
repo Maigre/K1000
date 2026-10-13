@@ -11,7 +11,8 @@
   WARMUP_GRACE_S), a link down, a refusal, the program gate (GetCaptureSignalRmsSince), the
   pause after knob events, a short trip off SHOW (under KEEP_S: the frame and PEAK kept), the
   idle close; `peak_floors` (k1000.yaml);
-- B4 on a silent input is the NO PEAK case; B4 right after a B1 hold on SHOW still finds the PEAK;
+- B3 (notch) on a silent input is the NO PEAK case; B3 right after a quick B1 trip to ALIGN and
+  back still finds the PEAK;
 - the controller's mute never waits for a stuck spectrum link;
 - `engine`: a real camilladsp (SignalGenerator sine) on the private port
   $K1000_CONTROL_TEST_PORT gives a live frame with its PEAK at the sine.
@@ -192,7 +193,8 @@ def test_no_peak_for(case: str):
 
 
 def test_no_peak_on_a_silent_input_below_the_level_floor():
-    """The acceptance's bug: a -114 dBFS noise-floor tone was a PEAK and B4 parked P1 on it."""
+    """The acceptance's bug: a -114 dBFS noise-floor tone was a PEAK and the notch helper (B4
+    then, B3 since D-013) parked P1 on it."""
     gate_off = Ballistics(peak_floor_db=-140.0)
     feed(gate_off, silent_input(), 0.0, n=20)
     assert gate_off.peak_hz is not None and abs(math.log2(gate_off.peak_hz / 7300.0)) < 1 / 24
@@ -735,9 +737,10 @@ def test_a_stuck_spectrum_link_never_delays_the_mute(tmp_path: Path):
     run(go())
 
 
-def test_b4_on_a_silent_input_is_the_no_peak_case(tmp_path: Path):
+def test_notch_on_a_silent_input_is_the_no_peak_case(tmp_path: Path):
     """The acceptance's silent input through the real task and Controller: no PEAK pointer,
-    and B4 is its documented no-peak case (a free bell at Q 8.65, frequency unchanged)."""
+    and the notch helper (B3) is its documented no-peak case (a free bell at Q 8.65, frequency
+    unchanged)."""
     from test_control import boot, make
     from k1000.control import NOTCH_Q
     from k1000.state import State
@@ -765,11 +768,12 @@ def test_b4_on_a_silent_input_is_the_no_peak_case(tmp_path: Path):
     run(go())
 
 
-def test_b4_right_after_a_b1_hold_on_show_still_finds_the_peak(tmp_path: Path):
-    """The operator card's reflex 'hold B1, then B4' on SHOW: B1's press shows ALIGN at once and
-    its long fires 0.8 s later back on SHOW. The spectrum is not wanted on ALIGN, but for less
-    than KEEP_S: the PEAK is kept, and B4 right after the hold moves a bell onto it (before
-    KEEP_S it was cleared, and B4 said NO PEAK until the PEAK had built again, ~2 s)."""
+def test_b3_right_after_a_quick_trip_to_align_still_finds_the_peak(tmp_path: Path):
+    """The reflex 'tap B1 to glance at ALIGN, tap B1 back, then B3' on SHOW (D-013: B1 tap =
+    SHOW <-> ALIGN on release, B3 = the notch helper). The spectrum is not wanted on ALIGN, but
+    for less than KEEP_S: the PEAK is kept, and B3 right after moves a bell onto it (before
+    KEEP_S it was cleared, and the notch said NO PEAK until the PEAK had built again, ~2 s). A
+    B1 press alone changes nothing, and a B1 hold opens SETUP without passing through ALIGN."""
     from types import SimpleNamespace
     from test_control import boot, make
     from k1000.control import NOTCH_Q
@@ -794,25 +798,33 @@ def test_b4_right_after_a_b1_hold_on_show_still_finds_the_peak(tmp_path: Path):
         def button(n: int, kind: str) -> None:
             ctl.handle_event(SimpleNamespace(index=4 + n, kind=kind, ts=clk.t))
 
+        def tap(n: int) -> None:
+            button(n, "press")
+            button(n, "short")
+
         assert ctl.page == "SHOW" and ctl.spectrum_wanted()
         await steps(3.0)
         peak = FREQS[bin_of(2440.0)]
         assert ctl.status.peak_hz == pytest.approx(peak)
-        button(0, "press")                                 # B1 down: ALIGN at once
+        button(0, "press")                                 # B1 down: nothing yet (acts on release)
+        assert ctl.page == "SHOW" and ctl.spectrum_wanted()
+        button(0, "short")                                 # B1 tap: ALIGN
         assert ctl.page == "ALIGN" and not ctl.spectrum_wanted()
         await steps(0.8)
         assert ctl.status.peak_hz == pytest.approx(peak)   # kept through ALIGN
-        button(0, "long")                                  # still held at 0.8 s: SHOW
-        button(0, "release")
+        tap(0)                                             # B1 tap again: back on SHOW
         assert ctl.page == "SHOW"
-        await steps(0.3)                                   # the finger moves to B4
-        button(3, "press")
-        button(3, "short")
+        await steps(0.3)                                   # the finger moves to B3
+        tap(2)
         p1 = ctl.state.live_peq[0]
         assert p1.freq == pytest.approx(peak, rel=1e-3) and p1.q == pytest.approx(NOTCH_Q, abs=1e-3)
         assert p1.gain == 0.0 and "NO PEAK" not in ctl.focus.hint_now()
-        button(0, "press")                                 # a real page change: ALIGN for good
-        await steps(rta.KEEP_S + 0.2)
+        button(0, "press")                                 # B1 hold: SETUP, never via ALIGN
+        assert ctl.page == "SHOW"
+        button(0, "long")
+        button(0, "release")
+        assert ctl.page == "SETUP" and not ctl.spectrum_wanted()
+        await steps(rta.KEEP_S + 0.2)                      # a real page change: cleared
         assert ctl.status.spectrum is None and ctl.status.peak_hz is None
         await ctl.stop()
     run(go())

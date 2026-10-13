@@ -126,12 +126,12 @@ next engine start only, never at show time.
 
 **Before this step:**
 
-- **The Knob test (§10) first.** The balance, Lo-Cut and Mute rows need B1, B3 and B2 on the right
-  buttons, and the box still holds the default `controls:` map.
-- **SETUP › Mono subs OFF** (two pushes) for this step; the box has it ON. With Mono subs ON, both
-  subs get L+R at −6 dB each, so a tone in LINE IN 3 alone lights out3 **and** out4, 6 dB under
-  out1: that is mono, not a fault. Note the Lo-Cut frequency (ALIGN, E4) too. Set both back after
-  the step.
+- **The Knob test (§10) first.** The balance, Lo-Cut and Mute rows need B1, B2 and B4 on the right
+  buttons (D-013), and the box still holds the default `controls:` map.
+- **SETUP › SUBS › Mono L+R off** (turn E2 to choose `off`, push to set) for this step; the box has
+  it ON. With Mono L+R ON, both subs get L+R at −6 dB each, so a tone in LINE IN 3 alone lights out3
+  **and** out4, 6 dB under out1: that is mono, not a fault. Note the Lo-Cut frequency (ALIGN, E4)
+  too. Set both back after the step.
 
 Phone tone generator, moderate level, into **LINE IN 3 only**. K1000 master at −20 dB (E1 on SHOW).
 Peak reader (2 s window per call):
@@ -148,9 +148,9 @@ for n in ("GetCaptureSignalPeakSince","GetPlaybackSignalPeakSince"):
 | Program path | tone in LINE IN 3 | Capture: only index 2 live. Playback: index 0 (out1 Top L) and index 2 (out3 Sub L) at about the input level −20 dB; 1 and 3 at the floor. M4 LCD: In 3, Out 1, Out 3 move |
 | Right side | tone in LINE IN 4 | Capture index 3; outs 2 and 4 |
 | Tops vs subs | ALIGN (B1 tap), E2 BALANCE up to +12 (fully to subs) | out3/4 +6 dB, out1/2 −6 dB (against balance 0) |
-| Lo-Cut | 60 Hz tone; ALIGN, hold B3 (`EDIT 0:30`), E4 LO-CUT up to 300 Hz (2 Hz a click, 8 Hz on fast spins: spin it). E4 reads `OFF`: SETUP › Lo-Cut ON first (two pushes) | out1/2 far below out3/4 |
-| Mute | hold B2 (Knob test not done: Main mute in CamillaGUI instead) | all four outputs at the floor. Then restore balance (0), the Lo-Cut frequency, unmute |
-| Loop (MONITOR = unity) | TRS cable from out N into front INPUT 1 (GAIN 1 fully counter-clockwise, 48V off, MON 1 unlit) | Capture index 0 within about ±0.5 dB of playback index N−1, for N = 1…4; out1 equal to out3 (Mono subs OFF) |
+| Lo-Cut | 60 Hz tone; ALIGN, hold B2 (`EDIT 0:30`), E4 LO-CUT up to 300 Hz (2 Hz a click, 8 Hz on fast spins: spin it). E4 reads `OFF`: SETUP › TOPS › Lo-Cut ON first (choose, push) | out1/2 far below out3/4 |
+| Mute | hold B4 (Knob test not done: Main mute in CamillaGUI instead) | all four outputs at the floor. Then restore balance (0), the Lo-Cut frequency, unmute |
+| Loop (MONITOR = unity) | TRS cable from out N into front INPUT 1 (GAIN 1 fully counter-clockwise, 48V off, MON 1 unlit) | Capture index 0 within about ±0.5 dB of playback index N−1, for N = 1…4; out1 equal to out3 (Mono L+R off) |
 | MONITOR knob | loop on out1, turn MONITOR down | only outs 1-2 fall. Back fully clockwise |
 | Leak (MON MIX blocks inputs) | K1000 muted, tone in LINE IN 3, loop on out1, press 3-4 | capture index 0 stays at the floor. Turning MON MIX counter-clockwise makes it rise: the raw program past K1000 and its mute. Back fully clockwise, 3-4 off, unmute |
 | Optional: emergency feed | `sudo systemctl stop camilladsp`, press 3-4, MON MIX fully counter-clockwise | Is the raw program on outs 1-2 with the engine stopped? If yes, that is a two-gesture emergency feed to the tops. Restore the panel, `sudo systemctl start camilladsp` |
@@ -159,7 +159,7 @@ for n in ("GetCaptureSignalPeakSince","GetPlaybackSignalPeakSince"):
 If out1/2 read lower than out3/4 with MONITOR fully clockwise, write the difference down; do not
 trim yet (Friday's mic tune sets the output trims).
 
-End of the step: SETUP › Mono subs back ON (two pushes): the Sunday setting (D-010).
+End of the step: SETUP › SUBS › Mono L+R back ON (choose `ON`, push): the Sunday setting (D-010).
 
 ## 7. Levels
 
@@ -168,7 +168,7 @@ outs reach +16 dBu; Meyer UPA-1P/USW-1P limiting starts at 0 dBV (+2.2 dBu), i.e
 the M4 outputs. So K1000 at master 0 dB with flat trims is the old direct-cable level −2 dB, and the
 M4 cannot overdrive a Meyer input.
 
-| Source on Sunday | Input trim (SETUP) | Check |
+| Source on Sunday | SETUP › INPUT › Trim | Check |
 |---|---|---|
 | Pro, +4 dBu (DJ mixer master XLR, console) | 0 dB | loud track at the source's normal level: capture index 2/3 peaks around −12…−6 dBFS, never IN CLIP, M4 LCD In 3/4 never red |
 | Consumer, −10 dBV (RCA) | about +10…+12 dB | same |
@@ -204,15 +204,16 @@ soak at the gig `target_level` (512, D-010), again with its own unit and log (`k
 
 ## 10. Knob test (required; do it before §6)
 
-SETUP → Knob test. Press every button and turn every knob, and note for each physical position the
-`sw`/`enc` index shown (the k1000 restart below brings SHOW back; later, a Knob test is left with
-two B1 holds: SETUP, then SHOW). Write `controls:` in `/etc/k1000/k1000.yaml`, `sudo systemctl restart k1000`, then check: hold B2
-mutes and unmutes on every page, a B1 tap steps SHOW → ALIGN → SETUP, a B3 tap on SHOW moves the
-selected band, a B4 tap on SHOW shows the notch hint (`P1 · … · E3 TO CUT`, nothing audible). Label
-the shell: PAGE · MUTE · BAND/UNLOCK · NOTCH (the operator card's labels). Fill in the "Where" line
-and the bypass patch of `docs/04-operator-card.md` and the bypass patch of `docs/13-quick-start.md`,
-then print both (`tools/make-print.sh`). Knob labels drawn at the wrong screen corners =
-`KNOB_CORNERS` in `box/k1000/ui/input_map.py` (a code change).
+SETUP › BOX › Knob test. Press every button and turn every knob, and note for each physical position
+the `sw`/`enc` index shown and the name the code gives it (`= B1` … `= B4`) (the k1000 restart below
+brings SHOW back; later, a Knob test is left with a B1 hold, to SETUP, then a B1 tap, to SHOW).
+Write `controls:` in `/etc/k1000/k1000.yaml`, `sudo systemctl restart k1000`, then check: hold B4
+mutes and unmutes on every page, a B1 tap flips SHOW ↔ ALIGN and a B1 hold opens SETUP, a B2 tap on
+SHOW moves the selected band, a B3 tap on SHOW shows the notch hint (`P1 · … · E3 TO CUT`, nothing
+audible). Label the shell: B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE (D-013, the operator card's
+labels). Fill in the "Where" line and the bypass patch of `docs/04-operator-card.md` and the bypass
+patch of `docs/13-quick-start.md`, then print both (`tools/make-print.sh`). Knob labels drawn at the
+wrong screen corners = `KNOB_CORNERS` in `box/k1000/ui/input_map.py` (a code change).
 
 ## 11. Tape and label
 
@@ -240,7 +241,7 @@ then print both (`tools/make-print.sh`). Knob labels drawn at the wrong screen c
 ## Decisions for Thomas
 
 Answered 2026-10-13 (D-010, D-012): out1/2 tops, out3 both subs (Loop or XLR Y; out4 spare), `target_level` 512, the
-source and cables are Thomas's, Mono subs ON. Firmware and power remain as below.
+source and cables are Thomas's, Mono L+R ON (SETUP › SUBS). Firmware and power remain as below.
 
 | Question | Recommendation (M4 review) |
 |---|---|

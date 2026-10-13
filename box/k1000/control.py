@@ -10,8 +10,8 @@ Why it is shaped like this:
   runs, further detents pile up in the state and the next plan goes straight to the latest value.
   Setup actions (mono subs, audition, profile) come out of the diff as a `Rebuild`: they
   regenerate and upload the whole config with Main muted around it, and are refused unless the
-  operator confirmed them (SETUP double push) or the box is muted.
-- **Mute never waits.** B2 is the emergency gesture: `set_mute` sends the Main mute at once,
+  operator confirmed them (SETUP: chosen, then set by a push, D-013) or the box is muted.
+- **Mute never waits.** B4 is the emergency gesture: `set_mute` sends the Main mute at once,
   outside the worker and its lock. Nothing else ever UNMUTES Main except the operator, a boot ramp,
   or a setup guard, and the last two re-check the operator's mute right before unmuting.
 - **No ramp into an engine that is not processing.** CamillaDSP applies a fader change made while
@@ -80,8 +80,8 @@ from .ui.input_map import (
     A_LAPTOP, ALL_PAGES, AUTO_HOME_PAGES, BELL_SLOTS, EDIT_HIGHLIGHT_S, F_LOWCUT_ON, F_SPECTRUM_ON,
     HINT_S, HOME_AFTER_S, HOME_PAGE, LIVE_SLOT_LABELS, LIVE_SLOT_SHORT, LIVE_SLOTS, MUTE_TOGGLE,
     PAGES, ControlMap, Focus, GotoPage, Mute, NextPage, NotchHelper, Nudge, PhoneQr, PhoneToggle,
-    ResetLive, SetupAction, Toggle, UndoReset, apply_focus, knob_tag_style, map_event, page_name,
-    parse_knob_tags,
+    B1_TAP, SETUP_ITEMS, ResetLive, SetChoice, SetupAction, Toggle, UndoReset, apply_focus, knob_tag_style,
+    map_event, page_name, parse_knob_tags,
 )
 
 log = logging.getLogger(__name__)
@@ -147,7 +147,7 @@ FADER_CEILING_DB = max(RANGES["master_db"].max, RANGES["balance_db"].max / 2.0)
 DEVICE_NAMES = {"dev": "HiFiBerry", "m4": "MOTU M4"}
 ENGINE_DOWN_STATES = ("Inactive", "Stalled")
 
-HINT_STILL_MUTED = "STILL MUTED · HOLD B2 TO UNMUTE"
+HINT_STILL_MUTED = "STILL MUTED · HOLD B4 TO UNMUTE"
 HINT_CONFIRM_SETUP = "MUTE OR CONFIRM ON SETUP (MAY CLICK)"
 HINT_PINNED = "PROFILE PINNED IN k1000.yaml"
 HINT_LIVE_RESET = "LIVE EQ RESET · UNDO IN SETUP"
@@ -155,12 +155,15 @@ HINT_LIVE_FLAT = "LIVE EQ ALREADY FLAT"
 HINT_LIVE_RESTORED = "LIVE EQ RESTORED"
 HINT_NOTHING_TO_UNDO = "NOTHING TO UNDO"
 HINT_UNDO_LOST = "RESET UNDO LOST"
-HINT_MUTE_CHANGED = "MUTE CHANGED · LOOK, HOLD B2 AGAIN"
+HINT_MUTE_CHANGED = "MUTE CHANGED · LOOK, HOLD B4 AGAIN"
 HINT_MASTER_SLOW = "MASTER: SLOW DOWN"
 HINT_NO_FREE_BAND = "NO FREE BAND"
 HINT_NOTCH = "{band} · {hz} · E3 TO CUT"              # D-009: "P3 · 2.44k · E3 TO CUT"
 HINT_NOTCH_NO_PEAK = "{band} · {hz} · NO PEAK · E3 TO CUT"
 HINT_SPECTRUM_DISABLED = "SPECTRUM OFF IN k1000.yaml"
+HINT_AUDITION_DEV_ONLY = "AUDITION: DEV PROFILE ONLY"
+SETUP_PICK_FIELDS: frozenset[str] = frozenset(it.field for it in SETUP_ITEMS if it.picks)
+HINT_NO_CHANGE = "NO CHANGE: ALREADY SET"
 HINT_LAPTOP_NA = "LAPTOP ACCESS: NOT AVAILABLE"
 HINT_LAPTOP_OPENING = "LAPTOP ACCESS: OPENING…"
 HINT_LAPTOP_OPEN = "LAPTOP OPEN 2 H · GUI :5005 · SSH"
@@ -174,7 +177,7 @@ MASTER_UP_GUARD_DB = 6.0
 MASTER_UP_WINDOW_S = 2.0
 # Reset live EQ keeps a one-level undo this long (and until the live EQ is edited again).
 UNDO_RESET_S = 300.0
-# The notch helper (B4 on SHOW): a free bell at 1/6 octave, at the spectrum PEAK if there is
+# The notch helper (B3 on SHOW): a free bell at 1/6 octave, at the spectrum PEAK if there is
 # one; a target this close to a bell already in use selects that bell instead.
 NOTCH_OCT = 1.0 / 6.0
 NOTCH_Q = 1.0 / (2.0 * math.sinh(math.log(2.0) / 2.0 * NOTCH_OCT))     # 8.65
@@ -578,7 +581,7 @@ def recover_state(paths: Paths) -> tuple[State, str]:
     once and patch the defaults over the engine: the tune gone from both. Faders live only in
     state.json, so master/balance come back as defaults, and the calibrated master may be well
     below the default: the state starts MUTED (a fresh engine parks Main at the master and stays
-    muted until the operator checks it and holds B2; an engine already playing is adopted as it
+    muted until the operator checks it and holds B4; an engine already playing is adopted as it
     plays, mute included). A MISSING state.json means defaults (first boot, or moved away on
     purpose: README "Sound state"; atomic writes never leave it missing), also MUTED when
     active.yml shows the box was set up before (not a first boot).
@@ -907,6 +910,7 @@ class Controller:
             st.spectrum, st.peak_hz = None, None
         st.master_up_guard_db = self.master_up_guard_db
         st.laptop_s, st.laptop_state = self._laptop_view()
+        self.focus.readonly = self.setup_readonly()
         return self.page, self.state.copy(), st.copy(), copy.deepcopy(self.focus)
 
     # ------------------------------------------------------------------ UI v1 views
@@ -954,11 +958,11 @@ class Controller:
 
     def set_knobs_ok(self, ok: bool | None) -> None:
         """The knob service reports whether the MCP23017 answers (None = no knobs expected).
-        While it does not, the screen says so: B2 (mute) does nothing then."""
+        While it does not, the screen says so: B4 (mute) does nothing then."""
         if ok == self.status.knobs_ok:
             return
         if ok is False:
-            log.error("knobs offline: B2 mute and the knobs do nothing until they recover")
+            log.error("knobs offline: B4 mute and the knobs do nothing until they recover")
         elif ok and self.status.knobs_ok is False:
             log.warning("knobs back online")
         self.status.knobs_ok = ok
@@ -1065,7 +1069,8 @@ class Controller:
         """Flip a bool field, or step an enum field (`dev_audition`, `profile`) to its next choice.
 
         Pipeline-rebuilding fields (state.REBUILD_FIELDS) are refused unless `confirmed` (the
-        SETUP double push) or the box is muted; `profile` is refused while k1000.yaml pins it.
+        SETUP choice set by a push) or the box is muted; `profile` is refused while k1000.yaml
+        pins it.
         """
         if field == "muted":
             self.set_mute(MUTE_TOGGLE)
@@ -1084,6 +1089,54 @@ class Controller:
             return False
         log.info("toggle %s -> %r", field, self.state.get(field))
         self._local_edit()
+        return True
+
+    def setup_readonly(self) -> dict[str, str]:
+        """SETUP fields that cannot change now -> the hint the knobs show (Focus.readonly):
+        Profile while k1000.yaml pins it, Audition off the dev profile, Spectrum while k1000.yaml
+        disables it. The screen draws their values dimmed."""
+        out: dict[str, str] = {}
+        if self.profile_pinned:
+            out["profile"] = HINT_PINNED
+        if not getattr(self.profile, "audition", False):
+            out["dev_audition"] = HINT_AUDITION_DEV_ONLY
+        if not self.spectrum_enabled:
+            out[F_SPECTRUM_ON] = HINT_SPECTRUM_DISABLED
+        return out
+
+    def set_choice(self, field: str, value: Any) -> bool:
+        """SETUP (D-013): set `field` to the value the row showed, chosen with E2 and set by a
+        push (two gestures: the confirm a pipeline rebuild needs). Refused, and said, when the
+        field cannot change now (Focus.readonly) or the value is not one of its choices; a
+        value already set (a phone changed it meanwhile) changes nothing and says so."""
+        if field not in SETUP_PICK_FIELDS:      # never `muted`: that is set_mute's, with its guards
+            log.warning("set_choice %r: not a SETUP choice row", field)
+            return False
+        ro = self.setup_readonly().get(field)
+        if ro:
+            self.show_hint(ro)
+            return False
+        if field == F_LOWCUT_ON:
+            if bool(value) == bool(self.state.lowcut_on):
+                self.show_hint(HINT_NO_CHANGE)
+                return False
+            self.set_lowcut(bool(value))
+            return True
+        if field in BOOL_FIELDS:
+            value = bool(value)
+        elif field not in CHOICES or value not in CHOICES[field]:
+            log.warning("set_choice %r = %r: not a SETUP choice", field, value)
+            return False
+        if self.state.get(field) == value:
+            self.show_hint(HINT_NO_CHANGE)
+            return False
+        if field in REBUILD_FIELDS and not self._setup_allowed(field, confirmed=True):
+            return False
+        self.state.set(field, value)
+        log.info("setup %s -> %r", field, value)
+        self._local_edit()
+        if field == F_SPECTRUM_ON:
+            self.show_hint("SPECTRUM ON" if value else "SPECTRUM OFF")
         return True
 
     def reset_live(self) -> None:
@@ -1106,7 +1159,7 @@ class Controller:
     def undo_left(self, now: float | None = None) -> float:
         """Seconds the reset undo stays available (0.0 = none). It ends at the first AUDIBLE
         live EQ edit after the reset (a gain moved off 0 dB, by a knob, the phone or CamillaGUI
-        adopted; freq/Q of a band at 0 dB is inaudible and keeps it: the notch helper's B4, an
+        adopted; freq/Q of a band at 0 dB is inaudible and keeps it: the notch helper's B3, an
         E2/E4 turn on a flat band), or after UNDO_RESET_S. Undo then restores the whole live
         EQ from before the reset, over any such inaudible move. Dropped by an edit, it says
         so (RESET UNDO LOST)."""
@@ -1141,7 +1194,7 @@ class Controller:
         return True
 
     def notch_helper(self, now: float | None = None) -> int | None:
-        """B4 on SHOW (D-009). Returns the slot it selected (None: no free band).
+        """B3 on SHOW (D-009). Returns the slot it selected (None: no free band).
 
         1. A spectrum PEAK within NOTCH_NEAR_OCT of a bell already in use (gain != 0): select
            that bell, write nothing.
@@ -1245,7 +1298,7 @@ class Controller:
     def set_mute(self, on: bool | str | None = MUTE_TOGGLE, seen: int | None = None) -> bool:
         """Main mute, sent at once (never queued behind other engine work). 'toggle' = the
         opposite of what the screen shows. `seen` (an unmute from a surface that LOOKED first:
-        B2's press, a phone's hold): the mute_view() generation it saw; if the mute changed
+        B4's press, a phone's hold): the mute_view() generation it saw; if the mute changed
         since, the unmute is refused (someone muted meanwhile) and the mute shown is returned.
         A mute is never refused."""
         if on is None or on == MUTE_TOGGLE:
@@ -1271,8 +1324,8 @@ class Controller:
         return on
 
     def next_page(self) -> str:
-        i = PAGES.index(self.page) if self.page in PAGES else -1
-        return self.goto_page(PAGES[(i + 1) % len(PAGES)])
+        """B1 tap (D-013): SHOW <-> ALIGN, SETUP -> SHOW, PHONE -> SETUP (input_map.B1_TAP)."""
+        return self.goto_page(B1_TAP.get(self.page, HOME_PAGE))
 
     def goto_page(self, page: str) -> str:
         """Show `page` (v0 names MAIN/LIVE are aliases of ALIGN/SHOW). Leaving ALIGN locks its
@@ -1285,6 +1338,7 @@ class Controller:
             self.focus.unlock_until = 0.0
         if page != self.page:
             self.focus.confirm = None
+            self.focus.clear_pick()
         self._last_input = self._ui_clock()
         self.page = page
         self._changed()
@@ -1292,10 +1346,10 @@ class Controller:
 
     def ui_tick(self, now: float | None = None) -> None:
         """ALIGN and SETUP go back to SHOW after HOME_AFTER_S without a knob/button event (not
-        while a SETUP confirm is pending; PHONE and the Knob test stay where they are)."""
+        while a SETUP confirm or choice is pending; PHONE and the Knob test stay where they are)."""
         now = self._ui_clock() if now is None else now
         if (self.page in AUTO_HOME_PAGES and now - self._last_input >= HOME_AFTER_S
-                and not self.focus.confirm_now(now)):
+                and not self.focus.confirm_now(now) and not self.focus.pick_now(now)):
             log.info("%s idle %.0f s: back to %s", self.page, now - self._last_input, HOME_PAGE)
             self.goto_page(HOME_PAGE)
 
@@ -1316,11 +1370,11 @@ class Controller:
         return bool(self.status.muted) if self.status.muted is not None else bool(self.state.muted)
 
     def b2_muted(self) -> bool:
-        """The mute B2 long acts against (it asks for the opposite).
+        """The mute B4 long acts against (it asks for the opposite).
 
         Normally the one the screen shows. But while K1000 ITSELF holds Main muted on its way to
         bringing it in (a boot ramp parked, a setup guard) and the operator has not muted, the
-        screen says Main comes in by itself and that B2 keeps it muted: B2 then means MUTE (the
+        screen says Main comes in by itself and that B4 keeps it muted: B4 then means MUTE (the
         operator's mute, which the ramp/guard honours), never an unmute into an engine that is
         not processing yet."""
         if (self._ramping or FADER_MAIN in self._guards) and not self._operator_muted():
@@ -1328,8 +1382,8 @@ class Controller:
         return self.displayed_muted()
 
     def mute_view(self) -> tuple[bool, int]:
-        """(the mute B2 acts against = b2_muted(), its generation). The generation moves when
-        the mute shown or b2_muted() changes between two calls, and on every set_mute(). B2's
+        """(the mute B4 acts against = b2_muted(), its generation). The generation moves when
+        the mute shown or b2_muted() changes between two calls, and on every set_mute(). B4's
         press and every phone (web.PhoneBridge) read it; cheap, call it as often as needed."""
         key = (self.displayed_muted(), self.b2_muted())
         if key != self._mute_seen:
@@ -1348,10 +1402,11 @@ class Controller:
             except Exception:   # noqa: BLE001 - the knobs never depend on the spectrum
                 pass
         muted, seq = self.mute_view()
+        self.focus.readonly = self.setup_readonly()
         for action in map_event(self.page, self.focus, event, self.controls,
-                                muted=muted, mute_seq=seq):
+                                muted=muted, mute_seq=seq, state=self.state):
             self.handle_action(action)
-        self._changed()   # HWTEST log, held pushes, confirm marks
+        self._changed()   # HWTEST log, held pushes, confirm and choice marks
 
     def handle_action(self, action: Any) -> None:
         """One input_map Action. UI-local ones (slot/item select, hints) stay in `focus`."""
@@ -1360,8 +1415,10 @@ class Controller:
             return
         if isinstance(action, Nudge):
             self.nudge(action.field, action.detents, action.fine)
+        elif isinstance(action, SetChoice):
+            self.set_choice(action.field, action.value)
         elif isinstance(action, Toggle):
-            # input_map emits a Toggle on a confirmed field only after the SETUP double push.
+            # Console and older callers; the knobs send SetChoice since D-013.
             if action.field == F_LOWCUT_ON:
                 self.set_lowcut(not self.state.lowcut_on)
             elif self.toggle(action.field, confirmed=True) and action.field == F_SPECTRUM_ON:

@@ -17,7 +17,7 @@ Commands:
             `--guided` walks you through ~2 minutes of known turns ("E1: exactly 10 clicks
             clockwise") so the analysis has a ground truth, then repeats two of them polled.
             Needs k1000.service STOPPED (it owns the chip and the INT lines). The engine keeps
-            playing and its faders do not move, but B2 MUTE does nothing until k1000 runs again.
+            playing and its faders do not move, but B4 MUTE does nothing until k1000 runs again.
   analyze   The offline analysis of a saved trace (also printed at the end of every capture).
             Per encoder: transitions per click, the contact states it rests on, invalid
             (double-bit) changes, bounces, turn rates, pauses between clicks, a verdict for
@@ -1341,7 +1341,7 @@ def run_capture(args: argparse.Namespace) -> int:
     active = k1000_active()
     if active and not args.force:
         print("k1000.service is RUNNING: it owns the knobs. Stop it first (the audio keeps "
-              "playing, its faders do not move; B2 MUTE is off until you start it again):\n"
+              "playing, its faders do not move; B4 MUTE is off until you start it again):\n"
               "    sudo systemctl stop k1000\n"
               "then run this again, and afterwards:\n"
               "    sudo systemctl start k1000", file=sys.stderr)

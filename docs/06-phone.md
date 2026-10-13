@@ -54,7 +54,7 @@ carry the show.
   (443) and its plain fallback (8080), with at most 16 open connections per phone and 64 in all
   to those ports (the k1000 process's sockets are the knobs' too; it also has `LimitNOFILE=4096`).
   Never CamillaGUI (:5005, no authentication: it could undo knob work and lift the volume limit),
-  rpcbind, or SSH (unless `--ssh on`), except during **SETUP › Laptop access** (§11): then
+  rpcbind, or SSH (unless `--ssh on`), except during **SETUP › PHONE › Laptop access** (§11): then
   CamillaGUI and SSH from the AP's own subnet, for 2 hours at most, never across a reboot. Nothing on the AP is routed anywhere, and the AP address
   10.42.0.1 is unreachable from `eth0` (only that address: an `eth0` network that happens to be
   10.42.0.0/24 too keeps working). The hostapd unit **requires** the fence: it refuses to start
@@ -73,7 +73,7 @@ carry the show.
 - **Never on a Wi-Fi client link**: when `wlan0` is connected to another Wi-Fi as a client (a card
   set up with Wi-Fi in Raspberry Pi Imager), `setup-ap.sh` refuses (exit 4) instead of cutting
   that link. Leave Wi-Fi empty in Imager.
-- **QR codes on the box screen** (SETUP › Phone): first the Wi-Fi code (Android 10+ joins in one
+- **QR codes on the box screen** (SETUP › PHONE › Phone): first the Wi-Fi code (Android 10+ joins in one
   tap; the password is also printed, easy to type). Once a phone is on the AP the screen shows the
   page's URL. E1 turn steps through the codes: Wi-Fi → URL → **first time** (http://10.42.0.1/,
   the certificate page).
@@ -90,33 +90,33 @@ carry the show.
 
 Screens: `docs/ui/phone_wifi.png` (step 1), `phone_url.png` (step 2), `phone_setup.png` (first
 time), `phone_connected.png` (muted box, one phone connected), `phone_off.png`, `phone_ap_down.png`,
-`phone_no_tls.png`; with SETUP › Laptop access open, `phone_laptop.png` (the password as text, §11).
+`phone_no_tls.png`; with SETUP › PHONE › Laptop access open, `phone_laptop.png` (the password as text, §11).
 
 ## 2. What the phone does (v0)
 
 | Page | Controls |
 |---|---|
 | **MAIN** | Master: −6 / −1 / −½ / +½ / +1 dB steps (never an absolute jump). Balance subs↔tops ±½/±1. Lo-Cut on/off + frequency (−10 / −2 / +2 / +10 Hz since D-011; it was ±1/12, ±⅓ oct) |
-| **LIVE EQ** | The 6 live bands (PEQ 1–4, low shelf, high shelf) on a 20 Hz–20 kHz log graph with the summed curve. **Drag a dot** = frequency + gain. **Long-press empty space = "notch here"**: the first flat PEQ band goes there at −6 dB, Q 8, and **stays under the finger**: keep it down and slide to tune it. Per band: FREQ ±1/12, ±⅓ oct · GAIN ±½, ±3 dB · Q ½× (wide) / − / + / 2× (narrow) · hold = band flat. **Reset live EQ** with a confirm (the box's own reset: SETUP › Undo reset brings it back until the next EQ cut or 5 minutes) |
+| **LIVE EQ** | The 6 live bands (PEQ 1–4, low shelf, high shelf) on a 20 Hz–20 kHz log graph with the summed curve. **Drag a dot** = frequency + gain. **Long-press empty space = "notch here"**: the first flat PEQ band goes there at −6 dB, Q 8, and **stays under the finger**: keep it down and slide to tune it. Per band: FREQ ±1/12, ±⅓ oct · GAIN ±½, ±3 dB · Q ½× (wide) / − / + / 2× (narrow) · hold = band flat. **Reset live EQ** with a confirm (the box's own reset: SETUP › LIVE EQ › Undo reset brings it back until the next EQ cut or 5 minutes) |
 | Always | **Hold to mute** (0.6 s; unmute needs 1.2 s), the 4 output meters (~10 Hz, clip boxes), engine state, NO DEVICE / ENGINE DOWN / the box's messages, external changes (drift) |
 
-Not on the phone in v0 (setup-class, refused by the box): profile, mono subs, delays, polarity,
+Not on the phone in v0 (setup-class, refused by the box): profile, Mono L+R, delays, polarity,
 system EQ, trims, input trim, sub low-pass.
 
 **The mute, exactly:**
 
 - What a hold does is decided **when the finger goes down**, and the button says it: *HOLD TO
   MUTE*, *MUTED · HOLD TO UNMUTE*, or *HOLD TO KEEP MUTED* (K1000 itself holds Main muted on its
-  way in, a boot ramp or a setup guard: like B2, the phone then never unmutes).
-- A hold that starts as a MUTE always mutes, whatever happens meanwhile (B2, another phone).
+  way in, a boot ramp or a setup guard: like B4, the phone then never unmutes).
+- A hold that starts as a MUTE always mutes, whatever happens meanwhile (B4, another phone).
 - An UNMUTE carries the box's *mute generation* the page was showing. If anyone muted or unmuted
   during the hold, the hold is cancelled on the phone (*The mute changed meanwhile*) and the box
-  refuses it anyway: nobody undoes someone else's emergency mute. The same rule holds for B2 on
-  the box (`ui/input_map.py` `_b2`, `Controller.set_mute(seen=)`): B2 acts on what the screen
-  showed when it was pressed.
+  refuses it anyway: nobody undoes someone else's emergency mute. The same rule holds for B4 on
+  the box (`ui/input_map.py` `_b2`, named when mute was B2; `Controller.set_mute(seen=)`): B4 acts
+  on what the screen showed when it was pressed.
 - The phone buzzes when **the box confirms** (*MUTING…* until then); no answer in 1.5 s says
-  *No answer from K1000: use B2 on the box*.
-- B2 on the box remains the master mute, always.
+  *No answer from K1000: use B4 on the box*.
+- B4 on the box (a hold, D-013) remains the master mute, always.
 
 **Safety, enforced by the box, not only the page:**
 
@@ -135,7 +135,7 @@ system EQ, trims, input trim, sub low-pass.
 - The servers listen on 10.42.0.1 only, and **the fence** makes that address unreachable from any
   interface but the AP (Linux would otherwise accept it on `eth0` too). Physical access (the
   password on the box screen) is the authorisation.
-- **SETUP › Phone** switches phone control off at run time (and it stays off across restarts:
+- **SETUP › PHONE › Phone** switches phone control off at run time (and it stays off across restarts:
   `/var/lib/k1000/phone.json`). The page then opens but controls nothing and says so.
   `phone: enabled: false` in `k1000.yaml` removes the phone servers entirely. Neither takes the
   Wi-Fi off the air: that is `sudo /opt/k1000/net/setup-ap.sh --down` (the no-go, §9).
@@ -146,7 +146,7 @@ system EQ, trims, input trim, sub low-pass.
    (D-007), once per card" (copies `k1000.crt`, `k1000.key` and `k1000-ca.crt`, never `ca.key`,
    to a temporary folder on the box, runs `install.sh --ap` with `K1000_TLS_DIR` and
    `K1000_REVISION`, removes the folder), then restart the k1000 service between shows so it
-   loads the certificate. On the box: SETUP › **Phone**.
+   loads the certificate. On the box: SETUP › PHONE › **Phone**.
 2. **Put the CA on the phone first (simplest):** the CA certificate is public. Copy
    `k1000-ca.crt` (or `.der`, from the CA's folder on the laptop that made it) to the phone over
    USB, a file share or a mail to yourself, into *Downloads*. (Or later from the box's first-time page, step 4.)
@@ -247,8 +247,8 @@ PHONE page's third QR (**FIRST TIME**, `http://10.42.0.1/`). Back to the portal,
 | Phone shows K1000, *Obtaining IP address…*, then drops | §6: `setup-ap.sh --status` (backend hostapd, PMF unset), then `--band bg`, then the dongle |
 | Page says *Not connected to K1000 — join the K1000 Wi-Fi* | Not on K1000 (check the Wi-Fi), or k1000 is restarting (it reconnects by itself within ~3 s) |
 | Page says *K1000 was updated: reloading* | The box was updated; the page reloads itself once. If it then says *close and reopen*, swipe K1000 away and open it again |
-| Page says *Phone control is OFF on the box* | SETUP › Phone › push E1 |
-| *The mute changed meanwhile* | Someone (B2, another phone) muted/unmuted during your hold: look, then hold again |
+| Page says *Phone control is OFF on the box* | SETUP › PHONE › Phone › push E1 |
+| *The mute changed meanwhile* | Someone (B4, another phone) muted/unmuted during your hold: look, then hold again |
 | *K1000 already has the maximum number of phones* | 4 phones max: close the page on another phone |
 | Phone does not list "K1000" | Phone without 5 GHz, or channel 36 blocked by its region: `sudo /opt/k1000/net/setup-ap.sh --band bg` |
 | **Outdoor gig** | 5 GHz channel 36 is **indoor-only** in the EU: `sudo /opt/k1000/net/setup-ap.sh --band bg` (2.4 GHz ch 6). The choice sticks until `--band a` |
@@ -260,9 +260,9 @@ PHONE page's third QR (**FIRST TIME**, `http://10.42.0.1/`). Back to the portal,
 | New Wi-Fi password wanted | `sudo /opt/k1000/net/setup-ap.sh --new-password` (every phone scans the QR again) |
 | SSH to the box over K1000 | Fenced off by default: `sudo /opt/k1000/net/setup-ap.sh --ssh on` (or use `eth0`, not with a laptop sharing on 10.42.0.x: §1) |
 | Certificate expiry | The leaf is valid until **2029-01-14**; the box logs a warning 60 days before. Re-sign it on the laptop that holds the CA key (the README next to that key) |
-| Laptop on K1000 cannot open CamillaGUI or `/tune` | SETUP › Laptop access must say `OPEN h:mm` (§11). Closed: push twice. It closes by itself after 2 h and when k1000 restarts: open it again |
-| SETUP › Laptop access says `NO ANSWER` | The root watcher is not running: `systemctl status k1000-laptop.path` (k1000 brings it; after a deploy, k1000 must have restarted once). `journalctl -t k1000-laptop` |
-| SETUP › Laptop access says `NO WI-FI FENCE` | The AP and its fence are not set up (`setup-ap.sh`): there is no K1000 Wi-Fi to open. Use the wired LAN |
+| Laptop on K1000 cannot open CamillaGUI or `/tune` | SETUP › PHONE › Laptop access must say `OPEN h:mm` (§11). Closed: push twice. It closes by itself after 2 h and when k1000 restarts: open it again |
+| SETUP › PHONE › Laptop access says `NO ANSWER` | The root watcher is not running: `systemctl status k1000-laptop.path` (k1000 brings it; after a deploy, k1000 must have restarted once). `journalctl -t k1000-laptop` |
+| SETUP › PHONE › Laptop access says `NO WI-FI FENCE` | The AP and its fence are not set up (`setup-ap.sh`): there is no K1000 Wi-Fi to open. Use the wired LAN |
 | Laptop cannot scan the Wi-Fi QR | While laptop access is open, the PHONE page prints the Wi-Fi password on every step |
 
 ## 8. Notes and limits
@@ -299,8 +299,8 @@ phone off), `pong`; phone → box `nudge {f, d, fine}`, `set {f, v}` (live EQ va
 3. In airplane mode + Wi-Fi, the **K1000 icon** opens in < 2 s and shows LINK + RUNNING. Note what
    *Install* produced (app or Chrome-badged shortcut).
 4. Master −1 dB on the phone → the box screen follows; a knob turn → the phone follows at once.
-5. **Hold to mute** on the phone mutes the PA; B2 (long) on the box unmutes. Then both at once:
-   phone hold + B2 together → the PA ends **muted**.
+5. **Hold to mute** on the phone mutes the PA; B4 (long) on the box unmutes. Then both at once:
+   phone hold + B4 together → the PA ends **muted**.
 6. Range, both bands (§6): 5 / 10 / 20 / 30 m, screen window facing the room; note the band and
    the distance where NO LINK appears. **10 m must hold** (Thomas's working distance). Pick the
    band for Sunday (5 GHz ch 36 by default, `--band bg` if 2.4 GHz holds better).
@@ -308,15 +308,15 @@ phone off), `pong`; phone → box `nudge {f, d, fine}`, `set {f, v}` (live EQ va
    it onto the ring without lifting; the box's SHOW page shows the cut on its EQ curve.
 8. Scan the Wi-Fi QR from 50 cm: note whether it worked first time.
 9. Turn the phone's Wi-Fi off mid-show: nothing changes in the sound.
-10. SETUP › Phone off: the phone says OFF and controls nothing; on again: it reconnects.
+10. SETUP › PHONE › Phone off: the phone says OFF and controls nothing; on again: it reconnects.
 11. `sudo systemctl restart k1000`: audio unchanged, the page reconnects by itself.
 12. From the phone, `http://10.42.0.1:5005/` (CamillaGUI) does **not** load (the fence), with
-    SETUP › Laptop access closed.
-13. **Laptop access** (§11): SETUP › Laptop access, push twice → `OPEN 2:00` and the SHOW pill
+    SETUP › PHONE › Laptop access closed.
+13. **Laptop access** (§11): SETUP › PHONE › Laptop access, push twice → `OPEN 2:00` and the SHOW pill
     `LAPTOP OPEN 2:00`. The laptop joins K1000 with the password the PHONE page now prints, opens
     `http://10.42.0.1:5005/gui/index.html` (CamillaGUI), `https://10.42.0.1/tune`, and `ssh
     k1000@10.42.0.1`. Paste a REW filter list on `/tune`: preview, Apply, Undo. One push on
-    SETUP › Laptop access closes it: CamillaGUI no longer loads (a reload of `/tune` says closed).
+    SETUP › PHONE › Laptop access closes it: CamillaGUI no longer loads (a reload of `/tune` says closed).
 
 All pass → phone **on** for Sunday. Any fail → phone **fully off** for Sunday, knobs only:
 
@@ -326,7 +326,7 @@ sudo nano /etc/k1000/k1000.yaml           # phone: enabled: false (no phone serv
 sudo systemctl restart k1000              # between shows: audio keeps playing
 ```
 
-SETUP › Phone alone is **not** a no-go: it leaves the K1000 Wi-Fi on the air. The `--down` sticks:
+SETUP › PHONE › Phone alone is **not** a no-go: it leaves the K1000 Wi-Fi on the air. The `--down` sticks:
 a later `install.sh --ap` or `bootstrap.sh` keeps the AP down (it only keeps its files current),
 and a spare card is made with `bootstrap.sh --no-ap`. Back on later:
 `sudo /opt/k1000/net/setup-ap.sh --up` (it keeps its other choices) and `enabled: true`.
@@ -358,11 +358,11 @@ With the phone off, the box's KNOBS OFFLINE alert says `SOURCE DOWN / BYPASS` in
 - Unit tests `box/tests/test_web.py` + `test_qr.py` + `test_phone_wiring.py`: the bridge against the real Controller over an in-memory engine (mute generation and
   races, a stalled downlink, hostile numbers), the servers in-process (static files, Origin,
   limits, phone off, isolation, TLS with a throwaway certificate, portal), presence helpers, QR
-  codes **decoded** from the rendered 480×320 page; B2 + phone races on the wired controller.
+  codes **decoded** from the rendered 480×320 page; box mute + phone races on the wired controller.
 - End to end, headless Chromium at 412×915, 393×851 (Pixel 4a) and 360×780: installable on both
   the localhost and the HTTPS origin, service worker shell works offline and **reloads itself once
   after a box update**, every control reaches the Controller, knob moves show on the phone in
-  ~30 ms, drags coalesced, mute races (B2 during a phone hold, two phones, an unmute during a
+  ~30 ms, drags coalesced, mute races (the box mute during a phone hold, two phones, an unmute during a
   change, an old page) all end MUTED, notch + slide in one gesture, step buttons ≥ 48 px at
   393 px and ≥ 44 px at 360 px, reconnect after a k1000 restart ~1 s, the portal in Chrome and in
   the sign-in WebView.
@@ -404,7 +404,7 @@ only over the K1000 Wi-Fi (there is no house network, and a laptop sharing its c
 `eth0` cable takes the AP down: §1), and the fence keeps CamillaGUI and SSH away from the Wi-Fi.
 Laptop access opens exactly those two, for a while.
 
-**On the box:** SETUP › **Laptop access**, push twice (`PUSH AGAIN: LAPTOP ACCESS FOR 2 H`). The
+**On the box:** SETUP › PHONE › **Laptop access**, push twice (`PUSH AGAIN: LAPTOP ACCESS FOR 2 H`). The
 row then reads `OPEN 1:59` (hours:minutes left), SHOW carries the pill `LAPTOP OPEN 1:59`, and
 the PHONE page prints the Wi-Fi password on every step (a laptop cannot scan the QR). **One push
 closes it** (the safe direction needs no confirm). It also closes by itself:
@@ -445,17 +445,17 @@ The request carries nothing: ports, subnet and duration are the root script's. I
 
 **The laptop, step by step:**
 
-1. SETUP › Laptop access, push twice. SETUP › Phone: the Wi-Fi password is printed.
+1. SETUP › PHONE › Laptop access, push twice. SETUP › PHONE › Phone: the Wi-Fi password is printed.
 2. Join **K1000** with that password.
 3. CamillaGUI: `http://10.42.0.1:5005/gui/index.html` (press *Fetch from DSP* before editing:
    `box/README.md`, "Laptop"). SSH: `ssh k1000@10.42.0.1`.
 4. Or the **tune page**: `https://10.42.0.1/tune` (the laptop needs the K1000 CA like the phone,
    §3; or accept the browser's warning once).
-5. Done: one push on SETUP › Laptop access.
+5. Done: one push on SETUP › PHONE › Laptop access.
 
 **The tune page** (`/tune`, served by k1000 next to the phone page; `403 laptop access is closed`
 while it is closed, every open tune page dropped the moment it closes). It needs the phone
-servers (`phone: enabled: true` in k1000.yaml) but not SETUP › Phone: phone control off does not
+servers (`phone: enabled: true` in k1000.yaml) but not SETUP › PHONE › Phone: phone control off does not
 close it, and laptop access never turns phone control on.
 
 - Paste a filter list. **REW**: *File › Export › Export filter settings as text*, then the

@@ -18,7 +18,7 @@ ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/i
   second, then ramps back in.
 - Re-running is always safe; with nothing new it ends with `0 changes`.
 - Read its last lines: it says when a service must start again to use what changed (for example
-  k1000, once, for SETUP › Laptop access), and when access-point units changed, which only
+  k1000, once, for SETUP › PHONE › Laptop access), and when access-point units changed, which only
   `install.sh --ap` applies. A new engine device setting (a fader ramp, a buffer size) reaches the
   engine at its next start; until then the screen says `DEVICES CHANGED (GUI)`. With `--start`
   both services start again at once.
@@ -94,7 +94,7 @@ scheme (decision D-007):
 - The author's current leaf is valid until **2029-01-14**.
 
 **Expiry.** At each start, k1000 logs `phone certificate expires in N days: re-sign it` when fewer
-than 60 days are left. Once it has expired, SETUP › Phone shows `phone certificate EXPIRED …`.
+than 60 days are left. Once it has expired, SETUP › PHONE › Phone shows `phone certificate EXPIRED …`.
 
 **Renewing the leaf** (the CA stays, so the phones need nothing new):
 
@@ -177,7 +177,7 @@ moment.
 | The filesystem | ext4 replays its journal and cleans up orphaned files at boot: normal, nothing to do |
 | The clock | **No battery clock.** The box boots with the time last saved to the card, minutes behind, and only an internet time server over `eth0` corrects it (about 45 s after boot on the bench). At a gig there is none: the clock stays behind all night. Audio, the saved state and Laptop access's 2 h (counted from boot) do not depend on it; journal and soak times do |
 
-**End of a night: hold B2 (muted), speakers off, then K1000 off.** The next power-on stays silent
+**End of a night: hold B4 (muted), speakers off, then K1000 off.** The next power-on stays silent
 until you unmute.
 
 The author's power-cut drill (2026-10-13: an instant reset with no disk sync, the box playing):

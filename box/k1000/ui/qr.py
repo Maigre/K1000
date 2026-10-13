@@ -201,7 +201,7 @@ def _footer(c: Any, state: Any, status: Any, muted: bool, hint: list[str]) -> No
     if muted:
         c.d.rectangle((x0, y0, x1, y1), fill=BAND_RED)
         c.d.text((COL_X0, y0 + 15), "MUTED", font=font(22), fill=FG, anchor="lm")
-        _text_fit(c, (COL_X0, y0 + 35), "hold B2 to unmute", 13, COL_X1 - COL_X0, FG, anchor="lm",
+        _text_fit(c, (COL_X0, y0 + 35), "hold B4 to unmute", 13, COL_X1 - COL_X0, FG, anchor="lm",
                   face=pages.FONT_REG)
         return
     if pages.device_present(status) is False:

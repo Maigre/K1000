@@ -9,7 +9,8 @@ line driver's feature set, as summarised in [`docs/01-approaches-review.md`](../
 §1. The M4 level figures are research from [`docs/05-m4-day.md`](../05-m4-day.md) §7, marked
 **(research)** below until they are measured on a unit. Where this chapter says which knob to
 turn, it is the panel described in [chapter 4](04-usage.md): balance, the sub/top delay and Lo-Cut
-on ALIGN (the delay and Lo-Cut unlocked with a B3 hold), the rest in SETUP.
+on ALIGN (the delay and Lo-Cut unlocked with a B2 hold), the rest in SETUP (by speaker floor:
+TOPS, SUBS, INPUT…).
 
 ## 1. What you need
 
@@ -20,7 +21,7 @@ on ALIGN (the delay and Lo-Cut unlocked with a B3 hold), the rest in SETUP.
   [`docs/05-m4-day.md`](../05-m4-day.md).
 - For the system EQ: a measurement mic, a laptop with REW or Open Sound Meter, and a way to get the
   mic into the laptop (a USB measurement mic, or the laptop's own interface). The laptop reaches
-  the box over the **K1000 Wi-Fi** with SETUP › Laptop access open (2 h,
+  the box over the **K1000 Wi-Fi** with SETUP › PHONE › Laptop access open (2 h,
   [chapter 4 §5.1](04-usage.md#51-laptop-access-and-the-tune-page)), or on a wired network
   (CamillaGUI only: the `/tune` page answers on the K1000 Wi-Fi alone).
 - The bypass kit, and ear protection for the noise.
@@ -31,9 +32,9 @@ The boxes are self-powered: any transient at their input goes straight to the dr
 
 **Power on:** speakers **off**, source quiet → M4 on the Pi's USB, its rear switch on → K1000 on.
 Wait for ● RUNNING and the MUTED band (or the ramp, if it was saved unmuted) → speakers **on** →
-hold B2 to unmute, master up.
+hold B4 to unmute, master up.
 
-**Power off:** hold B2 until MUTED (saved at once, so the next boot stays muted) → speakers **off**
+**Power off:** hold B4 until MUTED (saved at once, so the next boot stays muted) → speakers **off**
 → unplug K1000 and the M4.
 
 **Thump check, once per rig:** speakers on, source silent, cycle K1000's power and listen. Note
@@ -47,7 +48,7 @@ and the Meyer limiters stay idle at that level.
 
 | Stage | Set | Check |
 |---|---|---|
-| Source → M4 LINE IN 3/4 | A pro +4 dBu source (DJ mixer XLR master, console): input trim 0 dB. A consumer −10 dBV source: about +10 to +12 dB (SETUP › Input trim) | A loud track peaks around −12 to −6 dBFS on the capture side, never `IN CLIP`, the M4 input meters never red |
+| Source → M4 LINE IN 3/4 | A pro +4 dBu source (DJ mixer XLR master, console): input trim 0 dB. A consumer −10 dBV source: about +10 to +12 dB (SETUP › INPUT › Trim) | A loud track peaks around −12 to −6 dBFS on the capture side, never `IN CLIP`, the M4 input meters never red |
 | Too hot | `IN CLIP` lights, or the M4 input meters go red | The trim cannot help (it acts after the converter): inline −10 dB XLR pads, or the source turns down |
 | K1000 → speakers | Master (E1) | The M4 output meters, the box meter (green below −18 dBFS, yellow to −6, red above) |
 | The speakers | — | The Meyer limit LEDs stay dark at show level |
@@ -62,7 +63,8 @@ the M4 cannot overdrive a Meyer input. Check it with your rig.
 1. Pink noise from the source at −20 dBFS.
 2. Bring the master up to the loudest level the show will need, watching the Meyer limit LEDs.
    Stop below the point where they light. Note that master value: it is the show level.
-3. Output trims (SETUP › Trim Sub L … Top R) only to match boxes or sides, not to set the level.
+3. Output trims (SETUP › SUBS › Trim L/R, TOPS › Trim L/R) only to match boxes or sides, not to set
+   the level.
 
 **The ceiling for remote controls.**
 
@@ -91,7 +93,7 @@ says polarity reversal and/or delay may be needed.
 | Off-plane by 1.5 m or more | Delay the element **nearer** to the audience by distance ÷ 343 m/s: **2.9 ms per metre** | check (below) |
 
 Where the delay is: **ALIGN E3, DELAY**, one setting for either side (D-011), locked until a
-**B3 hold** unlocks it (30 s of idle locks it again). Clockwise from 0 delays the **subs** (subs
+**B2 hold** unlocks it (30 s of idle locks it again). Clockwise from 0 delays the **subs** (subs
 nearer the audience: `SUBS LATER`), anticlockwise from 0 delays the **tops** (tops nearer:
 `TOPS LATER`); up to 50 ms either way, and only the late side is delayed. 0.1 ms per click, push
 held = one sample (1/48 ms); after 2.5 s at rest the first click only wakes it. The screen shows
@@ -105,8 +107,9 @@ Delays are whole samples at 48 kHz.
 3. Look at the response from about 60 to 150 Hz, around the overlap (60–120 Hz per Meyer,
    [`docs/01`](../01-approaches-review.md) §0). You want the **fullest sum** around
    80–100 Hz.
-4. Flip SETUP › Sub polarity and compare. Keep the setting with the fuller sum. A deep, narrow dip
-   in the overlap with one setting usually means the other one is right.
+4. Flip SETUP › SUBS › Polarity (turn E2 to choose, push to set) and compare. Keep the setting with
+   the fuller sum. A deep, narrow dip in the overlap with one setting usually means the other one is
+   right.
 5. Fine-tune the delay with the push held, in single samples, for the fullest sum.
 
 A delay or polarity change dips that group briefly: K1000 mutes the group, writes the value, and
@@ -127,11 +130,11 @@ UPA-1P's 12″ so the tops limit later, and leaves the low end to the subs.
 | **160 Hz, 12 dB/oct** | Meyer's LD-2 line driver had a Mid-Hi Lo-Cut at exactly this: the historical practice for this pair |
 | **100 Hz** | K1000's default (on); the Sunday choice (D-010) |
 
-A/B it on program with the subs running: SETUP › Lo-Cut switches it on and off (two pushes; the
-phone's Lo-Cut switch, with a confirm, is handier while walking the room). ALIGN E4, unlocked with
-a B3 hold, moves the frequency (20–300 Hz, 2 Hz per click, push held = 1 Hz; a fast spin goes 8 Hz
-a click: 100 → 160 Hz is 30 clicks, or a few fast turns). "Off" parks it at 10 Hz, and SHOW shows
-the pill `LO-CUT OFF` until it is back on.
+A/B it on program with the subs running: SETUP › TOPS › Lo-Cut switches it on and off (turn E2 to
+choose, push to set; the phone's Lo-Cut switch, with a confirm, is handier while walking the room).
+ALIGN E4, unlocked with a B2 hold, moves the frequency (20–300 Hz, 2 Hz per click, push held = 1 Hz;
+a fast spin goes 8 Hz a click: 100 → 160 Hz is 30 clicks, or a few fast turns). "Off" parks it at
+10 Hz, and SHOW shows the pill `LO-CUT OFF` until it is back on.
 
 - Higher (toward 160 Hz): cleaner, louder tops before limiting; more of the 100–160 Hz region on the
   subs. Check the sum in the overlap again (§4).
@@ -154,8 +157,8 @@ The live EQ sits on top of it and never changes it.
 
 ### Measure
 
-1. The laptop and the box: SETUP › Laptop access, two pushes, then the laptop joins the **K1000**
-   Wi-Fi (the PHONE page prints the password while access is open). The box is `10.42.0.1`. On a
+1. The laptop and the box: SETUP › PHONE › Laptop access, two pushes, then the laptop joins the
+   **K1000** Wi-Fi (the PHONE page prints the password while access is open). The box is `10.42.0.1`. On a
    wired network instead (CamillaGUI only, no `/tune`): `k1000.local`, your router's list, or
    `ssh k1000 'hostname -I'`.
 2. The laptop's audio output into K1000's program input (M4 LINE IN 3/4), at a level that peaks
@@ -163,8 +166,8 @@ The live EQ sits on top of it and never changes it.
 3. The measurement mic into the laptop. Load its calibration file in REW or Open Sound Meter.
 4. Pink noise (Open Sound Meter, REW's RTA) or log sweeps (REW). Measure a few positions across the
    listening area and average them.
-5. Live EQ flat while you measure: SETUP › Reset live EQ, two pushes. (SETUP › Undo reset brings
-   it back within 5 minutes, unless a live-EQ gain has moved since.)
+5. Live EQ flat while you measure: SETUP › LIVE EQ › Reset live EQ, two pushes. (Undo reset, just
+   below it, brings it back within 5 minutes, unless a live-EQ gain has moved since.)
 
 ### Decide
 
@@ -199,7 +202,7 @@ like a phone, or accept the browser's warning once). It answers `403` while acce
    eight bands like a knob would: clamped, click-safe steps (about a second), saved at once.
 4. **Undo** puts back the system EQ the last Apply replaced (one level; it survives a k1000
    restart).
-5. Close Laptop access: one push on SETUP › Laptop access.
+5. Close Laptop access: one push on SETUP › PHONE › Laptop access.
 
 More: [`docs/06-phone.md`](../06-phone.md) §11.
 
@@ -233,10 +236,10 @@ adopt (a group fader, a fixed gain, a value out of range) is pulled back down in
 The live EQ: four bells (cut down to −20 dB, boost at most +6 dB) and two shelves, on top of the
 system EQ. A band at 0 dB is free and inaudible.
 
-**On SHOW, in 3 gestures: B4, E3 down, E4 up** (on another page: B1 hold first, then wait for the
-cyan PEAK, about 2 s, since the spectrum runs only while SHOW is on screen):
+**On SHOW, in 3 gestures: B3, E3 down, E4 up** (on ALIGN or SETUP: a B1 tap first, then wait for
+the cyan PEAK, about 2 s, since the spectrum runs only while SHOW is on screen):
 
-1. **B4**: the notch helper sets a free bell to Q 8.65 (1/6 octave) and, if the cyan PEAK pointer
+1. **B3**: the notch helper sets a free bell to Q 8.65 (1/6 octave) and, if the cyan PEAK pointer
    is up, to its frequency. The gain stays at 0 dB, so nothing is audible yet; the strip says
    `P3 · 2.44k · E3 TO CUT`. A PEAK within 1/6 octave of a bell already in use selects that bell
    instead.
@@ -252,11 +255,11 @@ that feeds back through a microphone in the program, not a room resonance, and i
 when you cut. Details and pictures: [chapter 4 §3.2](04-usage.md#32-notching-a-ring-in-3-gestures).
 
 **Phone:** long-press "notch here" on the graph, and slide onto the ring without lifting. Unlike
-B4, the phone's notch cuts at once (−6 dB, Q 8: `phone.notch_gain_db`, `phone.notch_q`)
+B3, the phone's notch cuts at once (−6 dB, Q 8: `phone.notch_gain_db`, `phone.notch_q`)
 ([`docs/06-phone.md`](../06-phone.md) §2).
 
-**Reset all live EQ:** SETUP › Reset live EQ, two pushes. **SETUP › Undo reset** puts it back
-exactly, for 5 minutes or until the next audible live-EQ edit. The phone's reset (with a confirm)
+**Reset all live EQ:** SETUP › LIVE EQ › Reset live EQ, two pushes. **Undo reset**, the next row,
+puts it back exactly, for 5 minutes or until the next audible live-EQ edit. The phone's reset (with a confirm)
 is the same reset: the box can undo it.
 
 Good practice:

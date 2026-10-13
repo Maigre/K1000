@@ -538,7 +538,8 @@ def test_knob_actions_emit_the_expected_ops(tmp_path: Path) -> None:
         assert sets_for(ops, "/filters/live_peq_2/parameters/gain") == [-0.5, -1.0]
         ops = await act(ctl.nudge, "live_peq.1.freq", 1)
         assert sets_for(ops, "/filters/live_peq_2/parameters/freq")[-1] == pytest.approx(1000 * 2 ** (1 / 12), abs=0.01)
-        # B3 Lo-Cut off: a frequency move to 10 Hz in click-safe steps, never a rebuild
+        # Lo-Cut off (SETUP > TOPS > Lo-Cut): a frequency move to 10 Hz in click-safe steps,
+        # never a rebuild
         ops = await act(ctl.toggle, "lowcut_on")
         freqs = sets_for(ops, "/filters/top_lowcut/parameters/freq")
         assert freqs[-1] == 10.0 and len(freqs) > 10
@@ -557,7 +558,7 @@ def test_knob_actions_emit_the_expected_ops(tmp_path: Path) -> None:
         ops = await act(ctl.toggle, "top_inverted")
         assert nomark(ops) == [("mute", 2, True), ("set", "/filters/top_trim/parameters/inverted", True),
                                ("mute", 2, False)]
-        # B4 reset live: smoothed back to flat
+        # SETUP > Reset live EQ: smoothed back to flat
         ops = await act(ctl.reset_live)
         assert sets_for(ops, "/filters/live_peq_2/parameters/gain")[-1] == 0.0
         assert cl.cfg["filters"]["live_peq_2"]["parameters"]["freq"] == 1000.0   # default again
@@ -707,7 +708,7 @@ def test_setup_actions_are_refused_unless_confirmed_or_muted(tmp_path: Path) -> 
         assert ctl.state.mono_subs is False and ctl.focus.hint == ctl_mod.HINT_CONFIRM_SETUP
         assert await ctl.settle(2.0)
         assert not any(e[0] == "config" for e in cl.log)
-        # confirmed (SETUP double push): Main muted around the upload, then back
+        # confirmed (SETUP choose + push since D-013): Main muted around the upload, then back
         n = len(cl.log)
         assert ctl.toggle("mono_subs", confirmed=True)
         assert await ctl.settle(5.0)
@@ -1022,45 +1023,55 @@ def _push_twice(ctl: Controller) -> None:
 
 
 def test_knob_and_button_events_through_input_map(tmp_path: Path) -> None:
-    """The v1 show, gesture by gesture (D-009): SHOW -> ALIGN -> SETUP and home."""
+    """The v1 show, gesture by gesture (D-009, buttons D-013: B1 PAGE tap/hold, B2 BAND/UNLOCK,
+    B3 NOTCH, B4 MUTE): SHOW <-> ALIGN on a B1 tap, SETUP on a B1 hold, and home."""
     async def body() -> None:
         ctl, cl = make(tmp_path, State(master_db=-20.0), playing=True)
         await boot(ctl)
         assert ctl.page == "SHOW"
         ctl.handle_event(_enc_ev(0, 1))                               # E1 = master
         assert ctl.state.master_db == -19.5
-        ctl.handle_event(_sw_ev(5, "short"))                          # B2 short: hint only
-        assert ctl.focus.hint is not None and "B2" in ctl.focus.hint
+        ctl.handle_event(_sw_ev(7, "short"))                          # B4 short: hint only
+        assert ctl.focus.hint == "HOLD B4 TO MUTE / UNMUTE"
         assert ctl.state.muted is False
-        ctl.handle_event(_sw_ev(5, "long"))                           # B2 long: mute
+        ctl.handle_event(_sw_ev(7, "long"))                           # B4 long: mute
         assert ctl.state.muted is True
         await until(lambda: cl.faders[0]["mute"] is True, what="mute reaches the engine")
-        ctl.handle_event(_sw_ev(5, "long"))                           # B2 long again: unmute
+        ctl.handle_event(_sw_ev(7, "long"))                           # B4 long again: unmute
         await until(lambda: cl.faders[0]["mute"] is False, what="unmute")
-        ctl.handle_event(_sw_ev(6, "short"))                          # B3: next band P1 -> P2
+        ctl.handle_event(_sw_ev(5, "short"))                          # B2: next band P1 -> P2
         assert ctl.focus.slot == 1 and ctl.focus.editing_now() == "slot"
+        assert ctl.state.muted is False                               # B2 is not the mute any more
+        ctl.handle_event(_sw_ev(5, "long"))                           # B2 hold on SHOW: nothing
+        assert ctl.focus.slot == 1 and ctl.state.muted is False and ctl.page == "SHOW"
         ctl.handle_event(_enc_ev(2, -2))                              # E3 = gain of PEQ 2
         assert ctl.state.live_peq[1].gain == -1.0
-        ctl.handle_event(_sw_ev(7, "long"))                           # B4 hold: never a reset
+        ctl.handle_event(_sw_ev(6, "long"))                           # B3 hold: never a reset
         assert ctl.state.live_peq[1].gain == -1.0 and "SETUP" in (ctl.focus.hint_now() or "")
-        ctl.handle_event(_sw_ev(4, "press"))                          # B1: ALIGN
+        ctl.handle_event(_sw_ev(4, "press"))                          # B1 press: nothing yet
+        assert ctl.page == "SHOW"
+        ctl.handle_event(_sw_ev(4, "short"))                          # B1 tap: ALIGN
         assert ctl.page == "ALIGN"
         hz = ctl.state.lowcut_hz
         ctl.handle_event(_enc_ev(3, 2))                               # E4 locked: hint only
-        assert ctl.state.lowcut_hz == hz and ctl.focus.hint_now() == "LOCKED · HOLD B3 TO EDIT"
-        ctl.handle_event(_sw_ev(6, "long"))                           # B3 hold: unlock
+        assert ctl.state.lowcut_hz == hz and ctl.focus.hint_now() == "LOCKED · HOLD B2 TO EDIT"
+        ctl.handle_event(_sw_ev(6, "long"))                           # B3 hold on ALIGN: no unlock
+        assert ctl.snapshot()[2].align_locked is True
+        ctl.handle_event(_sw_ev(5, "long"))                           # B2 hold: unlock
         assert ctl.snapshot()[2].align_locked is False
         ctl.handle_event(_enc_ev(3, 2))
         assert ctl.state.lowcut_hz > hz
-        ctl.handle_event(_sw_ev(4, "press"))                          # B1: SETUP (relocks ALIGN)
+        ctl.handle_event(_sw_ev(4, "press"))
+        ctl.handle_event(_sw_ev(4, "long"))                           # B1 hold: SETUP (relocks ALIGN)
+        ctl.handle_event(_sw_ev(4, "release"))
         assert ctl.page == "SETUP" and ctl.snapshot()[2].align_locked is True
         _setup_to(ctl, "lowcut_on")
         ctl.handle_event(_sw_ev(0, "press"))
-        ctl.handle_event(_sw_ev(0, "short"))                          # first push: arms only
-        assert ctl.state.lowcut_on is True and "AGAIN" in (ctl.focus.hint_now() or "")
+        ctl.handle_event(_sw_ev(0, "short"))                          # first push: chooses OFF only
+        assert ctl.state.lowcut_on is True and ctl.focus.pick_now() == ("lowcut_on", False)
         ctl.handle_event(_sw_ev(0, "press"))
         ctl.handle_event(_sw_ev(0, "short"))                          # second push: Lo-Cut off
-        assert ctl.state.lowcut_on is False
+        assert ctl.state.lowcut_on is False and ctl.focus.pick_now() is None
         assert ctl.focus.hint_now() == "LO-CUT OFF" and ctl.focus.editing_now() == "lowcut_on"
         _setup_to(ctl, "reset_live")
         _push_twice(ctl)                                              # confirmed reset
@@ -1071,10 +1082,19 @@ def test_knob_and_button_events_through_input_map(tmp_path: Path) -> None:
         ctl.handle_event(_sw_ev(0, "press"))
         ctl.handle_event(_sw_ev(0, "short"))                          # one push: undone
         assert ctl.state.live_peq[1].gain == -1.0 and ctl.focus.hint_now() == ctl_mod.HINT_LIVE_RESTORED
-        ctl.handle_event(_sw_ev(4, "press"))                          # B1 press: SETUP -> SHOW
-        ctl.handle_event(_sw_ev(4, "press"))                          # -> ALIGN
-        ctl.handle_event(_sw_ev(4, "long"))                           # B1 hold: home
+        ctl.handle_event(_sw_ev(4, "press"))                          # B1 press on SETUP: nothing
+        assert ctl.page == "SETUP"
+        ctl.handle_event(_sw_ev(4, "short"))                          # B1 tap: SETUP -> SHOW
         assert ctl.page == "SHOW"
+        ctl.handle_event(_sw_ev(4, "short"))                          # -> ALIGN
+        ctl.handle_event(_sw_ev(4, "short"))                          # -> SHOW (never SETUP)
+        assert ctl.page == "SHOW"
+        ctl.handle_event(_sw_ev(4, "short"))                          # -> ALIGN
+        ctl.handle_event(_sw_ev(4, "long"))                           # B1 hold from ALIGN: SETUP
+        assert ctl.page == "SETUP"
+        ctl.handle_event(_sw_ev(4, "long"))                           # B1 hold on SETUP: home
+        assert ctl.page == "SHOW"
+        assert ctl.state.muted is False                               # no B1 gesture ever muted
         assert await ctl.settle(5.0)
         assert cl.cfg["filters"]["live_peq_2"]["parameters"]["gain"] == -1.0
         await ctl.stop()
@@ -1211,7 +1231,7 @@ def test_input_loop_feeds_knob_events_and_survives_bad_ones(tmp_path: Path) -> N
         ctl, cl = make(tmp_path, State(master_db=-20.0), playing=True)
         await boot(ctl)
         now = time.monotonic()
-        evs = [EncoderEvent(0, 2, now), object(), SwitchEvent(5, "long", now + 0.01)]
+        evs = [EncoderEvent(0, 2, now), object(), SwitchEvent(7, "long", now + 0.01)]   # B4 long
         await asyncio.wait_for(main_mod.input_loop(ctl, FakeControls(evs)), 2.0)
         assert ctl.state.master_db == -19.0 and ctl.state.muted is True
         await ctl.stop()
@@ -1805,17 +1825,23 @@ def test_notch_helper_without_a_peak_or_a_free_band(tmp_path: Path) -> None:
     run(body())
 
 
-def test_notch_helper_from_b4_on_show(tmp_path: Path) -> None:
+def test_notch_helper_from_b3_on_show(tmp_path: Path) -> None:
+    """D-013: the notch helper is B3 (sw6), no longer B4 (sw7, now the mute)."""
     async def body() -> None:
         ctl, _ = make(tmp_path, State(), playing=True)
         await boot(ctl)
         ctl.set_spectrum(_Frame(125.0), "live")
-        ctl.handle_event(SwitchEvent(7, "short", time.monotonic()))
+        freq = ctl.state.live_peq[0].freq
+        ctl.handle_event(SwitchEvent(7, "short", time.monotonic()))   # B4 tap: the mute's hint
+        assert ctl.state.live_peq[0].freq == freq
+        assert ctl.focus.hint_now() == "HOLD B4 TO MUTE / UNMUTE"
+        ctl.handle_event(SwitchEvent(6, "short", time.monotonic()))   # B3 tap: the notch
         assert ctl.state.live_peq[0].freq == 125.0 and ctl.state.live_peq[0].gain == 0.0
         ctl.goto_page("ALIGN")
         ctl.set_spectrum(_Frame(4000.0), "live")
-        ctl.handle_event(SwitchEvent(7, "short", time.monotonic()))   # off SHOW: hint only
-        assert ctl.state.live_peq[0].freq == 125.0 and "SHOW" in (ctl.focus.hint_now() or "")
+        ctl.handle_event(SwitchEvent(6, "short", time.monotonic()))   # off SHOW: hint only
+        assert ctl.state.live_peq[0].freq == 125.0
+        assert ctl.focus.hint_now() == "B3: NOTCH HELPER ON SHOW"
         await ctl.stop()
 
     run(body())
@@ -1863,9 +1889,9 @@ def test_reset_live_keeps_a_one_level_undo(tmp_path: Path) -> None:
 
 
 def test_reset_undo_survives_inaudible_edits_and_says_when_it_is_lost(tmp_path: Path) -> None:
-    """LAS-4 / UX-2: B4 right after a mistaken reset (the reflex to find the ring again) moves a
-    free bell's Q/freq at 0 dB: inaudible, so the undo that brings the notches back stays. The
-    first audible edit (a cut) ends it, and the screen says so."""
+    """LAS-4 / UX-2: B3 (the notch) right after a mistaken reset (the reflex to find the ring
+    again) moves a free bell's Q/freq at 0 dB: inaudible, so the undo that brings the notches back
+    stays. The first audible edit (a cut) ends it, and the screen says so."""
     async def body() -> None:
         st = State()
         st.live_peq[1].freq, st.live_peq[1].gain, st.live_peq[1].q = 2520.0, -6.5, 8.0
@@ -1877,7 +1903,7 @@ def test_reset_undo_survives_inaudible_edits_and_says_when_it_is_lost(tmp_path: 
         want = ctl_mod._live_dict(ctl.state)
         ctl.reset_live()
         assert ctl.focus.hint_now() == ctl_mod.HINT_LIVE_RESET
-        # B4 on SHOW: no peak -> P1's Q (inaudible); then with a peak -> P1 at the peak
+        # B3 on SHOW: no peak -> P1's Q (inaudible); then with a peak -> P1 at the peak
         ctl.focus.slot = 0
         assert ctl.notch_helper() == 0 and ctl.state.live_peq[0].gain == 0.0
         assert ctl.undo_left() == pytest.approx(300.0)
@@ -1967,7 +1993,7 @@ def test_align_lock_relocks_when_leaving_and_after_idle(tmp_path: Path) -> None:
         ctl, _ = make(tmp_path, State(sub_delay_ms=1.0), playing=True)
         await boot(ctl)
         ctl.goto_page("ALIGN")
-        ctl.handle_event(SwitchEvent(6, "long", time.monotonic()))
+        ctl.handle_event(SwitchEvent(5, "long", time.monotonic()))   # B2 hold (D-013): unlock
         snap = ctl.snapshot()[2]
         assert snap.align_locked is False and 29.0 < snap.align_unlock_s <= 30.0
         ctl.goto_page("SHOW")
@@ -1975,7 +2001,7 @@ def test_align_lock_relocks_when_leaving_and_after_idle(tmp_path: Path) -> None:
         assert ctl.snapshot()[2].align_locked is True             # leaving ALIGN relocked
         ctl.handle_event(EncoderEvent(2, 3, time.monotonic()))
         assert ctl.state.sub_delay_ms == 1.0
-        ctl.handle_event(SwitchEvent(6, "long", time.monotonic()))
+        ctl.handle_event(SwitchEvent(5, "long", time.monotonic()))
         ctl.focus.unlock_until = time.monotonic() - 0.01          # 30 s of idle went by
         ctl.handle_event(EncoderEvent(2, 3, time.monotonic()))
         assert ctl.state.sub_delay_ms == 1.0 and ctl.snapshot()[2].align_locked is True
@@ -2244,6 +2270,8 @@ def test_main_wiring_of_the_spectrum_and_the_v1_console(tmp_path: Path, monkeypa
 
     f = Focus(unlock_until=10.4)
     assert _next_wake(f, 10.0) == pytest.approx(0.41)            # the EDIT pill's end redraws
+    assert _next_wake(Focus(pick="mono_subs", pick_value=True, pick_until=10.3), 10.0) == \
+        pytest.approx(0.31)                                       # a lapsing SETUP choice too (D-013)
     made: list[tuple[str, dict[str, Any]]] = []
 
     class OwnClient:
@@ -2789,9 +2817,9 @@ def _band(ctl: Controller) -> str:
     return pages._mute_hint(pages._Ctx(focus, time.monotonic()), st, status)[1]
 
 
-def test_b2_during_a_held_boot_ramp_keeps_main_muted(tmp_path: Path) -> None:
+def test_b4_during_a_held_boot_ramp_keeps_main_muted(tmp_path: Path) -> None:
     """Engine not processing yet, K1000 holds Main muted before its ramp: the screen says Main
-    comes in by itself and B2 keeps it muted; B2 long then MUTES (the ramp is cancelled into a
+    comes in by itself and B4 keeps it muted; B4 long then MUTES (the ramp is cancelled into a
     held mute), it never sends an unmute into an engine that is not running."""
     async def body() -> None:
         ctl, cl = make(tmp_path, State(master_db=-10.0))
@@ -2802,7 +2830,7 @@ def test_b2_during_a_held_boot_ramp_keeps_main_muted(tmp_path: Path) -> None:
         assert _band(ctl).startswith("RAMPS IN BY ITSELF")
         assert ctl.b2_muted() is False
         n = len(cl.log)
-        ctl.handle_event(SwitchEvent(5, "long", time.monotonic()))
+        ctl.handle_event(SwitchEvent(7, "long", time.monotonic()))   # B4 long
         assert ctl.state.muted is True
         await asyncio.sleep(0.05)
         assert ("mute", 0, False) not in cl.log[n:]
@@ -2811,7 +2839,7 @@ def test_b2_during_a_held_boot_ramp_keeps_main_muted(tmp_path: Path) -> None:
         await until(lambda: ctl.engine_ready and not ctl.ramping, what="ramp finished")
         assert ("mute", 0, False) not in cl.log
         assert cl.faders[0]["mute"] is True and ctl.displayed_muted()
-        assert _band(ctl) == "READY · hold B2 to unmute"
+        assert _band(ctl) == "READY · hold B4 to unmute"
         await ctl.stop()
 
     run(body())
@@ -2921,7 +2949,7 @@ def test_low_priority_notes_are_not_alerts(tmp_path: Path) -> None:
 
 
 def test_edits_toward_silence_are_saved_at_once(tmp_path: Path) -> None:
-    """A power cut right after B2 (or after pulling the master down) must not boot the PA back
+    """A power cut right after B4 (or after pulling the master down) must not boot the PA back
     unmuted / louder: those edits skip the debounce. Raising the level keeps it."""
     async def body() -> None:
         ctl, cl = make(tmp_path, State(master_db=-10.0), playing=True,
@@ -3185,7 +3213,7 @@ def test_knobs_are_retried_until_they_answer_and_offline_is_shown(tmp_path: Path
         assert ctl_mod.MSG_KNOBS_OFFLINE in seen and calls[:3] == [False, True, True]
         await until(lambda: ctl.status.knobs_ok is True, what="knobs ok")
         assert ctl.status.message == ""
-        fc.queue.put_nowait(SwitchEvent(5, "long", time.monotonic()))      # B2 works
+        fc.queue.put_nowait(SwitchEvent(7, "long", time.monotonic()))      # B4 works
         await until(lambda: ctl.state.muted is True, what="mute from the knobs")
         fc.queue.put_nowait(None)                       # the event stream fails: reopened
         await until(lambda: fc.closed and len(calls) >= 4, what="reopen")
@@ -3354,14 +3382,14 @@ def test_console_injects_knob_events_and_highlights_nudges(tmp_path: Path,
         await run_command(ctl, "nudge master_db 1", stop)
         assert ctl.focus.editing_now() == "master_db"
         await run_command(ctl, "page SHOW", stop)
-        await run_command(ctl, "ev sw 6 short", stop)               # B3 on SHOW: next band x2
-        await run_command(ctl, "ev sw 6 short", stop)
-        assert ctl.focus.slot == 2
+        await run_command(ctl, "ev sw 5 short", stop)               # B2 on SHOW: next band x2
+        await run_command(ctl, "ev sw 5 short", stop)
+        assert ctl.focus.slot == 2 and ctl.state.muted is False
         await run_command(ctl, "ev sw 3 press", stop)               # E4 push held = FINE
         assert ctl.focus.held == {3}
-        await run_command(ctl, "ev sw 5 long", stop)                # B2 long
+        await run_command(ctl, "ev sw 7 long", stop)                # B4 long
         assert ctl.state.muted is True
-        await run_command(ctl, "ev sw 5 sideways", stop)
+        await run_command(ctl, "ev sw 7 sideways", stop)
         out = [l for l in capsys.readouterr().out.splitlines() if l.startswith("@")]
         assert out[-1].startswith("@err") and all(l.startswith("@ok") for l in out[:-1])
         await ctl.stop()
@@ -3532,8 +3560,8 @@ def test_signed_delay_through_the_knobs_lock_and_wake_unchanged(tmp_path: Path) 
         await boot(ctl)
         ctl.goto_page("ALIGN")
         ctl.handle_event(_enc_ev(2, -1))                                 # locked: hint only
-        assert ctl.state.sub_delay_ms == 0.1 and ctl.focus.hint_now() == "LOCKED · HOLD B3 TO EDIT"
-        ctl.handle_event(_sw_ev(6, "long"))                              # B3 hold: unlock
+        assert ctl.state.sub_delay_ms == 0.1 and ctl.focus.hint_now() == "LOCKED · HOLD B2 TO EDIT"
+        ctl.handle_event(_sw_ev(5, "long"))                              # B2 hold: unlock
         assert ctl.focus.hint_now() == "DELAY + LO-CUT UNLOCKED"
         ctl.handle_event(_enc_ev(2, -1))                                 # the wake-up detent
         assert ctl.state.sub_delay_ms == 0.1 and ctl.focus.hint_now() == "DELAY · TURN AGAIN TO CHANGE"
@@ -3545,7 +3573,7 @@ def test_signed_delay_through_the_knobs_lock_and_wake_unchanged(tmp_path: Path) 
             assert await ctl.settle(3.0)
             assert len(_config_writes(cl.log[n:])) == 1
         assert _engine_delays(cl) == (0.0, dc.delay_on_grid(0.2))
-        ctl.handle_event(_sw_ev(6, "short"))                             # B3 tap: locked again
+        ctl.handle_event(_sw_ev(5, "short"))                             # B2 tap: locked again
         ctl.handle_event(_enc_ev(2, 1))
         assert ctl.state.top_delay_ms == 0.2
         await ctl.stop()
@@ -3583,3 +3611,324 @@ def test_knob_tags_reach_the_screen_status(tmp_path: Path, caplog: Any) -> None:
     with caplog.at_level("WARNING"):
         run(body())
     assert "knob_tags 'neon'" in caplog.text
+
+
+# ======================================================================= D-013: SETUP choose-then-set
+def _m4_ctl(tmp_path: Path, **kw: Any) -> Controller:
+    """A Controller on the m4 profile (no audition mixer), not started: enough for SETUP rules."""
+    return Controller(FakeClient(None), load_profile("m4", {}, probe=False), State(),
+                      Paths(tmp_path / "s.json", tmp_path / "a.yml"), **kw)
+
+
+def _push(ctl: Controller, n: int = 0) -> None:
+    """E1 (n=0) or E2 (n=1) push, released without a turn: a SETUP 'select'."""
+    ctl.handle_event(_sw_ev(n, "press"))
+    ctl.handle_event(_sw_ev(n, "short"))
+
+
+def test_setup_readonly_names_what_cannot_change_here(tmp_path: Path) -> None:
+    """Controller.setup_readonly(): Profile while k1000.yaml pins it, Audition off the dev
+    profile, Spectrum while k1000.yaml disables it; refreshed into Focus.readonly by every
+    snapshot and every knob event."""
+    ctl, _ = make(tmp_path / "a", State())
+    assert ctl.setup_readonly() == {} and ctl.snapshot()[3].readonly == {}
+    pinned, _ = make(tmp_path / "b", State(), profile_choice=ProfileChoice("dev", "settings"))
+    assert pinned.setup_readonly() == {"profile": ctl_mod.HINT_PINNED}
+    assert ctl_mod.HINT_PINNED == "PROFILE PINNED IN k1000.yaml"
+    off, _ = make(tmp_path / "c", State(), settings={"spectrum": {"enabled": False}})
+    assert off.setup_readonly() == {"spectrum_on": ctl_mod.HINT_SPECTRUM_DISABLED}
+    assert _m4_ctl(tmp_path / "d").setup_readonly() == {
+        "dev_audition": ctl_mod.HINT_AUDITION_DEV_ONLY}
+    assert ctl_mod.HINT_AUDITION_DEV_ONLY == "AUDITION: DEV PROFILE ONLY"
+    gig = _m4_ctl(tmp_path / "e", settings={"spectrum": {"enabled": False}},
+                  profile_choice=ProfileChoice("m4", "settings"))
+    want = {"profile": ctl_mod.HINT_PINNED, "dev_audition": ctl_mod.HINT_AUDITION_DEV_ONLY,
+            "spectrum_on": ctl_mod.HINT_SPECTRUM_DISABLED}
+    assert gig.setup_readonly() == want
+    assert gig.snapshot()[3].readonly == want
+    gig.focus.readonly = {}
+    gig.handle_event(_enc_ev(0, 1))                       # any knob event refreshes it
+    assert gig.focus.readonly == want
+
+
+def test_set_choice_rebuild_field_goes_under_a_main_mute_and_says_no_change(tmp_path: Path) -> None:
+    """SetChoice -> Controller.set_choice: a rebuild field (Mono, Audition) rebuilds as the old
+    confirmed toggle did (Main muted around the upload); a value already held changes nothing
+    and says so; only a field's own choices are ever set."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-10.0), playing=True)
+        await boot(ctl)
+        n = len(cl.log)
+        assert ctl.set_choice("mono_subs", True) is True
+        assert await ctl.settle(5.0)
+        ops = nomark(cl.log[n:])
+        assert [e[0] for e in ops] == ["mute", "config", "mute"]
+        assert ops[0] == ("mute", 0, True) and ops[2] == ("mute", 0, False)
+        assert len(ops[1][1]["mixers"]["split"]["mapping"][0]["sources"]) == 2
+        assert ctl.state.mono_subs is True and cl.faders[MARKER_FADER]["volume"] == MARKER_DB
+        n = len(cl.log)
+        assert ctl.set_choice("mono_subs", True) is False             # already set: nothing
+        assert ctl.focus.hint_now() == ctl_mod.HINT_NO_CHANGE == "NO CHANGE: ALREADY SET"
+        n2 = len(cl.log)
+        assert ctl.set_choice("dev_audition", "subs") is True
+        assert await ctl.settle(5.0)
+        assert [e[0] for e in nomark(cl.log[n2:])] == ["mute", "config", "mute"]
+        assert ctl.state.dev_audition == "subs"
+        # bools are coerced; anything that is not one of the field's choices is refused
+        assert ctl.set_choice("top_inverted", 1) is True and ctl.state.top_inverted is True
+        assert ctl.set_choice("dev_audition", "both") is False and ctl.state.dev_audition == "subs"
+        assert ctl.set_choice("profile", "nope") is False and ctl.state.profile == "dev"
+        assert ctl.set_choice("master_db", 0.0) is False and ctl.state.master_db == -10.0
+        assert await ctl.settle(5.0)
+        assert [e for e in cl.log[n:n2] if e[0] == "config"] == []
+        await ctl.stop()
+        saved = json.loads((tmp_path / "state.json").read_text())
+        assert saved["mono_subs"] is True and saved["dev_audition"] == "subs"
+
+    run(body())
+
+
+def test_set_choice_profile_refused_while_pinned(tmp_path: Path) -> None:
+    """k1000.yaml pins the profile: neither set_choice nor the knobs (E2 turn, push) switch it;
+    each says why and nothing is chosen."""
+    from k1000.ui import input_map as im
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(), playing=True,
+                       profile_choice=ProfileChoice("dev", "settings"))
+        await boot(ctl)
+        n = len(cl.log)
+        assert ctl.set_choice("profile", "m4") is False
+        assert ctl.focus.hint_now() == ctl_mod.HINT_PINNED and ctl.state.profile == "dev"
+        ctl.goto_page("SETUP")
+        _setup_to(ctl, "profile")
+        ctl.focus.hint = None
+        ctl.handle_event(_enc_ev(1, 1))                               # E2: no choice, the reason
+        assert ctl.focus.hint_now() == ctl_mod.HINT_PINNED and ctl.focus.pick_now() is None
+        ctl.focus.hint = None
+        _push(ctl)                                                    # push: the same
+        assert ctl.focus.hint_now() == ctl_mod.HINT_PINNED and ctl.focus.pick_now() is None
+        assert ctl.state.profile == "dev" and im.SETUP_ITEMS[ctl.focus.item].field == "profile"
+        assert await ctl.settle(3.0)
+        assert not any(e[0] == "config" for e in cl.log[n:])
+        await ctl.stop()
+
+    run(body())
+
+
+def test_set_choice_audition_refused_off_the_dev_profile(tmp_path: Path) -> None:
+    """The m4 profile has no audition mixer: Audition (dev) cannot be set there, by set_choice
+    or by the knobs."""
+    ctl = _m4_ctl(tmp_path)
+    assert ctl.set_choice("dev_audition", "tops") is False
+    assert ctl.focus.hint_now() == ctl_mod.HINT_AUDITION_DEV_ONLY
+    assert ctl.state.dev_audition == "sum"
+    ctl.goto_page("SETUP")
+    _setup_to(ctl, "dev_audition")
+    ctl.focus.hint = None
+    ctl.handle_event(_enc_ev(1, 1))
+    assert ctl.focus.hint_now() == ctl_mod.HINT_AUDITION_DEV_ONLY and ctl.focus.pick_now() is None
+    ctl.focus.hint = None
+    _push(ctl, 1)
+    assert ctl.focus.hint_now() == ctl_mod.HINT_AUDITION_DEV_ONLY and ctl.focus.pick_now() is None
+    assert ctl.state.dev_audition == "sum"
+
+
+def test_set_choice_spectrum_refused_when_disabled_and_said_when_set(tmp_path: Path) -> None:
+    async def body() -> None:
+        off, _ = make(tmp_path / "off", State(), playing=True,
+                      settings={"spectrum": {"enabled": False}})
+        await boot(off)
+        assert off.set_choice("spectrum_on", False) is False
+        assert off.focus.hint_now() == ctl_mod.HINT_SPECTRUM_DISABLED
+        assert off.state.spectrum_on is True                         # untouched
+        off.goto_page("SETUP")
+        _setup_to(off, "spectrum_on")
+        off.focus.hint = None
+        off.handle_event(_enc_ev(1, -1))
+        assert off.focus.hint_now() == ctl_mod.HINT_SPECTRUM_DISABLED and off.focus.pick_now() is None
+        await off.stop()
+        ctl, _ = make(tmp_path / "on", State(), playing=True)
+        await boot(ctl)
+        assert ctl.set_choice("spectrum_on", False) is True
+        assert ctl.focus.hint_now() == "SPECTRUM OFF" and ctl.spectrum_wanted() is False
+        assert ctl.set_choice("spectrum_on", True) is True
+        assert ctl.focus.hint_now() == "SPECTRUM ON" and ctl.state.spectrum_on is True
+        await ctl.stop()
+
+    run(body())
+
+
+def test_set_choice_lo_cut_goes_through_set_lowcut(tmp_path: Path) -> None:
+    """Lo-Cut is not a plain state write: set_choice hands it to set_lowcut (the frequency
+    parked at 10 Hz in click-safe steps, never a rebuild; said on the screen)."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        calls: list[bool] = []
+        real = ctl.set_lowcut
+
+        def spy(on: bool) -> bool:
+            calls.append(on)
+            return real(on)
+        ctl.set_lowcut = spy                                          # type: ignore[method-assign]
+        n = len(cl.log)
+        assert ctl.set_choice("lowcut_on", False) is True
+        assert calls == [False] and ctl.state.lowcut_on is False
+        assert ctl.focus.hint_now() == "LO-CUT OFF" and ctl.focus.editing_now() == "lowcut_on"
+        assert await ctl.settle(5.0)
+        freqs = sets_for(cl.log[n:], LOWCUT_PTR)
+        assert freqs[-1] == 10.0 and len(freqs) > 10
+        assert not any(e[0] == "config" for e in cl.log[n:])
+        assert ctl.set_choice("lowcut_on", 0) is False and calls == [False]   # already off
+        assert ctl.focus.hint_now() == ctl_mod.HINT_NO_CHANGE
+        assert ctl.set_choice("lowcut_on", True) is True and calls == [False, True]
+        assert ctl.focus.hint_now().startswith("LO-CUT ON")
+        await ctl.stop()
+
+    run(body())
+
+
+def test_a_choice_the_phone_made_meanwhile_is_no_change(tmp_path: Path) -> None:
+    """E2 chose Lo-Cut OFF, a phone switched it off before the push: the push changes nothing
+    and says so (never a flip back ON, never a second Lo-Cut move)."""
+    from k1000.web.server import PhoneBridge
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        ctl.goto_page("SETUP")
+        _setup_to(ctl, "lowcut_on")
+        ctl.handle_event(_enc_ev(1, 1))                               # E2: chooses OFF
+        assert ctl.focus.pick_now() == ("lowcut_on", False) and ctl.state.lowcut_on is True
+        assert PhoneBridge(ctl).apply({"t": "set", "f": "lowcut_on", "v": False})[:2] == (True, False)
+        assert await ctl.settle(5.0)
+        n = len(cl.log)
+        _push(ctl)                                                    # the push comes late
+        assert ctl.state.lowcut_on is False and ctl.focus.pick_now() is None
+        assert ctl.focus.hint_now() == ctl_mod.HINT_NO_CHANGE
+        assert await ctl.settle(3.0)
+        assert cl.log[n:] == []
+        await ctl.stop()
+
+    run(body())
+
+
+def test_knobs_choose_then_push_through_the_controller(tmp_path: Path) -> None:
+    """End to end on SETUP (handle_event hands map_event the State): E2 chooses from the value
+    the state holds, the row waits, a push sets it. Mono L+R: off -> ON; Audition: SUM -> TOPS
+    with one turn event, however many detents it carries."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-10.0), playing=True)
+        await boot(ctl)
+        ctl.goto_page("SETUP")
+        _setup_to(ctl, "mono_subs")
+        n = len(cl.log)
+        ctl.handle_event(_enc_ev(1, 1))                               # E2: choose ON
+        assert ctl.focus.pick_now() == ("mono_subs", True) and ctl.state.mono_subs is False
+        assert await ctl.settle(3.0)
+        assert not any(e[0] == "config" for e in cl.log[n:])         # a turn alone never rebuilds
+        _push(ctl)                                                    # E1 push: set
+        assert ctl.state.mono_subs is True and ctl.focus.pick_now() is None
+        assert ctl.focus.editing_now() == "mono_subs"
+        assert await ctl.settle(5.0)
+        assert [e[0] for e in nomark(cl.log[n:])] == ["mute", "config", "mute"]
+        ctl.handle_event(_enc_ev(1, 1))                               # now from ON: chooses off
+        assert ctl.focus.pick_now() == ("mono_subs", False)
+        ctl.handle_event(_enc_ev(1, -1))                              # back on the value held
+        assert ctl.focus.pick_now() is None
+        _setup_to(ctl, "dev_audition")
+        ctl.handle_event(_enc_ev(1, 3))                               # one event: one choice
+        assert ctl.focus.pick_now() == ("dev_audition", "tops") and ctl.state.dev_audition == "sum"
+        n = len(cl.log)
+        _push(ctl, 1)                                                 # E2 push: set
+        assert ctl.state.dev_audition == "tops" and ctl.focus.pick_now() is None
+        assert await ctl.settle(5.0)
+        assert [e[0] for e in nomark(cl.log[n:])] == ["mute", "config", "mute"]
+        assert cl.cfg["mixers"]["output"]["mapping"][0]["sources"][0]["channel"] == 2
+        await ctl.stop()
+
+    run(body())
+
+
+def test_a_page_change_drops_a_pending_choice(tmp_path: Path) -> None:
+    """goto_page clears a chosen-but-not-set value: after a trip away (B1 tap to SHOW, hold back
+    to SETUP) the next push proposes again, it never sets a stale choice."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        ctl.goto_page("SETUP")
+        _setup_to(ctl, "mono_subs")
+        ctl.handle_event(_enc_ev(1, 1))
+        assert ctl.focus.pick_now() == ("mono_subs", True)
+        ctl.goto_page("SETUP")                                        # same page: kept
+        assert ctl.focus.pick_now() == ("mono_subs", True)
+        ctl.handle_event(_sw_ev(4, "press"))
+        ctl.handle_event(_sw_ev(4, "short"))                          # B1 tap: SHOW
+        assert ctl.page == "SHOW" and ctl.focus.pick_now() is None
+        ctl.handle_event(_sw_ev(4, "press"))
+        ctl.handle_event(_sw_ev(4, "long"))                           # B1 hold: SETUP again
+        assert ctl.page == "SETUP" and ctl.focus.pick_now() is None
+        _push(ctl)                                                    # proposes, does not set
+        assert ctl.focus.pick_now() == ("mono_subs", True) and ctl.state.mono_subs is False
+        ctl.goto_page("PHONE")
+        assert ctl.focus.pick_now() is None and ctl.state.mono_subs is False
+        assert await ctl.settle(3.0)
+        assert not any(e[0] == "config" for e in cl.log)
+        await ctl.stop()
+
+    run(body())
+
+
+def test_auto_home_waits_for_a_pending_choice(tmp_path: Path) -> None:
+    async def body() -> None:
+        ctl, _ = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        clk = _Clock()
+        ctl._ui_clock = clk
+        ctl.goto_page("SETUP")
+        ctl.focus.pick, ctl.focus.pick_value, ctl.focus.pick_until = "mono_subs", True, clk.t + 100.0
+        clk.t += 61.0
+        ctl.ui_tick(clk.t)
+        assert ctl.page == "SETUP" and ctl.focus.pick_now(clk.t) == ("mono_subs", True)
+        clk.t += 40.0                                                 # the choice lapsed
+        ctl.ui_tick(clk.t)
+        assert ctl.page == "SHOW" and ctl.focus.pick is None
+        assert ctl.state.mono_subs is False
+        await ctl.stop()
+
+    run(body())
+
+
+def test_next_page_follows_the_b1_tap(tmp_path: Path) -> None:
+    """Controller.next_page (console `page next`, NextPage) is a B1 tap (input_map.B1_TAP):
+    SHOW <-> ALIGN, SETUP -> SHOW, PHONE -> SETUP, anything else home; never SETUP from
+    SHOW/ALIGN (a hold away)."""
+    from k1000.ui import input_map as im
+    ctl, _ = make(tmp_path, State())
+    for start, want in (("SHOW", "ALIGN"), ("ALIGN", "SHOW"), ("SETUP", "SHOW"),
+                        ("PHONE", "SETUP"), ("HWTEST", "SHOW")):
+        ctl.goto_page(start)
+        assert ctl.next_page() == want == ctl.page, start
+        assert want == im.B1_TAP.get(start, im.HOME_PAGE)
+    ctl.goto_page("SHOW")
+    ctl.handle_action(im.NextPage())
+    assert ctl.page == "ALIGN"
+    ctl.handle_action(im.NextPage())
+    assert ctl.page == "SHOW"
+
+
+def test_set_choice_only_takes_setup_choice_rows(tmp_path: Path) -> None:
+    """set_choice is the SETUP rows' path only (D-013 review): never `muted` (set_mute's, with its
+    immediate engine mute and seen-generation guard), nor a number or an action."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        before = ctl.state.to_dict()
+        for field, value in (("muted", True), ("muted", False), ("master_db", -3.0),
+                             ("out_trim_db.0", 2.0), ("reset_live", True)):
+            assert ctl.set_choice(field, value) is False, field
+        assert ctl.state.to_dict() == before
+        assert ctl.set_choice("sub_inverted", True) is True and ctl.state.sub_inverted is True
+
+    run(body())

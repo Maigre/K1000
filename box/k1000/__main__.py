@@ -6,7 +6,7 @@ Wiring only; the behaviour lives in `control.Controller`. What this file guarant
 - It starts whatever is there and keeps trying for the rest: no screen yet (the panel's fbtft
   probe can lose the boot race) -> retried every HW_RETRY_S; knobs that do not answer (loose
   ribbon, an I2C glitch at boot) -> retried every HW_RETRY_S, and the screen says KNOBS OFFLINE
-  meanwhile (B2 mute does nothing then); no engine -> ENGINE DOWN until it appears. Nothing here
+  meanwhile (B4 mute does nothing then); no engine -> ENGINE DOWN until it appears. Nothing here
   may stop the controller from running, and the audio never waits for the UI.
 - It never mutes on the way out. SIGTERM/SIGINT persist the state and leave the engine exactly as
   it is: audio must survive a k1000 restart (docs/03 §2 "Audio never depends on the UI").
@@ -165,9 +165,10 @@ def _stop_frame(fb: Any) -> None:
 
 def _next_wake(focus: Any, now: float) -> float:
     """Seconds until the next frame that would differ without any change: a hint, an edit
-    highlight, a SETUP confirm or the ALIGN unlock expiring (+10 ms), capped at RENDER_IDLE_S."""
+    highlight, a SETUP confirm or choice or the ALIGN unlock expiring (+10 ms), capped at
+    RENDER_IDLE_S."""
     out = RENDER_IDLE_S
-    for attr in ("hint_until", "edit_until", "confirm_until", "unlock_until"):
+    for attr in ("hint_until", "edit_until", "confirm_until", "pick_until", "unlock_until"):
         t = getattr(focus, attr, 0.0)
         if isinstance(t, (int, float)) and t > now:
             out = min(out, t - now + 0.01)
@@ -590,7 +591,7 @@ async def run(args: argparse.Namespace) -> int:
         await _cancel([lap_task] if lap_task is not None else [])
     if phone is not None:
         await phone.stop()       # phones are told (1001) first; bounded to 1 s (TimeoutStopSec=5)
-    # The screen keeps showing (and B2 keeps muting) while stop() lets a ramp/guard in flight
+    # The screen keeps showing (and B4 keeps muting) while stop() lets a ramp/guard in flight
     # finish: a frozen 'MUTED' while the PA ramps up would say the opposite of the truth.
     await ctl.stop()
     await _cancel(ui)

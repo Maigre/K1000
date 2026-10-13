@@ -41,6 +41,14 @@
 > **2 Hz a click** (1 Hz fine, on that grid) instead of 1/12 octave (§3's table). The E1–E4 tags
 > are **dim grey** by default (k1000.yaml `ui.knob_tags`: dim, off, bright); this spec's cyan tags
 > are the `bright` style. Hints: `DELAY + LO-CUT UNLOCKED` / `LOCKED`, `DELAY · TURN AGAIN TO CHANGE`.
+>
+> **Superseded by D-013** (2026-10-13, Thomas at the bench) for the buttons and SETUP, in the note
+> above and in the spec below: **B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE**. A B1 tap flips
+> SHOW ↔ ALIGN (from SETUP: SHOW), a B1 hold opens SETUP. Band select and the ALIGN unlock move from
+> B3 to B2 (`LOCKED · HOLD B2 TO EDIT`), the notch helper from B4 to B3, the mute (long press only)
+> from B2 to B4. SETUP is grouped by speaker floor (TOPS, SUBS, INPUT, LIVE EQ, PHONE, BOX; E3 jumps
+> a group); every ON/off or choice is chosen with E2 (the row shows `now → chosen`) and set by a
+> push, so Lo-Cut on/off has no double push. Details: `DECISIONS.md` D-013, `docs/manual/04-usage.md`.
 
 2026-10-12 evening, answering Thomas's notes on the v0 panel. Status: **design and prototype,
 nothing wired** (superseded by the note above). The engine and panel figures were measured on the

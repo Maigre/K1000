@@ -137,7 +137,7 @@ it. It starts on profile `dev` with the default knob map. Then:
 
 1. **Profile.** For the PA: `profile: m4` (the MOTU M4). See [chapter 3](03-configuration.md) and
    [`docs/05-m4-day.md`](../05-m4-day.md) for the first M4 bring-up.
-2. **Knob map.** SETUP › Knob test, then `controls:` ([chapter 3](03-configuration.md#5-controls)).
+2. **Knob map.** SETUP › BOX › Knob test, then `controls:` ([chapter 3](03-configuration.md#5-controls)).
    On a second card, copy the main card's file instead.
 3. **The phone certificate**, if you use the phone page:
 
@@ -297,7 +297,7 @@ in [chapter 7](07-maintenance.md#updating) with `--start`.
 
 ## 10. After the install
 
-- SETUP › Knob test and `controls:` ([chapter 3](03-configuration.md#5-controls)).
+- SETUP › BOX › Knob test and `controls:` ([chapter 3](03-configuration.md#5-controls)).
 - The M4 bring-up: [`docs/05-m4-day.md`](../05-m4-day.md).
 - The phone, if used: [`docs/06-phone.md`](../06-phone.md).
 - A soak test before the first show ([chapter 7](07-maintenance.md#soak-test)).

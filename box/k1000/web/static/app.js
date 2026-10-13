@@ -136,7 +136,7 @@
     if (link === "ok") link = "nolink";
     flushCancel();
     if (drag && drag.wait) notchDone(false, null, "Link lost: the notch was not set");
-    if (mutePend) muteDone(false, null, "Link lost: use B2 on the box");
+    if (mutePend) muteDone(false, null, "Link lost: use B4 on the box");
     render();
   }
 
@@ -640,7 +640,7 @@
   }
 
   // MUTE: the intent is fixed when the finger goes down (see the header). What a hold means is
-  // the box's call (S.hold, B2's rule): while K1000 itself holds Main muted on its way in (boot
+  // the box's call (S.hold, B4's rule): while K1000 itself holds Main muted on its way in (boot
   // ramp, setup guard), a hold KEEPS it muted, it never unmutes.
   function holdUnmutes() { return !!S && (S.hold ? S.hold === "unmute" : S.muted === true); }
   holdButton($("#mute"), () => {
@@ -653,8 +653,8 @@
   function sendMute(want, seq) {
     const msg = { t: "mute", on: want, id: "mute" };
     if (!want) msg.seq = seq;
-    if (!send(msg, true)) { toast("Not connected: use B2 on the box", 3000); buzz([30, 60, 30, 60, 30]); return; }
-    mutePend = { want, timer: setTimeout(() => muteDone(false, null, "No answer from K1000: use B2 on the box"), ACK_MS) };
+    if (!send(msg, true)) { toast("Not connected: use B4 on the box", 3000); buzz([30, 60, 30, 60, 30]); return; }
+    mutePend = { want, timer: setTimeout(() => muteDone(false, null, "No answer from K1000: use B4 on the box"), ACK_MS) };
     render();
   }
   function muteDone(ok, v, why) {

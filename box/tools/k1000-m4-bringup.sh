@@ -378,7 +378,7 @@ else:
 ctl = cfg.get("controls") if isinstance(cfg.get("controls"), dict) else {}
 if all(ctl.get(k, v) == v for k, v in DEFAULT_CONTROLS.items()):
     say("WARN", "controls: still the defaults (encoders [0,1,2,3], buttons [4,5,6,7]): UNCONFIRMED "
-                "unless SETUP > Knob test proved them. Hold-B2 = MUTE depends on it (README: Knobs and buttons)")
+                "unless SETUP > Knob test proved them. Hold-B4 = MUTE depends on it (README: Knobs and buttons)")
 else:
     say("INFO", f"controls: {ctl} (set by hand)")
 act = read(active_path)

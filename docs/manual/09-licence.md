@@ -27,7 +27,7 @@ on the box for D-008.
 | PyYAML | MIT | Settings and engine configs |
 | smbus2 | MIT | The knob board (I²C) |
 | Pillow | HPND | Drawing the screen |
-| qrcode (Python) | BSD | The QR codes on SETUP › Phone |
+| qrcode (Python) | BSD | The QR codes on SETUP › PHONE › Phone |
 | python3-libgpiod | LGPL-2.1-or-later | The knob board's interrupt lines |
 | DejaVu fonts | Bitstream Vera licence (a free font licence; Debian's `fonts-dejavu-core`) | The screen's fonts, used from the system |
 

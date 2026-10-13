@@ -2,7 +2,8 @@
 
 How to run a show with K1000: the panel, the three pages, the mute, the phone, the end of the
 night and the bypass. This chapter follows the code as built (UI v1, decision D-009 in
-[`DECISIONS.md`](../../DECISIONS.md)). The pictures are drawn by that code (`docs/ui/`).
+[`DECISIONS.md`](../../DECISIONS.md); the buttons and SETUP, D-013). The pictures are drawn by that
+code (`docs/ui/`).
 
 Two printed pages go in the case: the [quick start](../13-quick-start.md) for someone who has
 never seen the box, and the [operator card](../04-operator-card.md) for the operator. Print them
@@ -15,9 +16,10 @@ message means is in [chapter 6](06-troubleshooting.md).
 
 **Controls.** Four push-encoders **E1–E4** and four buttons **B1–B4**. The screen draws each
 knob's value at its corner: **E1 top-left, E2 bottom-left, E3 top-right, E4 bottom-right**. Which
-physical knob and button is which is set once with SETUP › Knob test ([§5.4](#54-knob-test)) and
-the `controls:` map ([chapter 3](03-configuration.md#5-controls)). Label the buttons on the
-shell: **B1 PAGE · B2 MUTE · B3 BAND/UNLOCK · B4 NOTCH**, and the knobs **E1–E4**: Thomas's box
+physical knob and button is which is set once with SETUP › BOX › Knob test
+([§5.4](#54-knob-test)) and the `controls:` map ([chapter 3](03-configuration.md#5-controls)).
+Label the buttons on the
+shell: **B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE**, and the knobs **E1–E4**: Thomas's box
 draws no `E1`…`E4` tag on the screen (`knob_tags: off` in k1000.yaml's `ui:` section). `dim` puts a
 small grey tag by each label (the built-in default, as in the pictures), `bright` a cyan one
 ([chapter 3 §5](03-configuration.md#5-controls)).
@@ -44,17 +46,18 @@ small grey tag by each label (the built-in default, as in the pictures), `bright
 warning. Blue = a passing state (`RAMPING IN`). Cyan = the spectrum PEAK (and the knob tags when
 `ui.knob_tags` is `bright`).
 
-**Pages.** A B1 tap steps **SHOW → ALIGN → SETUP** and back to SHOW. **B1 hold = SHOW** from
-any page (on the Knob test, any hold but B2 goes back to SETUP first). ALIGN and SETUP go back to
-SHOW by themselves after 60 s without a knob or button event (not while a SETUP confirm is
-pending). PHONE and the Knob test open from SETUP and stay until you leave them.
+**Pages.** A B1 tap flips **SHOW ↔ ALIGN**. **A B1 hold opens SETUP** (from SHOW or ALIGN);
+from SETUP, a B1 tap or hold goes back to SHOW. ALIGN and SETUP go back to SHOW by themselves
+after 60 s without a knob or button event (not while a SETUP choice or confirm is pending). PHONE
+and the Knob test open from SETUP and stay until you leave them: on PHONE a B1 tap goes back to
+SETUP and a hold to SHOW; on the Knob test any hold but B4 goes back to SETUP.
 
 | Button | SHOW | ALIGN | SETUP |
 |---|---|---|---|
-| B1 | tap: next page · hold: SHOW | the same | the same |
-| B2 | **hold: mute / unmute** (a tap only shows a hint) | the same | the same, also on PHONE and the Knob test |
-| B3 | tap: next band | **hold: unlock E3/E4** · tap: lock again | hint only |
-| B4 | tap: **notch helper** · hold: hint only | hint only | hint only |
+| B1 | tap: ALIGN · hold: SETUP | tap: SHOW · hold: SETUP | tap or hold: SHOW |
+| B2 | tap: next band | **hold: unlock E3/E4** · tap: lock again | hint only |
+| B3 | tap: **notch helper** · hold: hint only | hint only | hint only |
+| B4 | **hold: mute / unmute** (a tap only shows a hint) | the same | the same, also on PHONE and the Knob test |
 
 ## 2. Power on to sound
 
@@ -62,20 +65,20 @@ pending). PHONE and the Knob test open from SETUP and stay until you leave them.
 2. The M4 on the Pi's USB, its rear power switch on.
 3. Power K1000. About 10 s later the screen shows SHOW and the engine `RUNNING`.
 4. What comes next depends on how the box was switched off:
-   - **Saved muted** (the normal end of a night): the MUTED band says `READY · hold B2 to unmute`.
+   - **Saved muted** (the normal end of a night): the MUTED band says `READY · hold B4 to unmute`.
      Nothing plays until you unmute.
    - **Saved unmuted**: the status bar shows the blue `RAMPING IN` and the band says
-     `RAMPS IN BY ITSELF · hold B2 to keep muted`. The engine always starts muted at −40 dB;
+     `RAMPS IN BY ITSELF · hold B4 to keep muted`. The engine always starts muted at −40 dB;
      K1000 fades it to the saved master over about 3 s, and only once audio really flows. At
      power-on the ramp starts before the screen and the knobs are up (on the author's box: the ramp
      from 8.9 s after the kernel starts, the knobs at 10.1 s, the saved level by about 12 s), so the
-     band shows for a second or two at most and the box is often already live when you look. A B2
+     band shows for a second or two at most and the box is often already live when you look. A B4
      hold then mutes it, as on any unmuted box.
    - `NO AUDIO FLOWING · HELD MUTED`: the engine is not processing yet (the M4, its USB, its
      power). K1000 waits, with no timeout.
 5. **Speakers on**, with the source still quiet.
-6. Saved muted: hold B2 to unmute, then E1 up to the show level. Saved unmuted (no MUTED band): it
-   already plays at the saved master, so do **not** hold B2 (that mutes); bring the source up.
+6. Saved muted: hold B4 to unmute, then E1 up to the show level. Saved unmuted (no MUTED band): it
+   already plays at the saved master, so do **not** hold B4 (that mutes); bring the source up.
 
 ![Muted and waiting: READY](../ui/muted.png) ![Ramping in by itself](../ui/muted_ramp_hold.png)
 
@@ -94,8 +97,8 @@ Everything a show needs: the master, the live EQ, the meter and the spectrum.
 | E2 **FREQ** | Frequency of the selected band | 1/12 octave, speeds up | 1/48 octave |
 | E3 **GAIN** | Gain of the selected band: bells −20 … +6 dB, shelves −12 … +6 dB | 0.5 dB | — |
 | E4 **Q** | Width of the selected band (shelves: `SLOPE`) | Q × 1.12 (1/6 octave) | Q × 1.03 (1/24 octave) |
-| B3 tap | Next band: **LS → 1 → 2 → 3 → 4 → HS**, then LS again | | |
-| B4 tap | The notch helper ([§3.2](#32-notching-a-ring-in-3-gestures)) | | |
+| B2 tap | Next band: **LS → 1 → 2 → 3 → 4 → HS**, then LS again | | |
+| B3 tap | The notch helper ([§3.2](#32-notching-a-ring-in-3-gestures)) | | |
 
 Under the Q value, the width in octaves (`8.65` = `1/6 oct`). The E3 label names the band
 (`PEQ 2 GAIN`, `LO SHELF GAIN`).
@@ -117,8 +120,8 @@ Master, balance and the mute move with a 0.1 s fade.
   (`L`, `1`–`4`, `H`), on a scale labelled +6 to −12 dB. The system EQ is not drawn.
 - **Behind it, the program spectrum**: what comes **in** (the program inputs, before any EQ), in
   1/24-octave bands, about 10 times a second. It runs only while SHOW is on screen and
-  SETUP › Spectrum is ON. It shows the program, not the room: a ring that feeds back through a
-  microphone in the program shows up; a room mode does not.
+  SETUP › LIVE EQ › Spectrum is ON. It shows the program, not the room: a ring that feeds back
+  through a microphone in the program shows up; a room mode does not.
 - **PEAK**: a small cyan pointer with its frequency (`▼ 2.43k`). It marks a narrow band standing
   10 dB above the median of the octave on either side, for 1.5 s, between 40 Hz and 16 kHz.
   **Never on silence**: the peak band must reach −80 dBFS and the program −60 dBFS RMS
@@ -126,15 +129,15 @@ Master, balance and the mute move with a 0.1 s fade.
   the same. And since it is read before the EQ, cutting the ring does not make it go.
 - After an engine start, the spectrum comes back by itself within a few seconds.
 - A grey **`NO SPECTRUM`** means the engine refuses to give one. The sound is not affected:
-  switch SETUP › Spectrum OFF. With Spectrum OFF, SHOW draws the curve alone.
+  switch SETUP › LIVE EQ › Spectrum off. With Spectrum off, SHOW draws the curve alone.
 
 ![Spectrum off: the curve alone](../ui/show_flat_spectrum_off.png)
 
 ### 3.2 Notching a ring in 3 gestures
 
-**B4, E3 down, E4 up.**
+**B3, E3 down, E4 up.**
 
-1. **B4** (tap). The notch helper takes a **free bell** (P1–P4 at exactly 0 dB: the selected band
+1. **B3** (tap). The notch helper takes a **free bell** (P1–P4 at exactly 0 dB: the selected band
    if it is free, else the first free one; never a shelf). It sets its Q to **8.65 (1/6 octave)**
    and, if a PEAK is shown, its frequency to the PEAK. **The gain stays at 0 dB**, so nothing is
    audible yet. The band is selected, GAIN is highlighted, and the strip says
@@ -143,15 +146,15 @@ Master, balance and the mute move with a 0.1 s fade.
 3. **E4 up**: narrower. 6 clicks take Q from 8.65 to 16, the maximum. To centre it, E2 with its
    push held (1/48 octave per click).
 
-| Case | What B4 does |
+| Case | What B3 does |
 |---|---|
 | The PEAK sits within 1/6 octave of a bell **already in use** | Selects that bell and changes nothing (cut it deeper with E3) |
 | No PEAK (nothing on the spectrum, or Spectrum OFF) | Sets the free bell up at its own frequency: `P2 · 1.00k · NO PEAK · E3 TO CUT`. **Cut first, then sweep**: E3 down (about −6 dB; at 0 dB the bell is inaudible wherever it sits), then E2 until the ring drops (250 Hz → 2.5 kHz is about 40 clicks), then E4 up to narrow |
-| `NO FREE BAND` | All four bells are in use. Reuse one (B3 to select it), or reset the live EQ in SETUP |
+| `NO FREE BAND` | All four bells are in use. Reuse one (B2 to select it), or reset the live EQ in SETUP |
 
-A B4 **hold** on SHOW only says `RESET LIVE EQ: IN SETUP`. Nothing on SHOW resets the live EQ.
+A B3 **hold** on SHOW only says `RESET LIVE EQ: IN SETUP`. Nothing on SHOW resets the live EQ.
 
-![After B4: P3 moved to the PEAK, gain still 0 dB](../ui/show_notch.png) ![B4 on a PEAK already cut: that bell is selected](../ui/show_notch_reselect.png)
+![After B3: P3 moved to the PEAK, gain still 0 dB](../ui/show_notch.png) ![B3 on a PEAK already cut: that bell is selected](../ui/show_notch_reselect.png)
 
 Cut narrow and only as deep as needed; several small notches beat one huge one. More in
 [chapter 5 §8](05-tuning.md#8-live-notching-at-the-show).
@@ -163,10 +166,10 @@ hint nor the MUTED band covers them:
 
 | Pill | Colour | Means |
 |---|---|---|
-| `LAPTOP OPEN 1:59` | orange | SETUP › Laptop access is open (hours:minutes left) |
+| `LAPTOP OPEN 1:59` | orange | SETUP › PHONE › Laptop access is open (hours:minutes left) |
 | `LO-CUT OFF` | orange | The tops' Lo-Cut is off |
 | `POL INV SUB`, `POL INV TOP`, `POL INV SUB+TOP` | orange | A polarity is inverted |
-| `MONO SUB` | grey | Mono subs is on |
+| `MONO SUB` | grey | SETUP › SUBS › Mono L+R is on |
 | `AUDITION TOPS`, `AUDITION SUBS` | grey | The bench profile plays one group only |
 
 When they do not fit, they fold into a `+N` pill, grey ones first. Spectrum OFF has no pill.
@@ -206,11 +209,11 @@ The system settings you set before the doors and leave alone: balance, the sub/t
 | E3 **DELAY** | Which side is late, and by how much: clockwise from 0 the **subs**, anticlockwise the **tops**, up to 50 ms either way. The size big, the side and the distance under it (`SUBS LATER · 0.81 m`, `TOPS LATER · 0.43 m`, `ALIGNED`) | 0.1 ms | 1 sample (1/48 ms) |
 | E4 **LO-CUT** | The tops' high-pass, 12 dB/oct, 20 … 300 Hz | 2 Hz, speeds up (8 Hz on a fast spin) | 1 Hz |
 
-**E3 and E4 are locked.** A turn shows `LOCKED · HOLD B3 TO EDIT` and changes nothing.
+**E3 and E4 are locked.** A turn shows `LOCKED · HOLD B2 TO EDIT` and changes nothing.
 
-- **Hold B3**: unlocked (`DELAY + LO-CUT UNLOCKED`). An amber `EDIT 0:30` badge counts down.
+- **Hold B2**: unlocked (`DELAY + LO-CUT UNLOCKED`). An amber `EDIT 0:30` badge counts down.
 - Any knob or button on ALIGN renews it, so **30 s without input locks again**.
-- **A B3 tap** locks at once (`DELAY + LO-CUT LOCKED`). Leaving ALIGN locks too.
+- **A B2 tap** locks at once (`DELAY + LO-CUT LOCKED`). Leaving ALIGN locks too.
 
 ![A locked turn](../ui/align_locked_turn.png) ![Unlocked: EDIT 0:28](../ui/align_unlocked.png)
 
@@ -228,66 +231,108 @@ zero): K1000 mutes the group around the write so it does not click. Do alignment
 between two steps (112.25 Hz) stays until the first click, which lands on the next step in that
 direction (114 up, 112 down).
 
-**Lo-Cut off**: E4 reads `OFF` with `on/off in SETUP`. Switching it is SETUP › Lo-Cut.
+**Lo-Cut off**: E4 reads `OFF` with `on/off in SETUP`. Switching it is SETUP › TOPS › Lo-Cut.
 
 Why ALIGN is not the front page: a wrong-knob turn on a delay or a Lo-Cut during a show is worse
 than no turn at all. The lock makes it a deliberate act. How to set these: [chapter 5](05-tuning.md).
 
 ## 5. SETUP
 
+What is set once per rig, grouped by speaker floor (D-013). **Hold B1** on SHOW or ALIGN to open
+it; a B1 tap (or hold) goes back to SHOW.
+
 ![SETUP](../ui/setup.png)
 
-**E1 turn** picks the item (the counter says `13/19`). **E2 turn** changes a number. **E1 or E2
-push** selects: it flips a switch, runs an action or opens a page. Items marked **×2** need a
-second push within 5 s; the first push puts `PUSH AGAIN` on the row and a hint in the footer.
-Moving to another item, or leaving the page, drops it. E2 turned on an item that is not a number
-says `PUSH TO CHANGE`.
+**The list.** Six groups, each under a header row: **TOPS**, **SUBS**, **INPUT**, **LIVE EQ**,
+**PHONE**, **BOX**. The top line says where you are (`TOPS 3/4`), a scroll bar at the right edge
+shows where in the list, and the bottom line says what the knobs do on the selected row
+(`turn = change`, `turn = choose · push = set`, `push = open`, `push = run`, `push ×2 = run`,
+`fixed here`).
 
-| Item | How | Does |
+| Knob | On SETUP |
+|---|---|
+| E1 turn | The item, one per click (headers are skipped; it stops at both ends) |
+| E3 turn | The group: forward = the next group's first item; back = this group's first item, then the group before |
+| E2 turn | A number: changes it. An ON/off or a choice: **chooses** it (below) |
+| E1 or E2 push | Sets what E2 chose, opens a page, or runs an action |
+
+**Choose, then set.** Every ON/off and every choice (both polarities, Lo-Cut, Mono L+R, Low-pass,
+Spectrum, Profile, Audition) takes two gestures, and the value is always on screen:
+
+1. **Turn E2 to choose.** One choice per turn, wrapping round. The row turns red and shows
+   **now → chosen** (`off → ON`, `SUM → TOPS`); the footer says what the push will do
+   (`PUSH TO SET ON`), plus `· MAY CLICK` when it rebuilds the pipeline (Mono L+R, Profile,
+   Audition). Turning back to the current value chooses nothing.
+2. **Push E1 or E2 to set it.** Nothing changes before this push.
+
+A push with nothing chosen proposes the next value (the row shows it) and a second push sets it,
+so push, push works too, with the target in sight in between. A choice waits 8 s (each turn renews
+it); E1, E3 or leaving the page drops it, and the page does not go home while one waits. If a phone
+set that value meanwhile, the push says `NO CHANGE: ALREADY SET`.
+
+![SUBS › Mono L+R chosen, waiting for the push](../ui/setup_confirm.png) ![BOX › Audition: SUM → TOPS chosen](../ui/setup_pick_audition.png)
+
+**Actions marked ×2** (Reset live EQ, opening Laptop access) need a second push within 5 s; the
+first push puts `PUSH AGAIN` on the row and a hint in the footer
+(`PUSH AGAIN TO RESET ALL LIVE EQ`). Moving to another item, or leaving the page, drops it.
+
+**Read-only rows** are dimmed, and the bottom line says `fixed here`. A turn or a push only says
+why:
+
+| Row | Shows | Why |
 |---|---|---|
-| Input trim | E2 | −24 … +12 dB, 0.5 dB. Acts after the converter: it cannot fix `IN CLIP` |
-| Sub polarity, Top polarity | push | `normal` / `INVERTED`. The group dips briefly. Pill `POL INV …` |
-| Sub low-pass | push | On/off: a 12 dB/oct low-pass on the subs |
-| Sub LP freq | E2 | 40 … 250 Hz, 1/12 octave |
-| Trim Sub L, Trim Sub R, Trim Top L, Trim Top R | E2 | −24 … +6 dB: to match boxes or sides, not to set the level |
-| Mono subs | push ×2 | Both subs get L+R. **Keep it ON with one cable to both subs** (OUT3, D-012): OFF puts the left channel alone on them. Rebuilds the pipeline: `PUSH AGAIN TO APPLY (MAY CLICK)`, then the blue `APPLYING SETUP…` with Main muted around it |
-| Audition (dev) | push ×2 | Bench profile only: `SUM`, `TOPS`, `SUBS` on the two bench outputs. Rebuilds the pipeline |
-| Profile | push ×2 | `DEV` / `M4`. Refused while `k1000.yaml` pins it (`PROFILE PINNED IN k1000.yaml`). About 1 s of silence, then the ramp |
-| **Reset live EQ** | push ×2 | `PUSH AGAIN TO RESET ALL LIVE EQ`, then the four bells and both shelves go flat, smoothly: `LIVE EQ RESET · UNDO IN SETUP` (`LIVE EQ ALREADY FLAT` if there was nothing to reset) |
-| **Undo reset** | push | Puts back exactly the live EQ the last reset flattened: `LIVE EQ RESTORED`. The row counts down (`UNDO 4:47`); `—` and greyed when there is nothing to undo (`NOTHING TO UNDO`) |
-| **Lo-Cut** | push ×2 | `PUSH AGAIN TO SWITCH THE LO-CUT`, then `LO-CUT ON · 112 Hz` or `LO-CUT OFF`. Off parks the filter at 10 Hz (no pipeline change). Pill `LO-CUT OFF` |
-| **Spectrum** | push | `ON` / `OFF`, saved. `DISABLED` when `spectrum: enabled: false` in `k1000.yaml` (`SPECTRUM OFF IN k1000.yaml`) |
-| **Laptop access** | push ×2 to open, push to close | CamillaGUI, SSH and the `/tune` page from a laptop on the K1000 Wi-Fi, for 2 h ([§5.1](#51-laptop-access-and-the-tune-page)) |
-| Phone | push | Opens the PHONE page ([§5.3](#53-the-phone-page)) |
-| Knob test | push | Opens the Knob test ([§5.4](#54-knob-test)) |
+| BOX › Profile | `DEV · PINNED` | `k1000.yaml` names the profile: `PROFILE PINNED IN k1000.yaml` |
+| BOX › Audition (dev) | `—` | Not the bench profile: `AUDITION: DEV PROFILE ONLY` |
+| LIVE EQ › Spectrum | `DISABLED` | `spectrum: enabled: false` in `k1000.yaml`: `SPECTRUM OFF IN k1000.yaml` |
+
+![BOX › Profile pinned](../ui/setup_profile_pinned.png)
+
+| Group › item | How | Does |
+|---|---|---|
+| TOPS › Trim L, Trim R | E2 | −24 … +6 dB: to match boxes or sides, not to set the level |
+| TOPS › Polarity | choose, push | `normal` / `INVERTED`. The tops dip briefly. Pill `POL INV TOP` |
+| TOPS › **Lo-Cut** | choose, push | The tops' high-pass on or off (`ON · 100 Hz` / `off · 100 Hz`; the frequency is ALIGN E4): `LO-CUT ON · 100 Hz` or `LO-CUT OFF`. Off parks the filter at 10 Hz (no pipeline change). Pill `LO-CUT OFF` |
+| SUBS › Trim L, Trim R | E2 | As the tops' trims |
+| SUBS › Polarity | choose, push | `normal` / `INVERTED`. The subs dip briefly. Pill `POL INV SUB` |
+| SUBS › Mono L+R | choose, push | Both subs get L+R. **Keep it ON with one cable to both subs** (OUT3, D-012): OFF puts the left channel alone on them. Rebuilds the pipeline (`PUSH TO SET ON · MAY CLICK`), then the blue `APPLYING SETUP…` with Main muted around it |
+| SUBS › Low-pass | choose, push | A 12 dB/oct low-pass on the subs, on or off |
+| SUBS › Low-pass freq | E2 | 40 … 250 Hz, 1/12 octave |
+| INPUT › Trim | E2 | −24 … +12 dB, 0.5 dB. Acts after the converter: it cannot fix `IN CLIP` |
+| LIVE EQ › **Reset live EQ** | push ×2 | `PUSH AGAIN TO RESET ALL LIVE EQ`, then the four bells and both shelves go flat, smoothly: `LIVE EQ RESET · UNDO IN SETUP` (`LIVE EQ ALREADY FLAT` if there was nothing to reset) |
+| LIVE EQ › **Undo reset** | push | Puts back exactly the live EQ the last reset flattened: `LIVE EQ RESTORED`. The row counts down (`UNDO 4:47`); `—` and greyed when there is nothing to undo (`NOTHING TO UNDO`) |
+| LIVE EQ › **Spectrum** | choose, push | `ON` / `off`, saved. Read-only `DISABLED` when `spectrum: enabled: false` in `k1000.yaml` |
+| PHONE › Phone | push | Opens the PHONE page ([§5.3](#53-the-phone-page)) |
+| PHONE › **Laptop access** | push ×2 to open, push to close | CamillaGUI, SSH and the `/tune` page from a laptop on the K1000 Wi-Fi, for 2 h ([§5.1](#51-laptop-access-and-the-tune-page)) |
+| BOX › Profile | choose, push | `DEV` / `M4`. Read-only while `k1000.yaml` pins it. About 1 s of silence, then the ramp |
+| BOX › Audition (dev) | choose, push | Bench profile only: `SUM`, `TOPS`, `SUBS` on the two bench outputs. Rebuilds the pipeline |
+| BOX › Knob test | push | Opens the Knob test ([§5.4](#54-knob-test)) |
 
 **The undo** keeps one level, for **5 minutes, or until the next audible live-EQ edit**: a gain
 moved off 0 dB on any band, from the knobs, the phone or CamillaGUI. That edit ends it and says
-`RESET UNDO LOST`. Inaudible moves (B4, a frequency or Q turned on a flat band) keep it. The phone's
+`RESET UNDO LOST`. Inaudible moves (B3, a frequency or Q turned on a flat band) keep it. The phone's
 reset is the same reset: the box can undo it.
 
 ![Reset: the confirm](../ui/setup_reset_confirm.png) ![Undo available for 4:47](../ui/setup_undo.png)
 
-During a show, SETUP is for Reset live EQ and Undo reset only. Polarity, delays, trims, mono subs
-and the profile belong before the doors.
+During a show, SETUP is for Reset live EQ and Undo reset only. Polarity, trims, Mono L+R and the
+profile belong before the doors.
 
 ### 5.1 Laptop access and the tune page
 
 At the rig the laptop reaches the box over the **K1000 Wi-Fi**. A fence normally keeps CamillaGUI
 and SSH away from that Wi-Fi; Laptop access opens exactly those two, for a while.
 
-1. SETUP › Laptop access, **push twice** (`PUSH AGAIN: LAPTOP ACCESS FOR 2 H`). The row reads
-   `OPENING…`, then `OPEN 2:00` counting down (hours:minutes); SHOW shows the pill
-   `LAPTOP OPEN 1:59`; the hint says
-   `LAPTOP OPEN 2 H · GUI :5005 · SSH`.
-2. SETUP › Phone: while access is open, the PHONE page prints the Wi-Fi password on every step (a
-   laptop cannot scan the QR). Join **K1000** with it.
+1. SETUP › PHONE › Laptop access, **push twice** (`PUSH AGAIN: LAPTOP ACCESS FOR 2 H`). The row
+   reads `OPENING…`, then `OPEN 2:00` counting down (hours:minutes); SHOW shows the pill
+   `LAPTOP OPEN 1:59`; the hint says `LAPTOP OPEN 2 H · GUI :5005 · SSH`.
+2. SETUP › PHONE › Phone: while access is open, the PHONE page prints the Wi-Fi password on every
+   step (a laptop cannot scan the QR). Join **K1000** with it.
 3. On the laptop:
    - the tune page: `https://10.42.0.1/tune` (it needs the K1000 CA like a phone, or accept the
      browser's warning once);
    - CamillaGUI: `http://10.42.0.1:5005/gui/index.html` (press *Fetch from DSP* before editing);
    - SSH: `ssh k1000@10.42.0.1`.
-4. Done: **one push** on SETUP › Laptop access (`LAPTOP ACCESS CLOSED`).
+4. Done: **one push** on SETUP › PHONE › Laptop access (`LAPTOP ACCESS CLOSED`).
 
 It also closes by itself after **2 hours** (`LAPTOP ACCESS CLOSED (2 H)`), when the k1000
 service stops or starts again, and at every boot. Closing refuses new connections at once; an open
@@ -312,9 +357,14 @@ eight system bands, **Apply** (with a confirm; click-safe, saved at once), and *
 
 ### 5.2 Hints on SETUP
 
-The footer carries the hints and, when muted, the MUTED strip. The confirm hints:
-`PUSH AGAIN TO APPLY (MAY CLICK)`, `PUSH AGAIN TO RESET ALL LIVE EQ`,
-`PUSH AGAIN TO SWITCH THE LO-CUT`, `PUSH AGAIN: LAPTOP ACCESS FOR 2 H`.
+The footer shows a hint (2.5 s) first, else the prompt of a choice waiting for its push
+(`PUSH TO SET ON`, `PUSH TO SET TOPS · MAY CLICK`), else, when muted, the MUTED strip. The confirm
+hints: `PUSH AGAIN TO RESET ALL LIVE EQ`, `PUSH AGAIN: LAPTOP ACCESS FOR 2 H`. The others:
+`TURN THE VALUE KNOB` (a push on a number), `PUSH TO OPEN`, `PUSH TO RUN`, `PUSH TWICE TO RUN`
+(E2 turned on a page or an action), `NO CHANGE: ALREADY SET`, and the read-only reasons
+([§5](#5-setup)).
+
+![Muted, a choice waiting: the prompt takes the footer](../ui/setup_muted.png)
 
 ### 5.3 The PHONE page
 
@@ -323,7 +373,8 @@ The footer carries the hints and, when muted, the MUTED strip. The confirm hints
 The QR codes a phone needs, and the phone switch. **E1 turn**: the next code, `1 · JOIN WI-FI` →
 `2 · OPEN K1000` → `FIRST TIME` (the certificate page). Once a phone is on the Wi-Fi the page shows
 step 2 by itself. **E1 push**: phone control on/off (`PHONE CONTROL ON` /
-`PHONE OFF · KNOBS ONLY`, kept across restarts). **B1**: leave (to SHOW). B2 still mutes.
+`PHONE OFF · KNOBS ONLY`, kept across restarts). **B1 tap**: back to SETUP; **B1 hold**: SHOW.
+B4 still mutes.
 
 The right column says `Wi-Fi AP ON` (green) or `Wi-Fi AP is OFF` (red, with the reason), the band
 and channel, and how many devices are on the Wi-Fi and on the page (`1 on Wi-Fi · 1 on K1000`).
@@ -335,20 +386,22 @@ The phone itself: [§8](#8-the-phone).
 
 Every physical knob (`enc0`–`enc3`) and switch (`sw0`–`sw7`) with the role the `controls:` map gives
 it, and a line for the last event. Turn and press each control, note which `enc`/`sw` index sits
-where, and write them into `controls:` ([chapter 3 §5](03-configuration.md#5-controls)). **Hold B2
-still mutes** here. Holding any other control goes back to SETUP.
+where, and write them into `controls:` ([chapter 3 §5](03-configuration.md#5-controls)). **Hold B4
+still mutes** here. Holding any other control goes back to SETUP. The test names each switch by
+its place in `controls:` (sw4–sw7 = B1–B4 by default), so pressing the four buttons in turn shows
+which one the code calls B1, B2, B3, B4: label the shell from that.
 
 ## 6. Mute
 
-**Hold B2 for 0.8 s, on every page**: SHOW, ALIGN (locked or not), SETUP (a pending confirm
-survives), PHONE and the Knob test. A tap only shows `HOLD B2 TO MUTE / UNMUTE`.
+**Hold B4 for 0.8 s, on every page**: SHOW, ALIGN (locked or not), SETUP (a pending choice or
+confirm survives), PHONE and the Knob test. A tap only shows `HOLD B4 TO MUTE / UNMUTE`.
 
 - The mute and the unmute fade over 0.1 s. A mute is saved **at once**: switched off muted, the box
   comes back muted.
-- **B2 acts on what the screen showed when you pressed it.** Pressed on an unmuted box, it always
+- **B4 acts on what the screen showed when you pressed it.** Pressed on an unmuted box, it always
   mutes. Pressed on a muted box, it unmutes only if nobody changed the mute meanwhile; if a phone
-  did, it says `MUTE CHANGED · LOOK, HOLD B2 AGAIN`.
-- While K1000 itself holds Main muted on its way in (`RAMPS IN BY ITSELF`), B2 means **keep it
+  did, it says `MUTE CHANGED · LOOK, HOLD B4 AGAIN`.
+- While K1000 itself holds Main muted on its way in (`RAMPS IN BY ITSELF`), B4 means **keep it
   muted**, never unmute.
 - K1000 never releases a mute it did not make (a mute from CamillaGUI stays).
 
@@ -358,9 +411,9 @@ or the QR); on the Knob test a red tag.
 
 | Band text | Means |
 |---|---|
-| `READY · hold B2 to unmute` | Your mute (or a mute saved at power-off). The engine runs and K1000 is in sync |
-| `hold B2 to unmute` | Muted, but the engine is not running yet or K1000 is not in sync: wait for `READY` |
-| `RAMPS IN BY ITSELF · hold B2 to keep muted` | The engine (re)started: K1000 fades Main in over about 3 s by itself |
+| `READY · hold B4 to unmute` | Your mute (or a mute saved at power-off). The engine runs and K1000 is in sync |
+| `hold B4 to unmute` | Muted, but the engine is not running yet or K1000 is not in sync: wait for `READY` |
+| `RAMPS IN BY ITSELF · hold B4 to keep muted` | The engine (re)started: K1000 fades Main in over about 3 s by itself |
 | an alert (`NO AUDIO FLOWING · HELD MUTED`, `APPLYING SETUP…`, `KNOBS OFFLINE …`) | Why it is still muted: [chapter 6 §1](06-troubleshooting.md#1-the-screen) |
 
 From the phone: *HOLD TO MUTE* (0.6 s), *MUTED · HOLD TO UNMUTE* (1.2 s), with the same rule
@@ -382,7 +435,7 @@ The alerts, most urgent first:
 
 | Alert | Level |
 |---|---|
-| `KNOBS OFFLINE · USE PHONE MUTE / BYPASS` or `KNOBS OFFLINE · SOURCE DOWN / BYPASS` | critical. **B2 does nothing meanwhile.** The first text only while a phone can mute right now (phone servers on, SETUP › Phone on, the Wi-Fi up, the page served); otherwise the second |
+| `KNOBS OFFLINE · USE PHONE MUTE / BYPASS` or `KNOBS OFFLINE · SOURCE DOWN / BYPASS` | critical. **B4 does nothing meanwhile.** The first text only while a phone can mute right now (phone servers on, SETUP › PHONE › Phone on, the Wi-Fi up, the page served); otherwise the second |
 | `NO DEVICE · MOTU M4`, `ENGINE DOWN` (also full-screen) | critical |
 | `CANNOT SAVE STATE`, `ENGINE SYNC FAILED (SEE LOG)` | critical |
 | `SETTINGS: …`, `k1000.yaml ROUTING FIXED UP (SEE LOG)`, `NO AUDIO FLOWING · HELD MUTED` | warning |
@@ -394,7 +447,7 @@ What each one means and what to do: [chapter 6 §1](06-troubleshooting.md#1-the-
 ## 8. The phone
 
 A page served by the box on its own Wi-Fi, **K1000**. It drives the same controller as the knobs:
-same ranges, same click-safe moves, one state. The knobs stay the main surface and B2 the master
+same ranges, same click-safe moves, one state. The knobs stay the main surface and B4 the master
 mute. Use the phone at a show only once it has been proven with your phone on your box
 ([`docs/06-phone.md`](../06-phone.md) §9 has the checklist).
 
@@ -408,9 +461,9 @@ mute. Use the phone at a show only once it has been proven with your phone on yo
    file.** Install it from Settings › Security › Encryption & credentials › Install a certificate
    › **CA certificate**. *Network may be monitored* is expected: this CA can only vouch for the
    K1000 box.
-2. **Join the Wi-Fi.** SETUP › Phone, first QR. Scan it from Settings › Wi-Fi (the QR icon), not
-   the camera app: Android then asks *K1000 has no internet access — Stay connected?* → **Yes**,
-   **Don't ask again**. The password is printed under the QR.
+2. **Join the Wi-Fi.** SETUP › PHONE › Phone, first QR. Scan it from Settings › Wi-Fi (the QR
+   icon), not the camera app: Android then asks *K1000 has no internet access — Stay connected?* →
+   **Yes**, **Don't ask again**. The password is printed under the QR.
 3. **Open and install the page.** The second QR, or `https://10.42.0.1/`. Then *Install* in the
    page's top bar, or ⋮ › *Add to Home screen*.
 
@@ -426,26 +479,26 @@ Step by step, other Android menus and the fixes: [`docs/06-phone.md`](../06-phon
 | Tab | Controls |
 |---|---|
 | **MAIN** | Master −6 / −1 / −½ / +½ / +1 dB. Balance ±½ / ±1 dB. Lo-Cut on/off (with a confirm) and its frequency (−10 / −2 / +2 / +10 Hz) |
-| **LIVE EQ** | The six live bands on a graph. **Drag a dot** = frequency and gain. **Long-press empty space = notch here**: the first flat bell goes there at **−6 dB, Q 8, at once** (audible, unlike B4) and stays under the finger: slide to tune it. Per band: FREQ, GAIN, Q steps; hold = band flat. *RESET LIVE EQ…* with a confirm (the undo is on the box) |
+| **LIVE EQ** | The six live bands on a graph. **Drag a dot** = frequency and gain. **Long-press empty space = notch here**: the first flat bell goes there at **−6 dB, Q 8, at once** (audible, unlike B3) and stays under the finger: slide to tune it. Per band: FREQ, GAIN, Q steps; hold = band flat. *RESET LIVE EQ…* with a confirm (the undo is on the box) |
 | Always | **Hold to mute** (0.6 s; unmute 1.2 s), the four meters, the engine state, the box's alerts, changes made outside K1000 |
 
 - **What a hold does is decided when the finger goes down**, and the button says it:
   *HOLD TO MUTE*, *MUTED · HOLD TO UNMUTE*, or *HOLD TO KEEP MUTED* (K1000 is bringing the sound in
   by itself). An unmute is cancelled if anyone changed the mute during the hold (*The mute changed
   meanwhile*). The phone buzzes when the box confirms; no answer in 1.5 s says *No answer from
-  K1000: use B2 on the box*.
+  K1000: use B4 on the box*.
 - **Master** rises at most +1 dB per tap and +6 dB per second for all phones together, and the
   box's master-up guard applies on top (6 dB within 2 s). Down is never limited.
 - At most **4 phones** at once.
 
-**It cannot**: anything in SETUP (profile, mono subs, delays, polarity, trims, input trim, sub
-low-pass, the system EQ), Undo reset, the Spectrum switch, Laptop access, phone on/off. It has no
-spectrum.
+**It cannot** change the profile, Mono L+R, the delay, a polarity, the trims, the input trim, the
+sub low-pass or the system EQ, nor run Undo reset, the Spectrum switch, Laptop access or phone
+on/off. It has no spectrum.
 
 ### 8.4 Switching it off
 
-- **For now:** SETUP › Phone, push E1: `PHONE OFF · KNOBS ONLY`. The page still opens but controls
-  nothing. It stays off across restarts.
+- **For now:** SETUP › PHONE › Phone, push E1: `PHONE OFF · KNOBS ONLY`. The page still opens
+  but controls nothing. It stays off across restarts.
 - **For a show (no-go):** `phone: enabled: false` in `/etc/k1000/k1000.yaml` (then
   `sudo systemctl restart k1000`, between shows) **and** the Wi-Fi off the air:
   `sudo /opt/k1000/net/setup-ap.sh --down`. It stays down across reboots and later
@@ -457,31 +510,31 @@ spectrum.
 
 ## 9. During a show
 
-- Stay on **SHOW**. Master on E1; ring control with B4, E3, E4.
+- Stay on **SHOW**. Master on E1; ring control with B3, E3, E4.
 - Leave ALIGN locked and SETUP alone, except Reset live EQ / Undo reset.
 - No CamillaGUI Apply, and Laptop access closed.
-- Never Mono subs, Profile or Audition: they rebuild the pipeline (a click).
-- `NO SPECTRUM`: SETUP › Spectrum OFF; the sound is not affected.
+- Never Mono L+R, Profile or Audition: they rebuild the pipeline (a click).
+- `NO SPECTRUM`: SETUP › LIVE EQ › Spectrum off; the sound is not affected.
 
 | Emergency | Do |
 |---|---|
-| Silence now | **Hold B2** |
-| Feedback | On SHOW: **B4**, **E3 down**, **E4 up** (no B1 needed). From another page: hold B1, wait for the cyan PEAK (about 2 s), then B4 |
-| `KNOBS OFFLINE` (B2 dead) | The phone's mute if the alert says so; else the source down. Then bypass |
+| Silence now | **Hold B4** |
+| Feedback | On SHOW: **B3**, **E3 down**, **E4 up** (no B1 needed). From ALIGN or SETUP: tap B1, wait for the cyan PEAK (about 2 s), then B3 |
+| `KNOBS OFFLINE` (B4 dead) | The phone's mute if the alert says so; else the source down. Then bypass |
 | Any doubt about the sound | **Bypass** ([§11](#11-the-bypass)) |
 
 ## 10. End of the night
 
-**Hold B2** (MUTED, saved at once) → **speakers off** → unplug K1000 → unplug the M4.
+**Hold B4** (MUTED, saved at once) → **speakers off** → unplug K1000 → unplug the M4.
 
-The next power-on stays silent (`READY · hold B2 to unmute`) until you unmute. Pulling the plug is
+The next power-on stays silent (`READY · hold B4 to unmute`) until you unmute. Pulling the plug is
 the normal way to switch K1000 off ([chapter 7](07-maintenance.md#power-cuts)).
 
 ## 11. The bypass
 
 **Bypass = the source straight into the speakers, as it was cabled before K1000.** About a minute:
 
-1. **Source down.** Hold B2 if K1000 still answers.
+1. **Source down.** Hold B4 if K1000 still answers.
 2. Unplug OUT1 TOP L, OUT2 TOP R and OUT3 SUBS (OUT4 too if it is patched) at the speakers.
 3. Patch the bypass kit as written on the operator card.
 4. **Source up slowly.** The bypass is about (2 − master) dB louder: +12 dB at master −10, with

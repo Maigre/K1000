@@ -20,7 +20,7 @@ What you need to build and run a K1000, and what it was designed around.
 in `box/k1000/hw/mcp23017.py`, the overlay `box/overlays/k1000-zynscreen.dts`). Another screen
 needs its own device-tree overlay. Another encoder board needs code changes. Which physical knob
 and button is E1–E4 and B1–B4 is configuration (`controls:`, [chapter 3](03-configuration.md)),
-found with SETUP › Knob test.
+found with SETUP › BOX › Knob test.
 
 ## Cables
 
@@ -55,7 +55,7 @@ tops, and EQ. A 3rd and 4th UPA-1P ride on the loop outputs of the first two.
 
 - **Any active speakers with balanced line inputs** work. K1000 has four outputs: Sub L, Sub R,
   Top L, Top R.
-- **Subs without their own low-pass**: switch on SETUP › Sub low-pass (12 dB/oct, 40–250 Hz). It
+- **Subs without their own low-pass**: switch on SETUP › SUBS › Low-pass (12 dB/oct, 40–250 Hz). It
   is off by default because the USW-1P has its own, and a second one would shift the phase at the
   overlap.
 - **The tops' Lo-Cut** is a 12 dB/oct high-pass, 20–300 Hz, on by default at 100 Hz.
@@ -84,13 +84,13 @@ Nothing is vendored: everything is installed from apt or from the projects' own 
 |---|---|
 | Install and updates | Ethernet with internet: apt, and GitHub for CamillaDSP and CamillaGUI. Offline, give the tarballs with `CAMILLADSP_TARBALL` / `CAMILLAGUI_TARBALL` ([chapter 2](02-installation.md)); apt packages still need a mirror |
 | At the gig | **None.** The box makes its own Wi-Fi for the phone ("K1000", WPA2, 10.42.0.1/24). Ethernet is never touched by it |
-| The tune | A laptop for the system EQ. **The `/tune` page**: only over the **box's own Wi-Fi**, while SETUP › Laptop access is open (2 h at most, [chapter 4 §5.1](04-usage.md#51-laptop-access-and-the-tune-page)) and with the phone servers on (`phone: enabled: true`). **CamillaGUI** (port 5005): over that Wi-Fi the same way, or on a **wired** network with the box. A laptop sharing its connection on the Ethernet cable must not use 10.42.0.0/24, the Wi-Fi's subnet (e.g. 10.43.0.1/24 instead) |
+| The tune | A laptop for the system EQ. **The `/tune` page**: only over the **box's own Wi-Fi**, while SETUP › PHONE › Laptop access is open (2 h at most, [chapter 4 §5.1](04-usage.md#51-laptop-access-and-the-tune-page)) and with the phone servers on (`phone: enabled: true`). **CamillaGUI** (port 5005): over that Wi-Fi the same way, or on a **wired** network with the box. A laptop sharing its connection on the Ethernet cable must not use 10.42.0.0/24, the Wi-Fi's subnet (e.g. 10.43.0.1/24 instead) |
 
 Ports on the box:
 
 | Port | What | Reachable from |
 |---|---|---|
 | 1234 | CamillaDSP websocket | the box only (127.0.0.1) |
-| 5005 | CamillaGUI | the wired network; from the box's Wi-Fi only while SETUP › Laptop access is open. **No password**: anyone who reaches it can change or stop the engine |
+| 5005 | CamillaGUI | the wired network; from the box's Wi-Fi only while SETUP › PHONE › Laptop access is open. **No password**: anyone who reaches it can change or stop the engine |
 | 80, 443, 8080 | The phone page (443 also serves `/tune`, closed unless Laptop access is open) | the box's own Wi-Fi only (10.42.0.1) |
-| 22 | SSH, keys only after `bootstrap.sh` | the wired network; from the box's Wi-Fi only while SETUP › Laptop access is open, or with `setup-ap.sh --ssh on` |
+| 22 | SSH, keys only after `bootstrap.sh` | the wired network; from the box's Wi-Fi only while SETUP › PHONE › Laptop access is open, or with `setup-ap.sh --ssh on` |

@@ -3,7 +3,7 @@
 
 Pages: SHOW (the front page: master, FREQ/GAIN/Q of the selected live band, the EQ curve over
 the program spectrum), ALIGN (master, balance, the signed sub/top delay, Lo-Cut; E3/E4 locked
-until a B3 hold), SETUP (the list), PHONE (drawn by ui/qr.py) and HWTEST (the knob test). The v0
+until a B2 hold), SETUP (the list), PHONE (drawn by ui/qr.py) and HWTEST (the knob test). The v0
 names MAIN and LIVE are aliases of ALIGN and SHOW.
 
 Design rules (why it looks like this):
@@ -55,7 +55,8 @@ from . import eqgraph as eg
 from .input_map import (A_LAPTOP, A_RESET_LIVE, A_UNDO_RESET, BAND_CYCLE, F_ALIGN_DELAY, F_BALANCE,
                         F_LOWCUT_FREQ, F_LOWCUT_ON, F_MASTER, F_SLOT, F_SPECTRUM_ON, HINT_LOCKED,
                         KNOB_CORNERS, KNOB_TAGS_DEFAULT, LIVE_SLOT_LABELS, LIVE_SLOTS,
-                        SETUP_ITEMS, Focus, knob_labels, page_name, parse_knob_tags)
+                        SETUP_GROUPS, SETUP_ITEMS, Focus, knob_labels, page_name, parse_knob_tags,
+                        setup_group_pos)
 
 log = logging.getLogger(__name__)
 
@@ -269,8 +270,8 @@ def engine_unknown(status: Any) -> bool:
 def displayed_muted(state: Any, status: Any) -> bool:
     """The mute the screen shows: the engine's real Main mute, else state.muted, else False.
 
-    The dispatcher passes this to `map_event(..., muted=...)`, so B2 long asks for the opposite
-    of what the operator sees; unknown reads as 'not muted', so B2 long then MUTES (safe side).
+    The dispatcher passes this to `map_event(..., muted=...)`, so B4 long asks for the opposite
+    of what the operator sees; unknown reads as 'not muted', so B4 long then MUTES (safe side).
     """
     m = _truth(_get(status, "muted", None))
     if m is None:
@@ -962,7 +963,7 @@ def _block(c: _Ctx, e: int, label: str, value: str, unit: str, field_key: str | 
 
 
 def _chips(c: _Ctx, sel: int, bands: Sequence[eg.Band]) -> None:
-    """LS · 1 · 2 · 3 · 4 · HS (B3's order): the selected band amber, a band in use outlined in
+    """LS · 1 · 2 · 3 · 4 · HS (B2's order): the selected band amber, a band in use outlined in
     its cut (orange) / boost (green) colour, an idle band faint."""
     d = c.d
     n, gap = len(BAND_CYCLE), 4
@@ -1146,7 +1147,7 @@ def _lock_badge(c: _Ctx, left_s: float) -> None:
                             fill=AMBER)
         d.text((cx, cy), t, font=f, fill=BG, anchor="mm")
     else:
-        t = "LOCKED · HOLD B3"
+        t = "LOCKED · HOLD B2"
         f = _fit(d, t, 16, (x1 - x0) - 30)
         tw = d.textlength(t, font=f)
         d.rounded_rectangle((cx - tw / 2 - 9, cy - 13, cx + tw / 2 + 9, cy + 13), radius=6,
@@ -1156,7 +1157,7 @@ def _lock_badge(c: _Ctx, left_s: float) -> None:
 
 def _page_align(c: _Ctx, state: Any, status: Any) -> None:
     """ALIGN: E1 MASTER and E2 BALANCE live; E3 DELAY and E4 LO-CUT dimmed while locked
-    (a B3 hold unlocks them for 30 s of idle: the EDIT badge counts it down). Lo-Cut on/off
+    (a B2 hold unlocks them for 30 s of idle: the EDIT badge counts it down). Lo-Cut on/off
     is a SETUP item now: said here, not offered. E3 is the signed sub/top delay (D-011): its
     size big, which side is late in words under it (SUBS LATER / TOPS LATER / ALIGNED)."""
     master = _num(state, F_MASTER)
@@ -1185,24 +1186,13 @@ def _page_align(c: _Ctx, state: Any, status: Any) -> None:
 # ------------------------------------------------------------------------------------------
 # SETUP
 # ------------------------------------------------------------------------------------------
-def _setup_value(state: Any, item, status: Any = None) -> str:
-    if item.kind == "page":
-        return "PUSH ▸"
-    if item.kind == "action":
-        if item.field == A_UNDO_RESET:
-            left = _num(status, "undo_reset_s", 0.0) or 0.0
-            return f"UNDO {fmt_mmss(left)}" if left > 0 else "—"
-        if item.field == A_LAPTOP:
-            return _laptop_value(status)
-        return "PUSH ×2" if getattr(item, "confirm", False) else "PUSH ▸"
-    if item.field == F_SPECTRUM_ON and _get(status, "spectrum_state", "") == "disabled":
-        return "DISABLED"
-    v = _get(state, item.field, None)
+def _fmt_setup(item, v: Any) -> str:
+    """One SETUP value as the row shows it (also the chosen value of a pending choice)."""
     if v is None:
         return "--"
     if item.field.endswith("_inverted"):
         return "INVERTED" if v else "normal"
-    if isinstance(v, bool):
+    if isinstance(v, bool) or item.kind == "bool":
         return "ON" if v else "off"
     if isinstance(v, str):
         return v.upper()
@@ -1215,6 +1205,32 @@ def _setup_value(state: Any, item, status: Any = None) -> str:
     if item.field.endswith("_hz"):
         return f"{fmt_hz(fv)} Hz"
     return f"{fmt_db(fv)} dB"
+
+
+def _setup_value(state: Any, item, status: Any = None, readonly: Any = None) -> str:
+    if item.kind == "page":
+        return "PUSH ▸"
+    if item.kind == "action":
+        if item.field == A_UNDO_RESET:
+            left = _num(status, "undo_reset_s", 0.0) or 0.0
+            return f"UNDO {fmt_mmss(left)}" if left > 0 else "—"
+        if item.field == A_LAPTOP:
+            return _laptop_value(status)
+        return "PUSH ×2" if getattr(item, "confirm", False) else "PUSH ▸"
+    if item.field == F_SPECTRUM_ON and (_get(status, "spectrum_state", "") == "disabled"
+                                        or item.field in (readonly or {})):
+        return "DISABLED"
+    if item.field == "dev_audition" and item.field in (readonly or {}):
+        return "—"                                     # not the dev profile: nothing to audition
+    v = _get(state, item.field, None)
+    out = _fmt_setup(item, v)
+    if item.field == F_LOWCUT_ON and v is not None:
+        hz = _num(state, "lowcut_hz", None)
+        if hz is not None:
+            out += f" · {fmt_hz(hz)} Hz"               # the frequency itself: ALIGN E4
+    if item.field == "profile" and item.field in (readonly or {}):
+        out += " · PINNED"
+    return out
 
 
 def _laptop_value(status: Any) -> str:
@@ -1232,9 +1248,11 @@ def _laptop_value(status: Any) -> str:
     return "PUSH ×2"
 
 
-def _setup_unavailable(item, status: Any) -> bool:
+def _setup_unavailable(item, status: Any, readonly: Any = None) -> bool:
     """A row with nothing to do right now (Undo reset with no undo, Laptop access without its
-    surface): its label is dimmed."""
+    surface, a field the Controller holds read-only: Focus.readonly): its label is dimmed."""
+    if item.field in (readonly or {}):
+        return True
     if item.kind == "action" and item.field == A_UNDO_RESET:
         return not (_num(status, "undo_reset_s", 0.0) or 0.0) > 0
     if item.kind == "action" and item.field == A_LAPTOP:
@@ -1242,10 +1260,65 @@ def _setup_unavailable(item, status: Any) -> bool:
     return item.field == F_SPECTRUM_ON and _get(status, "spectrum_state", "") == "disabled"
 
 
+def _setup_sel(c: _Ctx) -> int:
+    try:
+        return max(0, min(len(SETUP_ITEMS) - 1, int(getattr(c.focus, "item", 0) or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _setup_pick(c: _Ctx, item) -> Any:
+    """The value chosen for `item` and waiting for its push, or None (D-013). Never for a
+    field that has become read-only meanwhile: its push only shows the hint."""
+    if item.field in (getattr(c.focus, "readonly", None) or {}):
+        return None
+    fn = getattr(c.focus, "pick_now", None)
+    try:
+        pk = fn(c.now) if callable(fn) else None
+    except Exception:
+        return None
+    return pk if pk is not None and pk[0] == item.field else None
+
+
+def _setup_prompt(c: _Ctx) -> str | None:
+    """SETUP's footer while a choice waits for its push: what the push will set."""
+    item = SETUP_ITEMS[_setup_sel(c)]
+    pk = _setup_pick(c, item)
+    if pk is None:
+        return None
+    text = f"PUSH TO SET {_fmt_setup(item, pk[1]).upper()}"
+    return text + " · MAY CLICK" if item.rebuild else text
+
+
+def _setup_help(c: _Ctx, item, readonly: Any) -> str:
+    """The bottom line's right side: what the knobs do on the selected row."""
+    if item.field in (readonly or {}):
+        return "fixed here"
+    if item.kind == "num":
+        return "turn = change"
+    if item.picks:
+        return "push = set" if _setup_pick(c, item) is not None else "turn = choose · push = set"
+    if item.kind == "page":
+        return "push = open"
+    twice = item.needs_confirm and item.field not in (getattr(c.focus, "no_confirm", None) or ())
+    return "push ×2 = run" if twice else "push = run"
+
+
+# SETUP rows (D-013): a header per group, then its items. 8 rows of 28 px from y 60 to 284.
+SETUP_ROWS: tuple[tuple[str, Any], ...] = tuple(
+    r for name, _items in SETUP_GROUPS
+    for r in [("head", name)] + [("item", k) for k, it in enumerate(SETUP_ITEMS) if it.group == name])
+
+
 def _page_setup(c: _Ctx, state: Any, status: Any) -> None:
+    """SETUP (D-013): the items grouped by speaker floor. Top line: E1 ITEM, the group and the
+    position in it, E3 GROUP. The list: a header per group (the selected item's in white), the
+    selected row amber, red while a push would change something (a chosen value: `now ->
+    chosen`; an action waiting for its second push: PUSH AGAIN). A scroll bar on the right.
+    Bottom line: E2 VALUE and what the knobs do on that row; the footer: a hint, else the
+    pending choice's prompt."""
     d = c.d
     labels = knob_labels("SETUP")
-    # corner labels (E1 top-left, E2 bottom-left as per KNOB_CORNERS) on a header/footer row
     for e, lab in enumerate(labels):
         if not lab:
             continue
@@ -1253,45 +1326,69 @@ def _page_setup(c: _Ctx, state: Any, status: Any) -> None:
         y = STATUS_H + 4 if corner[0] == "t" else H - 24
         right = corner[1] == "r"
         _knob_label(c, e, lab, W - 10 if right else 10, y, right)
-    d.text((W - 10, H - 22), "push = select", font=font(16, FONT_REG), fill=DIM, anchor="ra")
-    try:
-        sel = max(0, min(len(SETUP_ITEMS) - 1, int(getattr(c.focus, "item", 0) or 0)))
-    except (TypeError, ValueError):
-        sel = 0
+    sel = _setup_sel(c)
+    item_sel = SETUP_ITEMS[sel]
+    readonly = getattr(c.focus, "readonly", None) or {}
+    grp, pos, size = setup_group_pos(sel)
+    head = f"{grp} {pos}/{size}"
+    d.text((W // 2, STATUS_H + 2), head, font=_fit(d, head, 20, 150), fill=FG, anchor="ma")
+    d.text((W - 10, H - 22), _setup_help(c, item_sel, readonly), font=font(16, FONT_REG),
+           fill=DIM, anchor="ra")
     conf_fn = getattr(c.focus, "confirm_now", None)
     confirm = conf_fn(c.now) if callable(conf_fn) else None
-    d.text((W - 10, STATUS_H + 4), f"{sel + 1}/{len(SETUP_ITEMS)}", font=font(18), fill=DIM,
-           anchor="ra")
     rows, row_h, y0 = 8, 28, STATUS_H + 30
-    first = max(0, min(sel - rows // 2, len(SETUP_ITEMS) - rows))
+    sel_row = next(r for r, (k, v) in enumerate(SETUP_ROWS) if k == "item" and v == sel)
+    head_row = next(r for r in range(sel_row, -1, -1) if SETUP_ROWS[r][0] == "head")
+    first = sel_row - 3
+    if head_row < first and sel_row - head_row <= rows - 2:
+        first = head_row                      # the group's header stays on screen when it fits
+    first = max(0, min(first, len(SETUP_ROWS) - rows))
+    x_val = W - 18
     for r in range(rows):
-        i = first + r
-        if i >= len(SETUP_ITEMS):
+        if first + r >= len(SETUP_ROWS):
             break
-        item = SETUP_ITEMS[i]
+        kind, v = SETUP_ROWS[first + r]
         y = y0 + r * row_h
-        is_sel = i == sel
-        pending = is_sel and confirm == item.field
+        cy = y + row_h // 2 - 1
+        if kind == "head":
+            hcol = FG if v == grp else DIM
+            d.text((10, cy), v, font=font(15), fill=hcol, anchor="lm")
+            hx = 10 + int(d.textlength(v, font=font(15))) + 8
+            d.line((hx, cy, x_val, cy), fill=FAINT, width=1)
+            continue
+        item = SETUP_ITEMS[v]
+        is_sel = v == sel
+        pk = _setup_pick(c, item) if is_sel else None
+        pending = is_sel and (pk is not None or confirm == item.field)
         if is_sel:
-            d.rectangle((4, y, W - 4, y + row_h - 3), fill=RED if pending else AMBER)
-        fg = FG if pending else (BG if is_sel else (DIM if _setup_unavailable(item, status) else FG))
-        d.text((14, y + row_h // 2 - 1), item.label,
-               font=font(20, FONT_BOLD if is_sel else FONT_REG), fill=fg, anchor="lm")
-        val = "PUSH AGAIN" if pending else _setup_value(state, item, status)
-        vcol = fg if is_sel else (AMBER if item.kind == "rebuild" else fg)
+            d.rectangle((4, y, W - 10, y + row_h - 3), fill=RED if pending else AMBER)
+        dimmed = _setup_unavailable(item, status, readonly)
+        fg = FG if pending else (BG if is_sel else (DIM if dimmed else FG))
+        d.text((24, cy), item.label, font=font(20, FONT_BOLD if is_sel else FONT_REG), fill=fg,
+               anchor="lm")
+        if pk is not None:
+            val = f"{_fmt_setup(item, _get(state, item.field, None))} → {_fmt_setup(item, pk[1])}"
+        elif pending:
+            val = "PUSH AGAIN"
+        else:
+            val = _setup_value(state, item, status, readonly)
+        vcol = fg if is_sel else (DIM if dimmed else (AMBER if item.rebuild else fg))
         if not is_sel and item.field == A_LAPTOP and val.startswith("OPEN "):
             vcol = AMBER                       # a gate open in the fence: never quiet
-        d.text((W - 14, y + row_h // 2 - 1), val, font=font(20), fill=vcol, anchor="rm")
-    # scroll marks
-    if first > 0:
-        d.polygon([(W // 2 - 8, y0 - 4), (W // 2 + 8, y0 - 4), (W // 2, y0 - 12)], fill=DIM)
-    if first + rows < len(SETUP_ITEMS):
-        yb = y0 + rows * row_h
-        d.polygon([(W // 2 - 8, yb), (W // 2 + 8, yb), (W // 2, yb + 8)], fill=DIM)
-    hint = _hint(c)
-    if hint:
+        lw = 24 + int(d.textlength(item.label, font=font(20, FONT_BOLD if is_sel else FONT_REG)))
+        d.text((x_val, cy), val, font=_fit(d, val, 20, x_val - lw - 16, FONT_REG if not is_sel else FONT_BOLD),
+               fill=vcol, anchor="rm")
+    # scroll bar: where the 8 rows sit in the whole list
+    ty0, ty1 = y0, y0 + rows * row_h - 3
+    d.rectangle((W - 6, ty0, W - 3, ty1), fill=FAINT)
+    n = len(SETUP_ROWS)
+    t0 = ty0 + (ty1 - ty0) * first // n
+    t1 = ty0 + (ty1 - ty0) * min(n, first + rows) // n
+    d.rectangle((W - 6, t0, W - 3, t1), fill=DIM)
+    footer = _hint(c) or _setup_prompt(c)
+    if footer:
         d.rectangle((0, H - FOOTER_H, W, H), fill=AMBER)
-        d.text((W // 2, H - FOOTER_H // 2), hint, font=_fit(d, hint, 20, W - 20), fill=BG,
+        d.text((W // 2, H - FOOTER_H // 2), footer, font=_fit(d, footer, 20, W - 20), fill=BG,
                anchor="mm")
 
 
@@ -1302,7 +1399,7 @@ def _page_hwtest(c: _Ctx, state: Any, status: Any) -> None:
     d = c.d
     hw = getattr(c.focus, "hw", None)
     d.text((W // 2, STATUS_H + 6), "KNOB TEST", font=font(24), fill=AMBER, anchor="ma")
-    sub = "turn / press each control · hold B2 = mute · hold any other = exit"
+    sub = "turn / press each control · hold B4 = mute · hold any other = exit"
     d.text((W // 2, STATUS_H + 36), sub, font=_fit(d, sub, 15, W - 24, FONT_REG), fill=DIM,
            anchor="ma")
     counts = list(getattr(hw, "enc_count", [0] * 4)) if hw else [0] * 4
@@ -1386,7 +1483,7 @@ def _mute_hint(c: _Ctx, state: Any, status: Any) -> tuple[str | None, str]:
 
     The band must never tell the operator something false about what happens next:
     - K1000 itself holds Main muted on its way to a boot ramp (and the operator did not mute):
-      it comes in BY ITSELF, and B2 keeps it muted (the controller resolves B2 that way);
+      it comes in BY ITSELF, and B4 keeps it muted (the controller resolves B4 that way);
     - a controller alert (APPLYING SETUP…, NO AUDIO FLOWING · HELD MUTED, ENGINE SYNC FAILED,
       KNOBS OFFLINE…) says why, instead of READY;
     - READY only when the engine RUNS (not Paused/Starting) and the controller is in sync.
@@ -1396,12 +1493,12 @@ def _mute_hint(c: _Ctx, state: Any, status: Any) -> tuple[str | None, str]:
     running = engine is not None and engine.upper() == "RUNNING"
     if _truth(_get(status, "ramping", None)) and _truth(_get(state, "muted", None)) is False:
         # (the status bar says whether the engine is processing yet: STARTING / RUNNING)
-        return hint, "RAMPS IN BY ITSELF · hold B2 to keep muted"
+        return hint, "RAMPS IN BY ITSELF · hold B4 to keep muted"
     alert = str(_get(status, "alert", "") or "")
     if alert:
         return hint, alert
     ready = running and _truth(_get(status, "ready", None)) is not False
-    return hint, ("READY · hold B2 to unmute" if ready else "hold B2 to unmute")
+    return hint, ("READY · hold B4 to unmute" if ready else "hold B4 to unmute")
 
 
 def _band_text(c: _Ctx, y0: int, y1: int, big: int, line1: int, line2: int, small: str) -> None:
@@ -1435,14 +1532,14 @@ def _overlay_muted(c: _Ctx, state: Any, status: Any, page: str = "ALIGN") -> Non
     hint, unmute = _mute_hint(c, state, status)
     page = page_name(page)
     if page == "SETUP":
-        if not hint:
+        if not hint and not _setup_prompt(c):
             d.rectangle((0, H - FOOTER_H, W, H), fill=BAND_RED)
             cy = H - FOOTER_H // 2
             d.text((14, cy), "MUTED", font=font(22), fill=FG, anchor="lm")
             fx = 14 + int(d.textlength("MUTED", font=font(22))) + 12
             d.text((W - 14, cy), unmute, font=_fit(d, unmute, 18, W - fx - 14, FONT_REG),
                    fill=FG, anchor="rm")
-        # else: the hint has the footer (drawn by the page) for its 2.5 s
+        # else: the hint (its 2.5 s) or a pending choice's prompt has the footer (the page)
         return
     if page == "HWTEST":
         box = (W - 120, STATUS_H + 6, W - 10, STATUS_H + 32)
@@ -1595,7 +1692,7 @@ def _setup_index(field: str) -> int:
 
 
 def demo_notch(state: Any, peak_hz: float, slot: int) -> tuple[Any, Any]:
-    """(state, focus) after a B4 tap on SHOW with `slot` selected and the spectrum's PEAK at
+    """(state, focus) after a B3 tap on SHOW with `slot` selected and the spectrum's PEAK at
     `peak_hz`, from the REAL Controller.notch_helper (no engine: nothing is sent), so the
     picture shows what the box does. The hint and the edit highlight are kept on for the
     snapshot."""
@@ -1649,7 +1746,7 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
     run_clip = with_(run, levels=(-14.0, -15.5, -9.0, -2.5), clip=(False, False, False, True))
     muted = State.from_dict({**s.to_dict(), "muted": True})
     run_muted = with_(run, muted=True)
-    # B4 (the real notch helper): with no bell in use within 1/6 oct of the PEAK (P2 is at
+    # B3 (the real notch helper): with no bell in use within 1/6 oct of the PEAK (P2 is at
     # 1 kHz here), P3 (selected, free) goes to the PEAK at Q 8.65, gain 0; with P2 cutting at
     # 2.52k (0.05 oct from the PEAK) it selects P2 and writes nothing.
     away = State.from_dict(s.to_dict())
@@ -1663,15 +1760,18 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
                        load=0.1, ready=True, laptop_state="closed")
     dev_muted = with_(dev, muted=True)
     knobs = "KNOBS OFFLINE · USE PHONE MUTE / BYPASS"
-    hw = HwTestLog(enc_count=[3, -2, 0, 7], sw_down=[False, False, False, False, False, True,
-                                                     False, False],
-                   sw_last=["short", "", "", "", "", "long", "", ""], last="sw5 press  = B2")
+    hw = HwTestLog(enc_count=[3, -2, 0, 7], sw_down=[False, False, False, False, False, False,
+                                                     False, True],
+                   sw_last=["short", "", "", "", "", "", "", "long"], last="sw7 press  = B4")
     hwf = Focus(hw=hw)
     reset_i, undo_i = _setup_index(A_RESET_LIVE), _setup_index(A_UNDO_RESET)
     laptop_i = _setup_index(A_LAPTOP)
     dev_open = with_(dev, laptop_state="open", laptop_s=7140.0,
                      pills=["MONO SUB", "LAPTOP OPEN 1:59"])
     mono_i = _setup_index("mono_subs")
+    aud_i, prof_i, tpol_i = _setup_index("dev_audition"), _setup_index("profile"), _setup_index("top_inverted")
+    ro = {"profile": "PROFILE PINNED IN k1000.yaml"}     # k1000.yaml names the profile (the box)
+    mono_pick = dict(pick="mono_subs", pick_value=not bool(s.mono_subs), pick_until=inf, readonly=ro)
     tops_later = State.from_dict({**s.to_dict(), "sub_delay_ms": 0.0, "top_delay_ms": 1.25})
     aligned = State.from_dict({**s.to_dict(), "sub_delay_ms": 0.0, "top_delay_ms": 0.0})
     return [
@@ -1706,7 +1806,7 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
         ("muted", "SHOW", muted, run_muted, Focus(slot=1)),
         ("muted_fine", "SHOW", muted, run_muted, Focus(slot=1, editing="live_peq.1.q",
                                                        edit_until=inf, held={3})),
-        # K1000 holds Main before its own boot ramp: not 'READY · hold B2 to unmute'
+        # K1000 holds Main before its own boot ramp: not 'READY · hold B4 to unmute'
         ("muted_ramp_hold", "SHOW", s, with_(run, engine="Starting", muted=True, ramping=True,
                                              ready=False, levels=(-100.0,) * 4, clip=(False,) * 4,
                                              alerts=[("info", "RAMPING IN")], spectrum=None),
@@ -1743,25 +1843,26 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
         ("align_lowcut_off", "ALIGN", lc_off, run, Focus()),
         ("align_muted", "ALIGN", muted, run_muted, Focus()),
         # SETUP
-        ("setup", "SETUP", s, dev, Focus(item=reset_i)),
+        # SETUP (D-013): grouped by speaker floor; E2 chooses, a push sets
+        ("setup", "SETUP", s, dev, Focus(item=tpol_i, readonly=ro)),
         ("setup_reset_confirm", "SETUP", s, dev, Focus(item=reset_i, confirm=A_RESET_LIVE,
                                                        confirm_until=inf,
                                                        hint="PUSH AGAIN TO RESET ALL LIVE EQ",
-                                                       hint_until=inf)),
-        ("setup_undo", "SETUP", s, with_(dev, undo_reset_s=287.0), Focus(item=undo_i)),
-        ("setup_confirm", "SETUP", s, dev, Focus(item=mono_i, confirm="mono_subs",
-                                                 confirm_until=inf,
-                                                 hint="PUSH AGAIN TO APPLY (MAY CLICK)",
-                                                 hint_until=inf)),
-        ("setup_muted", "SETUP", muted, dev_muted, Focus(item=mono_i, confirm="mono_subs",
-                                                         confirm_until=inf)),
+                                                       hint_until=inf, readonly=ro)),
+        ("setup_undo", "SETUP", s, with_(dev, undo_reset_s=287.0), Focus(item=undo_i, readonly=ro)),
+        ("setup_confirm", "SETUP", s, dev, Focus(item=mono_i, **mono_pick)),
+        ("setup_pick_audition", "SETUP", s, dev,
+         Focus(item=aud_i, pick="dev_audition", pick_value="tops", pick_until=inf, readonly=ro)),
+        ("setup_profile_pinned", "SETUP", s, dev,
+         Focus(item=prof_i, readonly=ro, hint="PROFILE PINNED IN k1000.yaml", hint_until=inf)),
+        ("setup_muted", "SETUP", muted, dev_muted, Focus(item=mono_i, **mono_pick)),
         ("setup_applying", "SETUP", s, with_(dev, alert="APPLYING SETUP…", message="APPLYING SETUP…",
                                              alerts=[("info", "APPLYING SETUP…")]),
-         Focus(item=mono_i)),
+         Focus(item=mono_i, readonly=ro)),
         ("setup_laptop_confirm", "SETUP", s, dev,
          Focus(item=laptop_i, confirm=A_LAPTOP, confirm_until=inf,
-               hint="PUSH AGAIN: LAPTOP ACCESS FOR 2 H", hint_until=inf)),
-        ("setup_laptop_open", "SETUP", s, dev_open, Focus(item=laptop_i - 1)),
+               hint="PUSH AGAIN: LAPTOP ACCESS FOR 2 H", hint_until=inf, readonly=ro)),
+        ("setup_laptop_open", "SETUP", s, dev_open, Focus(item=laptop_i - 1, readonly=ro)),
         # Knob test
         ("hwtest", "HWTEST", s, run, hwf),
         ("hwtest_muted", "HWTEST", muted, run_muted, hwf),

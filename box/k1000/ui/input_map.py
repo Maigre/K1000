@@ -13,38 +13,48 @@ the HWTEST log) and returns actions. The dispatcher then runs, for each action,
 `apply_focus(focus, action)` (UI-local: band/item selection, hints, the edit highlight, the
 ALIGN lock) and, when that returns False, hands the action to the Controller.
 
-Pages (D-009): SHOW (front) -> ALIGN -> SETUP on B1, plus PHONE and HWTEST reached from SETUP.
-- SHOW: E1 MASTER, E2/E3/E4 = FREQ/GAIN/Q of the selected live band. B3 tap = next band in
-  LS 1 2 3 4 HS order (wraps). B4 tap = the notch helper (Controller.notch_helper). An encoder
+Pages (D-009, buttons D-013): SHOW (front) <-> ALIGN on a B1 tap; SETUP on a B1 hold; PHONE and
+HWTEST reached from SETUP.
+- Buttons (D-013): B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE.
+- SHOW: E1 MASTER, E2/E3/E4 = FREQ/GAIN/Q of the selected live band. B2 tap = next band in
+  LS 1 2 3 4 HS order (wraps). B3 tap = the notch helper (Controller.notch_helper). An encoder
   push is FINE while held, never a select.
 - ALIGN: E1 MASTER and E2 BALANCE live; E3 DELAY (the signed sub/top alignment, D-011) and E4
-  LO-CUT are LOCKED: a turn shows HINT_LOCKED and changes nothing. A B3 hold unlocks them for
-  UNLOCK_S, renewed by every input on ALIGN (so any UNLOCK_S of idle relocks); a B3 tap relocks
+  LO-CUT are LOCKED: a turn shows HINT_LOCKED and changes nothing. A B2 hold unlocks them for
+  UNLOCK_S, renewed by every input on ALIGN (so any UNLOCK_S of idle relocks); a B2 tap relocks
   at once; leaving ALIGN relocks.
-- SETUP: E1 selects the item, E2 turns its value, an E1/E2 push selects it. Reset live EQ,
-  Lo-Cut on/off and the pipeline rebuilds need a second push within CONFIRM_WINDOW_S.
-- B1: press = next page (instant), hold = SHOW from anywhere. The Controller brings ALIGN and
-  SETUP back to SHOW after HOME_AFTER_S without input.
+- SETUP (D-013): the items grouped by speaker floor (TOPS, SUBS, INPUT, LIVE EQ, PHONE, BOX).
+  E1 selects the item, E3 jumps a group. E2 turns a number; on an ON/off or a choice it CHOOSES
+  (the row shows `now -> chosen`) and a push SETS it: two gestures, the value always visible.
+  A push with nothing chosen proposes the next value, so push, push still works. Reset live EQ
+  and Laptop access need a second push within CONFIRM_WINDOW_S.
+- B1: tap (on release) = SHOW <-> ALIGN, and back from SETUP to SHOW, from PHONE to SETUP;
+  hold = SETUP from SHOW/ALIGN, SHOW from SETUP/PHONE. The Controller brings ALIGN and SETUP
+  back to SHOW after HOME_AFTER_S without input.
 
 Safety rules carried here:
-- B2 mutes/unmutes on a LONG press only, on EVERY page, the Knob test included; a short press
-  only shows a hint. B2 emits an explicit `Mute(bool)` when the dispatcher passes the mute the
+- B4 mutes/unmutes on a LONG press only, on EVERY page, the Knob test included; a short press
+  only shows a hint. B4 emits an explicit `Mute(bool)` when the dispatcher passes the mute the
   screen shows (`map_event(..., muted=...)`): the operator presses for the opposite of what
   they see, never for a state the controller has not adopted yet.
 - Resetting the live EQ is a SETUP item with a confirm (and a one-step undo in the Controller):
-  B4 on SHOW only ever selects a band and sets an inaudible one up (gain is never touched).
+  B3 on SHOW only ever selects a band and sets an inaudible one up (gain is never touched).
 - DELAY (every settled change dips the subs or the tops under the delay guard) keeps v0's
   wake-up detent on top of the lock: the first detent after ARM_WINDOW_S at rest only wakes it.
-- Pipeline-rebuilding settings (mono subs, audition, profile) need two pushes on SETUP.
+- Every SETUP setting that is not a number (the pipeline rebuilds among them: mono subs,
+  audition, profile) is chosen first, then set by a push: never one gesture.
 - Acceleration makes master go DOWN faster; it never accelerates master UP (and the Controller
   caps master rises per window: the master-up guard).
 """
 from __future__ import annotations
 
+import dataclasses
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Literal, Sequence
+
+from ..state import CHOICES, REBUILD_FIELDS
 
 # ------------------------------------------------------------------------------------------
 # Actions (what the controller / dispatcher receives)
@@ -66,6 +76,14 @@ class Toggle:
 
 
 @dataclass(frozen=True)
+class SetChoice:
+    """SETUP (D-013): set `field` to `value`, the choice the row showed when the push came. The
+    controller checks it again (profile pinned, rebuild rules) and says so if it refuses."""
+    field: str
+    value: Any
+
+
+@dataclass(frozen=True)
 class SelectSlot:
     """Move the selected live-EQ slot by `delta` in LIVE_SLOTS order (UI-local, wraps). Kept
     for v0 callers; the knobs use SelectBand."""
@@ -74,7 +92,7 @@ class SelectSlot:
 
 @dataclass(frozen=True)
 class SelectBand:
-    """SHOW, B3 tap: the next band in BAND_CYCLE order (LS 1 2 3 4 HS, wraps). UI-local."""
+    """SHOW, B2 tap: the next band in BAND_CYCLE order (LS 1 2 3 4 HS, wraps). UI-local."""
     delta: int = 1
 
 
@@ -85,13 +103,20 @@ class SelectItem:
 
 
 @dataclass(frozen=True)
+class SelectGroup:
+    """SETUP page, E3 (D-013): the first item of the next (delta > 0) or previous group; back
+    from inside a group first goes to its own first item. UI-local, clamps."""
+    delta: int
+
+
+@dataclass(frozen=True)
 class NextPage:
     pass
 
 
 @dataclass(frozen=True)
 class GotoPage:
-    """Jump to a named page (B1 hold -> SHOW, SETUP -> HWTEST/PHONE and back)."""
+    """Jump to a named page (B1 tap/hold, SETUP -> HWTEST/PHONE and back)."""
     page: str
 
 
@@ -109,7 +134,7 @@ class Mute:
 
 
 def mute_action(muted: Any = None) -> "Mute":
-    """B2 long: the opposite of the mute the screen shows; 'toggle' only if that is unknown.
+    """B4 long: the opposite of the mute the screen shows; 'toggle' only if that is unknown.
 
     Why here and not in the controller: the screen's mute (engine truth, else state) is what
     the operator reacts to; resolving a toggle later against a not-yet-adopted state could
@@ -143,19 +168,19 @@ class SetupAction:
 
 @dataclass(frozen=True)
 class NotchHelper:
-    """SHOW, B4 tap: set a free bell up as a notch (Controller.notch_helper; gain untouched)."""
+    """SHOW, B3 tap: set a free bell up as a notch (Controller.notch_helper; gain untouched)."""
 
 
 @dataclass(frozen=True)
 class Unlock:
-    """ALIGN, B3 hold: E3/E4 (delay, Lo-Cut) editable until `seconds` without input on
+    """ALIGN, B2 hold: E3/E4 (delay, Lo-Cut) editable until `seconds` without input on
     ALIGN. UI-local (Focus.unlock_until)."""
     seconds: float = 30.0          # UNLOCK_S
 
 
 @dataclass(frozen=True)
 class Lock:
-    """ALIGN, B3 tap while unlocked: E3/E4 locked again at once. UI-local."""
+    """ALIGN, B2 tap while unlocked: E3/E4 locked again at once. UI-local."""
 
 
 @dataclass(frozen=True)
@@ -175,7 +200,8 @@ class PhoneQr:
     delta: int
 
 
-Action = (Nudge | Toggle | SelectSlot | SelectBand | SelectItem | NextPage | GotoPage | Mute
+Action = (Nudge | Toggle | SetChoice | SelectSlot | SelectBand | SelectItem | SelectGroup
+          | NextPage | GotoPage | Mute
           | ResetLive | UndoReset | SetupAction | NotchHelper | Unlock | Lock | ShowHint
           | PhoneToggle | PhoneQr)
 
@@ -200,16 +226,20 @@ LIVE_SLOTS: tuple[str, ...] = ("live_peq.0", "live_peq.1", "live_peq.2", "live_p
                                "live_lowshelf", "live_highshelf")
 LIVE_SLOT_LABELS: tuple[str, ...] = ("PEQ 1", "PEQ 2", "PEQ 3", "PEQ 4", "LO SHELF", "HI SHELF")
 LIVE_SLOT_SHORT: tuple[str, ...] = ("P1", "P2", "P3", "P4", "LS", "HS")
-# B3's band order on SHOW, low to high as drawn: LS 1 2 3 4 HS (LIVE_SLOTS indices).
+# B2's band order on SHOW, low to high as drawn: LS 1 2 3 4 HS (LIVE_SLOTS indices).
 BAND_CYCLE: tuple[int, ...] = (4, 0, 1, 2, 3, 5)
 BELL_SLOTS: tuple[int, ...] = (0, 1, 2, 3)      # the notch helper's candidates (never a shelf)
 
-PAGES: tuple[str, ...] = ("SHOW", "ALIGN", "SETUP")   # B1 cycles these; HWTEST/PHONE via SETUP
+PAGES: tuple[str, ...] = ("SHOW", "ALIGN", "SETUP")   # the main pages; HWTEST/PHONE via SETUP
 ALL_PAGES: tuple[str, ...] = PAGES + ("HWTEST", "PHONE")   # PHONE via SETUP > Phone (D-007)
 HOME_PAGE = "SHOW"
 # v0 page names, still accepted where a page is named (console `page MAIN`, old callers).
 PAGE_ALIASES: dict[str, str] = {"MAIN": "ALIGN", "LIVE": "SHOW"}
 AUTO_HOME_PAGES: tuple[str, ...] = ("ALIGN", "SETUP")
+# B1 (D-013): a tap flips SHOW <-> ALIGN and steps back from SETUP (to SHOW) and PHONE (to
+# SETUP, where it was opened); a hold opens SETUP from SHOW/ALIGN and goes home from the others.
+B1_TAP: dict[str, str] = {"SHOW": "ALIGN", "ALIGN": "SHOW", "SETUP": "SHOW", "PHONE": "SETUP"}
+B1_HOLD: dict[str, str] = {"SHOW": "SETUP", "ALIGN": "SETUP"}
 HOME_AFTER_S = 60.0           # ALIGN/SETUP -> SHOW after this long without a knob/button event
 UNLOCK_S = 30.0               # ALIGN E3/E4 unlock, renewed by every input on ALIGN
 
@@ -235,48 +265,113 @@ def next_band(slot: int, delta: int = 1) -> int:
 
 @dataclass(frozen=True)
 class SetupItem:
-    """One SETUP row. kind: num (E2 turns it), bool (a push flips it), rebuild (a push steps
-    it; pipeline rebuild), page (a push opens it), action (a push runs it: `field` names the
-    action). `confirm`: the push must come twice within CONFIRM_WINDOW_S (rebuilds always)."""
+    """One SETUP row. kind: num (E2 turns it), bool / choice (E2 chooses, a push sets: D-013),
+    page (a push opens it), action (a push runs it: `field` names the action). `confirm`
+    (actions): the push must come twice within CONFIRM_WINDOW_S. `group`: its SETUP_GROUPS
+    name, filled in by SETUP_ITEMS."""
     label: str
     field: str
-    kind: Literal["num", "bool", "rebuild", "page", "action"]
+    kind: Literal["num", "bool", "choice", "page", "action"]
     confirm: bool = False
+    group: str = ""
 
     @property
     def needs_confirm(self) -> bool:
-        return self.confirm or self.kind == "rebuild"
+        return self.confirm and self.kind == "action"
+
+    @property
+    def picks(self) -> bool:
+        """E2 chooses the value and a push sets it (ON/off and the choices)."""
+        return self.kind in ("bool", "choice")
+
+    @property
+    def rebuild(self) -> bool:
+        """Setting it rebuilds the pipeline (a possible click): said in the prompt."""
+        return self.field in REBUILD_FIELDS
+
+    @property
+    def choices(self) -> tuple[Any, ...]:
+        if self.kind == "bool":
+            return (False, True)
+        return tuple(CHOICES.get(self.field, ()))
 
 
 A_RESET_LIVE = "reset_live"     # SETUP action items (`SetupItem.field`)
 A_UNDO_RESET = "undo_reset"
 A_LAPTOP = "laptop_access"      # the Friday tune's laptop over the K1000 Wi-Fi (docs/06 §11)
 
-# v0's list (without Top delay since D-011: ALIGN E3 sets either delay), then the v1 items
-# (D-009), Laptop access (opened with a double push, closed with one: the Controller waives its
-# confirm while it is open), then Phone and the Knob test.
-# Rebuild items (state.REBUILD_FIELDS) change the pipeline: possible click -> two pushes.
-SETUP_ITEMS: tuple[SetupItem, ...] = (
-    SetupItem("Input trim", "input_trim_db", "num"),
-    SetupItem("Sub polarity", "sub_inverted", "bool"),
-    SetupItem("Top polarity", "top_inverted", "bool"),
-    SetupItem("Sub low-pass", "sub_lowpass_on", "bool"),
-    SetupItem("Sub LP freq", "sub_lowpass_hz", "num"),
-    SetupItem("Trim Sub L", "out_trim_db.0", "num"),
-    SetupItem("Trim Sub R", "out_trim_db.1", "num"),
-    SetupItem("Trim Top L", "out_trim_db.2", "num"),
-    SetupItem("Trim Top R", "out_trim_db.3", "num"),
-    SetupItem("Mono subs", "mono_subs", "rebuild"),
-    SetupItem("Audition (dev)", "dev_audition", "rebuild"),
-    SetupItem("Profile", "profile", "rebuild"),
-    SetupItem("Reset live EQ", A_RESET_LIVE, "action", confirm=True),
-    SetupItem("Undo reset", A_UNDO_RESET, "action"),
-    SetupItem("Lo-Cut", F_LOWCUT_ON, "bool", confirm=True),
-    SetupItem("Spectrum", F_SPECTRUM_ON, "bool"),
-    SetupItem("Laptop access", A_LAPTOP, "action", confirm=True),
-    SetupItem("Phone", "PHONE", "page"),          # QR codes + phone on/off (D-007)
-    SetupItem("Knob test", "HWTEST", "page"),
+# SETUP (D-013): grouped by speaker floor, then the rest by what it serves. The ALIGN page keeps
+# what is set per venue (balance, the signed delay, the Lo-Cut frequency); SETUP holds what is set
+# once per rig. Every ON/off and choice is chosen with E2 and set by a push (the row shows both
+# values), so a pipeline rebuild (Mono, Profile, Audition: a possible click) is never one gesture.
+# Laptop access opens with a double push and closes with one (the Controller waives its confirm
+# while it is open).
+SETUP_GROUPS: tuple[tuple[str, tuple[SetupItem, ...]], ...] = (
+    ("TOPS", (
+        SetupItem("Trim L", "out_trim_db.2", "num"),
+        SetupItem("Trim R", "out_trim_db.3", "num"),
+        SetupItem("Polarity", "top_inverted", "bool"),
+        SetupItem("Lo-Cut", F_LOWCUT_ON, "bool"),          # its frequency: ALIGN E4
+    )),
+    ("SUBS", (
+        SetupItem("Trim L", "out_trim_db.0", "num"),
+        SetupItem("Trim R", "out_trim_db.1", "num"),
+        SetupItem("Polarity", "sub_inverted", "bool"),
+        SetupItem("Mono L+R", "mono_subs", "bool"),
+        SetupItem("Low-pass", "sub_lowpass_on", "bool"),
+        SetupItem("Low-pass freq", "sub_lowpass_hz", "num"),
+    )),
+    ("INPUT", (
+        SetupItem("Trim", "input_trim_db", "num"),
+    )),
+    ("LIVE EQ", (
+        SetupItem("Reset live EQ", A_RESET_LIVE, "action", confirm=True),
+        SetupItem("Undo reset", A_UNDO_RESET, "action"),
+        SetupItem("Spectrum", F_SPECTRUM_ON, "bool"),
+    )),
+    ("PHONE", (
+        SetupItem("Phone", "PHONE", "page"),          # QR codes + phone on/off (D-007)
+        SetupItem("Laptop access", A_LAPTOP, "action", confirm=True),
+    )),
+    ("BOX", (
+        SetupItem("Profile", "profile", "choice"),
+        SetupItem("Audition (dev)", "dev_audition", "choice"),
+        SetupItem("Knob test", "HWTEST", "page"),
+    )),
 )
+SETUP_ITEMS: tuple[SetupItem, ...] = tuple(
+    dataclasses.replace(it, group=name) for name, items in SETUP_GROUPS for it in items)
+SETUP_GROUP_NAMES: tuple[str, ...] = tuple(name for name, _items in SETUP_GROUPS)
+
+
+def setup_group_start(i: int) -> int:
+    """Index (into SETUP_ITEMS) of the first item of item `i`'s group."""
+    i = max(0, min(len(SETUP_ITEMS) - 1, i))
+    g = SETUP_ITEMS[i].group
+    while i > 0 and SETUP_ITEMS[i - 1].group == g:
+        i -= 1
+    return i
+
+
+def setup_group_pos(i: int) -> tuple[str, int, int]:
+    """(group name, 1-based position in it, its size) of item `i`."""
+    i = max(0, min(len(SETUP_ITEMS) - 1, i))
+    first = setup_group_start(i)
+    g = SETUP_ITEMS[i].group
+    size = sum(1 for it in SETUP_ITEMS if it.group == g)
+    return g, i - first + 1, size
+
+
+def setup_group_step(i: int, delta: int) -> int:
+    """E3 on SETUP: the first item `delta` groups away (clamped). Backwards from inside a group,
+    the first step lands on that group's own first item."""
+    i = max(0, min(len(SETUP_ITEMS) - 1, i))
+    first = setup_group_start(i)
+    if delta < 0 and i != first:
+        i, delta = first, delta + 1
+    starts = [k for k in range(len(SETUP_ITEMS)) if k == 0 or SETUP_ITEMS[k - 1].group != SETUP_ITEMS[k].group]
+    g = starts.index(setup_group_start(i))
+    return starts[max(0, min(len(starts) - 1, g + delta))]
 
 
 @dataclass(frozen=True)
@@ -286,11 +381,11 @@ class Knob:
     field: str | None                 # None = unused on this page
     accel_up: int = 1                 # max detent multiplier on fast turns, per direction
     accel_down: int = 1
-    kind: Literal["nudge", "slot", "item", "setup_value", "phone_qr"] = "nudge"
+    kind: Literal["nudge", "slot", "item", "group", "setup_value", "phone_qr"] = "nudge"
     # The first detent after ARM_WINDOW_S of rest only wakes the knob (highlight + hint); the
     # next ones edit. For a value whose every change is audible as a dip (the delay).
     arm: bool = False
-    # ALIGN alignment knobs: a turn does nothing (HINT_LOCKED) until a B3 hold unlocks them.
+    # ALIGN alignment knobs: a turn does nothing (HINT_LOCKED) until a B2 hold unlocks them.
     locked: bool = False
 
 
@@ -311,7 +406,7 @@ KNOBS: dict[str, tuple[Knob, Knob, Knob, Knob]] = {
     "SETUP": (
         Knob("ITEM", None, kind="item"),
         Knob("VALUE", None, kind="setup_value"),
-        Knob("", None),
+        Knob("GROUP", None, kind="group"),
         Knob("", None),
     ),
     "HWTEST": (Knob("", None), Knob("", None), Knob("", None), Knob("", None)),
@@ -372,20 +467,23 @@ except Exception:  # pragma: no cover - keeps the UI usable if the driver module
             return max_mult
         return 1 + int((max_mult - 1) * (rate_dps - low) / (high - low))
 
-HINT_MUTE = "HOLD B2 TO MUTE / UNMUTE"
-HINT_LOCKED = "LOCKED · HOLD B3 TO EDIT"
+HINT_MUTE = "HOLD B4 TO MUTE / UNMUTE"
+HINT_LOCKED = "LOCKED · HOLD B2 TO EDIT"
 HINT_UNLOCKED = "DELAY + LO-CUT UNLOCKED"
 HINT_RELOCKED = "DELAY + LO-CUT LOCKED"
-HINT_B3_OFF_SHOW = "B3: NEXT BAND ON SHOW"
-HINT_B4_OFF_SHOW = "B4: NOTCH HELPER ON SHOW"
+HINT_B2_OFF_SHOW = "B2: NEXT BAND ON SHOW"
+HINT_B3_OFF_SHOW = "B3: NOTCH HELPER ON SHOW"
 HINT_RESET_IN_SETUP = "RESET LIVE EQ: IN SETUP"
-HINT_PUSH_TOGGLE = "PUSH TO CHANGE"
+HINT_TURN_VALUE = "TURN THE VALUE KNOB"
+HINT_PUSH_OPEN = "PUSH TO OPEN"
+HINT_PUSH_RUN = "PUSH TO RUN"
+HINT_PUSH_TWICE = "PUSH TWICE TO RUN"
 HINT_CONFIRM = "PUSH AGAIN TO APPLY (MAY CLICK)"
 HINT_CONFIRM_RESET = "PUSH AGAIN TO RESET ALL LIVE EQ"
-HINT_CONFIRM_LOWCUT = "PUSH AGAIN TO SWITCH THE LO-CUT"
 HINT_CONFIRM_LAPTOP = "PUSH AGAIN: LAPTOP ACCESS FOR 2 H"
 HINT_ARM = "{} · TURN AGAIN TO CHANGE"
 CONFIRM_WINDOW_S = 5.0
+PICK_WINDOW_S = 8.0           # SETUP: a chosen value waits this long for its push (each turn renews)
 
 # ------------------------------------------------------------------------------------------
 # Physical -> logical mapping (from /etc/k1000/k1000.yaml, section `controls:`)
@@ -506,17 +604,26 @@ class Focus:
     turned: set[int] = field(default_factory=set)        # held pushes whose knob was turned
     last_turn: dict[int, tuple[float, int]] = field(default_factory=dict)  # enc -> (ts, sign)
     turn_dt: dict[int, float | None] = field(default_factory=dict)  # enc -> previous interval
-    confirm: str | None = None            # SETUP field/action waiting for its second push
+    confirm: str | None = None            # SETUP action waiting for its second push
     confirm_until: float = 0.0
+    # SETUP (D-013): the value E2 chose for `pick` (a field), set by the next push before
+    # pick_until; None = nothing chosen. The row shows `now -> chosen`.
+    pick: str | None = None
+    pick_value: Any = None
+    pick_until: float = 0.0
     hw: HwTestLog = field(default_factory=HwTestLog)
-    # B2 press: (the mute B2 acts against, its generation) as the operator saw them when the
-    # press STARTED. B2 long fires 0.8 s later, while still held: it acts on that intent.
+    # B4 press (mute, D-013): (the mute B4 acts against, its generation) as the operator saw
+    # them when the press STARTED. B4 long fires 0.8 s later, while still held: it acts on that.
     b2_seen: tuple[Any, Any] | None = None
     # ALIGN: E3/E4 (delay, Lo-Cut) editable until this deadline (time.monotonic()); 0 = locked.
     unlock_until: float = 0.0
     # SETUP items whose confirm is waived right now (set by the Controller): Laptop access
     # while it is open, so that closing it, the safe direction, is a single push.
     no_confirm: set[str] = field(default_factory=set)
+    # SETUP fields that cannot change right now -> the hint a turn or push shows instead (set by
+    # the Controller: Profile pinned in k1000.yaml, Audition off the dev profile, Spectrum
+    # disabled in k1000.yaml). The row draws its value dimmed.
+    readonly: dict[str, str] = field(default_factory=dict)
 
     def editing_now(self, now: float | None = None) -> str | None:
         now = time.monotonic() if now is None else now
@@ -529,6 +636,14 @@ class Focus:
     def confirm_now(self, now: float | None = None) -> str | None:
         now = time.monotonic() if now is None else now
         return self.confirm if self.confirm and now < self.confirm_until else None
+
+    def pick_now(self, now: float | None = None) -> tuple[str, Any] | None:
+        """(field, chosen value) while a SETUP choice waits for its push, else None."""
+        now = time.monotonic() if now is None else now
+        return (self.pick, self.pick_value) if self.pick and now < self.pick_until else None
+
+    def clear_pick(self) -> None:
+        self.pick, self.pick_value, self.pick_until = None, None, 0.0
 
     def unlocked(self, now: float | None = None) -> bool:
         """ALIGN's E3/E4 (delay, Lo-Cut) are editable now."""
@@ -566,6 +681,12 @@ def apply_focus(focus: Focus, action: Action, now: float | None = None) -> bool:
     if isinstance(action, SelectItem):
         focus.item = max(0, min(len(SETUP_ITEMS) - 1, focus.item + action.delta))
         focus.confirm = None
+        focus.clear_pick()
+        return True
+    if isinstance(action, SelectGroup):
+        focus.item = setup_group_step(focus.item, action.delta)
+        focus.confirm = None
+        focus.clear_pick()
         return True
     if isinstance(action, Unlock):
         focus.unlock_until = now + max(0.0, float(action.seconds))
@@ -578,7 +699,7 @@ def apply_focus(focus: Focus, action: Action, now: float | None = None) -> bool:
     if isinstance(action, ShowHint):
         focus.hint, focus.hint_until = action.text, now + action.seconds
         return True
-    if isinstance(action, (Nudge, Toggle)):
+    if isinstance(action, (Nudge, Toggle, SetChoice)):
         focus.editing, focus.edit_until = action.field, now + EDIT_HIGHLIGHT_S
         return False
     return False
@@ -614,17 +735,19 @@ def _accel(knob: Knob, delta: int, last: tuple[float, int] | None, now: float,
 
 
 def map_event(page: str, focus: Focus, event: Any, cfg: Any = None, *,
-              muted: bool | None = None, mute_seq: int | None = None) -> list[Action]:
+              muted: bool | None = None, mute_seq: int | None = None,
+              state: Any = None) -> list[Action]:
     """Map one hardware event to actions for `page` (v0 names MAIN/LIVE are aliases).
 
     `event` is duck-typed: an encoder event has `.index`, `.delta` (signed detents) and
     optionally `.ts` (monotonic seconds); a switch event has `.index` and `.kind` in
     {'press', 'release', 'short', 'long'}. `cfg` is the k1000.yaml dict (or a ControlMap).
     `muted` is the mute the screen currently shows (`pages.displayed_muted(state, status)`):
-    B2 long then emits `Mute(not muted)`; with None it falls back to `Mute('toggle')`.
-    `mute_seq` is its generation (Controller.mute_view). Both are recorded at the B2 PRESS: the
+    B4 long then emits `Mute(not muted)`; with None it falls back to `Mute('toggle')`.
+    `mute_seq` is its generation (Controller.mute_view). Both are recorded at the B4 PRESS: the
     long press acts on what the operator meant when the finger went down (a mute stays a mute
     whatever a phone did meanwhile; an unmute carries `seen` and is refused if the mute changed).
+    `state` (k1000.state.State or anything with `.get(field)`): the values SETUP chooses from.
     """
     page = page_name(page)
     cmap = ControlMap.from_cfg(cfg)
@@ -663,8 +786,10 @@ def map_event(page: str, focus: Focus, event: Any, cfg: Any = None, *,
             return [SelectSlot(delta)]
         if knob.kind == "item":
             return [SelectItem(delta)]
+        if knob.kind == "group":
+            return [SelectGroup(1 if delta > 0 else -1)]
         if knob.kind == "setup_value":
-            return _setup_turn(focus, delta, fine)
+            return _setup_turn(focus, delta, fine, now, state)
         if knob.kind == "phone_qr":
             return [PhoneQr(1 if delta > 0 else -1)]
         if knob.field is None:
@@ -686,79 +811,138 @@ def map_event(page: str, focus: Focus, event: Any, cfg: Any = None, *,
         if kind == "press":
             focus.held.add(n)
             focus.turned.discard(n)
-        elif kind in ("release", "short"):
+        elif kind == "release":
+            # The driver sends `release` THEN `short` (hw/mcp23017.py): `turned` must survive
+            # the release so the short that follows still knows the knob was turned.
+            focus.held.discard(n)
+        elif kind == "short":
             focus.held.discard(n)
             focus.turned.discard(n)
         # A push released after turning its knob (the fine-mode habit from SHOW) is not a
-        # 'select': on SETUP it would flip a polarity or open a page.
+        # 'select': on SETUP it would set the value the turn chose, or open a page.
         if page == "PHONE" and kind == "short" and n in (0, 1) and not turned:
             return [PhoneToggle()]
         if page == "SETUP" and kind == "short" and n in (0, 1) and not turned:
-            return _setup_push(focus, now)
+            return _setup_push(focus, now, state)
         return []
 
-    if n == 0:   # B1: next page on press (navigation should feel instant); hold = SHOW
-        if kind == "press":
-            return [NextPage()]
-        return [GotoPage(HOME_PAGE)] if kind == "long" else []
-    if n == 1:   # B2 mute — long press only, on the intent of its press
-        return _b2(focus, kind, muted, mute_seq)
-    if n == 2:   # B3: next band (SHOW), unlock/lock the alignment knobs (ALIGN)
-        return _b3(page, focus, kind, now)
-    if n == 3:   # B4: the notch helper (SHOW)
+    if n == 0:   # B1 (D-013): tap (on release) = SHOW <-> ALIGN / back; hold = SETUP / home
+        if kind == "short":
+            return [GotoPage(B1_TAP.get(page, HOME_PAGE))]
+        return [GotoPage(B1_HOLD.get(page, HOME_PAGE))] if kind == "long" else []
+    if n == 1:   # B2: next band (SHOW), unlock/lock the alignment knobs (ALIGN)
+        return _band_button(page, focus, kind, now)
+    if n == 2:   # B3: the notch helper (SHOW)
         if page == "SHOW":
             if kind == "short":
                 return [NotchHelper()]
             return [ShowHint(HINT_RESET_IN_SETUP)] if kind == "long" else []
-        return [ShowHint(HINT_B4_OFF_SHOW)] if kind == "short" else []
+        return [ShowHint(HINT_B3_OFF_SHOW)] if kind == "short" else []
+    if n == 3:   # B4 mute — long press only, on the intent of its press
+        return _b2(focus, kind, muted, mute_seq)
     return []
 
 
-def _b3(page: str, focus: Focus, kind: str, now: float) -> list[Action]:
-    if page == "SHOW":
-        return [SelectBand(1)] if kind == "short" else []
+def _band_button(page: str, focus: Focus, kind: str, now: float) -> list[Action]:
+    """B2 (D-013, was B3): next band on SHOW; on ALIGN a hold unlocks DELAY + LO-CUT, a tap
+    relocks them. Off ALIGN a hold shows HINT_MUTE (B2 was the mute button until D-013)."""
     if page == "ALIGN":
         if kind == "long":
             return [Unlock(UNLOCK_S)]
         if kind == "short":
             return [Lock()] if focus.unlocked(now) else [ShowHint(HINT_LOCKED)]
         return []
-    return [ShowHint(HINT_B3_OFF_SHOW)] if kind == "short" else []
+    if kind == "long":                 # B2 was MUTE until D-013: a hold says where mute went
+        return [ShowHint(HINT_MUTE)]
+    if page == "SHOW":
+        return [SelectBand(1)] if kind == "short" else []
+    return [ShowHint(HINT_B2_OFF_SHOW)] if kind == "short" else []
 
 
 def _setup_item(focus: Focus) -> SetupItem:
     return SETUP_ITEMS[max(0, min(len(SETUP_ITEMS) - 1, focus.item))]
 
 
-def _setup_turn(focus: Focus, delta: int, fine: bool) -> list[Action]:
+def setup_value_of(state: Any, item: SetupItem) -> Any:
+    """The current value of a SETUP item's field in `state` (None when unknown)."""
+    get = getattr(state, "get", None)
+    if not callable(get):
+        return None
+    try:
+        v = get(item.field)
+    except Exception:   # noqa: BLE001 - an odd state reads as unknown, never breaks a knob
+        return None
+    return bool(v) if item.kind == "bool" and v is not None else v
+
+
+def _pick_step(focus: Focus, item: SetupItem, delta: int, now: float, state: Any) -> list[Action]:
+    """E2 on an ON/off or a choice: move the chosen value one choice (wraps) in `delta`'s
+    direction from the one already chosen, else from the current value. Back on the current
+    value = nothing chosen."""
+    choices = item.choices
+    if not choices:
+        return []
+    cur = setup_value_of(state, item)
+    pk = focus.pick_now(now)
+    base = pk[1] if pk is not None and pk[0] == item.field else cur
+    step = 1 if delta > 0 else -1          # one choice per event, however fast the turn
+    i = choices.index(base) if base in choices else (-1 if step > 0 else 0)
+    cand = choices[(i + step) % len(choices)]
+    if cand == cur:
+        focus.clear_pick()
+    else:
+        focus.pick, focus.pick_value, focus.pick_until = item.field, cand, now + PICK_WINDOW_S
+    focus.confirm = None
+    return []
+
+
+def _setup_turn(focus: Focus, delta: int, fine: bool, now: float = 0.0,
+                state: Any = None) -> list[Action]:
     item = _setup_item(focus)
     if item.kind == "num":
         return [Nudge(item.field, delta, fine)]
-    return [ShowHint(HINT_PUSH_TOGGLE)]
+    ro = focus.readonly.get(item.field)
+    if ro:
+        return [ShowHint(ro)]
+    if item.picks:
+        return _pick_step(focus, item, delta, now, state)
+    if item.kind == "page":
+        return [ShowHint(HINT_PUSH_OPEN)]
+    twice = item.needs_confirm and item.field not in getattr(focus, "no_confirm", ())
+    return [ShowHint(HINT_PUSH_TWICE if twice else HINT_PUSH_RUN)]
 
 
 def _confirm_hint(item: SetupItem) -> str:
     if item.field == A_RESET_LIVE:
         return HINT_CONFIRM_RESET
-    if item.field == F_LOWCUT_ON:
-        return HINT_CONFIRM_LOWCUT
     if item.field == A_LAPTOP:
         return HINT_CONFIRM_LAPTOP
     return HINT_CONFIRM
 
 
-def _setup_push(focus: Focus, now: float) -> list[Action]:
-    """E1/E2 push on SETUP = 'select' the current item (twice when it needs a confirm)."""
+def _setup_push(focus: Focus, now: float, state: Any = None) -> list[Action]:
+    """E1/E2 push on SETUP: set the chosen value (D-013), open a page, run an action (twice when
+    it needs a confirm). With nothing chosen, a push on an ON/off or a choice proposes the next
+    value (the row shows it) and the next push sets it."""
     item = _setup_item(focus)
     if item.kind == "page":
         return [GotoPage(item.field)]
+    ro = focus.readonly.get(item.field)
+    if ro:
+        return [ShowHint(ro)]
+    if item.picks:
+        pk = focus.pick_now(now)
+        if pk is not None and pk[0] == item.field:
+            focus.clear_pick()
+            return [SetChoice(item.field, pk[1])]
+        return _pick_step(focus, item, 1, now, state)
+    if item.kind == "num":
+        return [ShowHint(HINT_TURN_VALUE)]
     if item.needs_confirm and item.field not in getattr(focus, "no_confirm", ()):
         if focus.confirm_now(now) != item.field:
             focus.confirm, focus.confirm_until = item.field, now + CONFIRM_WINDOW_S
             return [ShowHint(_confirm_hint(item))]
         focus.confirm = None
-    if item.kind in ("bool", "rebuild"):
-        return [Toggle(item.field)]
     if item.kind == "action":
         if item.field == A_RESET_LIVE:
             return [ResetLive()]
@@ -769,7 +953,8 @@ def _setup_push(focus: Focus, now: float) -> list[Action]:
 
 
 def _b2(focus: Focus, kind: str, muted: Any, mute_seq: Any) -> list[Action]:
-    """B2: 'press' records what the operator sees; 'long' (0.8 s later, still held) acts on it.
+    """The MUTE button, B4 since D-013 (the name `_b2` is kept from D-009: B2 was mute then).
+    'press' records what the operator sees; 'long' (0.8 s later, still held) acts on it.
     Started on an unmuted box: always MUTE (a phone muting meanwhile must not turn it into an
     unmute). Started on a muted box: UNMUTE with the generation seen, which the controller
     refuses if the mute changed since. No press seen (an older event source): as before."""
@@ -790,7 +975,7 @@ def _b2(focus: Focus, kind: str, muted: Any, mute_seq: Any) -> list[Action]:
 
 def _hwtest(focus: Focus, event: Any, cmap: ControlMap, muted: Any = None,
             mute_seq: Any = None) -> list[Action]:
-    """Record raw activity. B2 long still mutes (the safety gesture works on every page);
+    """Record raw activity. B4 long still mutes (the safety gesture works on every page);
     a long press on any OTHER switch leaves the test (back to SETUP)."""
     hw = focus.hw
     hw.refresh_roles(cmap)
@@ -815,7 +1000,7 @@ def _hwtest(focus: Focus, event: Any, cmap: ControlMap, muted: Any = None,
     hw.last = f"sw{idx} {kind}  = {name}"
     if kind in ("press", "short", "long"):   # keep the log readable: no 'release' lines
         hw.lines.append(hw.last)
-    if cmap.switch_role(idx) == ("B", 1):          # B2 mutes on every page, as everywhere
+    if cmap.switch_role(idx) == ("B", 3):          # B4 mutes on every page, as everywhere
         acts = _b2(focus, kind, muted, mute_seq)
         return [a for a in acts if isinstance(a, Mute)]
     if kind == "long":

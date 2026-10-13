@@ -196,6 +196,8 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   - System alerts get their own place and colour, apart from hints.
 - **Gate**: accepted on the box by the Wednesday 14 evening freeze, otherwise Sunday runs v0. Thursday's
   soak runs v1 with the spectrum on.
+- **Superseded in part by D-013** (2026-10-13): the button assignments (B1 PAGE · B2 BAND/UNLOCK ·
+  B3 NOTCH · B4 MUTE now) and the SETUP list (grouped by speaker floor, choose-then-set).
 
 ## D-010 — Sunday settings, and the bypass as the only fallback · decided 2026-10-13
 
@@ -271,6 +273,8 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   `E1`/`E2` tags (its `_corner` helper and SETUP header), which merge without a conflict and would
   ignore `ui.knob_tags`: route both through `pages._knob_label`. Keep D-011's SETUP list (no Top
   delay). Its venue change lines can word the delay with `fmt_align_delay`.
+- **Superseded in part by D-013** (2026-10-13): the SETUP list wording (19 items, now grouped by
+  speaker floor: TOPS, SUBS, INPUT, LIVE EQ, PHONE, BOX).
 
 ## D-012 — Output patch: out3 feeds both subs, out4 spare · decided 2026-10-13
 
@@ -286,3 +290,96 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   carries the same sub sum as out3: a spare sub feed until its own voice exists. The per-sub trims
   and the meter's two sub bars still show, but only out3's matter.
 - **Lost**: a separate level, delay or polarity per sub. Fine while they stand together.
+
+## D-013 — SETUP by speaker floor, choose-then-set, buttons B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE · decided 2026-10-13
+
+- **Ask** (Thomas at the bench, 2026-10-13): "can you make a pass on the SETUP page: - group things
+  per speaker floor instead of function: all things tops, all things subs, ... - Things like
+  Audition or Profile, etc: the value changing system is off: E2 says 'Push to change', once
+  pushing it shows PUSH AGAIN but the value to select is not visible.. - overhaul that SETUP
+  section needs a better organisation". Then: "also i would say: B1 switch between SHOW and ALIGN
+  only and B1-hold to get to SETUP page.. what do you think ? Also Move EQ select (B3) into B2,
+  move peak detect (B4) into B3, so we can put mute/unmute (B2) into B4".
+- **Counsel given** (Claude, to "what do you think?"):
+  - **SETUP out of the tap cycle is right.** It is rarely used and holds the risky rows (pipeline
+    rebuilds, polarity, the live-EQ reset), so a hold is the right gesture to reach it. One B1 tap
+    from ALIGN or SETUP returns to SHOW.
+  - **The ALIGN unlock moves to B2 with band select** (Claude's call; the ask did not name it):
+    "hold B2 to edit". B2 then always means "what E2–E4 act on", and B3 is the notch alone.
+  - **The cost**: relearning all four buttons five days before the gig (the emergency mute moves
+    from B2 to B4), relabelling the shell and reprinting the operator card and the quick start.
+  - **The Knob test must confirm B1..B4's physical positions** before the shell is labelled, so
+    the labels match what the code calls B1..B4.
+- **Decided** (Thomas asked for each change; the unlock on B2 is Claude's call): built as below;
+  the deploy waits for Thomas's go.
+  - **Buttons: B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE.**
+    - **B1** tap (on release) = SHOW ↔ ALIGN; from SETUP a tap goes to SHOW, from PHONE back to
+      SETUP. **B1 hold** (0.8 s) = SETUP from SHOW or ALIGN; from SETUP or PHONE it goes to SHOW.
+      The press itself no longer moves a page.
+    - **B2** (was B3): SHOW tap = next band, LS 1 2 3 4 HS (wraps). ALIGN: hold = unlock DELAY and
+      LO-CUT for 30 s of idle, tap = relock (`LOCKED · HOLD B2 TO EDIT`). Elsewhere a tap says
+      `B2: NEXT BAND ON SHOW`.
+    - **B3** (was B4): SHOW tap = the notch helper; SHOW hold = `RESET LIVE EQ: IN SETUP`.
+      Elsewhere a tap says `B3: NOTCH HELPER ON SHOW`.
+    - **B4** (was B2): mute / unmute on a **long press only**, on every page (the Knob test and
+      PHONE included), acting on what the screen showed at the press; a tap says
+      `HOLD B4 TO MUTE / UNMUTE`. The MUTED band, the PHONE page and the phone's toasts say B4.
+    - **The physical map is unchanged**: `controls: buttons: [4, 5, 6, 7]` still maps B1..B4 to
+      sw4..sw7, and the Knob test still names sw5 "B2". Only what each logical button does moved.
+  - **SETUP grouped by speaker floor**, 19 items as before:
+    - **TOPS**: Trim L · Trim R · Polarity · Lo-Cut (on/off; its frequency stays ALIGN E4).
+    - **SUBS**: Trim L · Trim R · Polarity · Mono L+R · Low-pass · Low-pass freq.
+    - **INPUT**: Trim. **LIVE EQ**: Reset live EQ · Undo reset · Spectrum.
+    - **PHONE**: Phone · Laptop access. **BOX**: Profile · Audition (dev) · Knob test.
+    - Old labels → new: Input trim → INPUT › Trim, Sub/Top polarity → SUBS/TOPS › Polarity, Sub
+      low-pass → SUBS › Low-pass, Sub LP freq → SUBS › Low-pass freq, Trim Sub/Top L/R →
+      SUBS/TOPS › Trim L/R, Mono subs → SUBS › Mono L+R, Lo-Cut → TOPS › Lo-Cut.
+    - **Knobs**: E1 = item (header rows skipped, clamps), E2 = value, **E3 = group** (forward: the
+      next group's first item; back from inside a group: its own first item first), E4 unused.
+    - **Screen**: a header row per group, `<GROUP> <pos>/<size>` on the top line, a scroll bar at
+      the right edge (no more `▲▼` and `10/19`), and a bottom line saying what the knobs do on the
+      selected row (`turn = change`, `turn = choose · push = set`, `push = open`, `push ×2 = run`,
+      `fixed here`…).
+  - **Choose, then set**, for every ON/off and choice row (both polarities, Lo-Cut, Mono L+R,
+    Low-pass, Spectrum, Profile, Audition):
+    - **Turn E2 to choose**: one choice per turn, wrapping; back on the current value = nothing
+      chosen. The row turns red and shows **now → chosen** (`off → ON`, `SUM → TOPS`); the footer
+      says `PUSH TO SET ON`, plus `· MAY CLICK` on a pipeline rebuild (Mono L+R, Profile,
+      Audition).
+    - **Push E1 or E2 to set it.** With nothing chosen, a push proposes the next value (the row
+      shows it) and the next push sets it: push, push still works, with the target in sight.
+    - The choice waits 8 s (each turn renews it); E1, E3 or a page change drops it; auto-home
+      never fires while a choice or a confirm is pending. A value a phone set meanwhile changes
+      nothing: `NO CHANGE: ALREADY SET`.
+    - No setting needs the blind double push any more: Lo-Cut loses its confirm (choose + push are
+      the two gestures). Reset live EQ and opening Laptop access keep their push twice within 5 s.
+  - **Read-only rows**, dimmed, where a turn or push only says why: Profile while k1000.yaml pins
+    it (`DEV · PINNED`, `PROFILE PINNED IN k1000.yaml`), Audition off the dev profile (`—`,
+    `AUDITION: DEV PROFILE ONLY`), Spectrum while k1000.yaml disables it (`DISABLED`,
+    `SPECTRUM OFF IN k1000.yaml`).
+- **Why**: one floor's settings sat apart (the tops' Lo-Cut twelve rows below Top polarity), while a
+  rig is set floor by floor. The old double push showed `PUSH AGAIN` but not the value it would
+  set: on a rebuild, a possible click on a guess. Choose-then-set shows the target before it is set
+  and keeps two gestures for everything that rebuilds. The buttons: Thomas's layout, with the
+  counsel above.
+- **What it supersedes**:
+  - **D-009, button assignments**: "band select … on a B3 tap", "B4 tap = notch helper",
+    "`LOCKED · HOLD B3 TO EDIT`", "a B3 hold unlocks them", "B1 tap = next page, B1 hold = SHOW".
+    Mute stays a long press only, now on B4.
+  - **D-009, SETUP list**: "Lo-Cut on/off moves to SETUP with a confirm" → TOPS › Lo-Cut, chosen
+    then set. Reset live EQ keeps its confirm and undo.
+  - **D-011, SETUP list wording**: "SETUP has 19 items" → still 19, now in six groups; Top delay
+    stays gone.
+  - Everything else in D-009 (SHOW, the ALIGN lock, auto-home after 60 s, the master-up guard),
+    D-011 and D-012 stands. D-012's "Mono subs stays ON" is SETUP › SUBS › Mono L+R ON.
+- **Pictures**: `docs/ui/setup.png` (TOPS › Polarity), `setup_confirm.png` (SUBS › Mono L+R,
+  `off → ON` chosen), `setup_pick_audition.png`, `setup_profile_pinned.png`, `setup_muted.png`,
+  `hwtest_muted.png` (sw7 = B4 held long).
+- **Gate**: on the box before the Wednesday 14 freeze, like D-009 and D-011, after the Knob test
+  confirms B1..B4. Then the shell labels `B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE` and the
+  printed cards.
+- **Merge note** (`night/snapshots`, venue snapshots, after the gig): it conflicts here. Its SETUP
+  items (Venues, and its old flat list) must join a group; its `rebuild` kind becomes `bool` /
+  `choice` (`rebuild` is now a property); its VENUES page needs a B1 tap back to SETUP, like PHONE
+  (`input_map.B1_TAP`). Its E1/E2 tags go through `pages._knob_label` (D-011). Its hints and docs
+  name the D-013 buttons: mute B4, band B2, notch B3.
