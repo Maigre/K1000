@@ -374,7 +374,9 @@ items: the B1 page cycle, and sub delay off the front page.
   at ≤ 15 fps (§2).
 - **Cost on the box** (silent HiFiBerry input, 60 s on SHOW): k1000 19.6 % of one core (max 32.8 %),
   camilladsp 4.7 %, engine processing load 0.98 % (max 1.86 %), 0 xruns. Measured at the
-  acceptance, before the program gate added its one small RMS call per poll (not re-measured).
+  acceptance, before the program gate added its one small RMS call per poll. Re-measured with the
+  gate over the 1 h 34 min soak on 2026-10-13 (SHOW + spectrum, silent input, systemd CPU
+  counters): k1000 **25.5 %** of one core on average, camilladsp 6.0 %, 0 xruns, SoC max 55 °C.
 
 **Found at the acceptance (2026-10-13), fixed after it** (k1000 code only: deploy with
 `install.sh` without `--start`, then `sudo systemctl restart k1000`; the engine keeps playing):
