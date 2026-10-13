@@ -5,7 +5,7 @@
 
     <!-- First run / change Wi-Fi -->
     <string name="setup_title">Connect to K1000</string>
-    <string name="setup_text">On the box: SETUP › Phone shows the K1000 Wi-Fi code. Scan it once; the app keeps it and joins K1000 by itself from then on. Mobile data stays on for the rest of the phone.</string>
+    <string name="setup_text">On the box: SETUP › Phone shows the K1000 Wi-Fi code. Scan it once; the app keeps it and joins K1000 by itself from then on. Mobile data stays on for the rest of the phone. Phone already on K1000 (joined with the camera)? The app takes the Wi-Fi from the box by itself.</string>
     <string name="setup_scan">Scan the Wi-Fi QR code</string>
     <string name="setup_or_type">Or type the password printed under the code:</string>
     <string name="setup_ssid_hint">Wi-Fi name</string>
@@ -19,6 +19,17 @@
     <string name="setup_about">About &amp; licences</string>
     <string name="about_close">Close</string>
     <string name="about_header">K1000 for Android %1$s\nFree software: GNU General Public License, version 3 or (at your option) any later version. No warranty.\nSource code: https://github.com/Maigre/K1000 (the app is in android/).\n\nThe notices and licences of everything in this app follow.</string>
+
+    <!-- The K1000 Wi-Fi taken from the box (Connect screen, GET https://10.42.0.1/api/wifi) -->
+    <string name="box_asking">The phone is on the K1000 Wi-Fi: asking the box for it…</string>
+    <string name="box_taken">K1000 Wi-Fi taken from the box</string>
+    <string name="box_same">The box\'s Wi-Fi is the one this app already joins.</string>
+    <string name="box_same_unjoined">The box\'s Wi-Fi is the one this app already has, but the app is not on it. If Android\'s dialog found no K1000 (“No devices found”): tick “I joined K1000 in Android\'s Wi-Fi settings” below, then Join K1000. Otherwise: Cancel, then Retry.</string>
+    <string name="box_absent">This box does not hand its Wi-Fi to the app (an older K1000, or no Wi-Fi password file on it): scan the code or type the password.</string>
+    <string name="box_refused">The Wi-Fi this phone is on does not answer with the K1000 certificate: nothing was taken from it.</string>
+    <string name="box_invalid">The box\'s answer could not be used (%1$s): scan the code or type the password.</string>
+    <string name="box_no_answer">The box did not answer on this Wi-Fi: scan the code or type the password.</string>
+    <string name="box_local_refused">Without the nearby devices permission (local network), the app cannot ask the box for its Wi-Fi. Tap here to allow it.</string>
 
     <!-- Status -->
     <string name="status_retry">Retry</string>

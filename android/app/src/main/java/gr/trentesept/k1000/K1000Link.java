@@ -251,6 +251,11 @@ final class K1000Link {
     }
 
     private boolean onSubnet(LinkProperties lp) {
+        return onSubnet(lp, subnets);
+    }
+
+    /** True when {@code lp} has an IPv4 address on one of {@code subnets} (also BoxWifiProbe's test). */
+    static boolean onSubnet(LinkProperties lp, List<String> subnets) {
         if (lp == null) return false;
         for (LinkAddress la : lp.getLinkAddresses()) {
             if (!(la.getAddress() instanceof Inet4Address)) continue;

@@ -91,7 +91,7 @@ import java.util.Map;
  * keep Back off the page's slide areas, play the phone's own haptics, and answer diagnostics. The
  * page reaches those through a WebMessagePort bridge (android/BRIDGE.md). See docs/09-android.md.
  */
-public final class MainActivity extends Activity implements K1000Link.Listener {
+public final class MainActivity extends Activity implements K1000Link.Listener, BoxWifiProbe.Listener {
 
     private static final String TAG = "K1000";
     private static final int REQ_CAMERA = 1;
@@ -110,6 +110,8 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
     private static final String P_UI = "ui";
     /** The page's last fullscreen request (immersive from the start, no flash of the bars). */
     private static final String P_FULLSCREEN = "fullscreen";
+    /** Where the stored Wi-Fi came from: "scan", "typed", or "box <build id>" (Diagnostics only). */
+    private static final String P_SOURCE = "wifi_from";
 
     /**
      * Launcher shortcuts (long-press the K1000 icon). Honoured only through the non-exported
@@ -131,6 +133,22 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
     private K1000Link link;
     private K1000Trust trust;
     private String trustError;
+    /** The K1000 Wi-Fi taken from the box (Connect screen, app 0.2.1): BoxWifi. */
+    private BoxWifiProbe boxWifi;
+    private final BoxWifi.Tries boxTries = new BoxWifi.Tries();
+    /** The subnet a Wi-Fi must be on for the app to ask the box (the smoke build: the emulator's). */
+    private List<String> boxSubnets = List.of(K1000Hosts.SUBNET);
+    /** The Wi-Fi being joined was taken from the box: the joining screen says so. */
+    private boolean fromBox;
+    /**
+     * Android 17+: the local network permission was asked for the box on this Connect screen
+     * (once by itself per Connect screen; after a refusal, a tap on the screen's line asks again).
+     */
+    private boolean boxLocalAsked;
+    /** The pending local network prompt was the Connect screen's (for the box), not the page's. */
+    private boolean boxLocalPrompt;
+    /** The Connect screen's line is the local network refusal: a tap on it asks again. */
+    private boolean boxLineAsksPermission;
 
     private WebView web;
     private View statusPanel;
@@ -145,6 +163,7 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
     private EditText setupPassword;
     private CheckBox setupSystem;
     private TextView setupError;
+    private TextView setupBox;
     private Button setupCancel;
     private View scanPanel;
     private DecoratedBarcodeView scanView;
@@ -239,6 +258,7 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
 
         link = new K1000Link(this, this);
         trust = loadTrust();
+        boxWifi = new BoxWifiProbe(this, this, trust);
 
         bindViews();
         haptics = new Haptics(this, root);
@@ -253,8 +273,9 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
         }
 
         if (BuildConfig.SMOKE) {
-            if (!prefs.contains(P_MODE)) {
-                // The emulator has no K1000 access point: follow its own Wi-Fi instead.
+            if (!prefs.contains(P_MODE) && !getIntent().getBooleanExtra("smoke_fresh", false)) {
+                // The emulator has no K1000 access point: follow its own Wi-Fi instead (unless the
+                // test starts a real first run: the Connect screen, the Wi-Fi taken from the box).
                 prefs.edit().putString(P_MODE, K1000Link.Mode.SYSTEM.name()).apply();
             }
             smokeSetup(getIntent());
@@ -289,6 +310,7 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
             else if (link.isBlocked()) link.retryBind();
         }
         relinkWhenStarted = false;
+        maybeAskBox();
     }
 
     @Override
@@ -316,6 +338,7 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
     protected void onDestroy() {
         main.removeCallbacksAndMessages(null);
         haptics.cancel();
+        boxWifi.close();
         closePort();
         unregisterReceiver(wifiState);
         link.stop();
@@ -395,6 +418,7 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
         setupPassword = findViewById(R.id.setup_password);
         setupSystem = findViewById(R.id.setup_system);
         setupError = findViewById(R.id.setup_error);
+        setupBox = findViewById(R.id.setup_box);
         setupCancel = findViewById(R.id.setup_cancel);
         scanPanel = findViewById(R.id.scan_panel);
         scanView = findViewById(R.id.scan_view);
@@ -449,6 +473,9 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
             });
         }
 
+        setupBox.setOnClickListener(v -> {
+            if (boxLineAsksPermission) askLocalNetworkAgain();
+        });
         statusRetry.setOnClickListener(v -> retry());
         statusWifi.setOnClickListener(v -> openWifiPanel());
         statusChange.setOnClickListener(v -> showSetup(false));
@@ -459,6 +486,9 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
             setupPassword.setEnabled(!on);
             setupSsid.setEnabled(!on);
             findViewById(R.id.setup_scan).setEnabled(!on);
+            // The fallback ticked: the box is not asked (the user's choice stands). Unticked: ask.
+            if (on) hideBoxLine();
+            else maybeAskBox();
         });
     }
 
@@ -571,6 +601,7 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
     }
 
     private void showStatus(int title, CharSequence text, boolean busy, boolean canRetry) {
+        if (BuildConfig.DEBUG) Log.d(TAG, "status: " + getString(title) + " · " + text);   // the smoke test reads it
         statusTitle.setText(title);
         statusText.setText(text);
         statusProgress.setVisibility(busy ? View.VISIBLE : View.GONE);
@@ -589,13 +620,25 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
         setupPassword.setText("");
         setupSystem.setChecked(K1000Link.Mode.SYSTEM.name().equals(prefs.getString(P_MODE, "")));
         setupError.setVisibility(View.GONE);
+        hideBoxLine();
         setupCancel.setVisibility(first ? View.GONE : View.VISIBLE);
         setupPanel.setVisibility(View.VISIBLE);
+        // Already on the K1000 Wi-Fi (joined with the camera's QR code)? Ask the box for it. A new
+        // Connect screen: a new count, and a request still running from before does not count
+        // (BoxWifi.Tries: it is asked again once that one ends).
+        boxTries.reset();
+        boxLocalAsked = false;
+        main.removeCallbacks(askBoxLater);
+        boxWifi.watch();
+        main.post(askBoxLater);
     }
 
     private void closeSetup() {
         hideKeyboard();
         setupPanel.setVisibility(View.GONE);
+        main.removeCallbacks(askBoxLater);
+        boxTries.reset();
+        boxWifi.unwatch();
     }
 
     /** Version, licence, source, and the licences of everything the APK carries (assets/licenses). */
@@ -679,7 +722,7 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
 
     private void onScanned(String payload) {
         try {
-            save(WifiQr.parse(payload));
+            save(WifiQr.parse(payload), "scan");
         } catch (WifiQr.InvalidException e) {
             showSetup(!hasLinkConfig());
             setupError(e.getMessage());
@@ -695,21 +738,175 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
         try {
             WifiQr.Credentials c = WifiQr.of(setupSsid.getText().toString().trim(),
                     setupPassword.getText().toString().trim(), false);
-            save(c);
+            save(c, "typed");
         } catch (WifiQr.InvalidException e) {
             setupError(e.getMessage());
         }
     }
 
-    private void save(WifiQr.Credentials c) {
+    /** Scanned, typed or taken from the box: the same place, then the app's own join (JOIN). */
+    private void save(WifiQr.Credentials c, String source) {
         // App-private storage only (no backup, no device transfer: res/xml/data_extraction_rules).
         prefs.edit()
                 .putString(P_SSID, c.ssid)
                 .putString(P_PSK, c.passphrase)
                 .putBoolean(P_HIDDEN, c.hidden)
                 .putString(P_MODE, K1000Link.Mode.JOIN.name())
+                .putString(P_SOURCE, source)
                 .apply();
+        fromBox = source.startsWith("box");
         beginLink();
+    }
+
+    // ------------------------------------------------- the K1000 Wi-Fi taken from the box (0.2.1)
+
+    private final Runnable askBoxLater = this::maybeAskBox;
+
+    /**
+     * The Connect screen is up and a Wi-Fi network is on the K1000 subnet (the phone joined K1000
+     * with the camera's QR code, or in Settings): ask the box for its Wi-Fi over that network
+     * (BoxWifi: HTTPS, the pinned K1000 CA, the box's names only). Never while the fallback box is
+     * ticked: that choice stands.
+     */
+    private void maybeAskBox() {
+        main.removeCallbacks(askBoxLater);
+        if (boxWifi == null || setupPanel == null) return;
+        Network n = boxWifi.onSubnet(boxSubnets);
+        if (n == null && !boxTries.busy() && getString(R.string.box_asking).contentEquals(setupBox.getText())) {
+            hideBoxLine();   // that Wi-Fi went away before the box answered
+        }
+        boolean local = Build.VERSION.SDK_INT < API_LOCAL_NETWORK
+                || checkSelfPermission(PERM_LOCAL_NETWORK) == PackageManager.PERMISSION_GRANTED;
+        BoxWifi.Step step = BoxWifi.next(trust != null, setupPanel.getVisibility() == View.VISIBLE,
+                setupSystem.isChecked(), started, n != null, boxTries.due(n), boxTries.busy(), local, boxLocalAsked);
+        switch (step) {
+            case ASK_LOCAL_NETWORK:
+                // Android 17+: reaching the box needs it anyway. Asked once by itself per Connect
+                // screen (a refusal resumes the activity: asking from onResume again would loop);
+                // after a refusal the screen's line says so, and a tap on it asks again.
+                boxLocalAsked = true;
+                boxLocalPrompt = true;
+                localNetworkAsked = true;
+                requestPermissions(new String[] {PERM_LOCAL_NETWORK}, REQ_LOCAL_NETWORK);
+                break;
+            case PROBE: {
+                int token = boxTries.started(n);
+                setupBoxLine(getString(R.string.box_asking));
+                Log.i(TAG, "box wifi: asking the box over network " + n + " (try " + boxTries.tries() + ")");
+                boxWifi.ask(n, token);
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    @Override
+    public void onWifiChanged() {
+        maybeAskBox();
+    }
+
+    @Override
+    public void onBoxWifi(int token, Network network, BoxWifi.Result answer) {
+        if (!boxTries.ended(token)) {
+            // Asked on an earlier Connect screen (closed, or shown again since): not this screen's
+            // answer, and this screen has not asked yet (that request was running): ask now.
+            Log.i(TAG, "box wifi: an answer to an earlier Connect screen, dropped (" + answer.verdict + ")");
+            maybeAskBox();
+            return;
+        }
+        BoxWifi.Result r = BoxWifi.compare(answer, prefs.getString(P_MODE, ""), prefs.getString(P_SSID, null),
+                prefs.getString(P_PSK, null), link.isUp());
+        Log.i(TAG, "box wifi: " + r);   // never the password (Result.toString)
+        if (setupPanel.getVisibility() != View.VISIBLE || setupSystem.isChecked() || !started) {
+            // The Connect screen closed, the fallback was ticked, or K1000 went to the background
+            // meanwhile: nothing is taken (asked again on the next Connect screen or resume).
+            return;
+        }
+        if (r.verdict == BoxWifi.Verdict.ADOPT) {
+            // The pinned box's own answer: good even if that network has changed since.
+            boxTries.answered(network, r.verdict);
+            takeBoxWifi(r);
+            return;
+        }
+        if (!network.equals(boxWifi.onSubnet(boxSubnets))) {
+            // Another K1000-subnet network meanwhile: this answer is not its; ask that one.
+            main.post(askBoxLater);
+            return;
+        }
+        long again = boxTries.answered(network, r.verdict);
+        switch (r.verdict) {
+            case SAME:
+                setupBoxLine(getString(R.string.box_same));
+                break;
+            case SAME_UNJOINED:
+                // The app has this Wi-Fi but is not on it (e.g. Android's dialog found no K1000):
+                // re-taking it would only bring the same dialog back. Point to the fallback.
+                setupBoxLine(getString(R.string.box_same_unjoined));
+                break;
+            case ABSENT:
+                setupBoxLine(getString(R.string.box_absent));
+                break;
+            case REFUSED:
+                setupBoxLine(getString(R.string.box_refused));
+                break;
+            case INVALID:
+                setupBoxLine(getString(R.string.box_invalid, r.why));
+                break;
+            case RETRY:
+                if (again >= 0) main.postDelayed(askBoxLater, again);
+                else setupBoxLine(getString(R.string.box_no_answer));
+                break;
+            default:
+                break;
+        }
+    }
+
+    /** Stored where a scan stores it, then the app's own join: later launches join by themselves. */
+    private void takeBoxWifi(BoxWifi.Result r) {
+        Log.i(TAG, "box wifi: K1000 Wi-Fi taken from the box (" + r.creds.ssid + ", box " + r.box + ")");
+        stopScan();
+        toast(R.string.box_taken);
+        save(r.creds, "box " + (r.box.isEmpty() ? "?" : r.box) + (r.band.isEmpty() ? "" : ", band " + r.band));
+    }
+
+    private void setupBoxLine(String text) {
+        boxLineAsksPermission = false;
+        setupBox.setText(text);
+        setupBox.setClickable(false);
+        setupBox.setVisibility(View.VISIBLE);
+    }
+
+    private void hideBoxLine() {
+        boxLineAsksPermission = false;
+        setupBox.setClickable(false);
+        setupBox.setVisibility(View.GONE);
+    }
+
+    /**
+     * Android 17+: the local network permission refused on the Connect screen. The box cannot be
+     * asked without it, and the screen has no Retry: its line says so, and a tap on it asks again
+     * (review 2026-10-13: the box was then never asked again in that run).
+     */
+    private void showBoxLocalRefused() {
+        setupBoxLine(getString(R.string.box_local_refused));
+        boxLineAsksPermission = true;
+        setupBox.setClickable(true);
+    }
+
+    /** A tap on the refusal line: Android's prompt again, or, after "Don't allow" twice, App info. */
+    private void askLocalNetworkAgain() {
+        if (checkSelfPermission(PERM_LOCAL_NETWORK) == PackageManager.PERMISSION_GRANTED) {
+            hideBoxLine();
+            maybeAskBox();
+        } else if (shouldShowRequestPermissionRationale(PERM_LOCAL_NETWORK)) {
+            boxLocalAsked = true;
+            boxLocalPrompt = true;
+            requestPermissions(new String[] {PERM_LOCAL_NETWORK}, REQ_LOCAL_NETWORK);
+        } else {
+            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", getPackageName(), null)));
+        }
     }
 
     private void beginLink() {
@@ -732,8 +929,9 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
                     prefs.getString(P_PSK, ""), prefs.getBoolean(P_HIDDEN, false));
         }
         if (!link.isUp() && !quiet) {
-            showStatus(R.string.st_joining_title, getString(m == K1000Link.Mode.JOIN
-                    ? R.string.st_joining_text : R.string.st_joining_system_text), true, false);
+            String text = getString(m == K1000Link.Mode.JOIN ? R.string.st_joining_text : R.string.st_joining_system_text);
+            if (fromBox && m == K1000Link.Mode.JOIN) text = getString(R.string.box_taken) + "\n\n" + text;
+            showStatus(R.string.st_joining_title, text, true, false);
         }
         pausedSinceRequest = false;
         try {
@@ -784,6 +982,7 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
     @Override
     public void onLinkUp(Network network) {
         autoRetries = 0;
+        fromBox = false;
         if (!pageRequested || pageFailed) {
             loadPage(pageRequested);
         } else {
@@ -1163,9 +1362,19 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
                 else r.deny();
             }
         } else if (requestCode == REQ_LOCAL_NETWORK) {
+            boolean forBox = boxLocalPrompt;
+            boxLocalPrompt = false;
             if (granted) {
                 if (wantLink) startLink();
-            } else if (!shouldShowRequestPermissionRationale(PERM_LOCAL_NETWORK)) {
+                if (boxLineAsksPermission) hideBoxLine();
+                maybeAskBox();
+                return;
+            }
+            if (forBox && setupPanel.getVisibility() == View.VISIBLE && !setupSystem.isChecked()) {
+                Log.i(TAG, "box wifi: the local network permission was refused on the Connect screen");
+                showBoxLocalRefused();
+            }
+            if (!shouldShowRequestPermissionRationale(PERM_LOCAL_NETWORK)) {
                 // "Don't ask again": only the app's settings page can grant it now.
                 statusRetry.setOnClickListener(v -> {
                     statusRetry.setOnClickListener(w -> retry());
@@ -1352,6 +1561,8 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
         d.put("keep_awake", keepAwake);
         d.put("window_keep_screen_on", (getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) != 0);
         d.put("link", link.isUp() ? "up (" + link.mode() + ")" : link.isBlocked() ? "blocked" : "down");
+        d.put("wifi_from", mode() == K1000Link.Mode.SYSTEM ? "Android's Wi-Fi settings (fallback)"
+                : prefs.getString(P_SOURCE, prefs.contains(P_SSID) ? "scan or typed" : "none"));
         d.put("haptics_count", haptics.played + " played, " + haptics.dropped + " dropped (rate), "
                 + haptics.fallbacks + " via the vibrator, " + haptics.alarms + " answers via the alarm vibration (Touch feedback off)");
         if (!BuildConfig.BENCH_HOST.isEmpty()) d.put("bench_host", BuildConfig.BENCH_HOST);
@@ -1604,7 +1815,10 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
     /** The launching intent may point the link at the emulator's subnet before it starts. */
     private void smokeSetup(Intent intent) {
         String saved = prefs.getString("smoke_subnet", null);
-        if (saved != null) link.smokeSubnet(saved);
+        if (saved != null) {
+            link.smokeSubnet(saved);
+            boxSubnets = List.of(saved);
+        }
         if (intent != null && "subnet".equals(intent.getStringExtra("smoke"))) smokeCommand(intent);
     }
 
@@ -1643,6 +1857,8 @@ public final class MainActivity extends Activity implements K1000Link.Listener {
                 String cidr = intent.getStringExtra("cidr");
                 prefs.edit().putString("smoke_subnet", cidr).apply();
                 link.smokeSubnet(cidr);
+                boxSubnets = List.of(cidr);   // the box's Wi-Fi is asked for on that subnet too
+                maybeAskBox();
                 break;
             }
             case "refusebind":

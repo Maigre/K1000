@@ -1,14 +1,17 @@
-# 09 — The Android app: a thin shell around the phone page (2026-10-12; 0.2: 2026-10-13)
+# 09 — The Android app: a thin shell around the phone page (2026-10-12; 0.2 and 0.2.1: 2026-10-13)
 
 Ask: Thomas, 2026-10-12: *"Android app (APK) — thin WebView shell … for you to sideload and
 try"* (`ROADMAP.md` Phase 2, after D-007). The UI stays the page the box serves; the app adds what
 Chrome cannot. Code, build, signing and sideloading: [`android/README.md`](../android/README.md).
 The app ↔ page contract: [`android/BRIDGE.md`](../android/BRIDGE.md).
 
-**Status: v0.2.0 (2026-10-13, phone v2 design §4 / S3): the v2 page by default, the page bridge,
-immersive, Back, haptics, diagnostics, the bench build. Reviewed, fixed and rebuilt the same day
-(§8). Built and tested on emulators (§8), not yet on a phone or against the box.** v0.1.1 was
-never installed on a phone.
+**Status: v0.2.1 (2026-10-13): v0.2.0 plus the K1000 Wi-Fi taken from the box. A phone that
+joined K1000 with the camera's Wi-Fi QR code needs no scan in the app: on its Connect screen the app
+reads the Wi-Fi from the box over the pinned TLS and joins it itself from then on (§2, §3). The box
+serves the APK from its first-time page (`06-phone.md`). Built and tested on emulators (§8),
+reviewed and rebuilt the same day (use only that build), not yet on a phone or against the box.**
+v0.2.0 (phone v2 design §4 / S3: the v2 page by default, the page bridge, immersive, Back,
+haptics, diagnostics, the bench build) was never installed on a phone either; neither was v0.1.1.
 Sunday 18 Oct is a field test (Thomas, 2026-10-13). The APK is used on Sunday only once the
 release key is escrowed to USB and the real-phone checklist (§10) passes at Friday's rig test;
 Chrome on `/v2/` or `/` stays the fallback, then the knobs, then the bypass.
@@ -18,7 +21,7 @@ Chrome on `/v2/` or `/` stays the fallback, then the knobs, then the bypass.
 | | PWA in Chrome (`docs/06-phone.md`) | K1000 app |
 |---|---|---|
 | Certificate | Install the K1000 CA once in Android settings (needs a screen lock; Android then says *Network may be monitored*) | Built in, trusted **only** for `10.42.0.1` and `k1000.home.arpa`. Nothing to install |
-| Wi-Fi | Join K1000 in Settings. With mobile data on, Android may send the page over mobile data: **airplane mode + Wi-Fi** during the show | The app asks Android for K1000 itself and binds **only itself** to it. **Mobile data stays on** for the rest of the phone (calls, messages, maps) |
+| Wi-Fi | Join K1000 in Settings. With mobile data on, Android may send the page over mobile data: **airplane mode + Wi-Fi** during the show | The app asks Android for K1000 itself and binds **only itself** to it. **Mobile data stays on** for the rest of the phone (calls, messages, maps). The password: taken from the box when the phone is on K1000 already (0.2.1), or scanned once |
 | After a dropout | Depends on the portal setting and *Stay connected* (`06-phone.md` §5) | The app asks again at once; Android rejoins K1000 **without a dialog** as soon as it sees it (§3) |
 | Screen awake | Wake Lock, if the browser grants it | Always, while K1000 is on screen |
 | Haptics | `navigator.vibrate` only (no per-detent quality) | v1: the same `navigator.vibrate`. v2 (0.2): Android's own haptic effects (tick, click, confirm, reject, long press). The texture (tick, click, long press) follows the phone's *Touch feedback* setting; the answers (the mute ack, a refusal, link lost) always play (§3b) |
@@ -39,20 +42,53 @@ own hint *"Phone in airplane mode + Wi-Fi on"*, which the app makes unnecessary 
 
 ## 2. First run
 
-1. Install the APK (`android/README.md` › Install: allow *Install unknown apps* for Files or
-   Chrome, then *Install*).
+**From the box (0.2.1, the usual way).** Nothing to scan in the app, nothing to carry over USB.
+On the Pixel 4a (Android 13), with the box up, SETUP › PHONE on its screen:
+
+1. **Join K1000 with the camera.** The **first** QR code (Wi-Fi): Camera app, or Settings ›
+   Network & internet › Internet › the **⊞ QR icon** › scan › *Join*. *K1000 has no internet
+   access — Stay connected?* › **Yes** (`06-phone.md` §3 step 3).
+2. **The first-time page.** E1 turn to the **third** code, FIRST TIME (`http://10.42.0.1/`), scan
+   it, open it in **Chrome**. Tap **Get the K1000 app** (it shows the version and the first 8 hex
+   of the APK's SHA-256; no button = this box has no APK: §6).
+3. **Install.** Chrome may warn about the download (an APK, over plain http on the box's own Wi-Fi):
+   **Download anyway** / **Keep**. Tap the download, then, once per phone: *Your phone is not allowed
+   to install unknown apps from this source* › **Settings** › **Allow from this source** › Back ›
+   **Install** (*Update* over an earlier K1000). Play Protect: **Install anyway** (not on the Play
+   Store, expected). Then **Open**.
+4. **The app takes the Wi-Fi from the box.** The *Connect to K1000* screen shows *The phone is on
+   the K1000 Wi-Fi: asking the box for it…* for a moment, then *Joining K1000…* with the line
+   **K1000 Wi-Fi taken from the box**.
+5. Android's own dialog: *Connect to device — K1000 app wants to use a temporary Wi-Fi network to
+   connect to your device — K1000* › **Connect**. Once per phone and app: Android remembers it.
+6. The K1000 page opens (the box screen switches to the URL code, as with Chrome); Android says
+   *Viewing full screen · To exit, swipe down from the top* once › **Got it**. From then on the app
+   joins K1000 by itself at every launch, as after a scan.
+
+Android 17 and later ask *Allow K1000 to find, connect to, and determine the relative position of
+nearby devices?* before step 4 › **Allow** (that permission covers the local network, which the box
+is on; without it the app cannot reach the box at all).
+
+Leave the K1000 that step 1 saved in Android's Wi-Fi settings as it is: forgetting it there also
+removes the app's approval (§3), and the next join shows the dialog of step 5 once more.
+
+If Android's dialog of step 5 (or of a later launch) says *No devices found* while the phone is on
+K1000 from step 1 (**[verify on the 4a]**, §10 item 1): *Cancel* › *Change K1000 Wi-Fi* (its
+line says the box's Wi-Fi is the app's, but the app is not on it) › tick **I joined K1000 in
+Android's Wi-Fi settings** › **Join K1000**: the app follows the K1000 the camera joined (the
+fallback, §2b), and the page opens.
+
+**Scan or type (any box, and the APK from elsewhere).** If the phone is not on K1000 when the app
+opens, or the box is older than this (it then says *This box does not hand its Wi-Fi to the app (an
+older K1000)*), it is as in 0.2.0:
+
+1. Install the APK (`android/README.md` › Install).
 2. Open **K1000**: *Connect to K1000*. On the box: **SETUP › Phone** shows the Wi-Fi code.
    Tap **Scan the Wi-Fi QR code**, allow the camera, scan the **first** code (the Wi-Fi one). If
    the camera will not scan, type the password printed under the code (`abcd-efgh-jkmn` form; the
    name `K1000` is filled in) and tap **Join K1000**.
-3. Android 17 and later only: *Allow K1000 to find, connect to, and determine the relative position
-   of nearby devices?* › **Allow** (on Android 17 this permission covers the local network, which
-   the box is on).
-4. Android's own dialog: *Connect to device — K1000 app wants to use a temporary Wi-Fi network to
-   connect to your device — K1000* › **Connect**. Once per phone and app: Android remembers it.
-5. The K1000 page opens. The box screen switches to the URL code, as with Chrome.
-6. From 0.2 the app is full screen: Android says *Viewing full screen · To exit, swipe down from
-   the top* once › **Got it** (seen on the Android 13 emulator).
+3. Android 17+: the nearby devices question above › **Allow**.
+4. Android's *Connect to device* dialog › **Connect**, then the page, as above.
 
 At a gig: Wi-Fi **on** (airplane mode is no longer needed), open K1000. When you close the app for
 good (swipe it away in Recents), Android leaves K1000 and goes back to its usual Wi-Fi.
@@ -86,7 +122,46 @@ the Wi-Fi with internet, so rejoin K1000 in Settings).
 
 ## 3. How it works
 
-- **Joining K1000.** A `WifiNetworkSpecifier` (SSID + WPA2 passphrase from the QR) passed to
+- **The Wi-Fi taken from the box (0.2.1).** While the *Connect to K1000* screen is up (first run,
+  or *Change K1000 Wi-Fi*), the app watches the phone's Wi-Fi networks as the fallback mode does.
+  When one has an address in `10.42.0.0/24`, it asks the box, through that network
+  (`Network.openConnection`, no proxy): `GET https://10.42.0.1/api/wifi` (then
+  `https://k1000.home.arpa/api/wifi` if the address does not answer). The answer
+  `{"v":1,"ssid":"K1000","psk":"…","band":"…","box":"<build id>"}` must come over TLS that passes
+  **both** checks the page's does: the network security config during the handshake (the K1000 CA,
+  for the box's two names only), then `K1000Trust` on the leaf (the CA's name constraints
+  included). Then it must be a 200 `application/json` of at most 4 KB, strict UTF-8, one JSON
+  object, `v` = 1, an SSID of 1 to 32 bytes without control characters, a password of 8 to 63
+  printable ASCII characters (the scan's own rules). It is stored exactly where a scan stores it
+  (app-private, no backup), and the app joins it itself (JOIN mode below): later launches need
+  neither the box's answer nor the Settings network. No redirect is followed, nothing is cached,
+  plain HTTP is never used (no cleartext anywhere in the app), only the box's two names are asked
+  (never a bench host), and no intent or link can hand the app a password. The password is never
+  logged. Code: `BoxWifi.java` (the contract, pure), `BoxWifiProbe.java` (the request).
+  - **Why this is safe:** the box answers only on its AP's HTTPS listener, to clients on the AP's
+    own subnet (box side, `06-phone.md`): whoever can ask already knows the password, being on
+    K1000. The pin proves to the app that it is the real box: a rogue access point named K1000,
+    even on `10.42.0.0/24` at `10.42.0.1`, cannot show a K1000-CA certificate, so the app sends it
+    nothing but the TLS handshake and takes nothing (*does not answer with the K1000 certificate*
+    on the Connect screen). A Wi-Fi on any other subnet is never asked at all.
+  - **When it does not ask:** the fallback box *I joined K1000 in Android's Wi-Fi settings* is
+    ticked (that choice stands: no switching between the two modes behind the user's back); the
+    Connect screen is not up (a phone already set up never asks again); the app is in the
+    background; Android 17+ without the local network permission (asked once by itself per
+    Connect screen; refused, the screen's line says so, and a tap on that line asks again).
+  - **What each answer does:** a valid one is taken (or, when it is the Wi-Fi the app already
+    joins, nothing changes; when the app has that Wi-Fi but is not on it, after Android's dialog
+    found no K1000 or was cancelled, nothing changes either, and the line points to the fallback
+    box instead of saying the app is on it); 404 (an older box, or no password file on the box)
+    leaves today's Connect screen with one line saying so; a refused certificate or an unusable
+    answer is never asked again on that Connect screen; no answer at all (timeout, a connection
+    refused, closed or reset, also inside TLS during or after the handshake, 429, 503) is asked
+    again after 2 and 4 s, three tries in all. Only a certificate the pin refuses counts as *not
+    the K1000 certificate*. Leaving and reopening the Connect screen starts over: a request still
+    running from before does not count, and the reopened screen asks as soon as it ends.
+  - Diagnostics' `wifi_from` says where the stored Wi-Fi came from: `box <build id>, band <band>`,
+    `scan`, `typed`, or the fallback.
+- **Joining K1000.** A `WifiNetworkSpecifier` (SSID + WPA2 passphrase from the QR or the box) passed to
   `ConnectivityManager.requestNetwork`. Android shows its connect dialog the first time and stores
   the approval per app and network; for a password-protected network it matches on the SSID and
   the security type (AOSP `WifiNetworkFactory`, Android 13: *"Only require SSID and SecurityType
@@ -196,7 +271,13 @@ The contract is [`android/BRIDGE.md`](../android/BRIDGE.md); in short:
 
 | Screen | Meaning | What to do |
 |---|---|---|
-| *Connect to K1000* | First run, or *Change K1000 Wi-Fi* | Scan the Wi-Fi code on the box (SETUP › Phone) or type the password |
+| *Connect to K1000* | First run, or *Change K1000 Wi-Fi* | Phone on K1000 already: nothing, the app asks the box (next rows). Otherwise scan the Wi-Fi code on the box (SETUP › Phone) or type the password |
+| *…asking the box for it…* (amber, Connect screen) | The phone is on a `10.42.0.x` Wi-Fi: the app reads `/api/wifi` | Wait a second: *K1000 Wi-Fi taken from the box*, then *Joining K1000…* |
+| *This box does not hand its Wi-Fi to the app (an older K1000, or no Wi-Fi password file on it)* | The box answered 404 at `/api/wifi` | Scan the code or type the password (or tick the fallback) |
+| *…does not answer with the K1000 certificate: nothing was taken from it* | The Wi-Fi at `10.42.0.x` is not the K1000 box (or the box has a new CA) | Check it is your box's Wi-Fi; a re-made CA needs a new app build |
+| *The box's answer could not be used (…)* · *The box did not answer on this Wi-Fi* | A malformed answer; or no answer three times | Scan the code or type the password |
+| *The box's Wi-Fi is the one this app already has, but the app is not on it…* | The app has this Wi-Fi, but its own join did not happen (Android's dialog found no K1000, or was cancelled) | Dialog said *No devices found*: tick *I joined K1000 in Android's Wi-Fi settings*, **Join K1000** (the fallback, §2b). Otherwise *Cancel* › **Retry** |
+| *Without the nearby devices permission (local network), the app cannot ask the box…* | Android 17+, the permission refused on the Connect screen | Tap that line › **Allow** (after *Don't allow* twice the tap opens the app's settings › Permissions › Nearby devices) |
 | *Joining K1000…* | Android is looking for K1000 (its dialog may be on top the first time) | Tap **Connect** in Android's dialog; stay near the box |
 | *Not connected to K1000* + bar moving | The phone left K1000 (range, box off) | Nothing: it rejoins by itself when K1000 is seen |
 | *Not connected to K1000* · *Wi-Fi is off* | Wi-Fi was switched off | **Turn Wi-Fi on**: the app rejoins by itself |
@@ -214,6 +295,8 @@ The contract is [`android/BRIDGE.md`](../android/BRIDGE.md); in short:
 
 | Symptom | Cause / fix |
 |---|---|
+| On K1000 (joined with the camera), but the Connect screen does not ask the box | The fallback box *I joined K1000 in Android's Wi-Fi settings* is ticked (untick it), or Android 17's nearby devices permission was refused: the Connect screen then says so; tap that line › **Allow** (or close the app and open it again: a new Connect screen asks once more) |
+| *This box does not hand its Wi-Fi to the app* | The box predates `/api/wifi`, or has no password file (`setup-ap.sh --status`): scan the code |
 | The scan says *This is not a Wi-Fi QR code* | You scanned the URL or FIRST TIME code: turn E1 on the box back to the **Wi-Fi** code |
 | The scan says the code is for an open network or WPA3 | The box's AP is not the K1000 WPA2 one (`setup-ap.sh --status`) |
 | *Joining K1000…* for long, no dialog | K1000 is out of range or on a band the phone cannot see (`setup-ap.sh --band bg`, `06-phone.md` §6) |
@@ -242,6 +325,13 @@ SHA-256, `apksigner verify` and the licences file in `secrets/k1000-android/out/
 release is the intended way to hand it out (not done: publishing is Thomas's call); it should
 carry `K1000-<version>.LICENSES.txt` next to the APK (GitHub adds the source archive itself).
 
+**The box hands it out too (0.2.1):** its first-time page (`http://10.42.0.1/`, the PHONE page's
+third QR) offers *Get the K1000 app* when the box was deployed with an APK: `install.sh` installs
+the newest `box/apk/K1000-<version>.apk` (never in git) to `/opt/k1000/apk/`, and the deploy drops
+the signed release APK there before copying the tree (`06-phone.md`, first-time page). The page
+shows the version and the first 8 hex of the APK's SHA-256: compare them with
+`K1000-<version>.apk.sha256`.
+
 ## 7. Open points
 
 - **Not yet on a real phone or a real box.** The emulator does not cover the access point
@@ -261,13 +351,123 @@ carry `K1000-<version>.LICENSES.txt` next to the APK (GitHub adds the source arc
 - The phone-mic spectrum gets WebView's `getUserMedia` (with the page's own constraints), not
   Android's *unprocessed* source. A native capture bridge is a later step (DESIGN §4.3, after the
   gig); 0.2's Diagnostics reads whether the phone supports UNPROCESSED and lists its microphones.
-- Not in 0.2 (after the gig, APK 0.3): volume-key mute, the box-served APK with an update prompt,
+- Not in 0.2.x (after the gig, APK 0.3): volume-key mute, an update prompt for the APK the box
+  serves (0.2.1's box serves it on its first-time page, the app does not check it yet),
   `hello.min_app`, show lock, brightness, orientation.
+- **[verify on the 4a]** the first run from the box (§2): with K1000 saved in Settings by the
+  camera's join *and* the app's own request, what does Android do on the app's first request
+  (dialog, then the app's network), on every later launch with that saved K1000 connected (the
+  emulator joined by itself in about 5 s there, §8, but its radio is not a phone's), and with the
+  app closed near the box (the saved K1000 rejoins like any saved Wi-Fi; with *Stay connected*
+  accepted, check that mobile data stays the phone's internet)?
 - The release key is a single file: it belongs in the USB escrow (the hub's secrets sync skips binary
   files). Losing it means every phone must uninstall and reinstall to update.
 - A new K1000 CA (not a new leaf) needs a new app build.
 
-## 8. Test record (2026-10-12; v0.1.1 re-run 2026-10-13; v0.2.0 2026-10-13)
+## 8. Test record (2026-10-12; v0.1.1 re-run 2026-10-13; v0.2.0 and v0.2.1 2026-10-13)
+
+**v0.2.1 after its review (2026-10-13, rebuilt).** Still 0.2.1 / versionCode 4: the first 0.2.1
+build never reached a phone. Use only this build (sha256 in `K1000-0.2.1.apk.sha256`:
+`c5ea7d1e…1f25ec7`). Fixed (app side; the review found nothing that leaks the password, takes it
+from an unpinned host, a redirect or an intent, or loops between the two modes):
+- *Medium–low*: every `SSLException` read as a fake box, so a connection that dropped during or
+  after the TLS handshake (the edge of range, the box's service restarting) showed *does not
+  answer with the K1000 certificate*, final for that Connect screen, and the user had to scan. Only
+  a refused certificate counts now (`SSLPeerUnverifiedException`, or a `CertificateException` /
+  `CertPathValidatorException` among the causes or suppressed exceptions, or a message naming
+  one); any other is no answer: the other name, then asked again. Each TLS failure's cause chain
+  is logged (`box wifi: TLS failure at …`; the password is never in it). Seen on both emulators: a
+  close in the middle of the handshake is `SSLHandshakeException: connection closed`, a reset is
+  `SocketException: Connection reset`; a look-alike CA is `SSLHandshakeException` ←
+  `CertificateException` ← `CertPathValidatorException`.
+- *Low*: a Connect screen reopened while an earlier request was still running (Change K1000 Wi-Fi ›
+  Cancel › Change K1000 Wi-Fi, a slow box) did not ask the box until the Wi-Fi changed; and a
+  screen shown again over a running request counted that request's no answer as its own, final
+  after one try. The tries now know which Connect screen a request was asked on (`BoxWifi.Tries`):
+  an earlier screen's answer is dropped and the screen up asks at once, its own try 1.
+- *Low*: after the app took the box's Wi-Fi and Android's dialog found no K1000 (or was
+  cancelled), *Change K1000 Wi-Fi* said *the one this app already joins*, although the app was not
+  on it. That is its own answer now (`SAME_UNJOINED`): nothing taken again (the same dialog would
+  come back), and the line points to the fallback box.
+- *Low, Android 17*: the local network permission refused on the Connect screen was never asked
+  again in that run, and the *Retry* the docs gave does not exist there. The line now says so, and a
+  tap on it asks again (App info after *Don't allow* twice); each new Connect screen asks once by
+  itself.
+- *Test gap*: the relaunch was checked only after the Settings network had been forgotten. A
+  relaunch with the camera's K1000 still saved and connected (the state of every later launch) is
+  checked now, and the Pixel checklist (§10 item 1) asks for it.
+
+Results:
+- **`./build.sh check`: lint no issues, 61 unit tests pass** (+3 in `BoxWifiTest`: only a
+  certificate failure is a fake box, dropped connections inside TLS included, with the log line's
+  cause chain; the same Wi-Fi while the app is not on it; an answer to an earlier Connect screen).
+  Release signed with the K1000 key (signer `85:ff:f9:65:…:0a:8f`, v3, `apksigner`: Verifies).
+- **New emulator checks** (`smoke_server.py --tls-cut`, `--wifi-reset`, `--wifi-slow`), on
+  Android 13 and 17:
+  - the box closes the first connection mid-handshake and resets the next request: two no answers
+    (`SSLHandshakeException: connection closed`, `SocketException: Connection reset`), the third
+    try takes the Wi-Fi; never *not the K1000 certificate*;
+  - the app takes the Wi-Fi, Android's dialog (often *No devices found* on both emulators while
+    the Settings network holds K1000), *Cancel*, *Change K1000 Wi-Fi*: the line says
+    the app is not on it (not *already joins*), no re-join; then tick the fallback box, *Join
+    K1000*: fallback mode, link up, the page loads (the way out §2 gives);
+  - a slow box (its answer over 10 s): Connect screen, *Cancel*, Connect screen again: the old
+    answer is dropped, the reopened screen asks by itself (try 1) and says *already joins* 15 s
+    after reopening;
+  - relaunched with the camera's K1000 saved again in Settings and connected: joined by itself in
+    JOIN mode in 5 to 8 s, no dialog, `/api/wifi` not asked. **The emulator joins there; a phone
+    is still to be seen** (§10 item 1);
+  - Android 17: the permission refused on the Connect screen: no prompt loop, the line, a tap on
+    it, *Allow*: the box is asked and the Wi-Fi taken (the box never asked before *Allow*).
+- **Android 13 emulator (WebView 109): 75/75**, the new signed release APK included: the 70 of
+  the first build and 5 new ones. Alone (`K1000_SMOKE_ONLY=boxwifi`): 12/12. A second release
+  build from the same tree gave the same bytes.
+- **Android 17 emulator (WebView 145): 77/77**, the new signed release APK included: the 71 of
+  the first build and 6 new ones (the permission check is Android 17's). Alone
+  (`K1000_SMOKE_ONLY=boxwifi`): 14/14. One earlier full run gave 76/77: the 0.2.0 check of the
+  binding allowed again after a simulated VPN refusal (`fetch -> 503`), the one that also failed in
+  the first build's second run; it passed in the next run, and the code under it did not change.
+
+**v0.2.1 (2026-10-13), first build: the K1000 Wi-Fi taken from the box** (superseded by the
+rebuild above). versionCode 4.
+- **`./build.sh check`: lint no issues, 58 unit tests pass** (+11: `BoxWifiTest`: the contract's
+  answer; the password never in a log line; `v` must be 1; the SSID's and the password's rules
+  (32 bytes, multi-byte characters, control characters, 8 to 63 printable ASCII); one JSON object,
+  no duplicate field, strict UTF-8, at most 4 KB; only a 200 `application/json` (404 = an older
+  box, 429/503 = later, a redirect or anything else = not taken); HTTPS to the box's two names only,
+  bench build included; the same Wi-Fi changing nothing; when to ask (the fallback ticked never
+  asks, Android 17's permission asked once); three tries per network and Connect screen).
+  Release signed with the K1000 key (signer `85:ff:f9:65:…:0a:8f`, v3); that first
+  `K1000-0.2.1.apk` was SHA-256 `bf0ba125…379e83` (a second build from the same tree gave the same
+  bytes).
+- **Android 13 emulator (WebView 109): 70/70**, the signed 0.2.1 release APK included: the 63
+  checks of 0.2.0 and 7 new ones (also alone, `K1000_SMOKE_ONLY=boxwifi`: 7/7). The new ones, with
+  the phone on the emulated K1000 joined in Settings and the app fresh on its Connect screen:
+  - an older box (404 at `/api/wifi`): asked once, the Connect screen stays with its line, nothing
+    stored, no join;
+  - a look-alike box (a CA with the same name, another key): the TLS handshake fails, `/api/wifi`
+    never reaches it, nothing taken;
+  - the box: one `/api/wifi` over the pinned TLS; stored where a scan stores it (`mode` JOIN, the
+    SSID, the password, `wifi_from` = `box smoke-1, band bg`); the joining screen says *K1000 Wi-Fi
+    taken from the box*; Android's dialog, **Connect**, link up in JOIN mode, the page;
+  - relaunched: joined by itself in JOIN mode in 5 to 8 s, no dialog, no scan, `/api/wifi` not
+    asked again;
+  - the Connect screen opened while the app is on K1000 itself (Back › menu › hold *K1000
+    Wi-Fi*): the box gives the same Wi-Fi, nothing re-joins;
+  - the signed release APK, first run on a Wi-Fi off `10.42.0.0/24`: the box is not asked.
+- **Android 17 emulator (WebView 145): the 7 new checks pass in both runs**, the release APK's
+  included. The whole suite: 70/71, then 69/71. Each run failed different 0.2.0 checks, and each
+  of those passed in the other run: first *a box without `/v2/`* (the fake box saw only the `/v2/`
+  request), then the simulated VPN binding refusal and its recovery (the emulated Wi-Fi did not come
+  back within the check's 60 s). These are the Android 17 emulator's known Wi-Fi hiccups (0.2.0
+  below), on code 0.2.1 does not change. The Pixel 4a is Android 13, where the suite is clean.
+- **Seen on the emulator, not the app's:** its radio reports **no scan results while it is
+  associated** (`WifiNetworkFactory: Received 0 scan results` with K1000 connected), so Android's
+  dialog for the app's own join cannot list K1000 while the network joined in Settings holds it
+  (*Searching for device…*, then *No devices found*). AOSP's `WifiNetworkFactory` (Android 13)
+  does not exclude the connected network from its matches, and a real phone scans while connected,
+  so the test drops the Settings network once the app has asked, and the dialog then finds K1000.
+  **[verify on the 4a]** (§10 item 1): the dialog lists K1000 while the phone is still on it.
 
 **v0.2.0 after its review (2026-10-13, rebuilt).** Still 0.2.0 / versionCode 3: the first 0.2.0
 build never reached a phone. Use only this build (sha256 in `K1000-0.2.0.apk.sha256`). Fixed:
@@ -471,7 +671,7 @@ shows. It is never distributed and never the gig app:
   Until then, the bench build works exactly like the release one on the bench box's own AP, and
   it keeps WebView debugging.
 
-## 10. 0.2 on the Pixel 4a: sideload and the real-phone checklist (Friday rig test)
+## 10. 0.2.1 on the Pixel 4a: sideload and the real-phone checklist (Friday rig test)
 
 **Before the APK reaches the phone: escrow the release key to USB** (k1000#t-008, DESIGN §4.4):
 `secrets/k1000-android/k1000-release.jks` and `keystore.properties`. That is the only copy.
@@ -480,23 +680,36 @@ shows. It is never distributed and never the gig app:
 page shows the version at the bottom. Or, from a computer:
 `adb shell dumpsys package gr.trentesept.k1000 | grep versionName` (nothing printed = not
 installed).
-- Not installed (0.1.x never was): 0.2.0 installs fresh.
-- 0.1.x installed: 0.2.0 installs over it. Same key, higher versionCode (3); the Wi-Fi password
-  and the approval stay.
+- Not installed (0.1.x and 0.2.0 never were): 0.2.1 installs fresh.
+- An earlier K1000 installed: 0.2.1 installs over it. Same key, higher versionCode (4); the Wi-Fi
+  password and the approval stay.
 - *App not installed* / *package conflicts*: another key. Uninstall K1000 first (§5).
 
 **Sideload** (`android/README.md` › Install):
+- **From the box** (0.2.1, a box deployed with the APK): the first-time page's *Get the K1000
+  app* (§2, steps 1–3). The page's 8 hex must match the start of `K1000-0.2.1.apk.sha256`.
 - **USB + adb** (Developer options › USB debugging):
-  `adb install -r K1000-0.2.0.apk`.
+  `adb install -r K1000-0.2.1.apk`.
 - **USB file transfer, no adb:** copy the file to `Download/`. Open it in **Files** ›
   Downloads › *Install*. The first time: *Settings* › **Allow from this source** for Files, then
   back, then *Install*. Play Protect: *Install anyway*.
-- **Check the file first:** `sha256sum K1000-0.2.0.apk` against `K1000-0.2.0.apk.sha256`. The
+- **Check the file first:** `sha256sum K1000-0.2.1.apk` against `K1000-0.2.1.apk.sha256`. The
   signer's SHA-256 must be `85:ff:f9:65:…:0a:8f` (README › Sign).
 
 **Checklist** (on the box; v2 needs the S1 deploy, and before it the app shows v1 with a toast):
-- [ ] 1. First run (§2): scan the Wi-Fi code, *Connect*, and the page opens. Note v1 or v2,
-  and the seconds it took.
+- [ ] 1. First run **from the box** (§2): the camera's Wi-Fi join, the first-time page, *Get the
+  K1000 app*, install, open: *K1000 Wi-Fi taken from the box*, *Connect*, and the page opens.
+  Note v1 or v2, the seconds from *Open* to the page, and whether Android's dialog listed K1000
+  at once while the phone was still on it from the camera's join (the emulator could not: §8). If
+  it says *No devices found*: note it for Claude, *Cancel*, *Change K1000 Wi-Fi*, tick *I joined
+  K1000 in Android's Wi-Fi settings*, *Join K1000*: the app then follows the network the camera
+  joined (the fallback, §2b), and the show goes on. Otherwise force-stop K1000
+  (App info › Force stop) and open it again, the K1000 the camera saved still in Android's Wi-Fi
+  settings and connected (the state of **every later launch**, §2): the page, no dialog, no scan.
+  Note whether Android's dialog showed up there, and the seconds to the page; do it twice (once
+  right away, once after Wi-Fi off and on). A *No devices found* at a later launch is the same
+  question as above, with the same way out. Diagnostics › `wifi_from` reads `box <build id>,
+  band …`.
 - [ ] 2. **Diagnostics:** Back › menu › *Diagnostics* › *Copy*, and paste it to Claude. Record:
   - the WebView version;
   - `unprocessed_supported`;

@@ -10,6 +10,7 @@
 #                      $K1000_SIGNING_DIR/out/K1000-*.apk, if any)
 #   K1000_SMOKE_WIPE=1 cold-boot the emulator from a wiped data partition (an AVD left in a bad
 #                      state by an emulator that hung)
+#   K1000_SMOKE_ONLY=boxwifi  only the checks of the K1000 Wi-Fi taken from the box (app 0.2.1)
 #
 # 1. makes a throwaway name-constrained test CA (+ leaves) in a temporary directory, keys included,
 #    deleted at the end; never the K1000 CA;
@@ -117,4 +118,6 @@ docker exec "$name" bash -c "
   adb shell getprop ro.build.version.release
   timeout 30 adb shell 'dumpsys package com.google.android.webview | grep -m1 versionName' || true
 "
-docker exec "$name" python3 -I /tools/smoke_driver.py --apk /smoke/app-smoke.apk --work /smoke --static /pwa --api "$API" "${REL_ARG[@]}"
+ONLY_ARG=()
+[ -n "${K1000_SMOKE_ONLY:-}" ] && ONLY_ARG=(--only "$K1000_SMOKE_ONLY")
+docker exec "$name" python3 -I /tools/smoke_driver.py --apk /smoke/app-smoke.apk --work /smoke --static /pwa --api "$API" "${REL_ARG[@]}" "${ONLY_ARG[@]}"

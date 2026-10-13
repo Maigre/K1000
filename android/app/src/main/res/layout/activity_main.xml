@@ -116,6 +116,16 @@
                 android:textColor="@color/k1000_dim"
                 android:textSize="16sp" />
 
+            <!-- The K1000 Wi-Fi taken from the box (app 0.2.1): asking, or why it was not taken -->
+            <TextView
+                android:id="@+id/setup_box"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:textColor="@color/k1000_amber"
+                android:textSize="15sp"
+                android:visibility="gone" />
+
             <Button
                 android:id="@+id/setup_scan"
                 android:layout_width="match_parent"

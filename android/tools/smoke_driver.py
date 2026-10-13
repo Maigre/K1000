@@ -21,6 +21,19 @@ The 0.2 review's fixes have their checks here too: a set_ui for the page already
 nothing; the shortcuts' actions count only through the non-exported alias; the app's menu closes
 5 s after it was last touched itself, whatever the page is doing; the Edge test shows the bars;
 and a hold on the page (the band chip's, the notch's long-press) reaches the page whole.
+
+App 0.2.1 takes the K1000 Wi-Fi from the box (GET /api/wifi, docs/09-android.md §2): with the phone
+on K1000 joined in Settings (as the camera's Wi-Fi QR code does), a fresh app on its Connect screen
+reads the box's answer over the pinned TLS, stores it and joins K1000 itself; relaunched, it joins
+alone. Also: an older box (404) keeps today's Connect screen, a look-alike box (another CA) is never
+read, and the release APK (the real K1000 CA) takes nothing from the smoke box.
+
+The 0.2.1 review's fixes (2026-10-13) have their checks too: a connection reset inside TLS is no
+answer, asked again (not "not the K1000 certificate"); after Cancel in Android's dialog, the
+Connect screen does not claim the app is on K1000 and the fallback box gets the page; a Connect
+screen reopened while a slow box answers asks again by itself; a relaunch with the K1000 the camera
+saved still in Settings; Android 17: the local network permission refused on the Connect screen,
+then allowed from its line.
 """
 import argparse
 import asyncio
@@ -82,11 +95,12 @@ class Server:
     def __init__(self, work, static, log):
         self.work, self.static, self.log, self.proc = work, static, log, None
 
-    def start(self, leaf, v2="test"):
+    def start(self, leaf, v2="test", wifi="none", reset=0, slow=0, cut=0):
         self.stop()
         self.proc = subprocess.Popen([sys.executable, "-I", os.path.join(os.path.dirname(__file__), "smoke_server.py"),
                                       "--cert", f"{self.work}/{leaf}.pem", "--key", f"{self.work}/{leaf}.key",
-                                      "--static", self.static, "--log", self.log, "--v2", v2],
+                                      "--static", self.static, "--log", self.log, "--v2", v2, "--wifi", wifi,
+                                      "--wifi-reset", str(reset), "--wifi-slow", str(slow), "--tls-cut", str(cut)],
                                      stderr=subprocess.DEVNULL)
         time.sleep(1.0)
 
@@ -209,6 +223,30 @@ def wifi_subnet():
 def start_app(cidr):
     """Starts the smoke app with fallback mode's subnet filter pointed at `cidr` (smoke build only)."""
     adb("shell", "am", "start", "-W", "-n", ACT, "--es", "smoke", "subnet", "--es", "cidr", cidr)
+
+
+def start_fresh(cidr):
+    """A real first run of the smoke app: the Connect screen (not the smoke build's fallback-mode
+    preset), with the K1000 subnet pointed at the emulator's Wi-Fi `cidr`."""
+    adb("shell", "am", "start", "-W", "-n", ACT, "--es", "smoke", "subnet", "--es", "cidr", cidr,
+        "--ez", "smoke_fresh", "true")
+
+
+def stored(pkg):
+    """The app's stored Wi-Fi (shared_prefs/k1000.xml, adb is root): mode, ssid, wifi_from, and
+    whether the password is the test one. The password itself is never printed."""
+    xml = ashell(f"cat /data/data/{pkg}/shared_prefs/k1000.xml", check=False)
+    get = lambda k: (re.search(rf'<string name="{k}">([^<]*)</string>', xml) or [None, None])[1]
+    return {"mode": get("mode"), "ssid": get("ssid"), "wifi_from": get("wifi_from"),
+            "psk_is_the_box_one": get("psk") == PSK}
+
+
+def fresh_app():
+    """The smoke app with no data, its permissions granted again."""
+    adb("shell", "am", "force-stop", PKG)
+    ashell(f"pm clear {PKG}", check=False)
+    for p in ("android.permission.RECORD_AUDIO", "android.permission.CAMERA"):
+        ashell(f"pm grant {PKG} {p}", check=False)
 
 
 class Page:
@@ -553,6 +591,289 @@ async def bridge_checks(page, server, api, cidr):
     await page.eval("__send({t: 'exclusion', rects: []})")
 
 
+def dismiss_request_dialog():
+    """Closes a Wi-Fi request dialog an app left behind (it would sit over the next checks)."""
+    for _ in range(3):
+        txt = screen_text().split(" | ")
+        if "OK" in txt and any("Something came up" in t for t in txt):
+            tap_text("OK")
+        elif "Cancel" in txt:
+            tap_text("Cancel")
+        else:
+            return
+        time.sleep(1.5)
+
+
+def wifi_framework_log(n=40):
+    """The Wi-Fi framework's own lines (network requests, the connect dialog), for a failed check."""
+    keep = re.compile(r"WifiNetworkFactory|NetworkRequestDialog|NetworkRequestUi|ActiveModeWarden|"
+                      r"WifiClientModeImpl|ClientModeImpl|WifiConnectivityManager|WifiScan")
+    return [ln[-200:] for ln in adb("logcat", "-d", check=False).splitlines() if keep.search(ln)][-n:]
+
+
+def open_connect_screen():
+    """Back (the bridge test page is at its top level: the app's menu) › hold "K1000 Wi-Fi"."""
+    ashell("input keyevent KEYCODE_BACK")
+    time.sleep(1.5)
+    b = node_bounds("menu_wifi")
+    if b:
+        x, y = (b[0] + b[2]) // 2, (b[1] + b[3]) // 2
+        ashell(f"input swipe {x} {y} {x} {y} 1200")   # a hold
+    return bool(b)
+
+
+async def box_wifi_checks(server, api, cidr):
+    """The K1000 Wi-Fi taken from the box (app 0.2.1). The phone is on K1000 joined in Settings, as
+    the camera's Wi-Fi QR code leaves it; the app starts fresh (its Connect screen)."""
+    ashell("cmd wifi set-verbose-logging enabled", check=False)
+    def first_run(leaf, wifi, reset=0, cut=0, final=False, local=True):
+        """A fresh app on its Connect screen, the box served with `leaf` and `wifi` (its first `cut`
+        TLS handshakes and `reset` /api/wifi requests reset): (the logged "box wifi:" verdict match or None — the
+        first one, or with `final` the first that is not RETRY —, the requests the box saw, the
+        screen, the log). `local` False (Android 17): the local network permission not granted."""
+        fresh_app()
+        if api >= 37:
+            ashell(f"pm {'grant' if local else 'revoke'} {PKG} android.permission.ACCESS_LOCAL_NETWORK", check=False)
+        server.start(leaf, wifi=wifi, reset=reset, cut=cut)
+        if not wifi_connected():
+            ashell(f"cmd wifi connect-network {SSID} wpa2 {PSK}", check=False)
+        wifi_stable(8)
+        adb("logcat", "-c")
+        m = server.mark()
+        start_fresh(wait(wifi_subnet, 30, step=3) or cidr)
+        if not local:
+            return None, [], "", ""
+        verdicts = "ADOPT|SAME_UNJOINED|SAME|ABSENT|REFUSED|INVALID" + ("" if final else "|RETRY")
+        got = wait(lambda: re.search(rf"box wifi: ({verdicts})\b[^\n]*", logcat()), 40)
+        time.sleep(2)
+        return got, server.requests()[m:], screen_text(), logcat()
+
+    got, reqs, txt, log = first_run("good", "none")
+    asked = [r for r in reqs if r["path"] == "/api/wifi"]
+    result("an older box (404 at /api/wifi): the Connect screen stays as today (scan, type, or the fallback), "
+           "nothing stored, no join",
+           bool(got) and got.group(1) == "ABSENT" and len(asked) == 1 and "Connect to K1000" in txt
+           and "older K1000" in txt and "requesting the K1000 Wi-Fi" not in log and stored(PKG)["mode"] is None,
+           f"{got.group(0) if got else 'no verdict'}; screen: {txt[:60]}")
+
+    got, reqs, txt, log = first_run("wrongca", f"{SSID}:{PSK}", final=True)
+    for ln in re.findall(r"box wifi: (?:TLS failure at|TLS refused|\S+ did not answer)[^\n]*", log):
+        info("look-alike box: the app's TLS error", ln[:400])
+    result("a box whose certificate is not from the K1000 CA (a look-alike at 10.42.0.1): /api/wifi is never "
+           "read, nothing taken, the Connect screen stays",
+           bool(got) and got.group(1) == "REFUSED" and not [r for r in reqs if r["path"] == "/api/wifi"]
+           and "Connect to K1000" in txt and "requesting the K1000 Wi-Fi" not in log and stored(PKG)["mode"] is None,
+           f"{got.group(0)[:90] if got else 'no verdict'}")
+
+    # Review 2026-10-13 (1): the real box, its first connection closed in the middle of the TLS
+    # handshake (Android: SSLHandshakeException "connection closed", no certificate in it), the
+    # next request reset once read (the edge of range, the box's service restarting). That is no
+    # answer, asked again 2 then 4 s later, then taken: never "not the K1000 certificate", which
+    # used to be final for any SSLException.
+    ashell(f"cmd wifi network-requests-remove-user-approved-access-points {PKG}", check=False)
+    got, reqs, txt, log = first_run("good", f"{SSID}:{PSK}", cut=1, reset=1, final=True)
+    asked = [r for r in reqs if r["path"] == "/api/wifi"]
+    cuts = [r for r in reqs if r["path"] == "(tls cut)"]
+    why = re.findall(r"box wifi: (\S+) did not answer \(([^)]*)\)", log)
+    ssl_seen = sorted({w[:70] for h, w in why if "javax.net.ssl." in w})
+    result("review 1: a connection closed inside TLS (mid-handshake), then one reset once the request is in: no answer, "
+           "asked again, then the Wi-Fi is taken: never 'not the K1000 certificate'",
+           bool(got) and got.group(1) == "ADOPT" and bool(ssl_seen) and "TLS refused" not in log
+           and "box wifi: REFUSED" not in log and bool(cuts) and len(asked) >= 2 and stored(PKG)["mode"] == "JOIN",
+           f"{got.group(0)[:20] if got else 'no verdict'}; {len(cuts)} cut, {len(asked)} /api/wifi; "
+           f"{len(re.findall(r'box wifi: RETRY', log))} RETRY; SSLException seen as no answer: {ssl_seen}")
+    for h, w in why:
+        info("review 1: no answer from", f"{h}: {w[:150]}")
+
+    # Review 2026-10-13 (3): Android's dialog then lists no K1000 (the emulator never does while the
+    # Settings network holds it, §8; a phone might: "No devices found") › Cancel › Change K1000
+    # Wi-Fi. The box gives the same Wi-Fi, but the app is not on it: the Connect screen must not say
+    # it "already joins" it, and must point to the fallback box. Then that documented way out: tick
+    # it, Join K1000: the app follows the network joined in Settings, the page loads.
+    dialog = wait(lambda: "Cancel" in screen_text().split(" | ") and screen_text(), 30) or ""
+    tap_text("Cancel")
+    nc = wait(lambda: "Not connected to K1000" in screen_text() and screen_text(), 20) or ""
+    adb("logcat", "-c")
+    tap_text("Change K1000 Wi-Fi")
+    same = wait(lambda: re.search(r"box wifi: [A-Z_]+[^\n]*", logcat()), 30)
+    time.sleep(1.5)
+    txt = screen_text()
+    result("review 3: after Cancel in Android's dialog, Change K1000 Wi-Fi: the same Wi-Fi from the box, but the "
+           "app is not on it: the screen says so and points to the fallback box (not 'already joins'), no re-join",
+           bool(same) and same.group(0).startswith("box wifi: SAME_UNJOINED") and "the app is not on it" in txt
+           and "already joins" not in txt and "requesting the K1000 Wi-Fi" not in logcat(),
+           f"dialog: {dialog[:40]!r}; status: {'Not connected' if nc else nc[:40]!r}; "
+           f"{same.group(0)[:40] if same else 'not asked'}; screen: {txt[:60]}")
+    tap_text("setup_system")
+    time.sleep(0.5)
+    tap_text("Join K1000")
+    up = wait(lambda: "K1000 link up (SYSTEM)" in logcat(), 40)
+    page = wait(lambda: "page loaded: https://10.42.0.1/v2/" in logcat(), 30)
+    st = stored(PKG)
+    result("…the way out the docs give: tick 'I joined K1000 in Android's Wi-Fi settings', Join K1000: the app "
+           "follows the network the camera joined (fallback mode), the page loads",
+           bool(up) and bool(page) and st["mode"] == "SYSTEM", f"stored {st['mode']}; link up {bool(up)}; "
+           f"page {bool(page)}")
+    adb("shell", "am", "force-stop", PKG)
+    dismiss_request_dialog()
+
+    # The real thing, on a phone that never approved the app's own join (Android's dialog shows once).
+    ashell(f"cmd wifi network-requests-remove-user-approved-access-points {PKG}", check=False)
+    got, reqs, txt, log = first_run("good", f"{SSID}:{PSK}")
+    asked = [r for r in reqs if r["path"] == "/api/wifi"]
+    taken = "box wifi: K1000 Wi-Fi taken from the box (K1000" in log
+    st = stored(PKG)
+    result("phone on K1000 (joined in Settings), app fresh: it takes the K1000 Wi-Fi from the box over the "
+           "pinned TLS ('K1000 Wi-Fi taken from the box'), stored where a scan stores it, JOIN mode",
+           bool(got) and got.group(1) == "ADOPT" and len(asked) == 1 and taken
+           and st == {"mode": "JOIN", "ssid": SSID, "wifi_from": "box smoke-1, band bg", "psk_is_the_box_one": True}
+           and f"requesting the K1000 Wi-Fi ({SSID})" in log,
+           f"{len(asked)} /api/wifi; stored {st}; screen: {txt[:80]}")
+    shown = bool(re.search(r"status: Joining K1000… · K1000 Wi-Fi taken from the box", log))
+    # The emulator's radio reports no scan results while it is associated (WifiNetworkFactory:
+    # "Received 0 scan results" with K1000 connected), so Android's dialog cannot find K1000 while
+    # the Settings network holds it; a real phone scans while connected. So, once the app has asked
+    # (its request stays open), the Settings network is dropped, and the dialog's next scan sees
+    # K1000. On the Pixel 4a: docs/09-android.md §10, checklist item 1.
+    searching = "Searching for device" in screen_text()
+    forget_saved_networks()
+    dialog = wait(lambda: "Connect" in screen_text().split(" | ") and screen_text(), 40) or ""
+    tapped = tap_text("Connect") if dialog else False
+    up = wait(lambda: "K1000 link up (JOIN)" in logcat(), 40)
+    page = wait(lambda: "page loaded: https://10.42.0.1/v2/" in logcat(), 30)
+    result("…then it joins K1000 itself (WifiNetworkSpecifier, Android's dialog once): link up in JOIN mode, "
+           "the page loads",
+           bool(up) and bool(page) and shown, f"dialog: searching first {searching}, K1000 listed {bool(dialog)}, "
+           f"Connect tapped {tapped}; the joining screen under it says 'K1000 Wi-Fi taken from the box': {shown}")
+    if not up:
+        for ln in wifi_framework_log():
+            info("wifi framework", ln)
+    adb("shell", "am", "force-stop", PKG)
+    time.sleep(3)
+    adb("logcat", "-c")
+    m = server.mark()
+    t0 = time.time()
+    adb("shell", "am", "start", "-W", "-n", ACT)
+    up = wait(lambda: "K1000 link up (JOIN)" in logcat(), 40)
+    page = wait(lambda: "page loaded: https://10.42.0.1/v2/" in logcat(), 30)
+    txt = screen_text()
+    again = [r for r in server.requests()[m:] if r["path"] == "/api/wifi"]
+    result("relaunched: it joins K1000 by itself in JOIN mode (no dialog, no scan, /api/wifi not asked again)",
+           bool(up) and bool(page) and "Connect to device" not in txt and "Connect to K1000" not in txt and not again,
+           f"{time.time() - t0:.1f} s; screen: {txt[:60]}")
+    if not up:
+        for ln in wifi_framework_log():
+            info("wifi framework", ln)
+
+    # The Connect screen opened while the app is on K1000 itself (Back › menu › hold K1000 Wi-Fi):
+    # the box is asked and gives the same Wi-Fi, so nothing changes (no re-join, the page stays).
+    if up:
+        adb("logcat", "-c")
+        b = open_connect_screen()
+        same = wait(lambda: re.search(r"box wifi: [A-Z_]+[^\n]*", logcat()), 30)
+        time.sleep(2)
+        txt = screen_text()
+        log = logcat()
+        result("the Connect screen opened while the app is on K1000: the box gives the same Wi-Fi, nothing "
+               "changes (no re-join)",
+               bool(same) and same.group(0).startswith("box wifi: SAME ") and "already joins" in txt
+               and "requesting the K1000 Wi-Fi" not in log and "K1000 link lost" not in log,
+               f"{same.group(0)[:60] if same else 'not asked'}; menu found: {b}; screen: {txt[:70]}")
+        tap_text("Cancel")
+        time.sleep(1)
+
+        # Review 2026-10-13 (2): a slow box (its answer takes about 10 s). Connect screen, Cancel
+        # while the box is still answering, Connect screen again: once the first request ends, its
+        # answer is dropped and the reopened screen asks by itself (it used to wait for a Wi-Fi
+        # change), its own try 1.
+        server.start("good", wifi=f"{SSID}:{PSK}", slow=10)
+        adb("logcat", "-c")
+        b1 = open_connect_screen()
+        asking = wait(lambda: "box wifi: asking the box" in logcat(), 15)
+        time.sleep(1)
+        tap_text("Cancel")
+        time.sleep(1)
+        b2 = open_connect_screen()
+        t0 = time.time()
+        same = wait(lambda: re.search(r"box wifi: SAME [^\n]*", logcat()), 45)
+        time.sleep(1.5)
+        txt = screen_text()
+        log = logcat()
+        result("review 2: Cancel and reopen the Connect screen while a slow box answers: the old answer is dropped, "
+               "and the reopened screen asks again by itself (try 1), then 'already joins'",
+               bool(asking) and bool(same) and "an answer to an earlier Connect screen, dropped" in log
+               and len(re.findall(r"box wifi: asking the box over network \S+ \(try 1\)", log)) >= 2
+               and "already joins" in txt,
+               f"menu {b1}/{b2}; {same.group(0)[:30] + f' {time.time() - t0:.0f} s after reopening' if same else 'never asked again'}; "
+               f"screen: {txt[:50]}")
+        tap_text("Cancel")
+        time.sleep(1)
+        server.start("good", wifi=f"{SSID}:{PSK}")
+
+    # Review 2026-10-13 (4): relaunched in the state the docs leave the phone in, the K1000 the
+    # camera saved still in Android's Wi-Fi settings and connected (above, it had been forgotten so
+    # that the emulator's dialog could list K1000). The app must still join by itself, no dialog.
+    adb("shell", "am", "force-stop", PKG)
+    time.sleep(3)
+    for _ in range(3):
+        ashell(f"cmd wifi connect-network {SSID} wpa2 {PSK}", check=False)
+        if wait(wifi_connected, 30, step=2):
+            break
+    settings_on = wifi_stable(8)
+    if not settings_on:
+        info("review 4: Android's Wi-Fi", " / ".join(ashell("cmd wifi status", check=False).splitlines()[:4]))
+        info("review 4: saved networks", " / ".join(ashell("cmd wifi list-networks", check=False).splitlines()[:4]))
+    adb("logcat", "-c")
+    m = server.mark()
+    t0 = time.time()
+    adb("shell", "am", "start", "-W", "-n", ACT)
+    up = wait(lambda: "K1000 link up (JOIN)" in logcat(), 45)
+    page = wait(lambda: "page loaded: https://10.42.0.1/v2/" in logcat(), 30)
+    txt = screen_text()
+    again = [r for r in server.requests()[m:] if r["path"] == "/api/wifi"]
+    result("review 4: relaunched with the K1000 the camera saved still in Settings (connected): it joins K1000 "
+           "by itself in JOIN mode (no dialog, no scan, /api/wifi not asked)",
+           bool(up) and bool(page) and "Connect to device" not in txt and "Connect to K1000" not in txt
+           and not again and settings_on,
+           f"{time.time() - t0:.1f} s; Settings network connected first: {settings_on}; screen: {txt[:70]}")
+    if not up:
+        for ln in wifi_framework_log():
+            info("wifi framework", ln)
+    adb("shell", "am", "force-stop", PKG)
+    dismiss_request_dialog()
+
+    if api >= 37:
+        # Review 2026-10-13 (5): Android 17, the local network permission refused on the Connect
+        # screen (first run, on K1000): no prompt loop, the screen's line says so, and a tap on it
+        # asks again (the screen has no Retry; the box used to be never asked again in that run).
+        m = server.mark()
+        first_run("good", f"{SSID}:{PSK}", local=False)
+        prompt = wait(lambda: "Allow" in screen_text().split(" | ") and screen_text(), 20) or ""
+        refused = tap_text("Don’t allow") or tap_text("Don't allow")
+        line = wait(lambda: "Tap here to allow it" in screen_text(), 10)
+        time.sleep(3)
+        txt = screen_text()
+        looped = "Allow" in txt.split(" | ")
+        n0 = len([r for r in server.requests()[m:] if r["path"] == "/api/wifi"])
+        tapped = tap_text("setup_box")
+        prompt2 = wait(lambda: "Allow" in screen_text().split(" | ") and screen_text(), 15) or ""
+        tap_text("Allow")
+        got = wait(lambda: re.search(r"box wifi: (ADOPT|SAME_UNJOINED|SAME|ABSENT|REFUSED|INVALID)\b[^\n]*",
+                                     logcat()), 40)
+        result("review 5 (api37): the local network permission refused on the Connect screen: no prompt loop, the "
+               "screen says so; a tap on that line asks again › Allow: the box is asked, the Wi-Fi taken",
+               bool(prompt) and refused and not looped and line and n0 == 0 and tapped and bool(prompt2)
+               and bool(got) and got.group(1) == "ADOPT",
+               f"prompt {bool(prompt)}, refused {refused}, loop {looped}, line {line}, prompt again {bool(prompt2)}, "
+               f"/api/wifi before allowed {n0}, {got.group(0)[:30] if got else 'no verdict'}")
+        if not (line and got):
+            info("review 5: screen after the refusal", txt[:200])
+            for ln in re.findall(r"(?:box wifi|K1000 link|status)[^\n]*", logcat())[-12:]:
+                info("review 5: app log", ln[:200])
+        adb("shell", "am", "force-stop", PKG)
+        dismiss_request_dialog()
+
+
 async def run(a):
     server = Server(a.work, a.static, f"{a.work}/requests.jsonl")
     api = int(a.api)
@@ -592,6 +913,13 @@ async def run(a):
                txt[:160])
         adb("shell", "am", "force-stop", PKG)
         ashell(f"pm grant {PKG} android.permission.ACCESS_LOCAL_NETWORK")
+
+    if a.only == "boxwifi":
+        # Only the K1000 Wi-Fi taken from the box (tools/smoke.sh with K1000_SMOKE_ONLY=boxwifi).
+        wifi_stable(6)
+        await box_wifi_checks(server, api, wait(wifi_subnet, 60, step=3))
+        server.stop()
+        return summary(api)
 
     # --- 0. fallback mode follows K1000 only: the emulator's Wi-Fi is not on 10.42.0.0/24, so the
     # release logic must ignore it (no binding, no page) until the smoke "subnet" command says so.
@@ -888,6 +1216,9 @@ async def run(a):
     result("a box without /v2/ (404): the app shows the classic page for the session",
            "/v2/" in paths and "/" in paths and bool(v1) and "no /v2/ on this box" in logcat(), str(paths[:6]))
 
+    # --- 4c. the K1000 Wi-Fi taken from the box (app 0.2.1)
+    await box_wifi_checks(server, api, cidr)
+
     # --- 5. the app's own join: WifiNetworkSpecifier, Android's dialog, remembered approval
     adb("shell", "am", "force-stop", PKG)
     forget_saved_networks()
@@ -964,6 +1295,27 @@ async def run(a):
         ashell(f"pm grant {rel} android.permission.CAMERA", check=False)
         if api >= 37:
             ashell(f"pm grant {rel} android.permission.ACCESS_LOCAL_NETWORK", check=False)
+        # First run on a Wi-Fi that is not K1000's (the emulator's is not 10.42.0.x; a home Wi-Fi
+        # on a real phone), the smoke box serving /api/wifi: the release app does not ask (its
+        # subnet filter is the real one), takes nothing, and stays on its Connect screen.
+        server.start("good", wifi=f"{SSID}:{PSK}")
+        ashell(f"cmd wifi connect-network {SSID} wpa2 {PSK}", check=False)
+        wifi_stable(8)
+        adb("logcat", "-c")
+        m = server.mark()
+        adb("shell", "am", "start", "-W", "-n", ract)
+        time.sleep(8)
+        log = logcat()
+        txt = screen_text()
+        result("release APK, first run on a Wi-Fi that is not on 10.42.0.0/24 (joined in Settings): the box is "
+               "not asked, nothing taken, 'Connect to K1000'",
+               "Connect to K1000" in txt and "box wifi:" not in log and "requesting the K1000 Wi-Fi" not in log
+               and not [r for r in server.requests()[m:] if r["path"] == "/api/wifi"], f"emulator Wi-Fi {wifi_subnet()}")
+        adb("shell", "am", "force-stop", rel)
+        ashell(f"pm clear {rel}", check=False)
+        ashell(f"pm grant {rel} android.permission.CAMERA", check=False)
+        if api >= 37:
+            ashell(f"pm grant {rel} android.permission.ACCESS_LOCAL_NETWORK", check=False)
         forget_saved_networks()
         ashell(f"cmd wifi network-requests-remove-user-approved-access-points {rel}", check=False)
         wait(lambda: not wifi_connected(), 20)
@@ -1009,6 +1361,10 @@ async def run(a):
         adb("uninstall", rel, check=False)
 
     server.stop()
+    return summary(api)
+
+
+def summary(api):
     ok = all(r[1] for r in RESULTS)
     print(f"\n{sum(r[1] for r in RESULTS)}/{len(RESULTS)} checks passed (API {api})", flush=True)
     return 0 if ok else 1
@@ -1021,6 +1377,7 @@ def main():
     ap.add_argument("--static", required=True)
     ap.add_argument("--api", required=True)
     ap.add_argument("--release-apk", default="")
+    ap.add_argument("--only", default="", help="boxwifi: only the K1000 Wi-Fi taken from the box")
     return asyncio.run(run(ap.parse_args()))
 
 

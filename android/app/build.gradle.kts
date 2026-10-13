@@ -32,8 +32,8 @@ android {
         applicationId = "gr.trentesept.k1000"
         minSdk = 29          // Android 10: WifiNetworkSpecifier
         targetSdk = 37       // Android 17 (stable since 2026-06)
-        versionCode = 3
-        versionName = "0.2.0"
+        versionCode = 4
+        versionName = "0.2.1"
         // The smoke build (emulator test) flips these; the real app keeps them.
         buildConfigField("boolean", "SMOKE", "false")
         // The bench build's development host; "" = none (release, debug, smoke).

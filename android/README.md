@@ -7,8 +7,11 @@ mobile data stays on, trusts the K1000 CA for the box only (no CA install in And
 keeps the screen awake, lets the page use the microphone, and, through a message-port bridge the
 page feature-detects ([`BRIDGE.md`](BRIDGE.md)), goes immersive, keeps Back off the page's slide
 areas, plays Android's own haptics, closes the page's overlays on Back and answers diagnostics.
+From 0.2.1 a phone already on K1000 (joined with the camera's Wi-Fi QR code) needs no scan: the app
+takes the Wi-Fi from the box (`GET https://10.42.0.1/api/wifi`, over the pinned TLS) and joins it
+itself from then on.
 What it adds, the first run and troubleshooting: [`docs/09-android.md`](../docs/09-android.md).
-Version **0.2.0** (versionCode 3).
+Version **0.2.1** (versionCode 4).
 
 - Package `gr.trentesept.k1000`, app name **K1000**, Android 10+ (minSdk 29), targets Android 17
   (API 37). Thomas's Pixel 4a (Android 13) is the reference phone.
@@ -34,6 +37,8 @@ Version **0.2.0** (versionCode 3).
 | `…/K1000Link.java` | Asks Android for the K1000 Wi-Fi (`WifiNetworkSpecifier`), or follows the one joined in Settings (10.42.0.x only), and binds the process to it; a refused binding is its own state |
 | `…/K1000Trust.java` | The explicit TLS check against the bundled CA (behind `onReceivedSslError`) |
 | `…/WifiQr.java` | Parses the box's Wi-Fi QR code (`WIFI:T:WPA;S:K1000;P:…;;`) and typed passwords |
+| `…/BoxWifi.java` | The K1000 Wi-Fi taken from the box (0.2.1): `/api/wifi`'s URLs, the answer validated, what each answer means, when to ask and how often (pure, JVM-tested) |
+| `…/BoxWifiProbe.java` | Watches the Wi-Fi networks while the Connect screen is up, and asks the box over the one on `10.42.0.0/24`: HTTPS, the network security config then `K1000Trust`, no redirect, no cache |
 | `…/K1000Hosts.java` | The only hosts the WebView may load: `10.42.0.1` and `k1000.home.arpa`, HTTPS |
 | `app/src/main/res/raw/k1000_ca.pem` | The K1000 CA **certificate** (public; its key never leaves mgr-ran) |
 | `app/src/main/res/xml/network_security_config.xml` | That CA, for the two box names only; no CA at all for any other host |
@@ -130,9 +135,10 @@ SHA-256 85:ff:f9:65:e4:6d:4b:50:23:47:40:d1:38:4b:83:a6:21:0a:0a:43:93:f8:e9:ca:
 
 ## Install (sideload)
 
-1. Put `K1000-<version>.apk` on the phone: USB (the phone in *File transfer* mode, copy it to
-   `Download/`), Seafile, a mail to yourself, or (later) the GitHub release page in the phone's
-   browser.
+1. Put `K1000-<version>.apk` on the phone: from the box itself (0.2.1: its first-time page,
+   `http://10.42.0.1/`, *Get the K1000 app*, in Chrome; the box serves the APK it was deployed
+   with), USB (the phone in *File transfer* mode, copy it to `Download/`), Seafile, a mail to
+   yourself, or (later) the GitHub release page in the phone's browser.
 2. Tap it in **Files** (Files by Google › Downloads), or in Chrome's downloads. The first time,
    Android says the app (Files or Chrome) is not allowed to install unknown apps: **Settings** ›
    **Allow from this source** (also at Settings › Apps › Special app access › **Install unknown
@@ -161,7 +167,12 @@ over the old app: the stored Wi-Fi password and the K1000 approval stay.
   origins and bench host in `K1000HostsTest`, and, after the 0.2 review, `ShellRulesTest` (the
   shortcut alias, also read from the manifest; page choices that reload nothing; the menu's
   touch area; the Edge test's bars; the cutout on Android 10) and `HapticsTest` (the answers
-  with Touch feedback off; at most and at least 25 ticks in any second): 47 tests.
+  with Touch feedback off; at most and at least 25 ticks in any second): 47 tests. From 0.2.1
+  also `BoxWifiTest` (the box's `/api/wifi` answer: version, SSID and password rules, shape, size,
+  strict UTF-8, status and type, a redirect never taken, HTTPS to the box's names only, the same
+  Wi-Fi changing nothing, when to ask, retries): 58 tests. After the 0.2.1 review also: only a
+  refused certificate counts as a fake box (a connection reset inside TLS is no answer), the same
+  Wi-Fi while the app is not on it, and an answer to an earlier Connect screen: 61 tests.
 - `tools/smoke.sh [33|37] [pwa-static-dir]`: boots an x86_64 emulator (KVM) with Android 13 or
   17, its simulated access point turned into a WPA2 "K1000", serves the real PWA files over HTTPS
   from a throwaway test CA at 10.42.0.1, and checks the app end to end: the fallback mode ignoring
@@ -177,6 +188,20 @@ over the old app: the stored Wi-Fi password and the K1000 approval stay.
   action sent to `MainActivity` directly is ignored, the menu closes while the page is touched,
   Diagnostics › Edge test with the bars shown, and a still hold on the page reaching it whole
   (plus an INFO line on holds that drift on `touch-action: pan-y`). The smoke build is minified
-  with the release rules, so these run on R8's output.
+  with the release rules, so these run on R8's output. From 0.2.1 (`smoke_server.py --wifi`, the
+  fake box's `/api/wifi`), with the phone on K1000 joined in Settings and the app fresh on its
+  Connect screen: an older box (404) leaves the Connect screen as it was; a look-alike box (same
+  CA name, another key) is never read; the real one is taken (stored as a scan stores it, JOIN),
+  joined through Android's dialog, and a relaunch joins by itself without asking the box again;
+  opening the Connect screen while on the box's Wi-Fi changes nothing; the release APK on a Wi-Fi
+  off `10.42.0.0/24` does not ask at all. After the 0.2.1 review (`--wifi-reset N`, `--wifi-slow
+  S`: the fake box resets its first answers inside TLS, or trickles one over S seconds): a reset is
+  asked again and the Wi-Fi taken; after *Cancel* in Android's dialog, *Change K1000 Wi-Fi* does
+  not claim the app is on K1000 and the fallback box gets the page; a Connect screen reopened while
+  a slow box answers asks by itself; a relaunch with the camera's K1000 still saved in Settings;
+  Android 17: the local network permission refused on the Connect screen, then allowed from its
+  line. `K1000_SMOKE_ONLY=boxwifi tools/smoke.sh` runs these alone. (The emulator's radio reports
+  no scan results while associated, so the test drops the Settings network once the app has asked;
+  `docs/09-android.md` §8.)
   Results: `docs/09-android.md` §8. The emulator is the SDK's stable one (37.2.12, a test tool
   only; it is newer than two weeks on 2026-10-12, the build itself does not use it).
