@@ -1129,7 +1129,7 @@ def test_setup_list_is_d009s():
 
 def test_pages_and_v0_aliases():
     assert im.PAGES == ("SHOW", "ALIGN", "SETUP") and im.HOME_PAGE == "SHOW"
-    assert set(im.ALL_PAGES) == {"SHOW", "ALIGN", "SETUP", "HWTEST", "PHONE"}
+    assert set(im.ALL_PAGES) == {"SHOW", "ALIGN", "SETUP", "HWTEST", "PHONE", "VENUES"}   # VENUES: docs/12
     assert im.page_name("MAIN") == "ALIGN" and im.page_name("LIVE") == "SHOW"
     assert im.page_name("SETUP") == "SETUP" and im.page_name(None) is None
     assert map_event("MAIN", Focus(), Enc(1, 1)) == [Nudge("balance_db", 1, False)]

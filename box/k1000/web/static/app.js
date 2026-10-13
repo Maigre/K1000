@@ -7,6 +7,10 @@
      scroll never fires one), the EQ dots (a drag must START on a dot), hold-to-act buttons.
    - Mute and "band flat" need a hold; the live-EQ reset and the Lo-Cut switch need a confirm
      (the box's SETUP asks for a second push for both; the box keeps an undo of the reset).
+   - Venue snapshots (docs/12): a recall first asks the box what it would change and shows that
+     in a confirm; the recall carries the slot's "saved at", so a slot saved again meanwhile is
+     refused. Overwriting a slot and undoing a recall are confirmed too. Master and mute are never
+     part of a slot.
    - The MUTE hold acts on what the finger MEANT when it went down: a hold that starts as "hold to
      mute" always sends a mute, whatever happens meanwhile. An unmute carries the mute generation
      (mute_seq) the page showed, and is dropped here (and refused by the box) if the mute changed
@@ -50,7 +54,8 @@
   let S = null, M = null, H = null;      // state, meters, hello
   let link = "nolink";                   // ok | nolink | off | busy | old
   let sel = clampInt(load("k1000.sel", 0), 0, 5);
-  let tab = load("k1000.tab", "main") === "live" ? "live" : "main";
+  const TABS = ["main", "live", "venues"];
+  let tab = TABS.includes(load("k1000.tab", "main")) ? load("k1000.tab", "main") : "main";
   const echo = new Array(6).fill(0);     // until when local band values win (ms epoch)
   const local = new Array(6).fill(null); // optimistic band values while dragging
   const stats = { sent: 0, t: {}, rxState: 0, connects: 0, hist: [] };
@@ -58,6 +63,7 @@
   let outdated = "";                     // the box's build when it differs from this page's
   let behind = false;                    // ...and a reload did not bring the new page
   const holds = new Set();               // hold-to-act buttons with a finger on them
+  let undoUntil = 0, undoSeen = -1;      // venue recall undo: local deadline (ms epoch), last value
   window.K1000 = { stats, state: () => S, meters: () => M, linked: () => open, sel: () => sel, link: () => link,
     build: BUILD, mutePending: () => !!mutePend, dragging: () => (drag ? { i: drag.i, wait: !!drag.wait } : null) };
 
@@ -190,6 +196,8 @@
       case "ack":
         if (m.id === "mute") muteDone(true, m.v, "");
         else if (m.id === "notch" && m.v && Number.isInteger(m.v.s)) notchDone(true, m.v, "");
+        else if (m.id === "vdiff") venueDiff(m.v);
+        else if (typeof m.id === "string" && /^v(save|rename|recall|undo)$/.test(m.id)) { toast(String(m.v || "Done"), 2600); buzz(30); }
         break;
       case "err":
         if (m.id === "mute") muteDone(false, m.v, String(m.why || "refused"));
@@ -301,7 +309,124 @@
     renderSlots();
     drawEq();
     drawMeters();   // no link = empty meters, never the last levels frozen
+    // VENUES
+    renderVenues();
   }
+
+  // ------------------------------------------------------------------ venues (docs/12)
+  const vlist = $("#venue-list");
+  function fmtDate(at) {
+    if (!num(at) || at <= 0) return "";
+    const d = new Date(at * 1000);
+    return d.toLocaleDateString(undefined, { day: "numeric", month: "short" }) + " " +
+      d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  }
+  function venue(i) { return S && Array.isArray(S.venues) ? S.venues[i] || null : null; }
+  function venueSlots() { return (H && H.venues && Number.isInteger(H.venues.slots)) ? H.venues.slots : 8; }
+  function renderVenues() {
+    const n = venueSlots();
+    if (vlist.children.length !== n) {
+      vlist.replaceChildren();
+      for (let i = 0; i < n; i++) {
+        const row = document.createElement("div");
+        row.className = "vrow"; row.dataset.s = String(i);
+        row.innerHTML = '<div class="vname"><div class="vt"><b></b><span></span></div><em><i hidden>NOW</i><small></small></em></div>' +
+          '<div class="vbtns"><button class="rc" data-act="recall">RECALL</button><button data-act="save">SAVE</button>' +
+          '<button data-act="rename">NAME</button></div>';
+        row.querySelector("b").textContent = String(i + 1);
+        row.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => venueAct(b.dataset.act, i)));
+        vlist.appendChild(row);
+      }
+    }
+    const cur = S && S.venue && Number.isInteger(S.venue.s) ? S.venue.s : -1;
+    Array.from(vlist.children).forEach((row, i) => {
+      const v = venue(i);
+      const name = row.querySelector("span");
+      name.textContent = v ? v.n : "EMPTY";
+      name.classList.toggle("empty", !v);
+      row.querySelector("em small").textContent = v ? fmtDate(v.at) : "";
+      row.querySelector("i").hidden = i !== cur;
+      row.classList.toggle("now", i === cur);
+      row.querySelector('[data-act="recall"]').disabled = !v;
+      row.querySelector('[data-act="rename"]').disabled = !v;
+    });
+    $("#venue-now").textContent = cur >= 0 && S.venue.n ? "now: " + S.venue.n : "no venue recalled";
+    const u = S && num(S.venue_undo_s) ? S.venue_undo_s : 0;
+    if (u !== undoSeen) { undoSeen = u; undoUntil = u > 0 ? Date.now() + u * 1000 : 0; }
+    renderUndo();
+  }
+  function renderUndo() {
+    const b = $("#venue-undo");
+    const left = Math.max(0, Math.ceil((undoUntil - Date.now()) / 1000));
+    b.hidden = !(left > 0 && open);
+    b.textContent = "UNDO RECALL · " + Math.floor(left / 60) + ":" + String(left % 60).padStart(2, "0");
+  }
+  setInterval(() => { if (tab === "venues") renderUndo(); }, 1000);
+
+  function venueAct(act, i) {
+    if (!canEdit()) return;
+    const v = venue(i);
+    if (act === "recall") {
+      if (!v) return;
+      send({ t: "venue_diff", s: i, id: "vdiff" });
+    } else if (act === "save") {
+      askName(v ? "Overwrite slot " + (i + 1) + "?" : "Save in slot " + (i + 1),
+        v ? v.n + (v.at ? " (" + fmtDate(v.at) + ")" : "") + " is replaced by the sound now. Master and mute are not stored."
+          : "The sound now goes into this slot (live EQ, system EQ, delays, polarity, Lo-Cut, balance, mono subs). Master and mute are not stored.",
+        v ? v.n : "VENUE " + (i + 1), v ? "Overwrite" : "Save",
+        (name) => send(Object.assign({ t: "venue_save", s: i, name, id: "vsave" }, v ? { confirm: true } : {})));
+    } else if (act === "rename") {
+      if (!v) return;
+      askName("Rename slot " + (i + 1), "Up to 16 letters or digits; the box shows it in capitals.", v.n, "Rename",
+        (name) => send({ t: "venue_rename", s: i, name, id: "vrename" }));
+    }
+  }
+  // A change line that can make a group or a band LOUDER, as the box words it (venues.LOUDER_MARKS).
+  const LOUDER = [" louder)", "(subs +", "(tops +", "Lo-Cut ON → OFF"];
+  function louder(t) { return LOUDER.some((m) => t.includes(m)); }
+  // the box's answer to venue_diff: what a recall would change -> the confirm
+  function venueDiff(d) {
+    if (!d || !Number.isInteger(d.s)) return;
+    const lines = Array.isArray(d.changes) ? d.changes.map(String) : [];
+    const up = lines.some((t) => louder(t) && !/MUTE FIRST/.test(t));
+    ask("Recall " + d.n + "?",
+      lines.length ? (up ? "▲ = louder somewhere (a group or a band). " : "") +
+        "Master and mute stay as they are. The box keeps an undo for 5 minutes (until the next edit)."
+        : "Nothing changes: this is already the sound now.",
+      "Recall", () => send({ t: "venue_recall", s: d.s, at: d.at, confirm: true, id: "vrecall" }), lines);
+  }
+  $("#venue-undo").addEventListener("click", () => {
+    if (!canEdit()) return;
+    ask("Undo the recall?", "The venue values go back to what they were before the recall (master and mute untouched).",
+      "Undo", () => send({ t: "venue_undo", confirm: true, id: "vundo" }));
+  });
+
+  // the name dialog (save / rename)
+  const vmodal = $("#vname"), vin = $("#vname-in");
+  let onName = null;
+  function cleanName(t) { return String(t || "").toUpperCase().replace(/\s+/g, " ").slice(0, 16); }
+  function askName(q, sub, value, yes, fn) {
+    $("#vname-q").textContent = q;
+    $("#vname-sub").textContent = sub;
+    $("#vname-yes").textContent = yes;
+    vin.value = cleanName(value);
+    onName = fn;
+    vmodal.hidden = false;
+    setTimeout(() => { try { vin.focus(); vin.select(); } catch (e) { /* no focus */ } }, 30);
+  }
+  vin.addEventListener("input", () => { const c = cleanName(vin.value); if (c !== vin.value) vin.value = c; });
+  function nameDone(ok) {
+    vmodal.hidden = true;
+    const fn = onName; onName = null;
+    try { vin.blur(); } catch (e) { /* ignore */ }
+    if (!ok || !fn) return;
+    const name = vin.value.trim();
+    if (!name) { toast("A name needs letters or digits"); return; }
+    if (canEdit()) fn(name);
+  }
+  $("#vname-no").addEventListener("click", () => nameDone(false));
+  $("#vname-yes").addEventListener("click", () => nameDone(true));
+  vin.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); nameDone(true); } });
 
   function renderSlots() {
     if (!el.slots.children.length) {
@@ -672,10 +797,19 @@
   // One confirm dialog for the actions that need one (live-EQ reset, Lo-Cut on/off).
   const modal = $("#confirm");
   let onYes = null;
-  function ask(q, sub, yes, fn) {
+  function ask(q, sub, yes, fn, list) {
     $("#confirm-q").textContent = q;
     $("#confirm-sub").textContent = sub;
     $("#confirm-yes").textContent = yes;
+    const ul = $("#confirm-list");
+    ul.replaceChildren(...(list || []).map((t) => {
+      const li = document.createElement("li");
+      li.textContent = t;
+      if (/MUTE FIRST/.test(t)) { li.className = "warn"; li.textContent = t.replace(" · MUTE FIRST", " — not applied: mute first"); }
+      else if (louder(t)) { li.className = "up"; li.textContent = t + " ▲"; }
+      return li;
+    }));
+    ul.hidden = !(list && list.length);
     onYes = fn;
     modal.hidden = false;
   }
@@ -698,6 +832,7 @@
     $$("#tabs button").forEach((b) => b.setAttribute("aria-selected", b.dataset.tab === t ? "true" : "false"));
     $("#page-main").hidden = t !== "main";
     $("#page-live").hidden = t !== "live";
+    $("#page-venues").hidden = t !== "venues";
     if (t === "live") sizeCanvas();
   }
   $$("#tabs button").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));

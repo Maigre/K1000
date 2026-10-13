@@ -6,7 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="theme-color" content="#000000">
 <meta name="color-scheme" content="dark">
-<meta name="description" content="K1000 live DSP: master, mute, balance, Lo-Cut and the live EQ from the phone">
+<meta name="description" content="K1000 live DSP: master, mute, balance, Lo-Cut, the live EQ and venue snapshots from the phone">
 <title>K1000</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icons/icon-192.png" type="image/png">
@@ -27,6 +27,7 @@
 <nav id="tabs" role="tablist">
   <button role="tab" data-tab="main" aria-selected="true">MAIN</button>
   <button role="tab" data-tab="live" aria-selected="false">LIVE EQ</button>
+  <button role="tab" data-tab="venues" aria-selected="false">VENUES</button>
 </nav>
 
 <div id="banners"></div>
@@ -116,6 +117,18 @@
       </div>
     </div>
   </section>
+
+  <section id="page-venues" class="page" hidden>
+    <div class="block vhead">
+      <div class="row"><div class="lab">VENUES</div><div id="venue-now" class="sub">no venue recalled</div></div>
+      <div class="vnote">A slot keeps the live EQ, the system EQ, sub and top delay, polarity, the Lo-Cut,
+        the balance and mono subs. Never master, mute or trims: a recall never moves master and never
+        mutes. It can still make the subs, the tops or a band louder (balance, EQ boosts, a notch
+        taken away, Lo-Cut off): the confirm marks those lines.</div>
+      <button id="venue-undo" class="ghost warn vundo" hidden>UNDO RECALL</button>
+    </div>
+    <div id="venue-list" class="vlist" aria-label="venue slots"></div>
+  </section>
 </main>
 
 <footer id="foot">
@@ -132,9 +145,22 @@
   <div class="box">
     <div class="q" id="confirm-q">Reset the live EQ?</div>
     <div class="sub" id="confirm-sub">All 4 notches and both shelves go back to flat (smoothly).</div>
+    <ul id="confirm-list" class="clist" hidden></ul>
     <div class="row">
       <button id="confirm-no" class="ghost">Cancel</button>
       <button id="confirm-yes" class="danger">Reset</button>
+    </div>
+  </div>
+</div>
+<div id="vname" class="modal" hidden>
+  <div class="box">
+    <div class="q" id="vname-q">Save in slot 1</div>
+    <div class="sub" id="vname-sub">The sound now goes into this slot.</div>
+    <input id="vname-in" class="vin" type="text" maxlength="16" autocomplete="off" autocapitalize="characters"
+      spellcheck="false" enterkeyhint="done" aria-label="venue name">
+    <div class="row">
+      <button id="vname-no" class="ghost">Cancel</button>
+      <button id="vname-yes" class="danger">Save</button>
     </div>
   </div>
 </div>

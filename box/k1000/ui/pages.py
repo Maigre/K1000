@@ -3,8 +3,8 @@
 
 Pages: SHOW (the front page: master, FREQ/GAIN/Q of the selected live band, the EQ curve over
 the program spectrum), ALIGN (master, balance, sub delay, Lo-Cut; E3/E4 locked until a B3
-hold), SETUP (the list), PHONE (drawn by ui/qr.py) and HWTEST (the knob test). The v0 names
-MAIN and LIVE are aliases of ALIGN and SHOW.
+hold), SETUP (the list), VENUES (the 8 venue snapshots, docs/12), PHONE (drawn by ui/qr.py)
+and HWTEST (the knob test). The v0 names MAIN and LIVE are aliases of ALIGN and SHOW.
 
 Design rules (why it looks like this):
 - Read at arm's length, outdoors, by someone mixing: black background, white digits, amber
@@ -27,7 +27,8 @@ Design rules (why it looks like this):
   NO DEVICE > ENGINE DOWN replace the body. MUTED is a red pill in the status bar plus a red
   frame on every page; on SHOW also a red band over the chip row and the top of the graph (the
   0 dB line, every value, the edit box and FINE stay visible), on ALIGN the v0 band across the
-  middle, on SETUP a red footer (a band would hide the selected row), on the Knob test a tag.
+  middle, on SETUP and VENUES a red footer (a band would hide the selected row), on the Knob
+  test a tag.
 - Unknown is not OK (fail closed): a status that does not say the engine runs shows an amber
   "ENGINE ?", one that does not say the device is present shows "DEVICE ?", plus a STATUS ?
   warning; never green.
@@ -52,8 +53,9 @@ from PIL import Image, ImageDraw, ImageFont
 from . import eqgraph as eg
 from .input_map import (A_LAPTOP, A_RESET_LIVE, A_UNDO_RESET, BAND_CYCLE, F_BALANCE, F_LOWCUT_FREQ,
                         F_LOWCUT_ON, F_MASTER, F_SLOT, F_SPECTRUM_ON, F_SUB_DELAY, HINT_LOCKED,
-                        KNOB_CORNERS, LIVE_SLOT_LABELS, LIVE_SLOTS, SETUP_ITEMS, Focus,
-                        knob_labels, page_name)
+                        KNOB_CORNERS, LIVE_SLOT_LABELS, LIVE_SLOTS, SETUP_ITEMS, VENUE_CANCEL,
+                        VENUE_CLEAR, VENUE_MENU, VENUE_OK, VENUE_UNDO_KEY, VENUE_UNDO_ROW, Focus,
+                        knob_labels, page_name, venue_confirm_key)
 
 log = logging.getLogger(__name__)
 
@@ -94,7 +96,7 @@ FULL_WIDTH_ALERTS: tuple[str, ...] = ("KNOBS OFFLINE",)   # D-009: red, the whol
 ALERT_MIN_PX = 12                      # status-bar alert text: below this it is ellipsized
 # The page pill while a system alert is up (the alert gets the room).
 PAGE_SHORT: dict[str, str] = {"SHOW": "SHW", "ALIGN": "ALN", "SETUP": "SET", "PHONE": "PHN",
-                              "TEST": "TST"}
+                              "TEST": "TST", "VENUES": "VEN"}
 # Persistent SHOW pills that change the sound or open the box: orange, and folded into '+N'
 # only after every neutral one (MONO SUB, AUDITION).
 RISKY_PILLS: tuple[str, ...] = ("LAPTOP OPEN", "LO-CUT OFF", "POL INV")
@@ -157,6 +159,10 @@ class ScreenStatus:
             eqgraph.RtaFrame to draw behind the curve (None = none).
     laptop_s / laptop_state: SETUP > Laptop access, seconds left (0 = closed) and the state
             root reports (off = no such surface, closed, opening, open, closing, unavailable).
+    venues: (name, saved_at) or None per slot (docs/12); venue_slot / venue_name: the slot the
+            live values still equal (-1 = none); venue_undo_s: Undo recall, seconds left;
+            venue_changes: what recalling the open slot would change; venues_error: venues.json
+            unreadable at start.
     The controller must set engine and device_present explicitly: the defaults are "unknown".
     """
     profile: str = ""
@@ -183,6 +189,12 @@ class ScreenStatus:
     spectrum: Any = None
     laptop_s: float = 0.0
     laptop_state: str = "off"
+    venues: Sequence[Any] = ()
+    venue_slot: int = -1
+    venue_name: str = ""
+    venue_undo_s: float = 0.0
+    venue_changes: Sequence[str] = ()
+    venues_error: str = ""
 
 
 # ------------------------------------------------------------------------------------------
@@ -1135,6 +1147,9 @@ def _page_align(c: _Ctx, state: Any, status: Any) -> None:
 # SETUP
 # ------------------------------------------------------------------------------------------
 def _setup_value(state: Any, item, status: Any = None) -> str:
+    if item.kind == "page" and item.field == "VENUES":
+        cur = str(_get(status, "venue_name", "") or "")
+        return f"{cur.upper()} ▸" if cur else "PUSH ▸"
     if item.kind == "page":
         return "PUSH ▸"
     if item.kind == "action":
@@ -1246,6 +1261,285 @@ def _page_setup(c: _Ctx, state: Any, status: Any) -> None:
         d.rectangle((0, H - FOOTER_H, W, H), fill=AMBER)
         d.text((W // 2, H - FOOTER_H // 2), hint, font=_fit(d, hint, 20, W - 20), fill=BG,
                anchor="mm")
+
+
+# ------------------------------------------------------------------------------------------
+# VENUES (docs/12-venue-snapshots.md)
+# ------------------------------------------------------------------------------------------
+def _venue_rows(status: Any) -> list[tuple[str, float] | None]:
+    """status.venues as 8 (name, saved_at) / None entries, whatever the status holds."""
+    out: list[tuple[str, float] | None] = []
+    for v in _seq(_get(status, "venues", None))[:VENUE_UNDO_ROW]:
+        try:
+            name, at = str(v[0]), float(v[1])
+            out.append((name, at if math.isfinite(at) else 0.0) if name else None)
+        except Exception:
+            out.append(None)
+    return out + [None] * (VENUE_UNDO_ROW - len(out))
+
+
+def fmt_venue_date(at: float | None, with_time: bool = False) -> str:
+    """'13 OCT' (or '13 OCT 21:04') in the box's local time; '--' when unknown."""
+    if not at or at <= 0:
+        return "--"
+    try:
+        t = time.localtime(float(at))
+    except (OverflowError, OSError, ValueError):
+        return "--"
+    return time.strftime("%d %b %H:%M" if with_time else "%d %b", t).upper()
+
+
+def _corner(c: _Ctx, e: int, label: str) -> None:
+    """A knob's tag and label in its screen corner (SETUP's header/footer rows)."""
+    d = c.d
+    corner = KNOB_CORNERS[e]
+    y = STATUS_H + 4 if corner[0] == "t" else H - 24
+    if corner[1] == "l":
+        d.text((10, y), f"E{e + 1}", font=font(16), fill=CYAN, anchor="la")
+        d.text((40, y - 2), label, font=font(20), fill=AMBER, anchor="la")
+    else:
+        d.text((W - 10, y), f"E{e + 1}", font=font(16), fill=CYAN, anchor="ra")
+        d.text((W - 40, y - 2), label, font=font(20), fill=AMBER, anchor="ra")
+
+
+def _now_pill(c: _Ctx, x_right: float, cy: float) -> float:
+    """The grey NOW pill (the slot the live values still equal), right-aligned; returns its x."""
+    d = c.d
+    f = font(13)
+    w = d.textlength("NOW", font=f) + 12
+    d.rounded_rectangle((x_right - w, cy - 9, x_right, cy + 9), radius=4, fill=PILL_BG,
+                        outline=PILL_EDGE)
+    d.text((x_right - w / 2, cy + 1), "NOW", font=f, fill=FG, anchor="mm")
+    return x_right - w
+
+
+def _venue_footer(c: _Ctx, right: str) -> None:
+    d = c.d
+    hint = _hint(c)
+    if hint:
+        d.rectangle((0, H - FOOTER_H, W, H), fill=AMBER)
+        size, text = _fit_ellipsis(hint, 20, W - 20)
+        d.text((W // 2, H - FOOTER_H // 2), text, font=font(size), fill=BG, anchor="mm")
+        return
+    d.text((W - 10, H - 22), right, font=_fit(d, right, 16, 230, FONT_REG), fill=DIM, anchor="ra")
+
+
+def _page_venues(c: _Ctx, state: Any, status: Any) -> None:
+    """VENUES: the list (8 slots + Undo recall), an open slot (RECALL / SAVE HERE / RENAME /
+    BACK with what it does on the right), or the RENAME letter picker. Same rules as SETUP:
+    amber = the selected row and hints (footer), red = a push waiting for its second push."""
+    f = c.focus
+    mode = str(getattr(f, "venue_mode", "list") or "list")
+    try:
+        sel = max(0, min(VENUE_UNDO_ROW, int(getattr(f, "venue", 0) or 0)))
+    except (TypeError, ValueError):
+        sel = 0
+    rows = _venue_rows(status)
+    try:
+        cur = int(_get(status, "venue_slot", -1))
+    except (TypeError, ValueError):
+        cur = -1
+    conf_fn = getattr(f, "confirm_now", None)
+    confirm = conf_fn(c.now) if callable(conf_fn) else None
+    if mode == "rename" and sel < VENUE_UNDO_ROW:
+        _venue_rename(c, sel)
+    elif mode == "menu" and sel < VENUE_UNDO_ROW:
+        _venue_menu(c, status, sel, rows[sel], cur == sel, confirm)
+    else:
+        _venue_list(c, status, sel, rows, cur)
+
+
+def _venue_list(c: _Ctx, status: Any, sel: int, rows: list, cur: int) -> None:
+    d = c.d
+    conf_fn = getattr(c.focus, "confirm_now", None)
+    undo_pending = (callable(conf_fn) and conf_fn(c.now) == VENUE_UNDO_KEY)
+    _corner(c, 0, "SLOT")
+    _corner(c, 1, "SLOT")
+    err = str(_get(status, "venues_error", "") or "")
+    n_rows, row_h, y0 = 8, 28, STATUS_H + 30
+    total = VENUE_UNDO_ROW + 1
+    first = max(0, min(sel - n_rows // 2, total - n_rows))
+    undo_s = _num(status, "venue_undo_s", 0.0) or 0.0
+    if err:
+        title, col, face = "venues.json unreadable · kept as .bad", ORANGE, FONT_REG
+    elif undo_s > 0 and first + n_rows <= VENUE_UNDO_ROW:
+        # the Undo recall row is below the window: say it is there
+        title, col, face = f"UNDO RECALL {fmt_mmss(undo_s)} ▾", FG, FONT_BOLD
+    else:
+        title, col, face = f"VENUES  {sel + 1}/{total}", DIM, FONT_BOLD
+    d.text((W - 10, STATUS_H + 4), title, font=_fit(d, title, 18, 300, face), fill=col, anchor="ra")
+    for r in range(n_rows):
+        i = first + r
+        if i >= total:
+            break
+        y = y0 + r * row_h
+        cy = y + row_h // 2 - 1
+        is_sel = i == sel
+        pending = is_sel and i == VENUE_UNDO_ROW and undo_pending
+        if is_sel:
+            d.rectangle((4, y, W - 4, y + row_h - 3), fill=RED if pending else AMBER)
+        if i == VENUE_UNDO_ROW:
+            dim = undo_s <= 0
+            fg = FG if pending else (BG if is_sel else (DIM if dim else FG))
+            d.text((14, cy), "PUSH AGAIN" if pending else "Undo recall",
+                   font=font(20, FONT_BOLD if is_sel else FONT_REG), fill=fg, anchor="lm")
+            d.text((W - 14, cy), f"UNDO {fmt_mmss(undo_s)}" if undo_s > 0 else "—", font=font(20),
+                   fill=fg, anchor="rm")
+            continue
+        v = rows[i]
+        fg = BG if is_sel else FG
+        d.text((14, cy), f"{i + 1}", font=font(20), fill=BG if is_sel else CYAN, anchor="lm")
+        if v is None:
+            d.text((44, cy), "EMPTY", font=font(20, FONT_REG), fill=BG if is_sel else FAINT,
+                   anchor="lm")
+            continue
+        date = fmt_venue_date(v[1])
+        fd = font(18, FONT_REG)
+        xr = W - 14 - d.textlength(date, font=fd)
+        d.text((W - 14, cy), date, font=fd, fill=BG if is_sel else DIM, anchor="rm")
+        if i == cur:
+            xr = _now_pill(c, xr - 10, cy)
+        name = v[0].upper()
+        size, text = _fit_ellipsis(name, 20, int(xr - 54), min_size=14)
+        d.text((44, cy), text, font=font(size, FONT_BOLD if is_sel else FONT_REG), fill=fg, anchor="lm")
+    if first > 0:
+        d.polygon([(W // 2 - 8, y0 - 4), (W // 2 + 8, y0 - 4), (W // 2, y0 - 12)], fill=DIM)
+    if first + n_rows < total:
+        yb = y0 + n_rows * row_h
+        d.polygon([(W // 2 - 8, yb), (W // 2 + 8, yb), (W // 2, yb + 8)], fill=DIM)
+    _venue_footer(c, "push = open · B1 = back")
+
+
+_SAVE_LINES = ("live EQ · system EQ", "sub + top delay, polarity", "Lo-Cut · balance · mono subs",
+               "never master, mute or trims")
+# A change line that can make a group or a band louder (venues.describe_changes words it so;
+# venues.LOUDER_MARKS is the same tuple, asserted by the tests): drawn orange like a risky pill.
+LOUDER_MARKS: tuple[str, ...] = (" louder)", "(subs +", "(tops +", "Lo-Cut ON → OFF")
+VENUE_CHANGE_ROWS = 7        # the box's RECALL list: compact lines (describe_changes compact=True)
+
+
+def venue_line_colour(line: str) -> tuple[int, int, int]:
+    """Orange: not applied (MUTE FIRST) or can make it louder; white otherwise."""
+    if "MUTE FIRST" in line or any(m in line for m in LOUDER_MARKS):
+        return ORANGE
+    return FG
+
+
+def _venue_menu(c: _Ctx, status: Any, slot: int, v: Any, is_now: bool, confirm: Any) -> None:
+    d = c.d
+    f = c.focus
+    _corner(c, 0, "ACTION")
+    _corner(c, 1, "ACTION")
+    d.text((W - 10, STATUS_H + 4), f"SLOT {slot + 1}", font=font(18), fill=DIM, anchor="ra")
+    # the slot: name (or EMPTY SLOT), saved date, NOW
+    ty = STATUS_H + 44
+    name = v[0].upper() if v is not None else "EMPTY SLOT"
+    room = W - 28 - (60 if is_now else 0)
+    size, text = _fit_ellipsis(name, 28, room, min_size=16)
+    d.text((14, ty), text, font=font(size), fill=FG if v is not None else DIM, anchor="lm")
+    if is_now:
+        _now_pill(c, W - 14, ty)
+    if v is not None:
+        d.text((14, ty + 24), "saved " + fmt_venue_date(v[1], with_time=True).lower(),
+               font=font(15, FONT_REG), fill=DIM, anchor="lm")
+    try:
+        act = max(0, min(len(VENUE_MENU) - 1, int(getattr(f, "venue_menu", 0) or 0)))
+    except (TypeError, ValueError):
+        act = 0
+    y0, row_h, x1 = STATUS_H + 92, 38, 190
+    for i, label in enumerate(VENUE_MENU):
+        y = y0 + i * row_h
+        cy = y + row_h // 2 - 2
+        is_sel = i == act
+        key = {"RECALL": venue_confirm_key(f, "recall", slot),
+               "SAVE HERE": venue_confirm_key(f, "save", slot)}.get(label)
+        pending = is_sel and key is not None and confirm == key
+        unavailable = v is None and label in ("RECALL", "RENAME")
+        if is_sel:
+            d.rectangle((4, y, x1, y + row_h - 5), fill=RED if pending else AMBER)
+        fg = FG if pending else (BG if is_sel else (FAINT if unavailable else FG))
+        text = "PUSH AGAIN" if pending else label
+        d.text((16, cy), text, font=font(21, FONT_BOLD if is_sel else FONT_REG), fill=fg, anchor="lm")
+    # what the selected action does
+    x0, ly = 206, y0 + 4
+    label = VENUE_MENU[act]
+    if label == "RECALL" and v is not None:
+        # Every change on screen (the Controller sends the compact lines: at most 7, the MUTE
+        # FIRST one first). Up to 6 keep the "master and mute stay" line; 7 take its room.
+        changes = [str(x) for x in _seq(_get(status, "venue_changes", None))]
+        d.text((x0, ly), "IF RECALLED:", font=font(16), fill=AMBER, anchor="la")
+        lines = changes or ["nothing changes:", "this is the sound now"]
+        more = 0
+        if len(lines) > VENUE_CHANGE_ROWS:          # only from an odd status: say how many hide
+            more, lines = len(lines) - (VENUE_CHANGE_ROWS - 1), lines[:VENUE_CHANGE_ROWS - 1]
+        pitch, top = 20, ly + 24
+        for k, line in enumerate(lines):
+            col = venue_line_colour(line) if changes else DIM
+            size, txt = _fit_ellipsis(line, 16, W - x0 - 10, min_size=12, face=FONT_REG)
+            d.text((x0, top + k * pitch), txt, font=font(size, FONT_REG), fill=col, anchor="la")
+        if more:
+            d.text((x0, top + len(lines) * pitch), f"+{more} more", font=font(16, FONT_REG),
+                   fill=DIM, anchor="la")
+        elif len(lines) < VENUE_CHANGE_ROWS:
+            d.text((x0, top + 6 * pitch + 2), "master and mute stay", font=font(14, FONT_REG),
+                   fill=DIM, anchor="la")
+    elif label == "SAVE HERE":
+        d.text((x0, ly), "SAVE HERE STORES:", font=font(16), fill=AMBER, anchor="la")
+        for k, line in enumerate(_SAVE_LINES):
+            d.text((x0, ly + 26 + k * 22), line, font=_fit(d, line, 17, W - x0 - 10, FONT_REG),
+                   fill=DIM if k == len(_SAVE_LINES) - 1 else FG, anchor="la")
+        if v is not None:
+            rep_line = f"replaces {v[0].upper()}"
+            size, txt = _fit_ellipsis(rep_line, 17, W - x0 - 10, min_size=12, face=FONT_REG)
+            d.text((x0, ly + 26 + 4 * 22 + 6), txt, font=font(size, FONT_REG), fill=ORANGE,
+                   anchor="la")
+    elif label == "RENAME":
+        d.text((x0, ly), "RENAME:", font=font(16), fill=AMBER, anchor="la")
+        for k, line in enumerate(("E1 moves, E2 letter", "or name it from the", "phone: VENUES tab")):
+            d.text((x0, ly + 26 + k * 22), line, font=font(17, FONT_REG), fill=FG if v else DIM,
+                   anchor="la")
+    else:
+        d.text((x0, ly), "back to the list", font=font(17, FONT_REG), fill=DIM, anchor="la")
+    _venue_footer(c, "push = select")
+
+
+def _venue_rename(c: _Ctx, slot: int) -> None:
+    d = c.d
+    f = c.focus
+    _corner(c, 0, "MOVE")
+    _corner(c, 1, "LETTER")
+    d.text((W - 10, STATUS_H + 4), f"RENAME SLOT {slot + 1}", font=font(18), fill=DIM, anchor="ra")
+    buf = [ch if isinstance(ch, str) and len(ch) == 1 else " "
+           for ch in list(getattr(f, "venue_buf", []) or [])]
+    buf = (buf + [" "] * VENUE_OK)[:VENUE_OK]
+    try:
+        cur = max(0, min(VENUE_CANCEL, int(getattr(f, "venue_cursor", 0) or 0)))
+    except (TypeError, ValueError):
+        cur = 0
+    cw, ch_h = 28, 50
+    x0 = (W - cw * VENUE_OK) // 2
+    y0 = STATUS_H + 52
+    fc = font(30)
+    for i, ch in enumerate(buf):
+        x = x0 + i * cw
+        on = i == cur
+        d.rounded_rectangle((x + 1, y0, x + cw - 2, y0 + ch_h), radius=4,
+                            fill=AMBER if on else BAR_BG, outline=None if on else FAINT)
+        if ch != " ":
+            d.text((x + cw / 2, y0 + ch_h / 2 + 1), ch, font=fc, fill=BG if on else FG, anchor="mm")
+    by = y0 + ch_h + 24
+    for label, idx, bx in (("OK", VENUE_OK, 40), ("CLEAR", VENUE_CLEAR, 180),
+                           ("CANCEL", VENUE_CANCEL, 320)):
+        on = cur == idx
+        d.rounded_rectangle((bx, by, bx + 120, by + 40), radius=6, fill=AMBER if on else None,
+                            outline=AMBER if not on else None, width=2)
+        d.text((bx + 60, by + 21), label, font=font(22), fill=BG if on else AMBER, anchor="mm")
+    hy = by + 62
+    for k, line in enumerate(("E1 moves · E2 letter · push = next · 2 blanks = OK",
+                              "or name it from the phone: VENUES tab")):
+        d.text((W // 2, hy + k * 22), line, font=_fit(d, line, 16, W - 24, FONT_REG), fill=DIM,
+               anchor="mm")
+    _venue_footer(c, "push on OK = save")
 
 
 # ------------------------------------------------------------------------------------------
@@ -1387,7 +1681,7 @@ def _overlay_muted(c: _Ctx, state: Any, status: Any, page: str = "ALIGN") -> Non
     d.rectangle((0, STATUS_H, W - 1, H - 1), outline=BAND_RED, width=4)
     hint, unmute = _mute_hint(c, state, status)
     page = page_name(page)
-    if page == "SETUP":
+    if page in ("SETUP", "VENUES"):
         if not hint:
             d.rectangle((0, H - FOOTER_H, W, H), fill=BAND_RED)
             cy = H - FOOTER_H // 2
@@ -1413,7 +1707,8 @@ def _overlay_muted(c: _Ctx, state: Any, status: Any, page: str = "ALIGN") -> Non
     _band_text(c, y0, y1, 56, 22, 18, hint or unmute)
 
 
-_PAGES = {"SHOW": _page_show, "ALIGN": _page_align, "SETUP": _page_setup, "HWTEST": _page_hwtest}
+_PAGES = {"SHOW": _page_show, "ALIGN": _page_align, "SETUP": _page_setup, "HWTEST": _page_hwtest,
+          "VENUES": _page_venues}
 
 
 def render(page: str, state: Any, status: Any = None, focus: Any = None,
@@ -1580,7 +1875,9 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
     is exactly what is tested.
     """
     from ..state import State  # local import: pages must render without state.py too
-    from .input_map import HwTestLog
+    from ..venues import describe_changes, values_of
+    from .input_map import (HINT_VENUE_OVERWRITE, HINT_VENUE_RECALL, HINT_VENUE_RENAME,
+                            HINT_VENUE_UNDO, HwTestLog)
 
     inf = float("inf")
     s = State()
@@ -1625,6 +1922,28 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
     dev_open = with_(dev, laptop_state="open", laptop_s=7140.0,
                      pills=["MONO SUB", "LAPTOP OPEN 1:59"])
     mono_i = _setup_index("mono_subs")
+    # Venue snapshots (docs/12): three venues saved, the live values equal slot 1; slot 2 has
+    # another delay, Lo-Cut, two EQ bands and mono subs (not applied unmuted: said in orange).
+    def stamp(day: int, hh: int, mm: int) -> float:
+        return time.mktime((2026, 10, day, hh, mm, 0, 0, 0, -1))
+
+    vs = State.from_dict({**s.to_dict(), "sub_delay_ms": 2.9, "lowcut_hz": 90.0, "balance_db": 0.0,
+                          "mono_subs": True})
+    vs.live_peq[1].gain, vs.live_peq[3].gain = 0.0, -4.5
+    vs.sys_peq[2].gain = -3.0
+    changes = describe_changes(values_of(s), values_of(vs), rebuild_ok=False, compact=True)
+    # a room unlike the sound now in every way: the box's list at its longest (7 compact lines)
+    wide = State.from_dict({**vs.to_dict(), "top_delay_ms": 0.75, "sub_inverted": True,
+                            "top_inverted": True, "lowcut_on": False, "balance_db": 4.0})
+    wide.live_lowshelf.gain, wide.sys_peq[6].gain = 3.0, 2.0
+    changes_wide = describe_changes(values_of(s), values_of(wide), rebuild_ok=False, compact=True)
+    rows = [("SALLE DES FETES", stamp(12, 21, 4)), ("CHAPEL", stamp(3, 18, 30)), None,
+            ("GARDEN STAGE", stamp(9, 16, 12)), None, None, None, None]
+    ven = with_(run, venues=rows, venue_slot=0, venue_name="SALLE DES FETES", venue_undo_s=262.0)
+    ven_open = with_(ven, venue_changes=changes)
+    ven_wide = with_(ven, venue_changes=changes_wide)
+    ven_muted = with_(ven, muted=True, venue_undo_s=0.0)
+    venues_i = _setup_index("VENUES")
     return [
         # SHOW: the front page
         ("show", "SHOW", s, run, Focus(slot=1)),
@@ -1644,6 +1963,10 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
                                                          "POL INV SUB", "MONO SUB"]), Focus(slot=1)),
         ("show_pills_two", "SHOW", lc_off, with_(run, pills=["LO-CUT OFF", "MONO SUB"]),
          Focus(slot=1)),
+        # the live values still equal a recalled (or saved) venue: its pill, last in the row
+        ("show_venue_pill", "SHOW", s, with_(run, pills=["VENUE: SALLE DES FETES"]), Focus(slot=1)),
+        ("show_venue_pill_crowded", "SHOW", lc_off,
+         with_(run, pills=["LO-CUT OFF", "MONO SUB", "VENUE: SALLE DES FETES"]), Focus(slot=1)),
         ("hint", "SHOW", s, run, Focus(slot=1, editing=F_MASTER, edit_until=inf,
                                        hint="MASTER: SLOW DOWN", hint_until=inf)),
         ("input_clip", "SHOW", s, with_(run, in_clip=True), Focus(slot=1)),
@@ -1701,6 +2024,25 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
          Focus(item=laptop_i, confirm=A_LAPTOP, confirm_until=inf,
                hint="PUSH AGAIN: LAPTOP ACCESS FOR 2 H", hint_until=inf)),
         ("setup_laptop_open", "SETUP", s, dev_open, Focus(item=laptop_i - 1)),
+        ("setup_venues", "SETUP", s, with_(dev, venue_name="SALLE DES FETES"), Focus(item=venues_i)),
+        # VENUES (SETUP > Venues): the list, an open slot, the confirms, the letter picker
+        ("venues", "VENUES", s, ven, Focus(venue=1)),
+        ("venues_open", "VENUES", s, ven_open, Focus(venue=1, venue_mode="menu", venue_menu=0)),
+        ("venues_recall_confirm", "VENUES", s, ven_open,
+         Focus(venue=1, venue_mode="menu", venue_menu=0, confirm="venue_recall:1",
+               confirm_until=inf, hint=HINT_VENUE_RECALL.format("CHAPEL"), hint_until=inf)),
+        ("venues_overwrite_confirm", "VENUES", s, ven_open,
+         Focus(venue=1, venue_mode="menu", venue_menu=1, confirm="venue_save:1",
+               confirm_until=inf, hint=HINT_VENUE_OVERWRITE.format("CHAPEL"), hint_until=inf)),
+        ("venues_open_many", "VENUES", s, ven_wide, Focus(venue=3, venue_mode="menu", venue_menu=0)),
+        ("venues_undo_confirm", "VENUES", s, ven,
+         Focus(venue=8, venue_undo_ok=True, confirm=VENUE_UNDO_KEY, confirm_until=inf,
+               hint=HINT_VENUE_UNDO, hint_until=inf)),
+        ("venues_empty", "VENUES", s, ven, Focus(venue=2, venue_mode="menu", venue_menu=1)),
+        ("venues_rename", "VENUES", s, ven,
+         Focus(venue=1, venue_mode="rename", venue_buf=list("CHAPEL NORTH".ljust(16)),
+               venue_cursor=12, hint=HINT_VENUE_RENAME, hint_until=inf)),
+        ("venues_muted", "VENUES", muted, ven_muted, Focus(venue=0)),
         # Knob test
         ("hwtest", "HWTEST", s, run, hwf),
         ("hwtest_muted", "HWTEST", muted, run_muted, hwf),

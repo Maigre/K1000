@@ -175,6 +175,15 @@ parametric bands + the spectrum serve live notching better on 4 knobs).
   hold-to-mute; HTTPS from the name-constrained local CA. Phone setup: `docs/06-phone.md`.
 - **After the gig:** presets per place type, EQ A/B, the curve and spectrum on the phone, and a GEQ
   view only if the field trial asks for it.
+- **Venue snapshots** (2026-10-13 night): **built on branch `night/snapshots`, not on the box
+  yet** (the gig build does not have it). There are 8 named slots for the venues that come back.
+  A slot holds the live EQ, the system EQ, sub and top delay, polarity, the Lo-Cut, the balance and
+  mono subs, never master, mute or trims. Recall: two pushes on SETUP › Venues, or a confirm on the
+  phone that lists what changes and marks what can get louder (balance, EQ boosts, Lo-Cut off). It
+  goes through the usual click-safe edits (mono subs only while muted). One-level undo for 5 min
+  (two pushes on the box). Pill `VENUE: <NAME>` on SHOW until the first audible edit.
+  `docs/12-venue-snapshots.md` §9 lists 8 build choices for Thomas to confirm. To land after the
+  debrief, then accept on the box.
 - **Phone orientation** (Thomas, 12/10): portrait stays the default and stays locked for Sunday
   (one thumb, hold-to-mute under it). After the gig, a landscape "EQ focus" layout when the phone is
   turned (wide curve and spectrum, band controls at the side), the way console remote apps adapt

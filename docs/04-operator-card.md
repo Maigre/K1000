@@ -23,7 +23,7 @@ UI v1 (D-009), accepted on the box 2026-10-13 (`f7aa58b-v1`); ops `box/README.md
 
 **ALIGN lock.** E3/E4 turned while locked: `LOCKED · HOLD B3 TO EDIT`, nothing changes. Unlocked (`EDIT 0:30`; a B3 tap relocks), the first E3 click after 2.5 s at rest only wakes sub delay; each change dips the subs briefly.
 
-**SETUP** (×2 = push twice within 5 s): Input trim · Sub/Top polarity · Top delay · Sub low-pass + freq · 4 trims · Mono subs ×2 · Audition ×2 · Profile ×2 · **Reset live EQ ×2** · **Undo reset** (`UNDO 4:58`; one level, until the next audible live-EQ edit or 5 min) · **Lo-Cut** on/off ×2 · **Spectrum** ON/OFF · **Laptop access ×2** (GUI + SSH over the K1000 Wi-Fi, 2 h, pill `LAPTOP OPEN`; one push closes) · Phone · Knob test.
+**SETUP** (×2 = push twice within 5 s): Input trim · Sub/Top polarity · Top delay · Sub low-pass + freq · 4 trims · Mono subs ×2 · Audition ×2 · Profile ×2 · **Reset live EQ ×2** · **Undo reset** (`UNDO 4:58`; one level, until the next audible live-EQ edit or 5 min) · **Lo-Cut** on/off ×2 · **Spectrum** ON/OFF · **Venues** (8 slots: RECALL ×2 · SAVE HERE ×2 · RENAME (two blanks = OK) · Undo recall ×2; never master or mute, but balance/EQ can be louder: orange lines; pill `VENUE: <NAME>`) · **Laptop access ×2** (GUI + SSH over the K1000 Wi-Fi, 2 h, pill `LAPTOP OPEN`; one push closes) · Phone · Knob test.
 
 **Emergency.** Silence: **hold B2**. Feedback: **B1 hold, B4, E3 down**. KNOBS OFFLINE (red, full width; B2 dead): phone mute if proven Friday, else source down, bypass. Any doubt: bypass.
 

@@ -61,6 +61,8 @@ engine:
 paths:
   state: /var/lib/k1000/state.json
   active_config: /var/lib/k1000/active.yml
+  # venues: the 8 venue snapshots (docs/12). Unset = venues.json next to paths.state, so a run
+  # with --state elsewhere never writes the live slots.
 
 phone:
   enabled: true
@@ -167,6 +169,7 @@ switches 0–7 (0–3 are the encoder pushes, 4–7 the buttons on the V4).
 | `engine.boot_ramp_s` | 0.5 … 30 s (clamped) | 3 | Length of the ramp to the saved master. No step is ever larger than 6 dB |
 | `paths.state` | a path | `/var/lib/k1000/state.json` | The saved state |
 | `paths.active_config` | a path | `/var/lib/k1000/active.yml` | The engine config K1000 writes. **The engine unit reads this exact path**: change it only for tests |
+| `paths.venues` | a path | `venues.json` next to `paths.state` | The 8 venue snapshots (`docs/12-venue-snapshots.md`). Left unset in the shipped file, so a run with `--state` elsewhere (chapter 08) keeps its own slots and never writes the live ones |
 
 ## 7. `phone`
 
@@ -242,6 +245,7 @@ All in `/var/lib/k1000/`, owned by the `k1000` user, written by the k1000 servic
 | `active.yml` | The CamillaDSP config K1000 generated from the state. **The engine boots from it** | With `state.json` |
 | `active.yml.prev` | The previous `active.yml`: the config the engine had booted from | At k1000's start, only when the `active.yml` it regenerates differs from the one on disk (for example after an update, a `k1000.yaml` change or a hand edit of `state.json`). Not on an ordinary restart, and never again until k1000's next start |
 | `phone.json` | SETUP › Phone on/off | When toggled |
+| `venues.json` | The 8 venue snapshots ([`docs/12`](../12-venue-snapshots.md)): name, saved time, the venue values (never master, mute or trims) | Atomically, on a save or a rename only. A torn file reads as 8 empty slots (copy kept as `venues.json.bad`) |
 
 A failed write is retried after 2, 5 and 10 s and raises `CANNOT SAVE STATE` on the screen.
 

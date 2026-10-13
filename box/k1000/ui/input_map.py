@@ -13,7 +13,8 @@ the HWTEST log) and returns actions. The dispatcher then runs, for each action,
 `apply_focus(focus, action)` (UI-local: band/item selection, hints, the edit highlight, the
 ALIGN lock) and, when that returns False, hands the action to the Controller.
 
-Pages (D-009): SHOW (front) -> ALIGN -> SETUP on B1, plus PHONE and HWTEST reached from SETUP.
+Pages (D-009): SHOW (front) -> ALIGN -> SETUP on B1, plus PHONE, VENUES and HWTEST reached from
+SETUP.
 - SHOW: E1 MASTER, E2/E3/E4 = FREQ/GAIN/Q of the selected live band. B3 tap = next band in
   LS 1 2 3 4 HS order (wraps). B4 tap = the notch helper (Controller.notch_helper). An encoder
   push is FINE while held, never a select.
@@ -22,8 +23,15 @@ Pages (D-009): SHOW (front) -> ALIGN -> SETUP on B1, plus PHONE and HWTEST reach
   on ALIGN (so any UNLOCK_S of idle relocks); a B3 tap relocks at once; leaving ALIGN relocks.
 - SETUP: E1 selects the item, E2 turns its value, an E1/E2 push selects it. Reset live EQ,
   Lo-Cut on/off and the pipeline rebuilds need a second push within CONFIRM_WINDOW_S.
-- B1: press = next page (instant), hold = SHOW from anywhere. The Controller brings ALIGN and
-  SETUP back to SHOW after HOME_AFTER_S without input.
+- VENUES (SETUP > Venues, docs/12-venue-snapshots.md): E1 or E2 scrolls the 8 slots (and the
+  Undo recall row), a push opens the slot: RECALL / SAVE HERE / RENAME / BACK. Recall, save and
+  Undo recall need a second push within CONFIRM_WINDOW_S (the hint names the slot; an overwrite
+  says so). A slot's confirm is bound to its saved time: saved again from the phone between the
+  two pushes, the second push only re-arms. RENAME is a letter picker opened just after the
+  name: E1 moves the cursor (16 cells, then OK, CLEAR, CANCEL), E2 changes the letter, a push
+  steps to the next cell; a push on a blank cell right after another blank jumps to OK.
+- B1: press = next page (instant), hold = SHOW from anywhere. The Controller brings ALIGN, SETUP
+  and VENUES back to SHOW after HOME_AFTER_S without input.
 
 Safety rules carried here:
 - B2 mutes/unmutes on a LONG press only, on EVERY page, the Knob test included; a short press
@@ -35,6 +43,8 @@ Safety rules carried here:
 - SUB DELAY (every settled change dips the subs under the delay guard) keeps v0's wake-up
   detent on top of the lock: the first detent after ARM_WINDOW_S at rest only wakes it.
 - Pipeline-rebuilding settings (mono subs, audition, profile) need two pushes on SETUP.
+- A venue recall (many values at once) and its undo need two pushes, on the slot it names (as it
+  was when the first push armed); no button recalls.
 - Acceleration makes master go DOWN faster; it never accelerates master UP (and the Controller
   caps master rises per window: the master-up guard).
 """
@@ -44,6 +54,10 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Literal, Sequence
+
+from ..venues import N_SLOTS as VENUE_SLOTS
+from ..venues import NAME_MAX as VENUE_NAME_MAX
+from ..venues import NAME_PICKER as VENUE_PICKER
 
 # ------------------------------------------------------------------------------------------
 # Actions (what the controller / dispatcher receives)
@@ -141,6 +155,35 @@ class SetupAction:
 
 
 @dataclass(frozen=True)
+class RecallVenue:
+    """VENUES > slot > RECALL, confirmed: the slot's values through the Controller's parameter
+    writes (Controller.recall_venue; never master or mute). `saved_at`: the slot's saved time
+    when the confirm was armed (refused by the Controller if it was saved again since)."""
+    slot: int
+    saved_at: float | None = None
+
+
+@dataclass(frozen=True)
+class SaveVenue:
+    """VENUES > slot > SAVE HERE, confirmed: the current venue values into the slot (its name
+    kept; an empty slot gets VENUE n)."""
+    slot: int
+
+
+@dataclass(frozen=True)
+class RenameVenue:
+    """VENUES > slot > RENAME > OK: the slot's new name (sanitised by the Controller)."""
+    slot: int
+    name: str
+
+
+@dataclass(frozen=True)
+class UndoRecall:
+    """VENUES > Undo recall, confirmed: the values from before the last recall
+    (Controller.undo_recall)."""
+
+
+@dataclass(frozen=True)
 class NotchHelper:
     """SHOW, B4 tap: set a free bell up as a notch (Controller.notch_helper; gain untouched)."""
 
@@ -176,7 +219,7 @@ class PhoneQr:
 
 Action = (Nudge | Toggle | SelectSlot | SelectBand | SelectItem | NextPage | GotoPage | Mute
           | ResetLive | UndoReset | SetupAction | NotchHelper | Unlock | Lock | ShowHint
-          | PhoneToggle | PhoneQr)
+          | PhoneToggle | PhoneQr | RecallVenue | SaveVenue | RenameVenue | UndoRecall)
 
 # ------------------------------------------------------------------------------------------
 # Field names, slots, pages, SETUP items (shared with pages.py)
@@ -201,11 +244,11 @@ BAND_CYCLE: tuple[int, ...] = (4, 0, 1, 2, 3, 5)
 BELL_SLOTS: tuple[int, ...] = (0, 1, 2, 3)      # the notch helper's candidates (never a shelf)
 
 PAGES: tuple[str, ...] = ("SHOW", "ALIGN", "SETUP")   # B1 cycles these; HWTEST/PHONE via SETUP
-ALL_PAGES: tuple[str, ...] = PAGES + ("HWTEST", "PHONE")   # PHONE via SETUP > Phone (D-007)
+ALL_PAGES: tuple[str, ...] = PAGES + ("HWTEST", "PHONE", "VENUES")   # via SETUP (D-007, docs/12)
 HOME_PAGE = "SHOW"
 # v0 page names, still accepted where a page is named (console `page MAIN`, old callers).
 PAGE_ALIASES: dict[str, str] = {"MAIN": "ALIGN", "LIVE": "SHOW"}
-AUTO_HOME_PAGES: tuple[str, ...] = ("ALIGN", "SETUP")
+AUTO_HOME_PAGES: tuple[str, ...] = ("ALIGN", "SETUP", "VENUES")
 HOME_AFTER_S = 60.0           # ALIGN/SETUP -> SHOW after this long without a knob/button event
 UNLOCK_S = 30.0               # ALIGN E3/E4 unlock, renewed by every input on ALIGN
 
@@ -248,9 +291,9 @@ A_RESET_LIVE = "reset_live"     # SETUP action items (`SetupItem.field`)
 A_UNDO_RESET = "undo_reset"
 A_LAPTOP = "laptop_access"      # the Friday tune's laptop over the K1000 Wi-Fi (docs/06 §11)
 
-# v0's list (Top delay stays here), then the v1 items (D-009), Laptop access (opened with a
-# double push, closed with one: the Controller waives its confirm while it is open), then Phone
-# and the Knob test.
+# v0's list (Top delay stays here), then the v1 items (D-009), Venues (docs/12), Laptop access
+# (opened with a double push, closed with one: the Controller waives its confirm while it is
+# open), then Phone and the Knob test.
 # Rebuild items (state.REBUILD_FIELDS) change the pipeline: possible click -> two pushes.
 SETUP_ITEMS: tuple[SetupItem, ...] = (
     SetupItem("Input trim", "input_trim_db", "num"),
@@ -270,6 +313,7 @@ SETUP_ITEMS: tuple[SetupItem, ...] = (
     SetupItem("Undo reset", A_UNDO_RESET, "action"),
     SetupItem("Lo-Cut", F_LOWCUT_ON, "bool", confirm=True),
     SetupItem("Spectrum", F_SPECTRUM_ON, "bool"),
+    SetupItem("Venues", "VENUES", "page"),        # 8 venue snapshots (docs/12)
     SetupItem("Laptop access", A_LAPTOP, "action", confirm=True),
     SetupItem("Phone", "PHONE", "page"),          # QR codes + phone on/off (D-007)
     SetupItem("Knob test", "HWTEST", "page"),
@@ -283,7 +327,7 @@ class Knob:
     field: str | None                 # None = unused on this page
     accel_up: int = 1                 # max detent multiplier on fast turns, per direction
     accel_down: int = 1
-    kind: Literal["nudge", "slot", "item", "setup_value", "phone_qr"] = "nudge"
+    kind: Literal["nudge", "slot", "item", "setup_value", "phone_qr", "venue"] = "nudge"
     # The first detent after ARM_WINDOW_S of rest only wakes the knob (highlight + hint); the
     # next ones edit. For a value whose every change is audible as a dip (sub delay).
     arm: bool = False
@@ -313,7 +357,16 @@ KNOBS: dict[str, tuple[Knob, Knob, Knob, Knob]] = {
     ),
     "HWTEST": (Knob("", None), Knob("", None), Knob("", None), Knob("", None)),
     "PHONE": (Knob("QR", None, kind="phone_qr"), Knob("", None), Knob("", None), Knob("", None)),
+    "VENUES": (Knob("SLOT", None, kind="venue"), Knob("SLOT", None, kind="venue"), Knob("", None),
+               Knob("", None)),
 }
+
+# VENUES (docs/12): the list rows are the 8 slots, then Undo recall; an open slot's menu.
+VENUE_UNDO_ROW = VENUE_SLOTS
+VENUE_MENU: tuple[str, ...] = ("RECALL", "SAVE HERE", "RENAME", "BACK")
+VENUE_OK = VENUE_NAME_MAX               # RENAME: cursor cells 0..15 = letters, then OK, CLEAR, CANCEL
+VENUE_CLEAR = VENUE_NAME_MAX + 1
+VENUE_CANCEL = VENUE_NAME_MAX + 2
 
 # Screen corner of each logical encoder. Assumed (E1 top-left, E2 bottom-left, E3 top-right,
 # E4 bottom-right) until Thomas confirms on the box — then correct this table only.
@@ -355,6 +408,16 @@ HINT_CONFIRM_RESET = "PUSH AGAIN TO RESET ALL LIVE EQ"
 HINT_CONFIRM_LOWCUT = "PUSH AGAIN TO SWITCH THE LO-CUT"
 HINT_CONFIRM_LAPTOP = "PUSH AGAIN: LAPTOP ACCESS FOR 2 H"
 HINT_ARM = "{} · TURN AGAIN TO CHANGE"
+HINT_VENUE_RECALL = "PUSH AGAIN TO RECALL {}"
+HINT_VENUE_SAVE = "PUSH AGAIN TO SAVE IN SLOT {}"
+HINT_VENUE_OVERWRITE = "PUSH AGAIN TO OVERWRITE {}"
+HINT_VENUE_EMPTY = "SLOT EMPTY · SAVE HERE FIRST"
+HINT_VENUE_RENAME = "E1 MOVES · E2 LETTER · OR NAME IT FROM THE PHONE"
+HINT_VENUE_NO_NAME = "NAME IS EMPTY"
+HINT_VENUE_CANCELLED = "RENAME CANCELLED"
+HINT_VENUE_CLEARED = "NAME CLEARED · E2 PICKS THE FIRST LETTER"
+HINT_VENUE_UNDO = "PUSH AGAIN TO UNDO THE RECALL"
+HINT_VENUE_NO_UNDO = "NO RECALL TO UNDO"
 CONFIRM_WINDOW_S = 5.0
 
 # ------------------------------------------------------------------------------------------
@@ -487,6 +550,27 @@ class Focus:
     # SETUP items whose confirm is waived right now (set by the Controller): Laptop access
     # while it is open, so that closing it, the safe direction, is a single push.
     no_confirm: set[str] = field(default_factory=set)
+    # VENUES (docs/12): the list row (0..7 = slots, VENUE_UNDO_ROW = Undo recall), the mode
+    # (list | menu: a slot is open | rename: the letter picker), the menu row, the rename buffer
+    # and cursor. Kept up to date by the Controller: `venue_names` (name or None per slot),
+    # `venue_stamps` (saved time or None per slot: binds a confirm to what was shown) and
+    # `venue_undo_ok` (a recall can be undone).
+    venue: int = 0
+    venue_mode: str = "list"
+    venue_menu: int = 0
+    venue_buf: list[str] = field(default_factory=list)
+    venue_cursor: int = 0
+    venue_names: tuple[str | None, ...] = ()
+    venue_stamps: tuple[float | None, ...] = ()
+    venue_undo_ok: bool = False
+
+    def venue_name(self, slot: int) -> str | None:
+        """The name of `slot` as the Controller last said (None = empty or unknown)."""
+        try:
+            n = self.venue_names[slot]
+        except (IndexError, TypeError):
+            return None
+        return str(n) if n else None
 
     def editing_now(self, now: float | None = None) -> str | None:
         now = time.monotonic() if now is None else now
@@ -637,6 +721,8 @@ def map_event(page: str, focus: Focus, event: Any, cfg: Any = None, *,
             return _setup_turn(focus, delta, fine)
         if knob.kind == "phone_qr":
             return [PhoneQr(1 if delta > 0 else -1)]
+        if knob.kind == "venue":
+            return _venue_turn(focus, e, delta)
         if knob.field is None:
             return []
         fld = knob.field.replace("{slot}", LIVE_SLOTS[focus.band])
@@ -665,6 +751,8 @@ def map_event(page: str, focus: Focus, event: Any, cfg: Any = None, *,
             return [PhoneToggle()]
         if page == "SETUP" and kind == "short" and n in (0, 1) and not turned:
             return _setup_push(focus, now)
+        if page == "VENUES" and kind == "short" and n in (0, 1) and not turned:
+            return _venue_push(focus, now)
         return []
 
     if n == 0:   # B1: next page on press (navigation should feel instant); hold = SHOW
@@ -735,6 +823,149 @@ def _setup_push(focus: Focus, now: float) -> list[Action]:
         if item.field == A_UNDO_RESET:
             return [UndoReset()]
         return [SetupAction(item.field)]
+    return []
+
+
+def _venue_slot(focus: Focus) -> int:
+    try:
+        return max(0, min(VENUE_UNDO_ROW, int(focus.venue)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _venue_turn(focus: Focus, e: int, delta: int) -> list[Action]:
+    """VENUES, E1/E2 turn. List: E1 or E2 scrolls the slots (and Undo recall). Menu: E1 or E2
+    picks the action. Rename: E1 moves the cursor, E2 changes the letter under it. Every detent
+    counts; any move cancels a pending confirm. UI-local: nothing reaches the Controller."""
+    focus.confirm = None
+    mode = focus.venue_mode
+    if mode == "menu":
+        focus.venue_menu = max(0, min(len(VENUE_MENU) - 1, int(focus.venue_menu) + delta))
+        return []
+    if mode == "rename":
+        if e == 0:
+            focus.venue_cursor = max(0, min(VENUE_CANCEL, int(focus.venue_cursor) + delta))
+        elif e == 1 and 0 <= focus.venue_cursor < VENUE_NAME_MAX:
+            buf = _venue_buffer(focus)
+            ch = buf[focus.venue_cursor]
+            i = VENUE_PICKER.index(ch) if ch in VENUE_PICKER else 0
+            buf[focus.venue_cursor] = VENUE_PICKER[(i + delta) % len(VENUE_PICKER)]
+            focus.venue_buf = buf
+        return []
+    focus.venue_mode = "list"
+    focus.venue = max(0, min(VENUE_UNDO_ROW, _venue_slot(focus) + delta))
+    return []
+
+
+def _venue_buffer(focus: Focus) -> list[str]:
+    buf = [c if isinstance(c, str) and len(c) == 1 else " " for c in list(focus.venue_buf)]
+    return (buf + [" "] * VENUE_NAME_MAX)[:VENUE_NAME_MAX]
+
+
+def venue_stamp(focus: Any, slot: int) -> float | None:
+    """The saved time of `slot` as the Controller last said (None = empty or unknown)."""
+    try:
+        at = getattr(focus, "venue_stamps", ())[slot]
+    except (IndexError, TypeError, KeyError):
+        return None
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
+        return None
+    return float(at)
+
+
+def venue_confirm_key(focus: Any, act: str, slot: int) -> str:
+    """The confirm key of a slot's RECALL ('recall') or SAVE HERE ('save'): the slot AND its
+    saved time, so a slot saved again (from the phone) between the two pushes no longer matches
+    and the second push re-arms on what is there now instead of acting on what the operator did
+    not see. pages.py draws the pending row red by the same key."""
+    at = venue_stamp(focus, slot)
+    return f"venue_{act}:{slot}" + (f"@{at:.3f}" if at is not None else "")
+
+
+VENUE_UNDO_KEY = "venue_undo"
+
+
+def _venue_confirm(focus: Focus, key: str, now: float) -> bool:
+    """The double push: True on the second push within CONFIRM_WINDOW_S (same key)."""
+    if focus.confirm_now(now) != key:
+        focus.confirm, focus.confirm_until = key, now + CONFIRM_WINDOW_S
+        return False
+    focus.confirm = None
+    return True
+
+
+def _venue_push(focus: Focus, now: float) -> list[Action]:
+    """VENUES, E1/E2 push (not after a fine turn).
+
+    List: a slot row opens it (on RECALL when it holds a venue, on SAVE HERE when empty); the
+    Undo recall row needs a second push (a fast spin past slot 8 lands on it: one push must not
+    revert delays, polarity and EQ). Menu: RECALL and SAVE HERE need a second push, bound to the
+    slot's saved time (the hint names the slot, an overwrite says OVERWRITE); RENAME opens the
+    picker just after the current name; BACK returns to the list. Rename: a push on a letter
+    steps to the next cell, on a blank right after another blank jumps to OK (the name is done),
+    on OK emits RenameVenue, on CLEAR blanks the name, on CANCEL returns to the menu."""
+    slot = _venue_slot(focus)
+    mode = focus.venue_mode
+    if mode == "rename":
+        cur = int(focus.venue_cursor)
+        if cur == VENUE_CANCEL:
+            focus.venue_mode = "menu"
+            return [ShowHint(HINT_VENUE_CANCELLED)]
+        if cur == VENUE_CLEAR:
+            focus.venue_buf, focus.venue_cursor = [" "] * VENUE_NAME_MAX, 0
+            return [ShowHint(HINT_VENUE_CLEARED)]
+        if cur == VENUE_OK:
+            name = "".join(_venue_buffer(focus)).strip()
+            if not name:
+                return [ShowHint(HINT_VENUE_NO_NAME)]
+            focus.venue_mode = "menu"
+            return [RenameVenue(slot, name)]
+        buf = _venue_buffer(focus)
+        cur = max(0, min(VENUE_NAME_MAX - 1, cur))
+        if buf[cur] == " " and cur > 0 and buf[cur - 1] == " ":
+            focus.venue_cursor = VENUE_OK         # two blanks in a row: the name is done
+        else:
+            focus.venue_cursor = min(VENUE_OK, cur + 1)
+        return []
+    if mode == "menu" and slot < VENUE_SLOTS:
+        name = focus.venue_name(slot)
+        act = VENUE_MENU[max(0, min(len(VENUE_MENU) - 1, int(focus.venue_menu)))]
+        if act == "BACK":
+            focus.venue_mode, focus.confirm = "list", None
+            return []
+        if act == "RECALL":
+            if name is None:
+                return [ShowHint(HINT_VENUE_EMPTY)]
+            if not _venue_confirm(focus, venue_confirm_key(focus, "recall", slot), now):
+                return [ShowHint(HINT_VENUE_RECALL.format(name))]
+            focus.venue_mode = "list"
+            return [RecallVenue(slot, venue_stamp(focus, slot))]
+        if act == "SAVE HERE":
+            if not _venue_confirm(focus, venue_confirm_key(focus, "save", slot), now):
+                return [ShowHint(HINT_VENUE_OVERWRITE.format(name) if name is not None
+                                 else HINT_VENUE_SAVE.format(slot + 1))]
+            focus.venue_mode = "list"
+            return [SaveVenue(slot)]
+        # RENAME: the picker opens on the current name, the cursor just after it
+        if name is None:
+            return [ShowHint(HINT_VENUE_EMPTY)]
+        focus.venue_mode = "rename"
+        nm = name.upper()[:VENUE_NAME_MAX]
+        focus.venue_buf = list(nm.ljust(VENUE_NAME_MAX))
+        focus.venue_cursor = len(nm) if len(nm) < VENUE_NAME_MAX else VENUE_OK
+        return [ShowHint(HINT_VENUE_RENAME, 4.0)]
+    # list (or a menu left open on the Undo row: back to the list)
+    focus.venue_mode = "list"
+    if slot == VENUE_UNDO_ROW:
+        if not focus.venue_undo_ok:
+            focus.confirm = None
+            return [ShowHint(HINT_VENUE_NO_UNDO)]
+        if not _venue_confirm(focus, VENUE_UNDO_KEY, now):
+            return [ShowHint(HINT_VENUE_UNDO)]
+        return [UndoRecall()]
+    focus.venue_mode = "menu"
+    focus.venue_menu = 0 if focus.venue_name(slot) is not None else 1
+    focus.confirm = None
     return []
 
 

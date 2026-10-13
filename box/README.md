@@ -55,6 +55,7 @@ The order at power-on:
 | `/etc/systemd/system/k1000-laptop.{path,service}` | from `box/systemd/`, installed, never enabled: SETUP › Laptop access (k1000.service `Wants=` the watcher; the root unit runs `/opt/k1000/net/k1000-laptop-access.sh`) |
 | `/run/k1000/laptop-open`, `/run/k1000-laptop/status` | SETUP › Laptop access: k1000's request (its runtime directory, gone when k1000 stops) and root's answer (open until, or closed and why) |
 | `/var/lib/k1000/tune-undo.json` | the `/tune` page's undo: the system EQ the last Apply replaced |
+| `/var/lib/k1000/venues.json` | the 8 venue snapshots (SETUP › Venues, phone VENUES tab; `docs/12-venue-snapshots.md`), written atomically on save/rename only; a torn file reads as empty slots and is kept as `.bad` |
 | `/etc/systemd/system/k1000-ap-{fence,hostapd,dnsmasq}.service`, `k1000-ap-hostapd.service.d/k1000-iface.conf` | from `box/net/`, by `net/setup-ap.sh` only (`install.sh --ap`); the drop-in binds hostapd to its interface |
 | `/etc/NetworkManager/dispatcher.d/90-k1000-ap-guard` | `net/k1000-ap-guard.sh`, by setup-ap.sh: stops the AP while another interface is in 10.42.0.0/24 (a laptop sharing on `eth0`), starts it again after; `journalctl -t k1000-ap-guard` |
 | `/etc/k1000/tls/` | the phone page's certificate: `k1000.crt`, `k1000.key`, `k1000-ca.crt` (public), root:k1000 0640 (install.sh with `K1000_TLS_DIR`; the CA's private key never comes here) |

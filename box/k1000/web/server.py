@@ -13,6 +13,11 @@ Why it is shaped like this:
   values, because dragging a notch is the point of the phone), mute, and a confirmed live-EQ
   reset. Setup-class fields (profile, mono subs, delays, polarity, system EQ, trims) are refused.
   Master may rise by a few dB per second at most, whatever the phone sends.
+- **Venue snapshots** (docs/12) are whole-slot actions, never single fields: save the current
+  values into a slot (an overwrite needs `confirm: true`), rename, preview what a recall would
+  change, recall (`confirm: true`, and the slot's `at` so a slot saved again meanwhile is
+  refused), undo the recall (`confirm: true`). The Controller applies a recall through its own
+  parameter writes and never touches master or mute; names are sanitised there.
 - **The phone never stalls the box.** Every client has its own sender that only ever sends the
   LATEST state (slow phones skip states, they do not queue them), a send timeout that drops a
   stuck phone, a message-rate bucket (a mute is never rate-limited), and every error is caught
@@ -63,6 +68,10 @@ from .. import __version__
 from ..state import N_LIVE_PEQ, RANGES, atomic_write
 from ..tune import MAX_TEXT, TuneDesk
 from ..ui.input_map import LIVE_SLOT_LABELS, LIVE_SLOT_SHORT, LIVE_SLOTS
+from ..venues import N_SLOTS as VENUE_SLOTS
+from ..venues import NAME_MAX as VENUE_NAME_MAX
+from ..venues import NAME_PICKER as VENUE_NAME_CHARS
+from ..venues import RAW_NAME_MAX as VENUE_RAW_NAME_MAX
 
 log = logging.getLogger("k1000.web")
 
@@ -90,7 +99,9 @@ PHONE_RANGES: tuple[str, ...] = (
     "live_lowshelf.freq", "live_lowshelf.gain", "live_lowshelf.q",
     "live_highshelf.freq", "live_highshelf.gain", "live_highshelf.q",
 )
-MESSAGE_TYPES = ("ping", "nudge", "set", "band", "notch", "mute", "reset_live")
+VENUE_TYPES = ("venue_save", "venue_rename", "venue_diff", "venue_recall", "venue_undo")
+MESSAGE_TYPES = ("ping", "nudge", "set", "band", "notch", "mute", "reset_live") + VENUE_TYPES
+VENUE_UNDO_STEP_S = 5            # the undo countdown is sent in 5 s steps (the page counts down)
 MAX_MESSAGE = 1024               # bytes: the largest legal phone message is ~120 (bigger: 1009)
 TUNE_MAX_MESSAGE = 4 * MAX_TEXT + 1024   # bytes: the tune page's pasted text (UTF-8, JSON-escaped)
 TUNE_TYPES = ("ping", "state", "preview", "apply", "undo")
@@ -273,6 +284,15 @@ def _is_num(v: Any) -> bool:
     if isinstance(v, int):
         return -MAX_ABS <= v <= MAX_ABS
     return isinstance(v, float) and math.isfinite(v) and -MAX_ABS <= v <= MAX_ABS
+
+
+def _is_time(v: Any) -> bool:
+    """A Unix time as the box stamps venue slots (0 <= t < 1e11; beyond MAX_ABS on purpose)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    if isinstance(v, int):
+        return 0 <= v < 10 ** 11
+    return math.isfinite(v) and 0.0 <= v < 1e11
 
 
 def _origin(scheme: str, host: str, port: int, default_port: int) -> str:
@@ -546,7 +566,9 @@ class PhoneBridge:
                 "build": build, "phone_on": phone_on, "ranges": ranges, "bands": list(LIVE_SLOTS),
                 "labels": list(LIVE_SLOT_LABELS), "short": list(LIVE_SLOT_SHORT),
                 "notch": {"gain": self.notch_gain_db, "q": self.notch_q},
-                "nudge": {k: list(v) for k, v in NUDGE_CAPS.items()}}
+                "nudge": {k: list(v) for k, v in NUDGE_CAPS.items()},
+                "venues": {"slots": VENUE_SLOTS, "name_max": VENUE_NAME_MAX,
+                           "name_chars": VENUE_NAME_CHARS}}
 
     @staticmethod
     def state_message(snap: tuple[Any, Any, Any, Any], *, phone_on: bool, phones: int,
@@ -568,6 +590,17 @@ class PhoneBridge:
         drift = getattr(status, "drift", None) or []
         engine = getattr(status, "engine", "Unknown")
         present = getattr(status, "device_present", None)
+        venues: list[dict[str, Any] | None] = []
+        for v in list(getattr(status, "venues", None) or [])[:VENUE_SLOTS]:
+            try:
+                venues.append({"n": str(v[0]), "at": _f(v[1], 3)} if v else None)
+            except Exception:   # noqa: BLE001 - an odd status entry: shown empty
+                venues.append(None)
+        venues += [None] * (VENUE_SLOTS - len(venues))
+        vslot = getattr(status, "venue_slot", -1)
+        vslot = vslot if isinstance(vslot, int) and not isinstance(vslot, bool) else -1
+        undo = _f(getattr(status, "venue_undo_s", 0.0), 3) or 0.0
+        undo_q = int(math.ceil(undo / VENUE_UNDO_STEP_S) * VENUE_UNDO_STEP_S) if undo > 0 else 0
         return {
             "t": "state",
             "master_db": _f(getattr(st, "master_db", None)),
@@ -590,6 +623,10 @@ class PhoneBridge:
             "load": _f(getattr(status, "load", None), 1),
             "phone_on": bool(phone_on),
             "phones": int(phones),
+            "venues": venues,
+            "venue": ({"s": vslot, "n": str(getattr(status, "venue_name", "") or "")}
+                      if 0 <= vslot < VENUE_SLOTS else None),
+            "venue_undo_s": undo_q,
         }
 
     @staticmethod
@@ -626,7 +663,58 @@ class PhoneBridge:
                 return False, None, "reset needs confirm: true"
             self.ctl.reset_live()
             return True, None, ""
+        if t in VENUE_TYPES:
+            return self._venue(t, msg)
         return False, None, "unknown message"
+
+    # ------------------------------------------------------------------ venue snapshots
+    def _venue(self, t: str, msg: dict[str, Any]) -> tuple[bool, Any, str]:
+        """venue_save / venue_rename / venue_diff / venue_recall / venue_undo (docs/12).
+        Validated here (slot index, name type and length, confirm, `at`), sanitised and applied
+        by the Controller (save_venue, rename_venue, venue_changes, recall_venue, undo_recall)."""
+        ctl = self.ctl
+        if not callable(getattr(ctl, "recall_venue", None)):
+            return False, None, "venues not available on this box"
+        if t == "venue_undo":
+            if msg.get("confirm") is not True:
+                return False, None, "undo needs confirm: true"
+            ok, text = ctl.undo_recall(source="phone")
+            return (True, text, "") if ok else (False, None, text)
+        s = msg.get("s")
+        if isinstance(s, bool) or not isinstance(s, int) or not 0 <= s < VENUE_SLOTS:
+            return False, None, f"venue: s must be 0..{VENUE_SLOTS - 1}"
+        slot = ctl.venues.get(s)
+        if t == "venue_diff":
+            if slot is None:
+                return False, None, f"slot {s + 1} is empty"
+            changes = ctl.venue_changes(s) or []
+            return True, {"s": s, "n": slot.name, "at": _f(slot.saved_at, 3), "changes": changes,
+                          "muted": bool(ctl.displayed_muted())}, ""
+        if t == "venue_recall":
+            if msg.get("confirm") is not True:
+                return False, None, "recall needs confirm: true"
+            at = msg.get("at")
+            if at is not None and not _is_time(at):
+                return False, None, "venue: at must be the slot's saved time"
+            ok, text = ctl.recall_venue(s, source="phone",
+                                        expect_saved_at=float(at) if at is not None else None)
+            return (True, text, "") if ok else (False, None, text)
+        name = msg.get("name")
+        if name is not None:
+            if not isinstance(name, str):
+                return False, None, "venue: name must be text"
+            if len(name) > VENUE_RAW_NAME_MAX:
+                return False, None, f"venue: name longer than {VENUE_RAW_NAME_MAX} characters"
+        if t == "venue_rename":
+            if name is None:
+                return False, None, "rename needs a name"
+            ok, text = ctl.rename_venue(s, name, source="phone")
+            return (True, text, "") if ok else (False, None, text)
+        # venue_save
+        if slot is not None and msg.get("confirm") is not True:
+            return False, None, f"slot {s + 1} holds {slot.name}: overwrite needs confirm: true"
+        ok, text = ctl.save_venue(s, name, source="phone")
+        return (True, text, "") if ok else (False, None, text)
 
     def _nudge(self, f: Any, d: Any, fine: bool) -> tuple[bool, Any, str]:
         if not isinstance(f, str) or f not in NUDGE_CAPS:
@@ -1595,10 +1683,11 @@ class PhoneServer:
             self.stats["errors"] += 1
             self._log_failure(c, f"{t} failed", e)
             return self._err(c, mid, f"internal error ({type(e).__name__})")
-        if ok and t == "mute":
-            self._dirty = True               # every phone sees the new mute generation at once
+        if ok and t in ("mute",) + VENUE_TYPES:
+            self._dirty = True               # every phone sees it at once (mute generation, slots)
         f = msg.get("f")
-        if t in ("mute", "reset_live", "notch") or (t == "set" and isinstance(f, str) and f in SET_BOOL):
+        if (t in ("mute", "reset_live", "notch") or (t in VENUE_TYPES and t != "venue_diff")
+                or (t == "set" and isinstance(f, str) and f in SET_BOOL)):
             log.info("phone %s: %s %s -> %s", c.peer, t,
                      json.dumps({k: v for k, v in msg.items() if k not in ("t", "id")})[:80],
                      value if ok else f"refused ({why})")

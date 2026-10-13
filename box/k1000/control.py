@@ -51,6 +51,14 @@ Why it is shaped like this:
   defaults; the faders it cannot know come back MUTED.
 - **Audio never depends on this process.** `stop()` waits for the engine work in flight (a
   restore, a guard), persists, and leaves the engine as it is; it never mutes.
+- **Venue snapshots are edits like any other** (docs/12-venue-snapshots.md, `venues.py`): a
+  recall sets the slot's values on the state and kicks the worker, so it reaches the engine as
+  click-safe parameter writes (EQ in detent-sized steps, delays and polarity under the group
+  guard dip) and is saved like a tune import. It never touches master, mute, trims or the
+  profile. Mono subs (a pipeline rebuild) is recalled only while muted. One-level undo for
+  UNDO_RECALL_S or until the next audible edit of a recalled value. The VENUE pill holds while
+  the live values sound exactly like the slot's CURRENT content (`venues.audible_key`).
+  venues.json is written atomically in a thread; a torn file reads as empty slots.
 """
 from __future__ import annotations
 
@@ -80,8 +88,11 @@ from .ui.input_map import (
     A_LAPTOP, ALL_PAGES, AUTO_HOME_PAGES, BELL_SLOTS, EDIT_HIGHLIGHT_S, F_LOWCUT_ON, F_SPECTRUM_ON,
     HINT_S, HOME_AFTER_S, HOME_PAGE, LIVE_SLOT_LABELS, LIVE_SLOT_SHORT, LIVE_SLOTS, MUTE_TOGGLE,
     PAGES, ControlMap, Focus, GotoPage, Mute, NextPage, NotchHelper, Nudge, PhoneQr, PhoneToggle,
-    ResetLive, SetupAction, Toggle, UndoReset, apply_focus, map_event, page_name,
+    RecallVenue, RenameVenue, ResetLive, SaveVenue, SetupAction, Toggle, UndoRecall, UndoReset,
+    apply_focus, map_event, page_name,
 )
+from .venues import (N_SLOTS as VENUE_SLOTS, Venue, VenueStore, apply_values, audible_key,
+                     default_name, describe_changes, sanitize_name, values_of)
 
 log = logging.getLogger(__name__)
 
@@ -165,6 +176,24 @@ HINT_LAPTOP_OPENING = "LAPTOP ACCESS: OPENING…"
 HINT_LAPTOP_OPEN = "LAPTOP OPEN 2 H · GUI :5005 · SSH"
 HINT_LAPTOP_CLOSED = "LAPTOP ACCESS CLOSED"
 LAPTOP_HINT_S = 4.0
+# Venue snapshots (docs/12)
+HINT_VENUE_SAVED = "SAVED IN SLOT {n} · {name}"
+HINT_VENUE_RECALLED = "RECALLED {name} · UNDO IN VENUES"
+HINT_VENUE_RECALLED_MONO = "RECALLED {name} · MONO SUB NOT SET (MUTE FIRST)"
+HINT_VENUE_SAME = "{name}: NOTHING TO CHANGE"
+HINT_VENUE_SAME_MONO = "{name}: MONO SUB NOT SET (MUTE FIRST)"
+HINT_VENUE_RENAMED = "SLOT {n} IS NOW {name}"
+HINT_VENUE_UNDONE = "RECALL UNDONE"
+HINT_VENUE_UNDO_MUTE = "MUTE FIRST TO UNDO (MONO SUB)"
+HINT_VENUE_UNDO_LOST = "RECALL UNDO LOST"
+HINT_VENUE_NOTHING = "NO RECALL TO UNDO"
+HINT_VENUE_EMPTY = "SLOT {n} IS EMPTY"
+HINT_VENUE_NO_SLOT = "NO SUCH SLOT"
+HINT_VENUE_BAD_NAME = "NAME: LETTERS OR DIGITS NEEDED"
+HINT_VENUE_MOVED = "SLOT {n} CHANGED MEANWHILE: LOOK AGAIN"
+MSG_VENUES_NOT_SAVED = "VENUES NOT SAVED (DISK)"
+VENUE_HINT_S = 4.0
+UNDO_RECALL_S = 300.0        # a recall keeps a one-level undo this long (and until an edit)
 
 # D-009 master-up guard: master rises at most this much within any MASTER_UP_WINDOW_S (knobs,
 # phone and console nudges alike); the detents beyond are refused with HINT_MASTER_SLOW. Going
@@ -243,22 +272,30 @@ class Paths:
 
     state: Path = Path("/var/lib/k1000/state.json")
     active_config: Path = Path("/var/lib/k1000/active.yml")
+    venues: Path | None = None      # None = venues.json next to state.json (docs/12)
+
+    @property
+    def venues_file(self) -> Path:
+        """Where the 8 venue slots live: `venues`, else `<state dir>/venues.json`."""
+        return self.venues if self.venues is not None else self.state.with_name("venues.json")
 
     @classmethod
     def from_settings(cls, settings: Any, *, state: str | Path | None = None,
-                      active_config: str | Path | None = None) -> "Paths":
-        """k1000.yaml `paths.{state, active_config}`, overridden by explicit arguments."""
+                      active_config: str | Path | None = None,
+                      venues: str | Path | None = None) -> "Paths":
+        """k1000.yaml `paths.{state, active_config, venues}`, overridden by explicit arguments."""
         sec = settings.get("paths") if isinstance(settings, dict) else None
         sec = sec if isinstance(sec, dict) else {}
         d = cls()
 
-        def pick(explicit: Any, key: str, default: Path) -> Path:
+        def pick(explicit: Any, key: str, default: Any) -> Any:
             if explicit:
                 return Path(explicit)
             v = sec.get(key)
             return Path(v) if isinstance(v, str) and v.strip() else default
 
-        return cls(pick(state, "state", d.state), pick(active_config, "active_config", d.active_config))
+        return cls(pick(state, "state", d.state), pick(active_config, "active_config", d.active_config),
+                   pick(venues, "venues", None))
 
 
 @dataclass(frozen=True)
@@ -328,11 +365,19 @@ class Status:
     master_up_guard_db: float = MASTER_UP_GUARD_DB   # 0 = off
     laptop_s: float = 0.0            # SETUP > Laptop access: seconds left (0 = closed)
     laptop_state: str = "off"        # off (no such surface) | closed | opening | open | closing | unavailable
+    # ---- venue snapshots (docs/12), refreshed by Controller.snapshot()
+    venues: list[tuple[str, float] | None] = field(default_factory=list)   # (name, saved_at) per slot
+    venue_slot: int = -1             # the slot the live values still equal (the VENUE pill), -1 = none
+    venue_name: str = ""
+    venue_undo_s: float = 0.0        # Undo recall: seconds left (0 = nothing to undo)
+    venue_changes: list[str] = field(default_factory=list)   # VENUES, open slot: what a recall changes
+    venues_error: str = ""           # venues.json could not be read at start (kept as .bad)
 
     def copy(self) -> "Status":
         return dataclasses.replace(self, levels=list(self.levels), clip=list(self.clip),
                                    drift=list(self.drift), pills=list(self.pills),
-                                   alerts=list(self.alerts))
+                                   alerts=list(self.alerts), venues=list(self.venues),
+                                   venue_changes=list(self.venue_changes))
 
 
 # =========================================================================== helpers
@@ -693,7 +738,17 @@ class Controller:
         # None = no such surface: the item then says NOT AVAILABLE).
         self.laptop: Any = None
         self._laptop_seen: str | None = None
-        self.status = Status(profile=profile.name, device=DEVICE_NAMES.get(profile.name, profile.name))
+        # Venue snapshots (docs/12): the 8 slots, the recall's one-level undo, the slot recalled
+        # or saved last (the VENUE pill while the live values still sound like it), venues.json
+        # writes in flight. Wall clock for the slots' "saved at" (replaceable in tests).
+        self._wall_clock: Callable[[], float] = time.time
+        self.venues = VenueStore(paths.venues_file)
+        self._venue_undo: dict[str, Any] | None = None
+        self._venue_live: int | None = self.venues.find(values_of(s))   # booted on a venue: its pill
+        self._venue_writes: set[asyncio.Future[Any]] = set()
+        self._sync_venue_focus()
+        self.status = Status(profile=profile.name, device=DEVICE_NAMES.get(profile.name, profile.name),
+                             venues_error=self.venues.load_error)
         self.changed = asyncio.Event()
         self.version = 0
         self.phone: Any = None            # web.PhoneServer, set by __main__ (D-007); None = no phone
@@ -838,6 +893,7 @@ class Controller:
             if locked:
                 self._engine_lock.release()
         self.save_now()
+        await self.flush_venues(1.0)
 
     async def settle(self, timeout: float | None = None) -> bool:
         """Wait until the engine holds the state (or the engine is down: nothing to wait for).
@@ -878,7 +934,10 @@ class Controller:
         - undo_reset_s: SETUP > Undo reset availability;
         - spectrum_on / spectrum_state / spectrum / peak_hz: the SHOW spectrum (set by the
           spectrum task through set_spectrum; None when off, stale or not on SHOW);
-        - laptop_s / laptop_state: SETUP > Laptop access (seconds left, what root reports).
+        - laptop_s / laptop_state: SETUP > Laptop access (seconds left, what root reports);
+        - venues / venue_slot / venue_name / venue_undo_s / venue_changes: the 8 venue slots,
+          the slot the live values still equal, the recall undo, and (VENUES page, a slot open)
+          what a recall of that slot would change.
         """
         now = self._ui_clock()
         st = self.status
@@ -899,13 +958,25 @@ class Controller:
             st.spectrum, st.peak_hz = None, None
         st.master_up_guard_db = self.master_up_guard_db
         st.laptop_s, st.laptop_state = self._laptop_view()
+        st.venues = [(v.name, v.saved_at) if v is not None else None for v in self.venues.slots]
+        cur = self.venue_now()
+        st.venue_slot = -1 if cur is None else cur
+        cv = self.venues.get(cur) if cur is not None else None
+        st.venue_name = cv.name if cv is not None else ""
+        st.venue_undo_s = round(self.venue_undo_left(now), 3)
+        f = self.focus
+        open_slot = (self.page == "VENUES" and f.venue_mode == "menu"
+                     and isinstance(f.venue, int) and 0 <= f.venue < VENUE_SLOTS)
+        st.venue_changes = (self.venue_changes(f.venue, compact=True) or []) if open_slot else []
         return self.page, self.state.copy(), st.copy(), copy.deepcopy(self.focus)
 
     # ------------------------------------------------------------------ UI v1 views
     def pills(self) -> list[str]:
         """Persistent pills for any non-default system state (D-009). Spectrum OFF has none.
         The extra sources (LAPTOP OPEN) come FIRST: the screen folds the last ones into '+N'
-        when they do not fit, and an open laptop access must never be the one hidden."""
+        when they do not fit, and an open laptop access must never be the one hidden. VENUE:
+        <NAME> comes last, while the live values still equal the slot recalled or saved (it is
+        gone at the first edit of one of them: docs/12)."""
         s = self.state
         out: list[str] = []
         for src in list(self.pill_sources):
@@ -926,6 +997,10 @@ class Controller:
             out.append("MONO SUB")
         if self.profile.audition and s.dev_audition != "sum":
             out.append(f"AUDITION {str(s.dev_audition).upper()}")
+        cur = self.venue_now()
+        v = self.venues.get(cur) if cur is not None else None
+        if v is not None:       # last: the first pill folded into '+N' when the row is full
+            out.append(f"VENUE: {v.name.upper()}")
         return out
 
     def alerts(self) -> list[tuple[str, str]]:
@@ -1201,6 +1276,213 @@ class Controller:
         self.show_hint(f"LO-CUT ON · {self.state.lowcut_hz:.0f} Hz" if on else "LO-CUT OFF")
         return on
 
+    # ------------------------------------------------------------------ venue snapshots
+    # docs/12-venue-snapshots.md. Every call returns (ok, message): the message is also the hint
+    # the box shows, and the phone's answer.
+    def _sync_venue_focus(self) -> None:
+        """The input map's view of the slots: names (None = empty) and saved times, the latter
+        binding a box confirm to the content the operator saw (a phone save in between re-arms)."""
+        slots = list(self.venues.slots)
+        self.focus.venue_names = tuple(v.name if v is not None else None for v in slots)
+        self.focus.venue_stamps = tuple(v.saved_at if v is not None else None for v in slots)
+
+    def venue_now(self) -> int | None:
+        """The slot recalled or saved last, while the live values still SOUND exactly like what
+        that slot holds now (`venues.audible_key`: a 0 dB band moved, the notch helper's B4, keeps
+        it; a slot saved over or a mono subs a recall could not set does not). This is the VENUE
+        pill and the NOW mark. Dropped for good at the first difference."""
+        lv = self._venue_live
+        if lv is None:
+            return None
+        v = self.venues.get(lv)
+        if v is None or audible_key(values_of(self.state)) != audible_key(v.values):
+            self._venue_live = None
+            return None
+        return lv
+
+    def venue_changes(self, slot: int, compact: bool = False) -> list[str] | None:
+        """What recalling `slot` would change now (venues.describe_changes; `compact` for the
+        box's half screen), None = empty slot."""
+        v = self.venues.get(slot)
+        if v is None:
+            return None
+        return describe_changes(values_of(self.state), v.values, rebuild_ok=self.displayed_muted(),
+                                compact=compact)
+
+    def venue_undo_left(self, now: float | None = None) -> float:
+        """Seconds the recall's undo stays available (0.0 = none): UNDO_RECALL_S, and only while
+        the recalled values SOUND untouched (`venues.audible_key`, the reset undo's rule: the
+        first audible edit of one of them, from any surface or adopted from CamillaGUI, ends it
+        and says so: RECALL UNDO LOST; a FREQ/Q move of a 0 dB band does not). Keeps
+        focus.venue_undo_ok (the box's Undo recall row) in step."""
+        left = self._venue_undo_left(now)
+        self.focus.venue_undo_ok = left > 0.0
+        return left
+
+    def _venue_undo_left(self, now: float | None) -> float:
+        u = self._venue_undo
+        if u is None:
+            return 0.0
+        now = self._ui_clock() if now is None else now
+        if now >= u["until"]:
+            self._venue_undo = None
+            log.info("venue recall undo expired")
+            return 0.0
+        if audible_key(values_of(self.state)) != u["after"]:
+            self._venue_undo = None
+            log.info("venue recall undo dropped: a recalled value was edited since")
+            self.show_hint(HINT_VENUE_UNDO_LOST)
+            return 0.0
+        return u["until"] - now
+
+    def save_venue(self, slot: int, name: Any = None, source: str = "box") -> tuple[bool, str]:
+        """SAVE HERE (after its confirm): the current venue values into `slot`, stamped with the
+        box's clock. `name` None keeps the slot's name (an empty slot gets VENUE n). Changes no
+        sound; the live values then equal this slot (the VENUE pill)."""
+        if not (isinstance(slot, int) and not isinstance(slot, bool) and 0 <= slot < VENUE_SLOTS):
+            return False, HINT_VENUE_NO_SLOT
+        old = self.venues.get(slot)
+        if name is None:
+            nm = old.name if old is not None else default_name(slot)
+        else:
+            nm = sanitize_name(name)
+            if nm is None:
+                self.show_hint(HINT_VENUE_BAD_NAME)
+                return False, HINT_VENUE_BAD_NAME
+        vals = values_of(self.state)
+        self.venues.put(slot, Venue(nm, round(float(self._wall_clock()), 3), vals))
+        self._venue_live = slot
+        self._sync_venue_focus()
+        log.warning("venue slot %d saved as %r (%s)%s", slot + 1, nm, source,
+                    f", over {old.name!r}" if old is not None else "")
+        self._persist_venues()
+        msg = HINT_VENUE_SAVED.format(n=slot + 1, name=nm)
+        self.show_hint(msg, VENUE_HINT_S)
+        return True, msg
+
+    def rename_venue(self, slot: int, name: Any, source: str = "box") -> tuple[bool, str]:
+        """RENAME: a filled slot's new name (sanitised); its values and date stay."""
+        old = self.venues.get(slot) if isinstance(slot, int) and not isinstance(slot, bool) else None
+        if old is None:
+            msg = (HINT_VENUE_EMPTY.format(n=slot + 1)
+                   if isinstance(slot, int) and 0 <= slot < VENUE_SLOTS else HINT_VENUE_NO_SLOT)
+            self.show_hint(msg)
+            return False, msg
+        nm = sanitize_name(name)
+        if nm is None:
+            self.show_hint(HINT_VENUE_BAD_NAME)
+            return False, HINT_VENUE_BAD_NAME
+        if nm != old.name:
+            self.venues.put(slot, dataclasses.replace(old, name=nm))
+            self._sync_venue_focus()
+            log.info("venue slot %d renamed %r -> %r (%s)", slot + 1, old.name, nm, source)
+            self._persist_venues()
+        msg = HINT_VENUE_RENAMED.format(n=slot + 1, name=nm)
+        self.show_hint(msg, VENUE_HINT_S)
+        return True, msg
+
+    def recall_venue(self, slot: int, source: str = "box",
+                     expect_saved_at: float | None = None) -> tuple[bool, str]:
+        """RECALL (after its confirm): the slot's values onto the state, then the worker sends
+        them like any edit: EQ and Lo-Cut in detent-sized steps, delays and polarity under the
+        group guard dip (whole samples), balance on the Aux faders; saved at once (a tune). Never
+        master, mute, trims or the profile. Mono subs only while muted (it rebuilds the
+        pipeline); unmuted it stays and the hint says so (and the VENUE pill does not show: the
+        values are not the slot's). Allowed while muted. Keeps a one-level undo (undo_recall).
+        `expect_saved_at` (the phone, and the box's confirm): refused if the slot was saved
+        again since it was shown."""
+        v = self.venues.get(slot) if isinstance(slot, int) and not isinstance(slot, bool) else None
+        if v is None:
+            msg = (HINT_VENUE_EMPTY.format(n=slot + 1)
+                   if isinstance(slot, int) and 0 <= slot < VENUE_SLOTS else HINT_VENUE_NO_SLOT)
+            self.show_hint(msg)
+            return False, msg
+        if expect_saved_at is not None and abs(float(v.saved_at) - float(expect_saved_at)) > 0.01:
+            msg = HINT_VENUE_MOVED.format(n=slot + 1)
+            self.show_hint(msg)
+            return False, msg
+        rebuild_ok = self.displayed_muted()
+        before = values_of(self.state)
+        changes = describe_changes(before, v.values, rebuild_ok=rebuild_ok)
+        new = apply_values(self.state, v.values, rebuild=rebuild_ok)
+        after = values_of(new)
+        mono_kept = after["mono_subs"] != v.values["mono_subs"]
+        prev_live = self.venue_now()
+        self._venue_live = slot      # venue_now() keeps it only if the values sound like the slot's
+        if after == before:
+            log.info("venue recall: slot %d %r (%s): nothing to change%s", slot + 1, v.name, source,
+                     " (mono subs differs: not muted)" if mono_kept else "")
+            msg = (HINT_VENUE_SAME_MONO if mono_kept else HINT_VENUE_SAME).format(name=v.name)
+            self.show_hint(msg, VENUE_HINT_S)
+            return True, msg
+        self.state = new
+        self._venue_undo = {"before": before, "after": audible_key(after), "live": prev_live,
+                            "until": self._ui_clock() + UNDO_RECALL_S}
+        self.focus.venue_undo_ok = True
+        log.warning("venue recall: slot %d %r (%s)%s: %s", slot + 1, v.name, source,
+                    " (mono subs kept: not muted)" if mono_kept else "", "; ".join(changes))
+        # the edit first: it may end the reset's undo and say so; the recall's hint must win
+        self._local_edit(urgent=True)
+        msg = (HINT_VENUE_RECALLED_MONO if mono_kept else HINT_VENUE_RECALLED).format(name=v.name)
+        self.show_hint(msg, VENUE_HINT_S)
+        return True, msg
+
+    def undo_recall(self, source: str = "box") -> tuple[bool, str]:
+        """Undo recall: the exact venue values from before the last recall (same click-safe
+        path), while venue_undo_left() > 0. One level: gone once used. Always whole: when the
+        recall changed mono subs (it was muted then) and the box is no longer muted, the undo
+        would need a pipeline rebuild, so it is refused (MUTE FIRST TO UNDO) and kept."""
+        if self.venue_undo_left() <= 0.0:
+            self.show_hint(HINT_VENUE_NOTHING)
+            return False, HINT_VENUE_NOTHING
+        u = self._venue_undo
+        assert u is not None
+        if bool(u["before"]["mono_subs"]) != bool(self.state.mono_subs) and not self.displayed_muted():
+            log.info("venue recall undo (%s) refused: mono subs needs a rebuild, not muted", source)
+            self.show_hint(HINT_VENUE_UNDO_MUTE, VENUE_HINT_S)
+            return False, HINT_VENUE_UNDO_MUTE
+        self._venue_undo = None
+        self.focus.venue_undo_ok = False
+        self.state = apply_values(self.state, u["before"])
+        self._venue_live = u["live"]       # the venue before the recall (venue_now re-checks it)
+        log.warning("venue recall undone (%s)", source)
+        self._local_edit(urgent=True)
+        self.show_hint(HINT_VENUE_UNDONE, VENUE_HINT_S)
+        return True, HINT_VENUE_UNDONE
+
+    def _persist_venues(self) -> None:
+        """venues.json, atomically, off the event loop (an SD card fsync can take tens of ms);
+        synchronously when no loop runs. A failure keeps the slots in memory, says so (status
+        bar warning + hint) and is retried by the next venue write."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            self._venues_written(self.venues.save())
+            return
+        fut = asyncio.ensure_future(asyncio.to_thread(self.venues.save))
+        self._venue_writes.add(fut)
+
+        def done(f: asyncio.Future[Any]) -> None:
+            self._venue_writes.discard(f)
+            ok = not f.cancelled() and f.exception() is None and bool(f.result())
+            self._venues_written(ok)
+
+        fut.add_done_callback(done)
+
+    def _venues_written(self, ok: bool) -> None:
+        if not ok:
+            self.show_hint(MSG_VENUES_NOT_SAVED, VENUE_HINT_S)
+        self._set_message("venues", 3, None if ok else MSG_VENUES_NOT_SAVED)
+        self._changed()
+
+    async def flush_venues(self, timeout: float | None = None) -> bool:
+        """Wait for the venues.json writes in flight (stop, tests). True when none is left."""
+        pending = [f for f in self._venue_writes if not f.done()]
+        if not pending:
+            return True
+        done, rest = await asyncio.wait(pending, timeout=timeout)
+        return not rest
+
     # ------------------------------------------------------------------ spectrum (SHOW)
     def spectrum_wanted(self) -> bool:
         """The spectrum task polls only while this holds: SHOW displayed, SETUP > Spectrum ON,
@@ -1273,6 +1555,8 @@ class Controller:
             self.focus.unlock_until = 0.0
         if page != self.page:
             self.focus.confirm = None
+            if "VENUES" in (page, self.page):   # VENUES always opens on its list
+                self.focus.venue_mode = "list"
         self._last_input = self._ui_clock()
         self.page = page
         self._changed()
@@ -1364,6 +1648,14 @@ class Controller:
             self.undo_reset()
         elif isinstance(action, NotchHelper):
             self.notch_helper()
+        elif isinstance(action, RecallVenue):
+            self.recall_venue(action.slot, expect_saved_at=action.saved_at)
+        elif isinstance(action, SaveVenue):
+            self.save_venue(action.slot)
+        elif isinstance(action, RenameVenue):
+            self.rename_venue(action.slot, action.name)
+        elif isinstance(action, UndoRecall):
+            self.undo_recall()
         elif isinstance(action, SetupAction):
             fn = self.setup_actions.get(action.name)
             if fn is None:
@@ -1515,6 +1807,8 @@ class Controller:
     def _local_edit(self, urgent: bool = False) -> None:
         if self._undo is not None:
             self.undo_left()          # an audible live EQ edit ends the reset's undo, said so
+        if self._venue_undo is not None:
+            self.venue_undo_left()    # an edit of a recalled value ends the recall's undo
         self._gen += 1
         self._mark_dirty(urgent=urgent)
         self._changed()

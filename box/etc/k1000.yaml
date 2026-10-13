@@ -63,6 +63,8 @@ engine:
 paths:
   state: /var/lib/k1000/state.json
   active_config: /var/lib/k1000/active.yml
+  # venues: the 8 venue snapshots (docs/12). Unset = venues.json next to paths.state, so a run
+  # with --state elsewhere never writes the live slots.
 
 # Phone page (D-007, docs/06-phone.md): the box's own Wi-Fi "K1000" (net/setup-ap.sh: hostapd,
 # 5 GHz ch 36, portal off) and K1000's page at https://10.42.0.1/ (certificate in /etc/k1000/tls).
