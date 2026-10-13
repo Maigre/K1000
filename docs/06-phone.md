@@ -97,7 +97,7 @@ time), `phone_connected.png` (muted box, one phone connected), `phone_off.png`, 
 | Page | Controls |
 |---|---|
 | **MAIN** | Master: −6 / −1 / −½ / +½ / +1 dB steps (never an absolute jump). Balance subs↔tops ±½/±1. Lo-Cut on/off + frequency (−10 / −2 / +2 / +10 Hz since D-011; it was ±1/12, ±⅓ oct) |
-| **LIVE EQ** | The 6 live bands (PEQ 1–4, low shelf, high shelf) on a 20 Hz–20 kHz log graph with the summed curve. **Drag a dot** = frequency + gain. **Long-press empty space = "notch here"**: the first flat PEQ band goes there at −6 dB, Q 8, and **stays under the finger**: keep it down and slide to tune it. Per band: FREQ ±1/12, ±⅓ oct · GAIN ±½, ±3 dB · Q ½× (wide) / − / + / 2× (narrow) · hold = band flat. **Reset live EQ** with a confirm (the box's own reset: SETUP › LIVE EQ › Undo reset brings it back until the next EQ cut or 5 minutes) |
+| **LIVE EQ** | The 6 live bands (PEQ 1–4, low shelf, high shelf) on a 20 Hz–20 kHz log graph with the summed curve. **Drag a dot** = frequency + gain. **Long-press empty space = "notch here"**: the first flat PEQ band goes there at −6 dB, Q 8, and **stays under the finger**: keep it down and slide to tune it. Per band: FREQ ±1/12, ±⅓ oct · GAIN ±½, ±3 dB · Q ½× (wide) / − / + / 2× (narrow) · *FLAT* (hold) = this band to 0 dB. *ALL FLAT…* with a confirm (the box's own reset: SETUP › LIVE EQ › Undo reset brings it back until the next EQ cut or 5 minutes) |
 | Always | **Hold to mute** (0.6 s; unmute needs 1.2 s), the 4 output meters (~10 Hz, clip boxes), engine state, NO DEVICE / ENGINE DOWN / the box's messages, external changes (drift) |
 
 Not on the phone in v0 (setup-class, refused by the box): profile, Mono L+R, delays, polarity,
@@ -105,8 +105,8 @@ system EQ, trims, input trim, sub low-pass.
 
 **The mute, exactly:**
 
-- What a hold does is decided **when the finger goes down**, and the button says it: *HOLD TO
-  MUTE*, *MUTED · HOLD TO UNMUTE*, or *HOLD TO KEEP MUTED* (K1000 itself holds Main muted on its
+- What a hold does is decided **when the finger goes down**, and the button says it: *MUTE*
+  (hold 0.6 s), *MUTED* (hold 1.2 s to unmute), or *KEEP MUTED* (K1000 itself holds Main muted on its
   way in, a boot ramp or a setup guard: like B4, the phone then never unmutes).
 - A hold that starts as a MUTE always mutes, whatever happens meanwhile (B4, another phone).
 - An UNMUTE carries the box's *mute generation* the page was showing. If anyone muted or unmuted

@@ -192,3 +192,7 @@ body.muted::after { content: ""; position: fixed; inset: 0; border: 3px solid va
 .prow .steps button { min-height: 46px; }
 .actions { margin-top: 8px; }
 .actions button { min-height: 44px; }
+
+/* labels shortened (Thomas, 2026-10-13): MUTE / MUTED / KEEP MUTED, FLAT, ALL FLAT… — one word
+   fits the compact key at a size that reads from arm's length */
+.mute { font-size: 22px; letter-spacing: .06em; }

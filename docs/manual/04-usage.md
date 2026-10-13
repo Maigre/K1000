@@ -416,7 +416,7 @@ or the QR); on the Knob test a red tag.
 | `RAMPS IN BY ITSELF · hold B4 to keep muted` | The engine (re)started: K1000 fades Main in over about 3 s by itself |
 | an alert (`NO AUDIO FLOWING · HELD MUTED`, `APPLYING SETUP…`, `KNOBS OFFLINE …`) | Why it is still muted: [chapter 6 §1](06-troubleshooting.md#1-the-screen) |
 
-From the phone: *HOLD TO MUTE* (0.6 s), *MUTED · HOLD TO UNMUTE* (1.2 s), with the same rule
+From the phone: *MUTE* (hold 0.6 s), *MUTED* (hold 1.2 s to unmute), with the same rule
 ([§8](#8-the-phone)).
 
 ## 7. Alerts, hints and pills
@@ -479,11 +479,11 @@ Step by step, other Android menus and the fixes: [`docs/06-phone.md`](../06-phon
 | Tab | Controls |
 |---|---|
 | **MAIN** | Master −6 / −1 / −½ / +½ / +1 dB. Balance ±½ / ±1 dB. Lo-Cut on/off (with a confirm) and its frequency (−10 / −2 / +2 / +10 Hz) |
-| **LIVE EQ** | The six live bands on a graph. **Drag a dot** = frequency and gain. **Long-press empty space = notch here**: the first flat bell goes there at **−6 dB, Q 8, at once** (audible, unlike B3) and stays under the finger: slide to tune it. Per band: FREQ, GAIN, Q steps; hold = band flat. *RESET LIVE EQ…* with a confirm (the undo is on the box) |
+| **LIVE EQ** | The six live bands on a graph. **Drag a dot** = frequency and gain. **Long-press empty space = notch here**: the first flat bell goes there at **−6 dB, Q 8, at once** (audible, unlike B3) and stays under the finger: slide to tune it. Per band: FREQ, GAIN, Q steps; *FLAT* (hold) = this band to 0 dB. *ALL FLAT…* with a confirm (the undo is on the box) |
 | Always | **Hold to mute** (0.6 s; unmute 1.2 s), the four meters, the engine state, the box's alerts, changes made outside K1000 |
 
 - **What a hold does is decided when the finger goes down**, and the button says it:
-  *HOLD TO MUTE*, *MUTED · HOLD TO UNMUTE*, or *HOLD TO KEEP MUTED* (K1000 is bringing the sound in
+  *MUTE*, *MUTED* (hold to unmute), or *KEEP MUTED* (K1000 is bringing the sound in
   by itself). An unmute is cancelled if anyone changed the mute during the hold (*The mute changed
   meanwhile*). The phone buzzes when the box confirms; no answer in 1.5 s says *No answer from
   K1000: use B4 on the box*.

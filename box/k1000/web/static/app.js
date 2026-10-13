@@ -296,7 +296,7 @@
     el.lcVal.textContent = S ? fmtHz(S.lowcut_hz) : "--";
     el.lcVal.parentElement.classList.toggle("off-value", !lcOn);
     el.muteLabel.textContent = mutePend ? (mutePend.want ? "MUTING…" : "UNMUTING…")
-      : holdUnmutes() ? "MUTED · HOLD TO UNMUTE" : muted ? "HOLD TO KEEP MUTED" : "HOLD TO MUTE";
+      : holdUnmutes() ? "MUTED" : muted ? "KEEP MUTED" : "MUTE";   // a hold, always (a tap says so)
     // LIVE
     renderSlots();
     drawEq();
@@ -681,8 +681,9 @@
   }
   $("#reset-live").addEventListener("click", () => {
     if (!canEdit()) return;
-    ask("Reset the live EQ?", "All 4 notches and both shelves go back to flat (smoothly). " +
-      "The box can undo it until the next EQ cut or 5 minutes (SETUP › Undo reset).", "Reset",
+    ask("All bands flat?", "The 4 bells and both shelves go back to 0 dB and their default " +
+      "frequencies, smoothly. The box can undo it for 5 minutes, or until the next EQ cut " +
+      "(SETUP › LIVE EQ › Undo reset).", "All flat",
       () => send({ t: "reset_live", confirm: true, id: "reset" }));
   });
   $("#confirm-no").addEventListener("click", () => { modal.hidden = true; onYes = null; });

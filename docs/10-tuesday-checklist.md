@@ -119,7 +119,7 @@ below name the D-013 build, on the box since 14:31 (`dd740ce`). Re-label the she
   tap the icon → no certificate warning; opens in < 2 s with `LINK` + `RUNNING`. Note: an app
   or a Chrome-badged shortcut. *Claude:* the warning text.
 - [ ] **21.** Master −1 dB on the phone → the box follows; E1 on the box → the phone follows.
-  Phone *HOLD TO MUTE* → `MUTED`; B4 hold → unmuted; phone hold and B4 hold together → ends
+  Phone *MUTE* (hold) → `MUTED`; B4 hold → unmuted; phone hold and B4 hold together → ends
   **muted**.
 - [ ] **22.** Out of range (or the phone's Wi-Fi off) for a minute, then back → `NO LINK`, the
   box unchanged; `LINK` again by itself within 30 s. *Claude:* the distance, the rejoin time.
