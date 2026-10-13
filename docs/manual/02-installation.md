@@ -197,7 +197,10 @@ reboot.
 It also keeps the previous version in `/opt/k1000.prev` before changing anything (rollback, §9),
 installs a hardware watchdog setting (`RuntimeWatchdogSec=15`) and makes the journal persistent
 (32 MB cap). The CamillaDSP binary itself comes from `bootstrap.sh`; `install.sh` only warns when
-it is missing or not 5.x.
+it is missing or not 5.x. When the source carries the Android app (`apk/K1000-<version>.apk`, put
+there by the deploy, never in git), it installs the newest one to `/opt/k1000/apk/` for the
+first-time page, and keeps the box's when there is none ([chapter
+7](07-maintenance.md#the-android-app-on-the-box)).
 
 ## 7. Converting a desktop card
 

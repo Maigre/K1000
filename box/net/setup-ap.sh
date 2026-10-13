@@ -27,7 +27,8 @@
 #                                     hostapd package, which install.sh installs)
 #   sudo ./setup-ap.sh --iface wlan1  the AP on another Wi-Fi interface (a USB dongle + antenna)
 #   sudo ./setup-ap.sh --new-password a new Wi-Fi password (every phone must scan the QR again)
-#   sudo ./setup-ap.sh --no-up        configure only (it comes up at the next boot)
+#   sudo ./setup-ap.sh --no-up        configure only (it comes up at the next boot, or at the next
+#                                     run without --no-up)
 #   sudo ./setup-ap.sh --status       the AP, its clients, the fence, country, radio, subnet clashes
 #   sudo ./setup-ap.sh --down         the Friday no-go: take the AP down and KEEP it down, across
 #                                     reboots and across later plain runs (install.sh --ap,
@@ -52,7 +53,11 @@
 #     pmf 1 = disabled, power save off).
 #   - /etc/k1000/ap.psk: the password, generated once (12 easy-to-type characters, no 0/o/1/l/i),
 #     root:k1000 0640 so the k1000 service can show it as a QR on the box screen. It is shown on
-#     the box screen only.
+#     the box screen only, and given to the Android app on the K1000 Wi-Fi (/api/wifi) only while
+#     the AP is running it.
+#   - /run/k1000-ap.on-air: which ap.psk the running AP started with (`stat -c '%i %Y'`), written
+#     at each AP start by the hostapd unit, the NetworkManager guard (--backend nm) and this script.
+#     A run that finds the AP on another password (--new-password --no-up earlier) restarts it.
 #   - /etc/NetworkManager/dnsmasq-shared.d/k1000.conf: the AP's DNS, portal on or off (above).
 #   - The fence, k1000-ap-fence.service + /etc/k1000/ap-fence.nft (its own nftables table, loaded
 #     at boot before any network): from the AP, only DHCP, DNS, 80, 443, 8080 (+22 with --ssh on)
@@ -83,8 +88,9 @@
 # K1000_AP_SYS_NET (/sys/class/net), K1000_AP_UNIT_DIR (/etc/systemd/system),
 # K1000_AP_NM_CONF_DIR (/etc/NetworkManager/conf.d), K1000_AP_RFKILL (/sys/class/rfkill),
 # K1000_AP_DISPATCH_DIR (/etc/NetworkManager/dispatcher.d), K1000_AP_GUARD_MARK
-# (/run/k1000-ap-guard.stopped), K1000_AP_SETTLE_S (2: seconds between the two hostapd starts of a
-# handover), K1000_AP_CHECK_S (3: seconds hostapd must stay up after a start).
+# (/run/k1000-ap-guard.stopped), K1000_AP_ON_AIR (/run/k1000-ap.on-air), K1000_AP_SETTLE_S (2:
+# seconds between the two hostapd starts of a handover), K1000_AP_CHECK_S (3: seconds hostapd must
+# stay up after a start).
 set -euo pipefail
 
 SRC=$(cd "$(dirname "$0")" && pwd -P)
@@ -110,6 +116,7 @@ UNMANAGED_CONF=$NM_CONF_DIR/k1000-ap-unmanaged.conf
 DISPATCH_DIR=${K1000_AP_DISPATCH_DIR:-/etc/NetworkManager/dispatcher.d}
 GUARD=$DISPATCH_DIR/90-k1000-ap-guard
 GUARD_MARK=${K1000_AP_GUARD_MARK:-/run/k1000-ap-guard.stopped}
+ON_AIR=${K1000_AP_ON_AIR:-/run/k1000-ap.on-air}
 SETTLE_S=${K1000_AP_SETTLE_S:-2}
 CHECK_S=${K1000_AP_CHECK_S:-3}
 FENCE_UNIT=k1000-ap-fence.service
@@ -224,6 +231,21 @@ set_info_state() {
   changed "$INFO_FILE: state=$1"
 }
 
+# The password on the air: ap.psk's identity (`stat -c '%i %Y'`: a new password is a new file)
+# as the AP's last start recorded it in $ON_AIR. The k1000 service gives the Android app
+# (/api/wifi) the password only while the two agree (docs/06-phone.md §4).
+psk_id() { stat -c '%i %Y' "$PSK_FILE" 2>/dev/null || true; }
+on_air_current() { [ -s "$ON_AIR" ] && [ "$(cat "$ON_AIR" 2>/dev/null)" = "$(psk_id)" ]; }
+mark_on_air() {
+  local id
+  id=$(psk_id)
+  if [ -n "$id" ] && { printf '%s\n' "$id" > "$ON_AIR" && chmod 0644 "$ON_AIR"; } 2>/dev/null; then
+    return 0                              # read by the k1000 service (it is no secret)
+  fi
+  rm -f "$ON_AIR" 2>/dev/null || true
+  note "WARNING: could not record the password on the air in $ON_AIR: the Android app cannot read it (/api/wifi: 503)"
+}
+
 # Put $2 (a file) at $1 with mode $3 if it differs; returns 0 when it changed.
 put() {
   local dst=$1 src=$2 mode=$3
@@ -270,6 +292,13 @@ if [ $MODE = status ]; then
   note "phones seen (neighbours on $IFACE): $(awk -v i="$IFACE" 'NR > 1 && $6 == i && $3 == "0x2"' /proc/net/arp 2>/dev/null | wc -l)"
   note "DNS: $([ -f "$DNS_DST" ] && echo "$DNS_DST" || echo 'NOT installed')"
   note "password file: $([ -s "$PSK_FILE" ] && stat -c '%n %U:%G %a' "$PSK_FILE" || echo 'missing')"
+  if [ -s "$PSK_FILE" ]; then
+    if on_air_current; then
+      note "password on the air: the one in $PSK_FILE ($ON_AIR)"
+    else
+      note "password on the air: NOT recorded as the one in $PSK_FILE ($ON_AIR): the Android app gets 503 from /api/wifi until the AP restarts (sudo $0)"
+    fi
+  fi
   exit 0
 fi
 
@@ -338,6 +367,7 @@ if [ $MODE = remove ]; then
   for f in "$DNS_DST" "$INFO_FILE" "$FENCE_FILE" "$HOSTAPD_CONF" "$AP_ENV" "$APDNS_CONF"; do
     if [ -e "$f" ]; then rm -f "$f"; changed "removed $f"; fi
   done
+  rm -f "$ON_AIR"
   [ -e "$PSK_FILE" ] && note "kept $PSK_FILE (delete it by hand for a new password next time)"
   note "$CHANGES changes"
   exit 0
@@ -700,6 +730,13 @@ if [ "$STATE" = down ]; then
   note "AP kept DOWN (the no-go, $INFO_FILE state=down): everything is current, nothing on the air."
   note "Back on the air: sudo $0 --up"
 elif [ $DO_UP = 1 ]; then
+  # The AP on another password than ap.psk (--new-password --no-up earlier, or started before
+  # that was recorded): a restart puts ap.psk's on the air (phones on the old one drop off).
+  if [ $RESTART_AP = 0 ] && ! on_air_current \
+     && { if [ "$BACKEND" = nm ]; then con_active; else unit_active "$HOSTAPD_UNIT"; fi; }; then
+    note "the AP is not recorded as running the password in $PSK_FILE: restarting it with that one"
+    RESTART_AP=1
+  fi
   if [ "$BACKEND" = nm ]; then
     if ! con_active || [ $RESTART_AP = 1 ]; then
       # (exit 4 from here on: steps 1-7 may have changed things; the count line says how many)
@@ -712,6 +749,7 @@ elif [ $DO_UP = 1 ]; then
         exit 4
       fi
       changed "$CON is up"
+      mark_on_air
     fi
   elif ! unit_active "$HOSTAPD_UNIT" || [ $RESTART_AP = 1 ]; then
     note "starting $HOSTAPD_UNIT on $IFACE"
@@ -738,6 +776,7 @@ elif [ $DO_UP = 1 ]; then
       exit 4
     fi
     changed "$HOSTAPD_UNIT and $APDNS_UNIT are up"
+    mark_on_air
   fi
   sleep 1
   if ! ip -4 -o addr show dev "$IFACE" | grep -q " $IP/"; then

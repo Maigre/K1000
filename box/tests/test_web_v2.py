@@ -873,6 +873,36 @@ def test_v2_envelope_rate_ids_and_isolation(tmp_path: Path) -> None:
     run(go())
 
 
+def test_a_rate_refused_unmute_is_always_answered(tmp_path: Path) -> None:
+    """docs/14 §5 rule 5 (S2 review): an unmute refused by the message bucket gets its err even
+    when the error bucket is empty, so the page never says "No answer from K1000" for it."""
+    async def go() -> None:
+        ctl, _ = make_ctl(tmp_path)
+        await boot(ctl)
+        srv = PhoneServer(ctl, settings(tmp_path, rate_per_s=0.5, burst=1), tick_s=0.02)
+        await srv.start()
+        async with ws_connect(v2url(srv), origin=origin(srv)) as ws:
+            await recv_until(ws, lambda m: m["t"] == "state")
+            c = next(x for x in srv._clients if x.v == 2)
+            for i in range(4):                       # empty the message bucket
+                srv._on_message(c, json.dumps({"t": "nudge", "f": "balance_db", "d": 1, "id": i}))
+            if c.errors is not None:                 # and the error bucket
+                while c.errors.take():
+                    pass
+            out = srv._on_message(c, json.dumps({"t": "mute", "on": False, "seen": 0, "id": "um"}))
+            assert out is not None and out["t"] == "err" and out["code"] == "RATE" and out["id"] == "um"
+            assert out["v"] is srv.bridge._displayed_muted()
+        await srv.stop()
+        await ctl.stop()
+    run(go())
+
+
+def test_q_steps_halve_and_double() -> None:
+    """The v2 stepper for Q / SLOPE reads ×½ · − · + · ×2: ±6 detents of 1/6 octave."""
+    from k1000.web import server as srvmod
+    assert srvmod._V2_STEPPER[".q"] == (-6, -1, 1, 6)
+
+
 def test_phone_off_and_max_phones_are_shared(tmp_path: Path) -> None:
     async def go() -> None:
         ctl, _ = make_ctl(tmp_path)

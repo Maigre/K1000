@@ -23,6 +23,14 @@
 
   <a id="open" class="btn primary" href="{{APP_URL}}">Open K1000</a>
 
+  <!--APK-->
+  <section id="app" class="card">
+    <a id="apk-link" class="btn" href="{{APK_URL}}" download="{{APK_FILE}}">Get the K1000 app</a>
+    <p class="note">K1000 for Android, version {{APK_VERSION}} · <span class="nw">sha256 {{APK_SHA8}}</span></p>
+    <p class="note">Android asks once to allow installing from Chrome.</p>
+  </section>
+  <!--/APK-->
+
   <section id="signin" class="card" hidden>
     <h2>This is Android's sign-in window</h2>
     <p>It cannot check the K1000 certificate, and it is not where K1000 runs.</p>

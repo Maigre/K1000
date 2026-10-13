@@ -40,7 +40,9 @@ carry the show.
       ▼
  k1000.service (python3 -m k1000, the same process as the knobs)
    ├─ https://10.42.0.1/      the K1000 page (installable PWA) + wss://10.42.0.1/ws
+   │                          + /api/wifi (the Android app's Wi-Fi settings, §4)
    ├─ http://10.42.0.1/       first-time page: "Open K1000" + the certificate download
+   │                          + "Get the K1000 app" (/k1000.apk, when deployed, §4)
    │                          (and the captive portal with --portal on)
    └─ Controller  ◄── the knobs drive the same one: same clamps, same click-safe moves, one state
 ```
@@ -87,6 +89,9 @@ carry the show.
 - **Installed, it opens instantly.** A service worker keeps the page itself on the phone. With no
   link to the box the page still opens and says *Not connected to K1000 — join the K1000 Wi-Fi*.
   After a box update the first launch shows the old page for a second, then reloads itself once.
+  The worker answers only for the page itself (`/`, `/index.html`): any other address opened in
+  the browser (`/k1000.apk`, `/api/wifi`, `/tune`, the CA) goes to the box untouched and is never
+  kept as the page.
 
 Screens: `docs/ui/phone_wifi.png` (step 1), `phone_url.png` (step 2), `phone_setup.png` (first
 time), `phone_connected.png` (muted box, one phone connected), `phone_off.png`, `phone_ap_down.png`,
@@ -186,6 +191,50 @@ steps, and a check whether this phone already trusts the K1000 certificate (an H
 box only succeeds when it does). It also serves the CA at `http://10.42.0.1/k1000-ca.crt`
 (`application/x-x509-ca-cert`).
 
+**Get the K1000 app** (2026-10-13). When the box was deployed with the Android app
+([`docs/09-android.md`](09-android.md)), the first-time page (the PHONE page's third QR,
+**FIRST TIME**) shows a **Get the K1000 app** button under *Open K1000*, with the app's version
+and the first 8 hex digits of its SHA-256, and one line: *Android asks once to allow installing
+from Chrome*. Without an APK on the box the button is not in the page at all. It is hidden in
+Android's *Sign in to network* window (portal on: Chrome installs it) and on a box without HTTPS
+(the app talks to the box over HTTPS only). The captive portal stays **off** (§5): the app is
+offered by the page Thomas already opens once, not by a portal that would cost the automatic
+rejoin.
+
+| Endpoint | What |
+|---|---|
+| `GET http://10.42.0.1/k1000.apk` (also `https://`, and `k1000.home.arpa`) | The release APK the box was deployed with: `application/vnd.android.package-archive`, `Content-Disposition: attachment; filename="K1000-<version>.apk"`, `Content-Length`, `ETag: "<its sha256>"` (`If-None-Match` → 304). 404 when no APK was deployed. Rate-limited per device (3 at once, then one per 10 s: 429). k1000 loads it into memory at its start (`/opt/k1000/apk/`, put there by `install.sh`, [manual chapter 7](manual/07-maintenance.md#the-android-app-on-the-box)) |
+| `GET https://10.42.0.1/api/wifi` (also `k1000.home.arpa`) | `200 application/json` `{"v": 1, "ssid": "K1000", "psk": "<password>", "band": "5 GHz · ch 36 · hostapd", "box": "<build id>"}`, `Cache-Control: no-store`. `band` is the label the PHONE page prints (ap.info's `label`), display only, may be `""`; `box` is the page's build id (`hello.build`). The password and name are read at each request; a new password (`--new-password`) only once the AP runs it (503 until then, below) |
+
+**Who gets `/api/wifi`.** The Android app reads the K1000 Wi-Fi from the box once it is on it
+(joined from the camera's Wi-Fi QR, say), stores it as if it had scanned the code, and joins by
+itself from then on. Whoever can reach the endpoint is already on the K1000 Wi-Fi, so already has
+the password; HTTPS with the app's pinned CA proves to the app that this is the real box. So the
+box serves it:
+
+- over the **HTTPS listener only** (the AP address; never the plain page on :8080 nor the
+  first-time page on :80: 404 there), for the box's own names only (another `Host`: 404);
+- only to a **device on the AP**: its address in 10.42.0.0/24 (never the box's own) **and** in
+  the kernel's neighbour table on the AP's interface (`/proc/net/arp`, read at each request; the
+  interface `ap.info` names). A device that reached the box any other way (`eth0`, whatever its
+  address) gets 403, on top of the fence already keeping 10.42.0.1 off `eth0`;
+- rate-limited per device (5 at once, then one a second: 429 with `Retry-After`);
+- 404 when the box has no Wi-Fi password (`/etc/k1000/ap.psk`, as for the PHONE page);
+- only the password **on the air** (review, 2026-10-13): `setup-ap.sh --new-password` writes
+  `ap.psk` seconds before the AP restarts with it (with `--no-up`, not before the next boot), and
+  a device still on the AP with the old password must not learn the new one meanwhile. Each AP
+  start records which `ap.psk` it started with (`stat -c '%i %Y'`: a new password is a new file)
+  in `/run/k1000-ap.on-air`: the hostapd unit (`ExecStartPost`), the NetworkManager guard
+  (`--backend nm`) and `setup-ap.sh` itself. While that record is not the current `ap.psk`, or is
+  missing (an AP started by units older than this, until `install.sh --ap` or a reboot), the box
+  answers **503** with `Retry-After: 5` (the app asks again a little later). A `setup-ap.sh` run
+  without `--no-up` that finds the AP on another password restarts it on the current one;
+  `setup-ap.sh --status` says which;
+- with no CORS header: a web page on the phone cannot read it.
+
+Over HTTPS the APK has 10 s from the connection (websockets' handshake limit), enough for
+~0.5 MB at 400 kbit/s; the first-time page links the plain-HTTP copy, which has 30 s.
+
 Android's *Sign in to network* window (portal on) is a WebView that trusts **system** certificates
 only: there the trust check would always fail, so the page says so instead of giving a verdict,
 and asks for ⋮ › **Use this network as is**, then Chrome (which trusts the K1000 CA). That window
@@ -257,7 +306,9 @@ PHONE page's third QR (**FIRST TIME**, `http://10.42.0.1/`). Back to the portal,
 | Box screen: *Wi-Fi AP is OFF* (no reason) | `sudo /opt/k1000/net/setup-ap.sh --status`, then `sudo /opt/k1000/net/setup-ap.sh`; `journalctl -u k1000-ap-hostapd -n 60` (`-u NetworkManager` with `--backend nm`) |
 | `setup-ap.sh` exits 4 | It says why: another interface in 10.42.0.0/24, `wlan0` a Wi-Fi client, or hostapd did not stay up (then `--band bg`) |
 | Box screen: password unreadable | `/etc/k1000/ap.psk` must be `root:k1000 0640` (setup-ap.sh fixes it) |
-| New Wi-Fi password wanted | `sudo /opt/k1000/net/setup-ap.sh --new-password` (every phone scans the QR again) |
+| New Wi-Fi password wanted | `sudo /opt/k1000/net/setup-ap.sh --new-password` (every phone scans the QR again). After `--new-password --no-up` the AP keeps the old one until the next boot or the next plain `setup-ap.sh` run (`--status`: *password on the air*); the Android app reads the new one only from then on |
+| First-time page has no *Get the K1000 app* | No APK on the box (`ls /opt/k1000/apk`: the deploy puts it there, [manual chapter 7](manual/07-maintenance.md#the-android-app-on-the-box)), or k1000 has not started since it came: between shows `sudo systemctl restart k1000`. `journalctl -u k1000 \| grep 'Android app'` |
+| Chrome will not install the APK | Chrome may first warn about the file (an APK, over plain HTTP): **Download anyway** / **Keep**. Then Android asks once: *Settings* › **Allow from this source** for Chrome (Settings › Apps › Special app access › Install unknown apps › Chrome). The 8 hex digits on the page = the start of the release's `K1000-<version>.apk.sha256` |
 | SSH to the box over K1000 | Fenced off by default: `sudo /opt/k1000/net/setup-ap.sh --ssh on` (or use `eth0`, not with a laptop sharing on 10.42.0.x: §1) |
 | Certificate expiry | The leaf is valid until **2029-01-14**; the box logs a warning 60 days before. Re-sign it on the laptop that holds the CA key (the README next to that key) |
 | Laptop on K1000 cannot open CamillaGUI or `/tune` | SETUP › PHONE › Laptop access must say `OPEN h:mm` (§11). Closed: push twice. It closes by itself after 2 h and when k1000 restarts: open it again |
@@ -338,6 +389,30 @@ With the phone off, the box's KNOBS OFFLINE alert says `SOURCE DOWN / BYPASS` in
 `USE PHONE MUTE / BYPASS`: it names the phone mute only while there is one to use.
 
 ## 10. Test record (2026-10-12, before integration)
+
+- **The app on the box** (2026-10-13, §4), in the repo: `box/tests/test_web_apk.py` (the APK
+  picked, refused when it is not a zip or too big; on the first-time page and over HTTPS: MIME,
+  `Content-Disposition`, `Content-Length`, the sha256 `ETag`, 304, 404 without an APK, the
+  per-device limit; the button present with version and 8 hex digits, absent without an APK, and
+  `portal.js` hiding it in the sign-in WebView and without HTTPS (node); `/api/wifi` over HTTPS
+  from a device on the AP, refused from outside the subnet, from a neighbour on `eth0`, from an
+  address not in the neighbour table, from the box itself, on the plain page and the portal and
+  for another `Host`, 404 without a password, no-store, the per-device limit; a slow phone
+  getting a 400 KB APK whole over HTTPS (websockets' 2 s close would cut it); after the review:
+  `/api/wifi` 503 while `ap.psk` is not the password on the air (a new file not yet started
+  with, no record, a garbage record) and 200 once the AP's start records it, the hostapd unit's
+  `ExecStartPost` run as systemd would producing exactly the server's identity, a plain-HTTP APK
+  download aborted (not left to drain) once its time is up and a slow phone's whole APK when its
+  tail takes over a second, v1's service worker leaving `/api/wifi`, `/k1000.apk`, `/tune` and
+  `/v2/` to the network and storing only HTML under `/` (node); `tools/tests/test_phone_net.py`:
+  setup-ap.sh recording the password on the air (both backends), leaving the record on the old
+  one after `--new-password --no-up`, restarting the AP on the new one at the next plain run,
+  nothing while kept down, the record removed by `--remove`; the guard recording it when
+  NetworkManager's AP comes up, never for another event or an unfenced AP; install.sh step 5b
+  run with fakes: the newest of several, root 0644, stale ones removed, a rollback's older APK,
+  the box's kept when the source has none, a non-zip refused, idempotent; the mirror leaving
+  `apk/` alone, with the script's own rsync filters). The slow HTTPS APK and `/api/wifi` also
+  checked by hand against websockets 15.0.1 (the box's; the suite ran on 17.2).
 
 - **Laptop access + /tune** (2026-10-13, §11), in the repo: `box/tests/test_laptop.py` (the k1000
   side following root's status file: opening, refusals, no answer, the 2 h end, k1000's runtime

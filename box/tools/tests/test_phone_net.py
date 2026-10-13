@@ -195,7 +195,8 @@ class ApBox:
         _bin(b, "id", '[ "$1" = -u ] && echo 0 || /usr/bin/id "$@"\n')
         _bin(b, "getent", '[ "$1 $2" = "group k1000" ] && echo "k1000:x:1000:" && exit 0\nexit 2\n')
         _bin(b, "chown", 'echo "$1" > "$2.owner"\n')
-        _bin(b, "stat", 'f=$3; o=$(cat "$f.owner" 2>/dev/null || echo "user:user"); '
+        _bin(b, "stat", 'case $2 in *%U*) ;; *) exec /usr/bin/stat "$@" ;; esac\n'   # the password's id
+                        'f=$3; o=$(cat "$f.owner" 2>/dev/null || echo "user:user"); '
                         'echo "$o $(/usr/bin/stat -c %a "$f")"\n')
         _bin(b, "apt-mark", 'f=$FAKE/state/manual; touch "$f"\n'
                             'case $1 in showmanual) cat "$f" ;; manual) echo "$2" >> "$f" ;; esac\n')
@@ -232,7 +233,8 @@ class ApBox:
                    K1000_AP_DNS_DST=str(f / "nm/k1000.conf"), K1000_AP_SYS_NET=str(f / "sys"),
                    K1000_AP_UNIT_DIR=str(f / "units"), K1000_AP_NM_CONF_DIR=str(f / "nmconf"),
                    K1000_AP_RFKILL=str(f / "rfkill"), K1000_AP_SETTLE_S="0",
-                   K1000_AP_DISPATCH_DIR=str(f / "dispatch"), K1000_AP_GUARD_MARK=str(f / "state/guard-mark"))
+                   K1000_AP_DISPATCH_DIR=str(f / "dispatch"), K1000_AP_GUARD_MARK=str(f / "state/guard-mark"),
+                   K1000_AP_ON_AIR=str(f / "state/on-air"))
         for k in ("K1000_AP_IFACE", "K1000_AP_SSID", "K1000_AP_COUNTRY"):
             env.pop(k, None)
         r = subprocess.run(["bash", str(SETUP_AP), *args], capture_output=True, text=True, env=env)
@@ -443,6 +445,55 @@ def test_setup_ap_password_is_never_readable_by_others(tmp_path):
     assert (box.fake / "etc/ap.psk.tmp.owner").read_text().strip() == "root:k1000"
 
 
+def _psk_id(path: Path) -> str:
+    """ap.psk's identity as `stat -c '%i %Y'` prints it (k1000.web.server.psk_id)."""
+    st = path.stat()
+    return f"{st.st_ino} {st.st_mtime_ns // 1_000_000_000}"
+
+
+@pytest.mark.parametrize("backend", ["hostapd", "nm"])
+def test_setup_ap_records_the_password_on_the_air_and_never_runs_behind_it(tmp_path, backend):
+    """Review (APK + /api/wifi) #1: k1000 hands the Android app ap.psk only while the AP runs it.
+    Each start records which ap.psk it started with; --new-password --no-up leaves the record on
+    the old one (the AP still runs it), and the next plain run restarts the AP on the new one."""
+    box = ApBox(tmp_path)
+    on_air, psk = box.fake / "state/on-air", box.fake / "etc/ap.psk"
+    mask = os.umask(0o077)                                                # sudo with a strict umask
+    try:
+        box.run("--backend", backend)
+    finally:
+        os.umask(mask)
+    first = psk.read_text()
+    assert on_air.read_text() == _psk_id(psk) + "\n"
+    assert oct(on_air.stat().st_mode & 0o777) == "0o644"                  # k1000 reads it
+    up = "nmcli-up k1000-ap" if backend == "nm" else "restart k1000-ap-hostapd.service"
+    box.run()
+    assert box.changes == 0 and up not in box.starts()                   # on the air already: quiet
+    old_id = on_air.read_text()
+    box.run("--new-password", "--no-up")                                  # configure only
+    assert psk.read_text() != first and up not in box.starts()
+    assert on_air.read_text() == old_id != _psk_id(psk) + "\n"           # the AP still runs the old one
+    assert "NOT recorded as the one" in box.run("--status")
+    out = box.run()                                                       # a plain run applies it
+    assert "not recorded as running the password" in out and up in box.starts()
+    assert on_air.read_text() == _psk_id(psk) + "\n"
+    assert "password on the air: the one in" in box.run("--status")
+    box.run("--new-password")                                             # with the AP brought up
+    assert up in box.starts() and on_air.read_text() == _psk_id(psk) + "\n"
+    box.run("--down")                                                     # down: nothing to restart
+    box.run("--new-password")
+    assert up not in box.starts() and on_air.read_text() != _psk_id(psk) + "\n"
+    box.run("--remove")
+    assert not on_air.exists()
+
+
+def test_setup_ap_first_start_records_without_the_restart_note(tmp_path):
+    box = ApBox(tmp_path)
+    out = box.run()
+    assert "not recorded as running" not in out
+    assert (box.fake / "state/on-air").read_text() == _psk_id(box.fake / "etc/ap.psk") + "\n"
+
+
 def test_setup_ap_binds_hostapd_to_its_interface_and_installs_the_guard(tmp_path):
     box = ApBox(tmp_path)
     box.run()
@@ -547,6 +598,24 @@ def test_hostapd_unit_refuses_unfenced_and_in_an_occupied_subnet(tmp_path):
     assert (tmp_path / "mark").exists()                                   # the guard brings it back later
 
 
+def test_hostapd_unit_records_the_password_it_started_with(tmp_path):
+    """Its ExecStartPost writes ap.psk's identity to /run/k1000-ap.on-air (systemd's %% and $$
+    unescaped), never fails the unit, and leaves no stale record when ap.psk is unreadable."""
+    post = _unit_lines("k1000-ap-hostapd.service", "ExecStartPost")
+    assert len(post) == 1 and post[0].startswith("-/bin/sh -c '"), post     # "-": never fails the AP
+    assert "%%i %%Y" in post[0] and "%i" not in post[0].replace("%%i", "")  # systemd specifiers escaped
+    psk, on_air = tmp_path / "ap.psk", tmp_path / "on-air"
+    script = re.fullmatch(r"-/bin/sh -c '(.*)'", post[0]).group(1).replace("%%", "%").replace("$$", "$") \
+        .replace("/etc/k1000/ap.psk", str(psk)).replace("/run/k1000-ap.on-air", str(on_air))
+    psk.write_text("abcd-efgh-jkmn\n")
+    assert subprocess.run(["/bin/sh", "-c", "umask 077; " + script]).returncode == 0
+    assert on_air.read_text() == _psk_id(psk) + "\n"
+    assert oct(on_air.stat().st_mode & 0o777) == "0o644"                  # k1000 reads it
+    psk.unlink()
+    assert subprocess.run(["/bin/sh", "-c", script]).returncode == 0
+    assert not on_air.exists()
+
+
 class GuardBox:
     """net/k1000-ap-guard.sh (the NetworkManager dispatcher script) against fakes."""
 
@@ -564,7 +633,8 @@ class GuardBox:
         (f / "state/starts").write_text("")
         env = dict(os.environ, PATH=f"{self.ap.bin}:/usr/bin:/bin", FAKE=str(f),
                    K1000_AP_ENV=str(f / "etc/ap.env"), K1000_AP_INFO=str(f / "etc/ap.info"),
-                   K1000_AP_GUARD_MARK=str(f / "state/guard-mark"))
+                   K1000_AP_GUARD_MARK=str(f / "state/guard-mark"), K1000_AP_PSK=str(f / "etc/ap.psk"),
+                   K1000_AP_ON_AIR=str(f / "state/on-air"))
         r = subprocess.run(["sh", str(NET / "k1000-ap-guard.sh"), iface, action], capture_output=True,
                            text=True, env=env)
         assert r.returncode == 0, r.stdout + r.stderr
@@ -633,6 +703,35 @@ def test_guard_takes_an_unfenced_nm_ap_down(tmp_path):
     (f / "state/nft-loaded").touch()
     (f / "state/active").write_text("k1000-ap")
     assert g.run("wlan0", "up") == "" and "k1000-ap" in (f / "state/active").read_text()
+
+
+def test_guard_records_the_password_nm_ap_started_with(tmp_path):
+    """--backend nm: NetworkManager's AP coming up writes /run/k1000-ap.on-air like the hostapd
+    unit's start; any other event, or an AP the guard took down (unfenced), writes nothing."""
+    g = GuardBox(tmp_path)
+    f = g.ap.fake
+    on_air, psk = f / "state/on-air", f / "etc/ap.psk"
+    psk.write_text("abcd-efgh-jkmn\n")
+    (f / "state/con").mkdir(parents=True, exist_ok=True)
+    (f / "state/con/k1000-ap.nmconnection").write_text("connection.id=k1000-ap\n")
+    (f / "state/nft-loaded").touch()
+    g.run("wlan0", "up")                                                  # not active: nothing
+    assert not on_air.exists()
+    (f / "state/active").write_text("k1000-ap")
+    g.run("eth0", "up")                                                   # another interface
+    g.run("wlan0", "dhcp4-change")                                        # another event
+    assert not on_air.exists()
+    mask = os.umask(0o077)
+    try:
+        g.run("wlan0", "up")
+    finally:
+        os.umask(mask)
+    assert on_air.read_text() == _psk_id(psk) + "\n"
+    assert oct(on_air.stat().st_mode & 0o777) == "0o644"
+    on_air.unlink()
+    (f / "state/nft-loaded").unlink()                                     # unfenced: taken down
+    g.run("wlan0", "up")
+    assert not on_air.exists()
 
 
 def test_guard_syntax_and_shellcheck():

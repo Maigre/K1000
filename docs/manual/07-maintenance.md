@@ -38,6 +38,35 @@ ssh k1000 'systemctl is-active camilladsp k1000 camillagui; cat /opt/k1000/REVIS
 
 Then a short program run, and a soak before the next show if the update was more than a fix.
 
+### The Android app on the box
+
+The box offers the Android app on its first-time page (`http://10.42.0.1/`, *Get the K1000 app*;
+[`docs/06-phone.md`](../06-phone.md) §4). The APK is never in the repository (`box/apk/` is
+gitignored): the deploy puts the **signed release APK** there before the rsync, and `install.sh`
+does the rest.
+
+```sh
+mkdir -p box/apk && cp <signing dir>/out/K1000-0.2.0.apk box/apk/   # android/README.md › Sign
+rsync -a --delete --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
+ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/install.sh"
+```
+
+- `install.sh` takes the newest `apk/K1000-<version>.apk` (by version), installs it to
+  `/opt/k1000/apk/` (root, 0644) and removes any other file there: the box offers one version.
+  Other names (`app-bench.apk`, the `.sha256`) are ignored; a file that is not a zip, or is over
+  64 MB, is refused with a warning.
+- A deploy **without** `box/apk/` leaves the box's APK as it is (it says so). To take the app off
+  the first-time page: `ssh k1000 'sudo rm /opt/k1000/apk/*'`, then restart k1000.
+- k1000 loads it at its start: between shows `sudo systemctl restart k1000` (or `--start`). Then
+  `journalctl -u k1000 | grep 'Android app'` names the file and its SHA-256.
+- A rollback (below) puts back the APK of the version rolled back to.
+- The app reads the Wi-Fi password from the box (`/api/wifi`) only while it is the one on the air,
+  which the AP records at each start from this version of `net/` on. The first update that brings
+  it says *the phone AP's units changed (k1000-ap-hostapd): not applied*: run `sudo install.sh
+  --ap` once, between shows (it restarts the AP: phones on it reconnect in a few seconds), or
+  reboot. Until then the box answers the app 503 (it asks again a little later and gives up;
+  scanning the Wi-Fi QR in the app, or typing the password, works as before).
+
 ### Rollback
 
 ```sh

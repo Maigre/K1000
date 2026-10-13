@@ -31,12 +31,17 @@ self.addEventListener("fetch", (event) => {
   // /v2/ (the phone v2 page) has its own worker: never answer it with v1's cached "/".
   if (url.origin !== self.location.origin || url.pathname === "/ws" || url.pathname === "/v2" ||
       url.pathname.startsWith("/v2/")) return;
+  // Only "/" (and /index.html) is the app page. Any other address opened in the browser
+  // (/k1000.apk, /api/wifi, /tune, the CA...) goes to the network untouched: never answered with
+  // the cached page, never stored as it (a download would not start, and the next launch would
+  // show what that address returned).
+  if (req.mode === "navigate" && url.pathname !== "/" && url.pathname !== "/index.html") return;
   const key = req.mode === "navigate" ? "/" : url.pathname;
   if (SHELL.includes(key)) {
     event.respondWith(
       caches.open(CACHE).then((cache) => cache.match(key, { ignoreSearch: true }).then((hit) => {
         const fresh = fetch(req).then((res) => {
-          if (res && res.ok && res.type === "basic") cache.put(key, res.clone());
+          if (res && res.ok && res.type === "basic" && (key !== "/" || isHtml(res))) cache.put(key, res.clone());
           return res;
         }).catch(() => null);
         if (hit) {
@@ -50,6 +55,11 @@ self.addEventListener("fetch", (event) => {
   }
   event.respondWith(fetch(req).catch(() => caches.match(req).then((hit) => hit || offline())));
 });
+
+// "/" is only ever the page: what is stored under it must be HTML.
+function isHtml(res) {
+  return (res.headers.get("Content-Type") || "").toLowerCase().startsWith("text/html");
+}
 
 function offline() {
   return new Response(

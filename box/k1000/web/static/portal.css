@@ -21,3 +21,6 @@ li { margin: 10px 0; }
 [hidden] { display: none !important; }
 .card p { margin: 0 0 8px; }
 #signin { border-color: var(--amber); }
+#app .btn { margin-bottom: 8px; }
+#app .note { margin: 4px 0 0; }
+.nw { white-space: nowrap; }

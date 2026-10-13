@@ -35,6 +35,8 @@
 # K1000_TLS_DIR=<dir> installs the phone page's HTTPS certificate from <dir> (k1000.crt, k1000.key,
 #   k1000-ca.crt) into /etc/k1000/tls, root:k1000 0640. Never the CA's private key (ca.key): it
 #   never leaves the laptop that holds it. Restart k1000 (between shows) to load a new certificate.
+# apk/K1000-<version>.apk next to this script (the signed release APK, put there by the deploy:
+#   never in git) goes to /opt/k1000/apk, the newest one only; the first-time page offers it.
 #
 # Why each step exists is said where it happens. What it never does: touch /etc/k1000/k1000.yaml
 # once it exists (Thomas's settings), touch /var/lib/k1000 contents (live state; the one exception
@@ -186,10 +188,11 @@ fi
 # The whole box/ tree goes (package, tests, tools, units, README, this script), root-owned and
 # read-only for k1000. Hidden files, caches and REVISION are never mirrored nor deleted; directory
 # mtimes are not mirrored (-O), so writing REVISION does not make the next run see a change.
+# apk/ neither: step 5b installs one APK from it, and keeps the box's when the source has none.
 # Before anything changes, the running version is kept in /opt/k1000.prev (rollback: README).
 if [ "$SRC" != "$APP" ]; then
   RSYNC=(rsync -rlptgoO --delete --chown=root:root "--chmod=D755,Fu+rw,Fgo+r,Fgo-w"
-         --exclude='.*' --exclude=__pycache__ --exclude='*.pyc' --exclude=/REVISION)
+         --exclude='.*' --exclude=__pycache__ --exclude='*.pyc' --exclude=/REVISION --exclude=/apk)
   pending=$("${RSYNC[@]}" --dry-run --itemize-changes "$SRC/" "$APP/" 2>/dev/null || true)
   if [ -n "$pending" ]; then
     if [ -d "$APP/k1000" ]; then
@@ -289,6 +292,57 @@ for f in camillagui.yml gui-config.yml; do
   put "$SRC/camillagui/$f" "$GUI/config/$f" 644
   if [ $PUT_CHANGED = 1 ]; then GUI_CHANGED=1; fi
 done
+
+# --- 5b. the Android app the first-time page offers (docs/06-phone.md §4) ----------------------
+# The deploy puts the signed release APK in $SRC/apk/ (box/apk/ is gitignored: an APK is never in
+# the repository). The newest K1000-<version>.apk there (sort -V) goes to /opt/k1000/apk/,
+# root-owned 0644, and anything else in that folder is removed: the box offers one version, the
+# one it was deployed with (a rollback copy of /opt/k1000.prev carries its own). No APK in the
+# source: the box keeps the one it has. A file that is not a zip archive, or is over 64 MB (k1000's
+# own limit: it holds the APK in memory), is not installed. k1000 loads it at its next start.
+APK_DIR=$APP/apk
+APK_RE='^K1000-[0-9][0-9A-Za-z.-]{0,31}\.apk$'
+APK_NEW=0
+apks=()
+if [ -d "$SRC/apk" ]; then
+  for f in "$SRC"/apk/*.apk; do
+    [ -f "$f" ] || continue
+    if [[ ${f##*/} =~ $APK_RE ]]; then apks+=("${f##*/}"); else note "WARNING: $f ignored (not K1000-<version>.apk)"; fi
+  done
+fi
+apk=""
+if [ ${#apks[@]} -gt 0 ]; then
+  apk=$(printf '%s\n' "${apks[@]}" | sort -V | tail -n 1)
+  if [ "$(head -c 4 "$SRC/apk/$apk" | od -An -tx1 | tr -d ' \n')" != 504b0304 ] \
+     || [ "$(wc -c < "$SRC/apk/$apk")" -gt 67108864 ]; then
+    note "WARNING: $SRC/apk/$apk is not an APK (a zip archive of at most 64 MB): not installed"
+    apk=""
+  fi
+fi
+if [ -n "$apk" ]; then
+  own_dir "$APK_DIR" root
+  put "$SRC/apk/$apk" "$APK_DIR/$apk" 644
+  APK_NEW=$PUT_CHANGED
+  for f in "$APK_DIR"/*; do
+    if [ ! -e "$f" ] || [ "${f##*/}" = "$apk" ]; then continue; fi
+    rm -rf -- "$f"
+    changed "removed $f (the box offers $apk only)"
+    APK_NEW=1
+  done
+else
+  kept=""
+  for f in "$APK_DIR"/K1000-*.apk; do
+    if [ -f "$f" ]; then kept="$kept ${f##*/}"; fi
+  done
+  if [ -n "$kept" ]; then
+    note "no app in $SRC/apk: the first-time page keeps offering$kept"
+  else
+    note "no Android app in $SRC/apk: the first-time page offers none (the deploy puts K1000-<version>.apk there)"
+  fi
+fi
+if [ $APK_NEW = 1 ] && [ $DO_START = 0 ] && systemctl is-active --quiet k1000.service; then
+  note "new Android app: the first-time page offers it once k1000 has started again (between shows: sudo systemctl restart k1000)"
+fi
 
 # --- 6. systemd: units, hardware watchdog --------------------------------------------------------
 RELOAD=0 LAPTOP_NEW=0

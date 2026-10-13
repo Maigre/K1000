@@ -23,6 +23,11 @@
 #   `ip addr replace` never rewrites it, which would leave the AP subnet without a route. The AP
 #   address is then set while the link is down; hostapd brings it up.
 # - hostapd.conf (0600: it holds the password) leaves ieee80211w unset: PMF off.
+# - At each start, which /etc/k1000/ap.psk it started with (`stat -c '%i %Y'`: a new password is a
+#   new file) goes to /run/k1000-ap.on-air. The k1000 service hands the password to the Android
+#   app (/api/wifi, docs/06-phone.md §4) only while it is that one: `setup-ap.sh --new-password`
+#   writes ap.psk before the AP restarts with it (with --no-up, not before the next boot), and a
+#   device still on the old password must not learn the new one meanwhile.
 [Unit]
 Description=K1000 Wi-Fi access point (hostapd)
 Documentation=file:///opt/k1000/net/setup-ap.sh
@@ -42,6 +47,7 @@ ExecStartPre=/usr/sbin/ip addr flush dev ${K1000_AP_IFACE}
 ExecStartPre=/usr/sbin/ip link set ${K1000_AP_IFACE} down
 ExecStartPre=/usr/sbin/ip addr add ${K1000_AP_ADDR} dev ${K1000_AP_IFACE}
 ExecStart=/usr/sbin/hostapd /etc/k1000/hostapd.conf
+ExecStartPost=-/bin/sh -c 'f=/run/k1000-ap.on-air; /usr/bin/stat -c "%%i %%Y" /etc/k1000/ap.psk > "$$f" 2>/dev/null && chmod 0644 "$$f" || rm -f "$$f"'
 ExecStopPost=-/usr/sbin/ip addr flush dev ${K1000_AP_IFACE}
 Restart=on-failure
 RestartSec=3

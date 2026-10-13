@@ -33,6 +33,14 @@ Why it is shaped like this:
   screen's render loop waits on; a second waiter would steal its wake-ups. The pump reads
   `Controller.version` (falling back to comparing snapshots) every `tick_s` instead, and only
   while a phone is connected.
+- **The Android app is offered by the box itself** (docs/06-phone.md §4): the first-time page
+  links the release APK the box was deployed with (`/k1000.apk`, loaded into memory at start),
+  and the app reads the Wi-Fi name and password from `/api/wifi` once it is on the K1000 Wi-Fi
+  (HTTPS only, to devices on the AP only): whoever reaches it already knows the password, and
+  the app's pinned CA proves to it that this is the real box. That holds only for the password
+  the AP is running, so `/api/wifi` hands out /etc/k1000/ap.psk only once the AP has started
+  with that very file (/run/k1000-ap.on-air, written at each AP start): a device still on the
+  AP with the old password never learns a new one that is not on the air yet.
 - **Protocol 2 beside protocol 1, never instead** (docs/14-phone-v2-protocol.md, DESIGN §10).
   The v1 page refuses any `hello.v` but 1, so `/ws` stays exactly v1 and the v2 page gets
   `/v2/ws` and `/v2/` (its own build id and service-worker scope). Both sockets share this
@@ -58,6 +66,8 @@ import ipaddress
 import json
 import logging
 import math
+import os
+import re
 import socket
 import ssl
 import struct
@@ -147,6 +157,20 @@ BUILD_STAMPED = frozenset({"/sw.js", "/app.js"})
 PORTAL_ONLY = frozenset({"/portal.html"})
 QR_CYCLE = ("wifi", "url", "setup")   # E1 on the PHONE page steps through these
 
+# The Android app, offered by the box (docs/06-phone.md §4; the app: docs/09-android.md).
+APK_PATH = "/k1000.apk"
+APK_CONTENT_TYPE = "application/vnd.android.package-archive"
+APK_NAME_RE = re.compile(r"K1000-([0-9][0-9A-Za-z.\-]{0,31})\.apk")   # install.sh: the same names
+APK_MAX = 64 * 1024 * 1024        # bytes; the release APK is ~0.5 MB, held in memory
+APK_SEND_S = 30.0                 # how long one APK download may take (the portal; HTTPS: < 10 s)
+APK_PORTAL_MARK = re.compile(r"<!--APK-->.*?<!--/APK-->", re.S)   # portal.html: only with an APK
+WIFI_API = "/api/wifi"            # the app reads the K1000 Wi-Fi from here (HTTPS, AP only)
+WIFI_API_VERSION = 1
+# Per device address and endpoint: (requests per second, burst). The Wi-Fi settings are read once
+# per app setup; an APK costs the Wi-Fi ~0.5 MB of airtime the phones' controls share.
+HTTP_LIMITS: dict[str, tuple[float, float]] = {"wifi": (1.0, 5.0), "apk": (0.1, 3.0)}
+HTTP_LIMIT_KEYS = 1024
+
 # ----------------------------------------------------------------------------- protocol 2
 # docs/14-phone-v2-protocol.md is the contract; keep the two in step.
 PROTOCOL_VERSION_V2 = 2
@@ -190,7 +214,7 @@ _V2_STEPPER = {"master_db": (-12, -2, -1, 1, 2), "balance_db": (-2, -1, 1, 2),
                "align_delay_ms": (-10, -1, 1, 10), "lowcut_hz": (-5, -1, 1, 5),
                "out_trim_db": (-2, -1, 1, 2), "input_trim_db": (-2, -1, 1, 2),
                "sub_lowpass_hz": (-4, -1, 1, 4), ".freq": (-4, -1, 1, 4), ".gain": (-6, -1, 1, 6),
-               ".q": (-2, -1, 1, 2)}
+               ".q": (-6, -1, 1, 6)}   # Q / SLOPE: ×½ · − · + · ×2 (6 detents of 1/6 oct = an octave)
 _V2_ACCEL = {"out_trim_db": (1, 1), "input_trim_db": (1, 1), "sub_lowpass_hz": (4, 4)}
 _V2_STICKY = {"balance_db": (0.0,), "align_delay_ms": (0.0,), "out_trim_db": (0.0,),
               "input_trim_db": (0.0,), ".gain": (0.0,)}
@@ -230,6 +254,9 @@ class PhoneSettings:
     ssid: str = "K1000"
     psk_file: Path = Path("/etc/k1000/ap.psk")
     ap_info_file: Path = Path("/etc/k1000/ap.info")  # written by setup-ap.sh: ssid, band, label
+    # which ap.psk the running AP started with (`stat -c '%i %Y'`), written at each AP start by the
+    # hostapd unit, the NetworkManager guard and setup-ap.sh: /api/wifi only hands out that one
+    on_air_file: Path = Path("/run/k1000-ap.on-air")
     iface: str = "wlan0"
     band: str = ""                                   # PHONE page label; ap.info wins
     max_clients: int = 4
@@ -240,6 +267,7 @@ class PhoneSettings:
     notch_q: float = 8.0
     extra_origins: tuple[str, ...] = ()
     min_app: int = 0                                 # v2: lowest APK versionCode wanted (0 = any)
+    apk_dir: Path = Path("/opt/k1000/apk")           # the APK the first-time page offers (install.sh)
     state_file: Path = Path("/var/lib/k1000/phone.json")
     lease_files: tuple[str, ...] = ("/var/lib/NetworkManager/dnsmasq-{iface}.leases",   # --backend nm (root)
                                     "/run/k1000-ap/dnsmasq.leases")    # hostapd backend (the default)
@@ -322,6 +350,7 @@ class PhoneSettings:
             notch_q=pick("notch_q", is_num(q_rng.min, q_rng.max), float),
             extra_origins=pick("extra_origins", str_list, lambda v: tuple(x.strip() for x in v)),
             min_app=pick("min_app", is_int(0, 1_000_000_000)),
+            apk_dir=pick("apk_dir", is_str, lambda v: Path(v.strip())),
             state_file=pick("state_file", is_str, lambda v: Path(v.strip())),
         )
         if bad:
@@ -354,6 +383,15 @@ def _is_num(v: Any) -> bool:
 def _origin(scheme: str, host: str, port: int, default_port: int) -> str:
     h = f"[{host}]" if ":" in host else host
     return f"{scheme}://{h}" if port == default_port else f"{scheme}://{h}:{port}"
+
+
+def _peer_ip(conn: Any) -> str:
+    """A connection's remote address, '' when unknown."""
+    try:
+        addr = conn.remote_address
+        return str(addr[0]) if addr else ""
+    except Exception:   # noqa: BLE001 - a closed transport
+        return ""
 
 
 def _host_only(hostport: str) -> str:
@@ -602,18 +640,46 @@ def subnet_clash(settings: PhoneSettings, ap_iface: str,
 
 def read_psk(path: Path) -> tuple[str | None, str]:
     """(password, "") or (None, why). /etc/k1000/ap.psk is root:k1000 0640 (setup-ap.sh)."""
+    psk, why, _ = _read_psk(path)
+    return psk, why
+
+
+def psk_id(st: os.stat_result) -> str:
+    """ap.psk's identity, exactly as `stat -c '%i %Y'` prints it (the hostapd unit, the guard and
+    setup-ap.sh write it to /run/k1000-ap.on-air at each AP start). setup-ap.sh moves a new
+    password in as a new file: a new inode, so a new identity, whatever the clock says."""
+    return f"{st.st_ino} {st.st_mtime_ns // 1_000_000_000}"
+
+
+def _read_psk(path: Path) -> tuple[str | None, str, str]:
+    """(password, "", its file's identity) or (None, why, ""): one open, so both are the same file."""
     try:
-        text = path.read_text(encoding="utf-8")
+        with open(path, "rb") as f:
+            ident = psk_id(os.fstat(f.fileno()))
+            text = f.read().decode("utf-8")
     except FileNotFoundError:
-        return None, f"no {path} (run setup-ap.sh)"
+        return None, f"no {path} (run setup-ap.sh)", ""
     except PermissionError:
-        return None, f"{path} not readable by k1000"
+        return None, f"{path} not readable by k1000", ""
     except (OSError, UnicodeDecodeError) as e:
-        return None, f"{path}: {e}"
+        return None, f"{path}: {e}", ""
     psk = text.strip().splitlines()[0].strip() if text.strip() else ""
     if not 8 <= len(psk) <= 63 or not all(32 <= ord(ch) < 127 for ch in psk):
-        return None, f"{path}: not a WPA2 password"
-    return psk, ""
+        return None, f"{path}: not a WPA2 password", ""
+    return psk, "", ident
+
+
+def psk_on_air(ident: str, on_air_file: Path) -> bool:
+    """The running AP started with the ap.psk whose identity is `ident` (psk_id): what the hostapd
+    unit (ExecStartPost), the NetworkManager guard and setup-ap.sh recorded at the AP's last
+    start. False when nothing was recorded (an AP started by units older than this check, until
+    `install.sh --ap` or a reboot) or when the password changed since (`setup-ap.sh
+    --new-password`, until the AP restarts with it: at once, or at the next boot with --no-up)."""
+    try:
+        text = on_air_file.read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return False
+    return bool(ident) and " ".join(text.split()) == ident
 
 
 AP_INFO_KEYS = ("ssid", "band", "channel", "label", "address", "iface", "backend", "portal", "ssh",
@@ -1435,6 +1501,56 @@ def load_static_all(root: Path) -> tuple[dict[str, _Asset], dict[str, str]]:
     return assets, {"v1": build, "v2": build2}
 
 
+@dataclass(frozen=True)
+class _Apk:
+    """The Android app the box offers: K1000-<version>.apk, in memory."""
+
+    body: bytes
+    version: str
+    sha256: str
+
+    @property
+    def filename(self) -> str:
+        return f"K1000-{self.version}.apk"
+
+    @property
+    def etag(self) -> str:
+        return f'"{self.sha256}"'
+
+
+def _version_key(version: str) -> tuple[tuple[int, str], ...]:
+    """'0.10.1' > '0.2.0' (numbers compare as numbers), like install.sh's `sort -V`."""
+    return tuple((int(p), "") if p.isdigit() else (-1, p) for p in re.split(r"[.\-]", version))
+
+
+def load_apk(folder: Path) -> _Apk | None:
+    """The newest K1000-<version>.apk in `folder` (install.sh leaves exactly one there), or None:
+    no folder, no such file, or not plausibly an APK (a zip archive of at most APK_MAX bytes).
+    Never raises: a missing app only takes the button off the first-time page."""
+    try:
+        found = [(m.group(1), p) for p in folder.iterdir()
+                 if (m := APK_NAME_RE.fullmatch(p.name)) and p.is_file()]
+    except OSError:
+        return None
+    if not found:
+        return None
+    version, path = max(found, key=lambda vp: _version_key(vp[0]))
+    if len(found) > 1:
+        log.warning("phone: %d APKs in %s: offering the newest, %s", len(found), folder, path.name)
+    try:
+        if path.stat().st_size > APK_MAX:
+            log.warning("phone: %s is larger than %d MB: not offered", path, APK_MAX >> 20)
+            return None
+        body = path.read_bytes()
+    except OSError as e:
+        log.warning("phone: %s unreadable (%s): not offered", path, e)
+        return None
+    if not body.startswith(b"PK\x03\x04"):
+        log.warning("phone: %s is not an APK (not a zip archive): not offered", path)
+        return None
+    return _Apk(body, version, hashlib.sha256(body).hexdigest())
+
+
 def _csp(connect: str) -> str:
     return ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
             f"connect-src {connect}; worker-src 'self'; manifest-src 'self'; base-uri 'none'; "
@@ -1572,6 +1688,8 @@ class PhoneServer:
         self._psk: tuple[str | None, str] = (None, "not read yet")
         self._ap_info: dict[str, str] = {}
         self._portal_sem = asyncio.Semaphore(32)
+        self._apk: _Apk | None = None
+        self._http_buckets: dict[tuple[str, str], _Bucket] = {}
         self._tune_static: dict[str, _Asset] = {}
         self._tune_clients: set[Any] = set()
         self._tune: TuneDesk | None = None
@@ -1579,7 +1697,8 @@ class PhoneServer:
         self._started = False
         self.stats: dict[str, int] = {"connects": 0, "refused": 0, "rate_limited": 0, "errors": 0,
                                       "dropped": 0, "dropped_replies": 0, "rta_sent": 0,
-                                      "rta_dropped": 0}
+                                      "rta_dropped": 0, "http_limited": 0, "wifi_sent": 0,
+                                      "wifi_refused": 0, "wifi_held": 0, "apk_sent": 0}
         self.rx: dict[str, int] = {}
 
     # ------------------------------------------------------------------ public
@@ -1700,6 +1819,14 @@ class PhoneServer:
         except Exception as e:  # noqa: BLE001 - a broken install must not stop the service
             self._error(f"phone page files unreadable ({self.static_dir}: {e})")
             self._static = {}
+        try:
+            self._apk = await asyncio.to_thread(load_apk, self.cfg.apk_dir)
+        except Exception as e:  # noqa: BLE001 - the app is never worth the phone page
+            log.warning("phone: the Android app in %s unusable: %s", self.cfg.apk_dir, e)
+            self._apk = None
+        if self._apk is not None:
+            log.info("phone: the first-time page offers the Android app %s (sha256 %s)",
+                     self._apk.filename, self._apk.sha256)
         hooks = getattr(self.ctl, "spectrum_hooks", None)
         if isinstance(hooks, list) and self._on_spectrum not in hooks:
             hooks.append(self._on_spectrum)          # v2 phones' spectrum frames (docs/14 §3.4)
@@ -1910,8 +2037,117 @@ class PhoneServer:
                 return None
             if path == "/tune" or path.startswith("/tune/"):
                 return self._tune_response(path, req.headers, scheme)
+            if path == WIFI_API:
+                return self._wifi_response(_peer_ip(conn), req.headers, scheme)
+            if path == APK_PATH:
+                return self._apk_app_response(conn, req.headers)
             return self._app_response(path, req.headers, scheme)
         return process_request
+
+    # ------------------------------------------------------------------ the Android app
+    def _http_ok(self, peer: str, what: str) -> bool:
+        """One request to `what` ("wifi" | "apk") from `peer` fits its bucket (HTTP_LIMITS)."""
+        key = (peer, what)
+        bucket = self._http_buckets.get(key)
+        if bucket is None:
+            if len(self._http_buckets) >= HTTP_LIMIT_KEYS:          # the oldest goes first
+                self._http_buckets.pop(next(iter(self._http_buckets)))
+            rate, burst = HTTP_LIMITS[what]
+            bucket = self._http_buckets[key] = _Bucket(rate, burst, self._clock)
+        if bucket.take():
+            return True
+        self.stats["http_limited"] += 1
+        return False
+
+    def on_ap(self, peer: str) -> bool:
+        """`peer` is a device on the K1000 Wi-Fi right now: an address in the AP's subnet (never
+        the box's own), with a neighbour entry on the AP's interface (the kernel's table, read
+        now: a TCP peer always has one). An address that reached the box any other way (eth0)
+        has none there, whatever its number."""
+        try:
+            ip = ipaddress.ip_address(peer)
+        except ValueError:
+            return False
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        cfg = self.cfg
+        if ip not in cfg.subnet or str(ip) == cfg.address:
+            return False
+        iface = read_ap_info(cfg.ap_info_file).get("iface") or cfg.iface
+        try:
+            text = Path(cfg.arp_file).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        return str(ip) in read_arp(text, iface, cfg.subnet, exclude=(cfg.address,))
+
+    def _wifi_response(self, peer: str, headers: Headers, scheme: str) -> Response:
+        """GET /api/wifi: the K1000 Wi-Fi's name and password, for the Android app (docs/06-phone.md
+        §4). HTTPS only (the app's pinned CA proves the box to it), to a device on the AP only
+        (it already holds the password), never cached, rate-limited per device; 404 without a
+        password file. No CORS header: a web page cannot read it. 503 while the AP is not running
+        the password in ap.psk (psk_on_air): during `setup-ap.sh --new-password` until the AP has
+        restarted with it (until the next boot with --no-up), a device still on the AP with the
+        old one must not learn the new one."""
+        text = "text/plain; charset=utf-8"
+        if scheme != "https" or _host_only(headers.get("Host", "") or "") not in self.cfg.host_names:
+            return self._response(404, b"not found\n", text)
+        nostore = [("Cache-Control", "no-store")]
+        if not self._http_ok(peer, "wifi"):
+            return self._response(429, b"too many requests\n", text, [*nostore, ("Retry-After", "1")])
+        if not self.on_ap(peer):
+            self.stats["wifi_refused"] += 1
+            log.warning("phone: Wi-Fi settings refused to %s (not on the K1000 Wi-Fi)", peer)
+            return self._response(403, b"only for devices on the K1000 Wi-Fi\n", text, nostore)
+        psk, why, ident = _read_psk(self.cfg.psk_file)
+        if psk is None:
+            log.warning("phone: Wi-Fi settings asked by %s: no password (%s)", peer, why)
+            return self._response(404, b"no Wi-Fi password on this box\n", text, nostore)
+        if not psk_on_air(ident, self.cfg.on_air_file):
+            self.stats["wifi_held"] += 1
+            log.warning("phone: Wi-Fi settings held back from %s: the AP is not running the password "
+                        "in %s (changed and not applied yet, or no %s: sudo /opt/k1000/net/setup-ap.sh)",
+                        peer, self.cfg.psk_file, self.cfg.on_air_file)
+            return self._response(503, b"the K1000 Wi-Fi is not running this box's password yet\n",
+                                  text, [*nostore, ("Retry-After", "5")])
+        info = read_ap_info(self.cfg.ap_info_file)
+        body = json.dumps({"v": WIFI_API_VERSION, "ssid": info.get("ssid") or self.cfg.ssid,
+                           "psk": psk, "band": info.get("label") or self.cfg.band,
+                           "box": self.build}).encode()
+        self.stats["wifi_sent"] += 1
+        log.info("phone: Wi-Fi settings sent to %s (the K1000 app)", peer)
+        return self._response(200, body, "application/json", nostore)
+
+    def _apk_headers(self, apk: _Apk) -> list[tuple[str, str]]:
+        return [("Content-Disposition", f'attachment; filename="{apk.filename}"'),
+                ("ETag", apk.etag), ("Cache-Control", "no-cache")]
+
+    def _apk_app_response(self, conn: ServerConnection, headers: Headers) -> Response:
+        """GET /k1000.apk on the app servers (HTTPS; the first-time page links the portal's)."""
+        apk = self._apk
+        if apk is None:
+            return self._response(404, b"no K1000 app on this box\n", "text/plain; charset=utf-8")
+        extra = self._apk_headers(apk)
+        if headers.get("If-None-Match") == apk.etag:
+            return self._response(304, b"", None, extra)
+        if not self._http_ok(_peer_ip(conn), "apk"):
+            return self._response(429, b"too many requests\n", "text/plain; charset=utf-8",
+                                  [("Retry-After", "10")])
+        # websockets sends a refused handshake's response, then gives the client close_timeout
+        # (2 s) to take it all and close before it aborts, and asyncio's TLS shutdown gets the
+        # same 2 s (websockets passes it as ssl_shutdown_timeout): too short for ~0.5 MB at the
+        # edge of the Wi-Fi's range. Both are raised for this one connection, which never becomes
+        # a websocket (/ws keeps its own). websockets' open_timeout (10 s from the connection)
+        # still caps it: the first-time page links the portal's copy, which has APK_SEND_S.
+        with contextlib.suppress(Exception):
+            if conn.close_timeout is not None and conn.close_timeout < APK_SEND_S:
+                conn.close_timeout = APK_SEND_S
+        with contextlib.suppress(Exception):      # CPython's asyncio.sslproto, 3.11+
+            sslp = getattr(conn.transport, "_ssl_protocol", None)
+            if sslp is not None and (sslp._ssl_shutdown_timeout or 0) < APK_SEND_S:
+                sslp._ssl_shutdown_timeout = APK_SEND_S
+        self.stats["apk_sent"] += 1
+        log.info("phone: the Android app %s sent to %s (HTTPS)", apk.filename, _peer_ip(conn) or "?")
+        return self._response(200, apk.body, APK_CONTENT_TYPE, extra)
 
     def _app_response(self, path: str, headers: Headers, scheme: str) -> Response:
         if path == "/ping":    # the portal's 'is the K1000 certificate trusted?' check
@@ -1996,24 +2232,38 @@ class PhoneServer:
             writer.close()
             return
         async with self._portal_sem:
+            sent = False
             try:
                 async with asyncio.timeout(5.0):
                     head = await reader.readuntil(b"\r\n\r\n")
-                writer.write(self.portal_response(head))
-                async with asyncio.timeout(5.0):
+                peer = writer.get_extra_info("peername")
+                out = self.portal_response(head, peer=str(peer[0]) if peer else "")
+                writer.write(out)
+                # The whole response, to the last byte handed to the kernel, within the budget:
+                # close() alone keeps sending what is still buffered, with no deadline of its own
+                # (a phone gone out of range, or one that stops reading, would hold the APK's
+                # ~0.5 MB until TCP gives up, each one past the semaphore).
+                async with asyncio.timeout(5.0 if len(out) < 65536 else APK_SEND_S):
                     await writer.drain()
+                    writer.close()
+                    await writer.wait_closed()
+                sent = True
             except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, TimeoutError,
                     ConnectionError, OSError):
                 pass
             except Exception:   # noqa: BLE001 - a portal bug must never reach the service
                 log.exception("captive portal request failed")
             finally:
-                writer.close()
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(writer.wait_closed(), 1.0)
+                if not sent:
+                    with contextlib.suppress(Exception):
+                        writer.transport.abort()      # drops what is still buffered, at once
+                    writer.close()
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(writer.wait_closed(), 1.0)
 
-    def portal_response(self, head: bytes) -> bytes:
-        """One raw HTTP/1.x request head -> the raw response (tolerant: GET/HEAD, 1.0/1.1)."""
+    def portal_response(self, head: bytes, peer: str = "") -> bytes:
+        """One raw HTTP/1.x request head -> the raw response (tolerant: GET/HEAD, 1.0/1.1).
+        `peer`: the device's address (the APK's rate limit)."""
         try:
             lines = head.decode("latin-1").split("\r\n")
             method, target, version = lines[0].split(" ")
@@ -2037,6 +2287,8 @@ class PhoneServer:
         path = urllib.parse.unquote(path.split("?", 1)[0].split("#", 1)[0]) or "/"
         head_only = method == "HEAD"
         here = _origin("http", self.cfg.address, self.ports.get("http", self.cfg.http_port) or 80, 80)
+        if path == WIFI_API:      # never over plain HTTP, whatever the name (the app uses HTTPS)
+            return _raw(404, b"not found\n", "text/plain; charset=utf-8", (), head_only)
         if host not in self.cfg.host_names:
             # Every name resolves to the box on the AP: a phone's connectivity probe lands here.
             # A redirect (not 204) is what makes Android raise "Sign in to network".
@@ -2049,6 +2301,21 @@ class PhoneServer:
                             "text/plain; charset=utf-8", (), head_only)
             return _raw(200, body, CA_CONTENT_TYPE,
                         [("Content-Disposition", f'attachment; filename="{path[1:]}"')], head_only)
+        if path == APK_PATH:
+            apk = self._apk
+            if apk is None:
+                return _raw(404, b"no K1000 app on this box\n", "text/plain; charset=utf-8", (),
+                            head_only)
+            extra = self._apk_headers(apk)
+            if hdrs.get("if-none-match") == apk.etag:
+                return _raw(304, b"", APK_CONTENT_TYPE, extra, True)
+            if not head_only:
+                if not self._http_ok(peer, "apk"):
+                    return _raw(429, b"too many requests\n", "text/plain; charset=utf-8",
+                                [("Retry-After", "10")])
+                self.stats["apk_sent"] += 1
+                log.info("phone: the Android app %s sent to %s", apk.filename, peer or "?")
+            return _raw(200, apk.body, APK_CONTENT_TYPE, extra, head_only)
         if path in ("/", "/index.html", "/portal.html"):
             return _raw(200, self._portal_page(), "text/html; charset=utf-8",
                         [("Content-Security-Policy", _csp(self._ping_origin() or "'none'"))], head_only)
@@ -2064,9 +2331,12 @@ class PhoneServer:
 
     def _portal_page(self) -> bytes:
         asset = self._static.get("/portal.html")
+        apk = self._apk
         if asset is None:
             text = (f"<!doctype html><title>K1000</title><p>K1000: open "
                     f"<a href=\"{html.escape(self.url)}\">{html.escape(self.url)}</a>")
+            if apk is not None:
+                text += f"<p><a href=\"{APK_PATH}\">Get the K1000 app</a> ({html.escape(apk.version)})"
             return text.encode()
         ping = self._ping_origin()
         vals = {
@@ -2076,8 +2346,14 @@ class PhoneServer:
             "TLS": "1" if "https" in self.ports else "",
             "SSID": self.cfg.ssid,
             "ON": "1" if self._on else "",
+            "APK_URL": APK_PATH,
+            "APK_FILE": apk.filename if apk else "",
+            "APK_VERSION": apk.version if apk else "",
+            "APK_SHA8": apk.sha256[:8] if apk else "",
         }
         text = asset.body.decode("utf-8")
+        if apk is None:            # no app on this box: no button, nothing that names one
+            text = APK_PORTAL_MARK.sub("", text)
         for k, v in vals.items():
             text = text.replace("{{" + k + "}}", html.escape(v, quote=True))
         return text.encode("utf-8")
@@ -2390,6 +2666,9 @@ class PhoneServer:
         urgent = t == "mute" and msg.get("on") is True     # a MUTE is never rate-limited
         if not urgent and not c.bucket.take():
             self.stats["rate_limited"] += 1
+            if t == "mute":       # a refused unmute is always answered (docs/14 §5 rule 5), never throttled
+                return {"t": "err", "id": mid, "code": "RATE", "why": "too fast: hold again",
+                        "v": self.bridge._displayed_muted()}       # the mute as it is now
             return self._err2(c, mid, "RATE", "too fast")
         sess = c.sess if c.sess is not None else PhoneSession(n=c.n)
         if t == "sub":
@@ -2727,6 +3006,7 @@ def _raw(status: int, body: bytes, ctype: str, extra: Iterable[tuple[str, str]] 
 
 
 __all__ = ["PhoneBridge", "PhoneScreenInfo", "PhoneServer", "PhoneSession", "PhoneSettings",
-           "ap_is_up", "fields_v2", "iface_ipv4", "load_static", "load_static_all", "read_ap_info",
-           "read_arp", "read_leases", "read_psk", "rta_message", "setup_v2",
+           "ap_is_up", "fields_v2", "iface_ipv4", "load_apk", "load_static", "load_static_all",
+           "psk_id", "psk_on_air", "read_ap_info", "read_arp", "read_leases", "read_psk",
+           "rta_message", "setup_v2",
            "NUDGE_CAPS", "NUDGE_CAPS_V2", "SET_NUMERIC", "SET_BOOL", "LOCKED_V2", "MESSAGE_TYPES_V2"]

@@ -14,15 +14,21 @@
 #    the cable already in ends the same way.
 # 2. --backend nm: NetworkManager's AP never stays up without its fence (nftables table
 #    inet k1000_ap); the hostapd unit checks that itself.
+# 3. --backend nm: each time NetworkManager's AP comes up, which /etc/k1000/ap.psk it started with
+#    (`stat -c '%i %Y'`) goes to /run/k1000-ap.on-air, as the hostapd unit does at its start: the
+#    k1000 service hands the password to the Android app (/api/wifi) only while it is that one.
 # It only ever stops or starts the AP, never the interface that triggered it. Its lines go to the
 # journal (journalctl -t k1000-ap-guard).
 # Test hooks: K1000_AP_ENV (/etc/k1000/ap.env), K1000_AP_INFO (/etc/k1000/ap.info),
-# K1000_AP_GUARD_MARK (/run/k1000-ap-guard.stopped).
+# K1000_AP_GUARD_MARK (/run/k1000-ap-guard.stopped), K1000_AP_PSK (/etc/k1000/ap.psk),
+# K1000_AP_ON_AIR (/run/k1000-ap.on-air).
 set -u
 PATH=${PATH:+$PATH:}/usr/sbin:/usr/bin:/sbin:/bin
 ENV_FILE=${K1000_AP_ENV:-/etc/k1000/ap.env}
 INFO_FILE=${K1000_AP_INFO:-/etc/k1000/ap.info}
 MARK=${K1000_AP_GUARD_MARK:-/run/k1000-ap-guard.stopped}
+PSK_FILE=${K1000_AP_PSK:-/etc/k1000/ap.psk}
+ON_AIR=${K1000_AP_ON_AIR:-/run/k1000-ap.on-air}
 UNIT=k1000-ap-hostapd.service
 CON=k1000-ap
 
@@ -44,6 +50,11 @@ nm_up() { nmcli -t -f NAME connection show --active 2>/dev/null | grep -qxF "$CO
 if [ "$iface" = "$AP_IFACE" ] && [ "$action" = up ] && nm_up && ! nft list table inet k1000_ap >/dev/null 2>&1; then
   nmcli connection down "$CON" >/dev/null 2>&1 || true
   say "the $CON connection taken down: the fence (table inet k1000_ap) is not loaded"
+fi
+
+# 3. NetworkManager's AP is up: the password it started with
+if [ "$iface" = "$AP_IFACE" ] && [ "$action" = up ] && nm_up; then
+  { stat -c '%i %Y' "$PSK_FILE" > "$ON_AIR" && chmod 0644 "$ON_AIR"; } 2>/dev/null || rm -f "$ON_AIR"
 fi
 
 # 1. the subnet

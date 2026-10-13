@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 print/
+
+# The Android app the box offers (box/install.sh step 5b): put there by the deploy, never committed
+box/apk/
