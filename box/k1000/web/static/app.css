@@ -147,3 +147,48 @@ body.nolink #eq, body.off #eq { opacity: .45; pointer-events: none; }
   .slots { padding-left: 12px; padding-right: 12px; gap: 5px; }
   .big { font-size: 64px; }
 }
+
+/* ---------------------------------------------------------------- v1.1 compaction (2026-10-13)
+   Thomas: "the HOLD TO MUTE is too big", "if we could avoid scrolling". CSS only, from the phone
+   v2 design (docs/14, P0-a): compact mute beside stacked meters, red frame round the screen when
+   muted, LIVE EQ without scrolling from ~660 px tall. v2 is built beside this page at /v2/. */
+
+/* status bar + tabs: 46+52.7 -> 40+44 */
+#bar { min-height: 40px; }
+#tabs button { min-height: 44px; font-size: 16px; }
+
+/* footer: meters stacked on the left, a compact mute on the right (was full width, 76 px) */
+#foot {
+  display: grid; grid-template-columns: minmax(0, 1fr) 132px; gap: 10px; align-items: stretch;
+  padding: 6px 10px calc(8px + env(safe-area-inset-bottom));
+}
+.meters { grid-template-columns: 1fr; gap: 4px; margin: 0; }
+.m { grid-template-columns: 42px 1fr 14px; line-height: 1; }
+.m span { font-size: 11px; }
+.bar, .m em { height: 11px; }
+.mute {
+  min-height: 0; height: 100%; font-size: 15px; line-height: 1.15; letter-spacing: .02em;
+  white-space: normal; padding: 0 6px; border-width: 2px;
+}
+/* muted: the whole screen says so, not only the button */
+body.muted::after { content: ""; position: fixed; inset: 0; border: 3px solid var(--band-red); pointer-events: none; z-index: 9; }
+
+/* MAIN: 72/46 px values -> 60/38, 48 px step buttons */
+.block { padding: 8px 14px 10px; }
+.big { font-size: 60px; margin: 0 0 6px; }
+.mid { font-size: 38px; margin: 0 0 6px; }
+.big small, .mid small { font-size: 18px; }
+.steps button { min-height: 48px; }
+.hintline { margin-top: 3px; font-size: 12px; }
+.switch { min-height: 44px; }
+
+/* LIVE EQ: the graph takes what is left, the permanent hint line goes */
+.eqhint { display: none; }
+#eq { height: clamp(170px, calc(100dvh - 470px), 340px); }
+.slots { padding: 6px 14px 2px; }
+.slots button { min-height: 44px; }
+.slot { padding-top: 4px; }
+.prow { margin-top: 6px; }
+.prow .steps button { min-height: 46px; }
+.actions { margin-top: 8px; }
+.actions button { min-height: 44px; }
