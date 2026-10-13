@@ -1,0 +1,12 @@
+# Build outputs and local state (the build runs in Docker; caches live in Docker volumes)
+.gradle/
+.kotlin/
+build/
+app/build/
+local.properties
+*.iml
+.idea/
+# Signing material never lives in this repo (android/README.md › Sign)
+*.jks
+*.keystore
+keystore.properties

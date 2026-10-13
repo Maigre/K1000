@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<lint>
+    <!-- Builds run offline-pinned on purpose: no "a newer version exists" nags. -->
+    <issue id="GradleDependency" severity="ignore" />
+    <issue id="NewerVersionAvailable" severity="ignore" />
+    <issue id="AndroidGradlePluginVersion" severity="ignore" />
+    <!-- Sideloaded, never on Play. -->
+    <issue id="ExpiredTargetSdkVersion" severity="ignore" />
+</lint>

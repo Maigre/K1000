@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.K1000" parent="android:Theme.Material.NoActionBar">
+        <item name="android:colorAccent">@color/k1000_amber</item>
+        <item name="android:colorPrimary">@color/k1000_black</item>
+        <item name="android:windowBackground">@color/k1000_black</item>
+        <item name="android:statusBarColor" tools:ignore="NewApi">@color/k1000_black</item>
+        <item name="android:navigationBarColor">@color/k1000_black</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+    <!-- The buttons of the app's menu and Diagnostics panel: share a row, 48dp tall at least. -->
+    <style name="K1000.MenuButton" parent="android:Widget.Material.Button.Borderless.Colored">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:textAllCaps">false</item>
+    </style>
+</resources>

@@ -1,0 +1,92 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later
+     The emulator smoke test's stand-in for the box's /v2/ page (tools/smoke_server.py serves it
+     there when no real v2 page is given). It speaks the page side of android/BRIDGE.md exactly as
+     a page should, and keeps a record in window.__k for tools/smoke_driver.py (which drives it
+     over the WebView's DevTools socket). Never shipped in the APK or by the box. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>K1000 bridge test</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #eee; font: 16px system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  #log { flex: 1; padding: 12px; overflow: hidden; white-space: pre-wrap; font: 12px monospace; color: #aaa; }
+  #foot { height: 76px; background: #300; display: flex; align-items: center; justify-content: center; }
+  /* Hold targets: the band chip's gesture (v1: touch-action pan-y, D-014) and a plain hold
+     button's (touch-action none), recorded in __k.holds. */
+  #holds { display: flex; gap: 8px; padding: 0 12px; }
+  #holds button { flex: 1; height: 60px; background: #222; color: #eee; border: 1px solid #555; font: 14px system-ui; }
+  #tall { display: none; flex: none; height: 150vh; }
+  body.tall #tall { display: block; }   /* the document scrolls (as a page that scrolls would) */
+</style>
+</head>
+<body>
+<div style="padding:12px"><b>K1000 bridge test (v2 stand-in)</b></div>
+<div id="holds"><button id="hold-none" style="touch-action: none">hold · none</button><button id="hold-pany" style="touch-action: pan-y">hold · pan-y</button></div>
+<div id="log"></div>
+<div id="foot">footer (MUTE lives here)</div>
+<div id="tall"></div>
+<script>
+"use strict";
+// window.__k: what the driver reads. overlays = how many page overlays a Back would close;
+// deaf = do not answer {t:"back"} (the app must time out and treat it as the top level).
+window.__k = { natives: [], msgs: [], errs: [], overlays: 0, deaf: false, port: null };
+const K = window.__k;
+const log = (s) => { document.getElementById("log").textContent += s + "\n"; };
+
+window.addEventListener("message", (e) => {
+  if (typeof e.data !== "string" || !e.ports || e.ports.length !== 1) return;
+  let m;
+  try { m = JSON.parse(e.data); } catch (err) { return; }
+  if (!m || m.t !== "native") return;
+  if (K.port) K.port.close();
+  K.port = e.ports[0];
+  K.natives.push(m);
+  K.origin = e.origin;
+  log("native " + e.data);
+  K.port.onmessage = (ev) => {
+    let a;
+    try { a = JSON.parse(ev.data); } catch (err) { return; }
+    K.msgs.push(a);
+    if (a.t === "err") K.errs.push(a);
+    if (a.t === "back") {
+      if (K.deaf) return;
+      const handled = K.overlays > 0;
+      if (handled) K.overlays--;
+      K.port.postMessage(JSON.stringify({ t: "back_handled", id: a.id, handled }));
+    }
+    log("app " + ev.data.slice(0, 160));
+  };
+  K.port.postMessage(JSON.stringify({ t: "ready", v: 1, caps: ["back"] }));
+});
+
+// Holds: how a press on each target ended (pointerup or pointercancel), after how long, how far
+// it moved (CSS px), and whether a contextmenu came. Like the page's own holds: pointer capture,
+// no context menu.
+K.holds = [];
+document.querySelectorAll("#holds button").forEach((b) => {
+  let rec = null, t0 = 0, x0 = 0, y0 = 0;
+  b.addEventListener("pointerdown", (e) => {
+    t0 = performance.now(); x0 = e.clientX; y0 = e.clientY;
+    rec = { id: b.id, end: null, ms: 0, moved: 0, ctx: false };
+    K.holds.push(rec);
+    try { b.setPointerCapture(e.pointerId); } catch (err) { /* not capturable */ }
+  });
+  b.addEventListener("pointermove", (e) => {
+    if (rec && !rec.end) rec.moved = Math.max(rec.moved, Math.round(Math.hypot(e.clientX - x0, e.clientY - y0)));
+  });
+  const end = (e) => { if (rec && !rec.end) { rec.end = e.type; rec.ms = Math.round(performance.now() - t0); } };
+  b.addEventListener("pointerup", end);
+  b.addEventListener("pointercancel", end);
+  b.addEventListener("contextmenu", (e) => { e.preventDefault(); if (rec) rec.ctx = true; });
+});
+
+// The driver's way in: send one message (an object, or a raw string to test refusals).
+window.__send = (m) => { if (!K.port) return false; K.port.postMessage(typeof m === "string" ? m : JSON.stringify(m)); return true; };
+// The newest app message of type t, or null.
+window.__last = (t) => { for (let i = K.msgs.length - 1; i >= 0; i--) if (K.msgs[i].t === t) return K.msgs[i]; return null; };
+</script>
+</body>
+</html>
