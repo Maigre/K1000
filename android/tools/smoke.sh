@@ -10,7 +10,11 @@
 #                      $K1000_SIGNING_DIR/out/K1000-*.apk, if any)
 #   K1000_SMOKE_WIPE=1 cold-boot the emulator from a wiped data partition (an AVD left in a bad
 #                      state by an emulator that hung)
+#   K1000_PREVIOUS_APK the signed release APK before it (e.g. K1000-0.2.1.apk): the release APK
+#                      must install over it as an update (same key, higher versionCode)
 #   K1000_SMOKE_ONLY=boxwifi  only the checks of the K1000 Wi-Fi taken from the box (app 0.2.1)
+#   K1000_SMOKE_ONLY=mic      only the phone-mic checks (app 0.2.2): the grant rule, Android's dialog,
+#                             the microphone released when K1000 leaves the screen
 #
 # 1. makes a throwaway name-constrained test CA (+ leaves) in a temporary directory, keys included,
 #    deleted at the end; never the K1000 CA;
@@ -73,6 +77,9 @@ cp "$here/app/build/outputs/apk/smoke/app-smoke.apk" "$work/app-smoke.apk"
 REL=${K1000_RELEASE_APK:-$(ls -t "${K1000_SIGNING_DIR:-$HOME/Bakery/37Projects/secrets/k1000-android}"/out/K1000-*.apk 2>/dev/null | head -n 1)}
 REL_ARG=()
 if [ -n "$REL" ] && [ -f "$REL" ]; then cp "$REL" "$work/release.apk"; REL_ARG=(--release-apk /smoke/release.apk); fi
+if [ ${#REL_ARG[@]} -gt 0 ] && [ -n "${K1000_PREVIOUS_APK:-}" ] && [ -f "$K1000_PREVIOUS_APK" ]; then
+  cp "$K1000_PREVIOUS_APK" "$work/previous.apk"; REL_ARG+=(--previous-apk /smoke/previous.apk)
+fi
 
 # --- 3. emulator + driver. The test-only SDK packages (adb, the emulator, the system image) come
 # at sdkmanager's latest revision; they are printed, and never used by the build.

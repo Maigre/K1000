@@ -1,15 +1,20 @@
-# 09 — The Android app: a thin shell around the phone page (2026-10-12; 0.2 and 0.2.1: 2026-10-13)
+# 09 — The Android app: a thin shell around the phone page (2026-10-12; 0.2 and 0.2.1: 2026-10-13; 0.2.2: 2026-10-14)
 
 Ask: Thomas, 2026-10-12: *"Android app (APK) — thin WebView shell … for you to sideload and
 try"* (`ROADMAP.md` Phase 2, after D-007). The UI stays the page the box serves; the app adds what
 Chrome cannot. Code, build, signing and sideloading: [`android/README.md`](../android/README.md).
 The app ↔ page contract: [`android/BRIDGE.md`](../android/BRIDGE.md).
 
-**Status: v0.2.1 (2026-10-13): v0.2.0 plus the K1000 Wi-Fi taken from the box. A phone that
+**Status: v0.2.2 (2026-10-14, versionCode 5): v0.2.1 plus the app's versionCode in the bridge
+handshake (`native.code`, so the v2 page reports the app version to the box: `hi.app` /
+`hello.min_app`), and the phone mic on the v2 page checked end to end on the emulators: Android's
+microphone dialog only when the page asks, the microphone for the box's page only, and released
+when K1000 leaves the screen (§3b, §8). Install it over 0.2.1 (same key). Not yet on a phone.**
+v0.2.1 (2026-10-13): v0.2.0 plus the K1000 Wi-Fi taken from the box. A phone that
 joined K1000 with the camera's Wi-Fi QR code needs no scan in the app: on its Connect screen the app
 reads the Wi-Fi from the box over the pinned TLS and joins it itself from then on (§2, §3). The box
 serves the APK from its first-time page (`06-phone.md`). Built and tested on emulators (§8),
-reviewed and rebuilt the same day (use only that build), not yet on a phone or against the box.**
+reviewed and rebuilt the same day, not yet on a phone or against the box.
 v0.2.0 (phone v2 design §4 / S3: the v2 page by default, the page bridge, immersive, Back,
 haptics, diagnostics, the bench build) was never installed on a phone either; neither was v0.1.1.
 Sunday 18 Oct is a field test (Thomas, 2026-10-13). The APK is used on Sunday only once the
@@ -25,7 +30,7 @@ Chrome on `/v2/` or `/` stays the fallback, then the knobs, then the bypass.
 | After a dropout | Depends on the portal setting and *Stay connected* (`06-phone.md` §5) | The app asks again at once; Android rejoins K1000 **without a dialog** as soon as it sees it (§3) |
 | Screen awake | Wake Lock, if the browser grants it | Always, while K1000 is on screen |
 | Haptics | `navigator.vibrate` only (no per-detent quality) | v1: the same `navigator.vibrate`. v2 (0.2): Android's own haptic effects (tick, click, confirm, reject, long press). The texture (tick, click, long press) follows the phone's *Touch feedback* setting; the answers (the mute ack, a refusal, link lost) always play (§3b) |
-| Microphone (phone-mic spectrum, `night/phone-rta`) | Chrome asks per site | Android asks once; granted to the box's page only, audio only |
+| Microphone (the phone mic on the v2 page, 0.2.2) | Chrome asks per site | Android asks once, when the page first asks; granted to the box's page only, audio only; released when K1000 leaves the screen |
 | On the home screen | Usually a Chrome-badged shortcut (a WebAPK needs Google's server, unreachable from K1000) | A real app in the app drawer, the K1000 knob icon |
 | Back key | Leaves the page | Closes the page's overlays first; at the top level the app's menu, and Back again (or a 1 s hold) hides K1000. Never closes it (closing would drop the K1000 link) |
 | Which page | What the address bar says | **v2** (`https://10.42.0.1/v2/`) by default; **v1** (`/`) on THIS PHONE's choice, remembered (§2b) |
@@ -264,8 +269,17 @@ The contract is [`android/BRIDGE.md`](../android/BRIDGE.md); in short:
   triple no-answer) cannot be turned off (DESIGN §5.5): with Touch feedback off they play
   through the vibrator with the alarm usage.
 - **Screen on** by default, at every page load; the page may turn it off.
-- **Microphone**: unchanged, WebView's `getUserMedia` for the box's page only (the phone RTA).
-  The native raw mic (UNPROCESSED) is not in 0.2; Diagnostics says whether the phone has it.
+- **Microphone** (the phone mic on the v2 page, 0.2.2; `android/BRIDGE.md` › The microphone):
+  WebView's own `getUserMedia`, for the box's page only and the microphone only (the camera, or
+  the microphone with it, refused at once). Android's dialog *Allow K1000 to record audio?* comes
+  the first time the page asks (from THIS PHONE), never at launch. The WebView hides the page
+  whenever K1000 leaves the screen (HOME, screen off, Back › Back) and while Android's dialog is
+  up; the page stops its microphone on that, and Android's mic indicator goes within ~3 s. Without
+  echo cancellation, noise suppression and AGC, Android records with the CAMCORDER source at
+  48 kHz (seen on the Android 13 emulator). The native raw mic (UNPROCESSED) is not in 0.2.x; Diagnostics
+  says whether the phone has it.
+- **The app's version for the box** (0.2.2): the handshake carries `code` (the versionCode, 5),
+  which the v2 page sends as `hi.app`; the box compares it with `hello.min_app`.
 
 ## 4. The app's own screens
 
@@ -348,12 +362,14 @@ shows the version and the first 8 hex of the APK's SHA-256: compare them with
   hand from quick settings. Note what you see either way (dialog or not, seconds to the page).
 - The page could recognise the app (user agent) and hide its *Install* button, its certificate
   hints and its *airplane mode* advice there (v2 does it; v1 does not).
-- The phone-mic spectrum gets WebView's `getUserMedia` (with the page's own constraints), not
-  Android's *unprocessed* source. A native capture bridge is a later step (DESIGN §4.3, after the
-  gig); 0.2's Diagnostics reads whether the phone supports UNPROCESSED and lists its microphones.
+- The phone mic gets WebView's `getUserMedia` (with the page's own constraints): Android's
+  CAMCORDER source, not its *unprocessed* one. A native capture bridge is a later step (DESIGN
+  §4.3, after the gig); Diagnostics reads whether the phone supports UNPROCESSED and lists its
+  microphones. **[verify on the 4a]** (§10 item 13): the dialog, the indicator, the release.
 - Not in 0.2.x (after the gig, APK 0.3): volume-key mute, an update prompt for the APK the box
-  serves (0.2.1's box serves it on its first-time page, the app does not check it yet),
-  `hello.min_app`, show lock, brightness, orientation.
+  serves (0.2.1's box serves it on its first-time page, the app does not check it yet), show lock,
+  brightness, orientation. `hello.min_app` is reported from 0.2.2 (`native.code` → `hi.app`); the
+  app itself still shows nothing when the box wants a newer one (the page may).
 - **[verify on the 4a]** the first run from the box (§2): with K1000 saved in Settings by the
   camera's join *and* the app's own request, what does Android do on the app's first request
   (dialog, then the app's network), on every later launch with that saved K1000 connected (the
@@ -364,7 +380,45 @@ shows the version and the first 8 hex of the APK's SHA-256: compare them with
   files). Losing it means every phone must uninstall and reinstall to update.
 - A new K1000 CA (not a new leaf) needs a new app build.
 
-## 8. Test record (2026-10-12; v0.1.1 re-run 2026-10-13; v0.2.0 and v0.2.1 2026-10-13)
+## 8. Test record (2026-10-12; v0.1.1 re-run 2026-10-13; v0.2.0 and v0.2.1 2026-10-13; v0.2.2 2026-10-14)
+
+**v0.2.2 (2026-10-14): `native.code`, and the phone mic end to end.** versionCode 5. SHA-256
+`44b75423…3fd67b97` (`K1000-0.2.2.apk.sha256`). Code changes: the handshake's `code`
+(`BuildConfig.VERSION_CODE`); the microphone rule moved to `ShellRules.grantMic` (same rule as
+0.2.1, now unit-tested); log lines for each microphone request (asked, granted, refused in
+Android's dialog). Nothing else changed in the app.
+- **`./build.sh check`: lint no issues, 62 unit tests pass** (+1: `ShellRulesTest`'s microphone
+  rule; `BridgeTest` checks `code` is written as a JSON integer). Release signed with the K1000 key
+  (signer `85:ff:f9:65:…:0a:8f`, v3, `apksigner`: Verifies).
+- **Android 13 emulator (WebView 109): 91/91**, the signed 0.2.2 release APK included: the 75 of
+  0.2.1 and 16 new ones:
+  - `native.code` is 5, the installed versionCode, a JSON integer;
+  - the release APK installs over the signed 0.2.1 as an update (versionCode 4 → 5, the first
+    install time kept), and 0.2.1 cannot go back over it (*Downgrade detected*);
+  - the phone mic, RECORD_AUDIO revoked first: no Android dialog at launch; the page's
+    `getUserMedia` (no echo cancellation, noise suppression or AGC) brings *Allow K1000 to record
+    audio?*; *Don't allow* gives the page `NotAllowedError`; the camera, and the microphone with
+    the camera, are refused at once with no dialog; a sandboxed frame (opaque origin) is refused
+    by the WebView itself, the app is never asked; asked again, *While using the app* gives one
+    live track with the three processings off (48 kHz, 1 channel), Android records it (source
+    CAMCORDER) and its mic indicator is on;
+  - **the microphone is released when K1000 leaves the screen**, in three ways: HOME, screen off
+    (the power key), Back › Back (*hide K1000*). Each time the WebView hid the page at once
+    (`visibilitychange` → `hidden` 0.1 to 1 s after the key), the page stopped its track,
+    Android's recording ended, and **the mic indicator went away** (Android's SystemUI listed no
+    microphone use 3.1 to 3.7 s after the key: its own minimum display time). Back on screen: the
+    page is visible again and its mic starts again with no dialog.
+  - Seen, not asserted: while Android's dialog is up, the page is hidden (the dialog pauses the
+    activity), visible once it closes, and `getUserMedia` resolves about 0.5 s after that. A
+    page that keeps its track after HOME: Android keeps the indicator about 5 s, then silences the
+    recording (the indicator goes); the track stays `live` and delivers silence until K1000 is back
+    on screen. So the page must stop its tracks on `hidden`; the app needs no `life` message.
+- **Android 17 emulator (WebView 145), the phone-mic phase alone** (`K1000_SMOKE_ONLY=mic`):
+  16/16 (the Wi-Fi join and Android 17's local network permission, then the 14 mic checks): the
+  same answers as on Android 13. The page was hidden 0.06 to 0.9 s after the key, the indicator
+  gone 3.1 to 3.3 s after; a page keeping its track was silenced, the indicator gone 6.5 s after
+  HOME. The full Android 17 suite was not re-run (no other app code changed; its first boot of the
+  day hung in *full startup* and was restarted from a wiped AVD).
 
 **v0.2.1 after its review (2026-10-13, rebuilt).** Still 0.2.1 / versionCode 4: the first 0.2.1
 build never reached a phone. Use only this build (sha256 in `K1000-0.2.1.apk.sha256`:
@@ -671,7 +725,7 @@ shows. It is never distributed and never the gig app:
   Until then, the bench build works exactly like the release one on the bench box's own AP, and
   it keeps WebView debugging.
 
-## 10. 0.2.1 on the Pixel 4a: sideload and the real-phone checklist (Friday rig test)
+## 10. 0.2.2 on the Pixel 4a: sideload and the real-phone checklist (Friday rig test)
 
 **Before the APK reaches the phone: escrow the release key to USB** (k1000#t-008, DESIGN §4.4):
 `secrets/k1000-android/k1000-release.jks` and `keystore.properties`. That is the only copy.
@@ -680,20 +734,22 @@ shows. It is never distributed and never the gig app:
 page shows the version at the bottom. Or, from a computer:
 `adb shell dumpsys package gr.trentesept.k1000 | grep versionName` (nothing printed = not
 installed).
-- Not installed (0.1.x and 0.2.0 never were): 0.2.1 installs fresh.
-- An earlier K1000 installed: 0.2.1 installs over it. Same key, higher versionCode (4); the Wi-Fi
-  password and the approval stay.
+- Not installed (0.1.x and 0.2.0 never were): 0.2.2 installs fresh.
+- An earlier K1000 installed (0.2.1 = versionCode 4): 0.2.2 installs over it (*Update*). Same
+  key, higher versionCode (5); the Wi-Fi password, the approval and the microphone permission
+  stay (checked on the emulator: an update, not a reinstall, §8).
 - *App not installed* / *package conflicts*: another key. Uninstall K1000 first (§5).
 
 **Sideload** (`android/README.md` › Install):
-- **From the box** (0.2.1, a box deployed with the APK): the first-time page's *Get the K1000
-  app* (§2, steps 1–3). The page's 8 hex must match the start of `K1000-0.2.1.apk.sha256`.
+- **From the box** (a box deployed with the APK): the first-time page's *Get the K1000 app*
+  (§2, steps 1–3). It serves the APK the box was deployed with: check the version it shows. The
+  page's 8 hex must match the start of `K1000-<version>.apk.sha256`.
 - **USB + adb** (Developer options › USB debugging):
-  `adb install -r K1000-0.2.1.apk`.
+  `adb install -r K1000-0.2.2.apk`.
 - **USB file transfer, no adb:** copy the file to `Download/`. Open it in **Files** ›
   Downloads › *Install*. The first time: *Settings* › **Allow from this source** for Files, then
   back, then *Install*. Play Protect: *Install anyway*.
-- **Check the file first:** `sha256sum K1000-0.2.1.apk` against `K1000-0.2.1.apk.sha256`. The
+- **Check the file first:** `sha256sum K1000-0.2.2.apk` against `K1000-0.2.2.apk.sha256`. The
   signer's SHA-256 must be `85:ff:f9:65:…:0a:8f` (README › Sign).
 
 **Checklist** (on the box; v2 needs the S1 deploy, and before it the app shows v1 with a toast):
@@ -744,5 +800,13 @@ installed).
   (`android/BRIDGE.md` › Box-side notes).
 - [ ] 11. Leave the phone untouched for 10 min on the page: does the screen stay on?
 - [ ] 12. Out of range, then back (item 22), and the power-cut drill (§7).
+- [ ] 13. **Phone mic** (v2, 0.2.2; the page's own switch in SETUP › THIS PHONE). At launch: no
+  Android dialog. Turn the phone mic on: Android's *Allow K1000 to record audio?* → **While using
+  the app**. The page's mic line moves with a clap or a voice, and Android's green mic indicator
+  shows (top right). Then HOME: the indicator goes within ~3 s. K1000 back on screen: the page
+  says what it does (mic back on, or off until tapped). Same with the screen off and on, and with
+  Back › Back (*hide K1000*). Note if the indicator ever stays on while K1000 is not on screen.
+  THIS PHONE should name app 0.2.2; on the box, `journalctl -u k1000 | grep ': hi {'` should show
+  `"app": 5` (the versionCode the page reports, `native.code`).
 
 Anything red here: Sunday runs Chrome on `/v2/` or `/`, then the knobs, then the bypass.

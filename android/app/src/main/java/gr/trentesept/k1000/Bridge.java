@@ -241,12 +241,17 @@ final class Bridge {
 
     // ----------------------------------------------------------------------------- app → page
 
-    /** The handshake: {t:"native", v, app, build, caps, ui}. */
-    static String hello(String appVersion, String build, String ui) {
+    /**
+     * The handshake: {t:"native", v, app, code, build, caps, ui}. {@code app} is the version name
+     * ("0.2.2"), {@code code} the versionCode (an integer, 0.2.2 and later): the page sends it to
+     * the box as {@code hi.app}, which the box compares with {@code hello.min_app}.
+     */
+    static String hello(String appVersion, int versionCode, String build, String ui) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("t", "native");
         m.put("v", VERSION);
         m.put("app", appVersion);
+        m.put("code", versionCode);
         m.put("build", build);
         m.put("caps", CAPS);
         m.put("ui", ui);

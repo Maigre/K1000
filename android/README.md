@@ -11,7 +11,10 @@ From 0.2.1 a phone already on K1000 (joined with the camera's Wi-Fi QR code) nee
 takes the Wi-Fi from the box (`GET https://10.42.0.1/api/wifi`, over the pinned TLS) and joins it
 itself from then on.
 What it adds, the first run and troubleshooting: [`docs/09-android.md`](../docs/09-android.md).
-Version **0.2.1** (versionCode 4).
+From 0.2.2 the handshake carries the app's versionCode (`native.code`), which the v2 page reports
+to the box, and the phone mic on the v2 page is checked end to end (the microphone for the box's
+page only, Android's dialog only when the page asks, released when K1000 leaves the screen).
+Version **0.2.2** (versionCode 5).
 
 - Package `gr.trentesept.k1000`, app name **K1000**, Android 10+ (minSdk 29), targets Android 17
   (API 37). Thomas's Pixel 4a (Android 13) is the reference phone.
@@ -32,7 +35,7 @@ Version **0.2.1** (versionCode 4).
 | `…/Bridge.java` | The page bridge's contract ([`BRIDGE.md`](BRIDGE.md)): page messages validated, app messages built, CSS px ↔ pixels |
 | `…/MiniJson.java` | A small strict JSON reader/writer for the bridge (JVM-testable; Android's org.json is a stub there) |
 | `…/Haptics.java` | The page's haptic kinds on `performHapticFeedback` (the texture follows Touch feedback; the answers always play, through the alarm vibration when it is off), the tick rate cap (25/s) |
-| `…/ShellRules.java` | MainActivity's pure decisions: shortcuts only through the non-exported alias, when a page choice reloads, touches on the menu, bars during the Edge test, the cutout per Android version |
+| `…/ShellRules.java` | MainActivity's pure decisions: shortcuts only through the non-exported alias, when a page choice reloads, touches on the menu, bars during the Edge test, the cutout per Android version, which page permission request gets the microphone (0.2.2) |
 | `…/Diagnostics.java` | WebView, Android, model, UNPROCESSED mic support, microphones, haptic hardware, gesture areas |
 | `…/K1000Link.java` | Asks Android for the K1000 Wi-Fi (`WifiNetworkSpecifier`), or follows the one joined in Settings (10.42.0.x only), and binds the process to it; a refused binding is its own state |
 | `…/K1000Trust.java` | The explicit TLS check against the bundled CA (behind `onReceivedSslError`) |
@@ -172,7 +175,11 @@ over the old app: the stored Wi-Fi password and the K1000 approval stay.
   strict UTF-8, status and type, a redirect never taken, HTTPS to the box's names only, the same
   Wi-Fi changing nothing, when to ask, retries): 58 tests. After the 0.2.1 review also: only a
   refused certificate counts as a fake box (a connection reset inside TLS is no answer), the same
-  Wi-Fi while the app is not on it, and an answer to an earlier Connect screen: 61 tests.
+  Wi-Fi while the app is not on it, and an answer to an earlier Connect screen: 61 tests. 0.2.2:
+  the handshake's `code` (a JSON integer) in `BridgeTest`, and in `ShellRulesTest` the microphone
+  rule (the microphone alone, for the box's origins alone; camera, MIDI, protected media, the
+  microphone with the camera, plain http, other ports, hosts, look-alikes and opaque origins
+  refused; a bench build's host): 62 tests.
 - `tools/smoke.sh [33|37] [pwa-static-dir]`: boots an x86_64 emulator (KVM) with Android 13 or
   17, its simulated access point turned into a WPA2 "K1000", serves the real PWA files over HTTPS
   from a throwaway test CA at 10.42.0.1, and checks the app end to end: the fallback mode ignoring
@@ -200,7 +207,17 @@ over the old app: the stored Wi-Fi password and the K1000 approval stay.
   not claim the app is on K1000 and the fallback box gets the page; a Connect screen reopened while
   a slow box answers asks by itself; a relaunch with the camera's K1000 still saved in Settings;
   Android 17: the local network permission refused on the Connect screen, then allowed from its
-  line. `K1000_SMOKE_ONLY=boxwifi tools/smoke.sh` runs these alone. (The emulator's radio reports
+  line. `K1000_SMOKE_ONLY=boxwifi tools/smoke.sh` runs these alone. From 0.2.2: `native.code`
+  equals the installed versionCode; the phone mic on the v2 test page (RECORD_AUDIO revoked
+  first): no Android dialog at launch, the page's `getUserMedia` (raw constraints) brings it,
+  *Don't allow* gives the page `NotAllowedError`, the camera and the microphone with it are
+  refused at once, a sandboxed frame gets nothing, *While using the app* gives one raw live track
+  and Android's mic indicator; then HOME, screen off and Back › Back each hide the page
+  (`visibilitychange`), the page stops its track, Android's recording ends and the indicator goes,
+  and back on screen the mic starts again with no dialog (plus an INFO line on a page that keeps
+  its track: Android silences it). `K1000_SMOKE_ONLY=mic tools/smoke.sh` runs these alone. With
+  `K1000_PREVIOUS_APK` (e.g. `K1000-0.2.1.apk`), the release APK must install over it as an
+  update and the previous one must not go back over it. (The emulator's radio reports
   no scan results while associated, so the test drops the Settings network once the app has asked;
   `docs/09-android.md` §8.)
   Results: `docs/09-android.md` §8. The emulator is the SDK's stable one (37.2.12, a test tool

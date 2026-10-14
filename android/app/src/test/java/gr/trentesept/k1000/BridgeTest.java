@@ -143,10 +143,14 @@ public class BridgeTest {
 
     @Test
     public void appMessages() throws Exception {
-        Map<?, ?> hello = (Map<?, ?>) MiniJson.parse(Bridge.hello("0.2.0", "release", "v2"), 4);
+        String wire = Bridge.hello("0.2.2", 5, "release", "v2");
+        Map<?, ?> hello = (Map<?, ?>) MiniJson.parse(wire, 4);
         assertEquals("native", hello.get("t"));
         assertEquals((double) Bridge.VERSION, hello.get("v"));
-        assertEquals("0.2.0", hello.get("app"));
+        assertEquals("0.2.2", hello.get("app"));
+        // The versionCode as a JSON integer (the page takes it only when Number.isInteger).
+        assertEquals(5.0, hello.get("code"));
+        assertTrue(wire, wire.startsWith("{\"t\":\"native\",\"v\":1,\"app\":\"0.2.2\",\"code\":5,\"build\":\"release\","));
         assertEquals("v2", hello.get("ui"));
         assertEquals(Bridge.CAPS, hello.get("caps"));
         assertTrue(Bridge.CAPS.containsAll(List.of("haptic", "fullscreen", "exclusion", "keep_awake", "diag", "back")));

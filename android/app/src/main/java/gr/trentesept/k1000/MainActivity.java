@@ -1296,19 +1296,18 @@ public final class MainActivity extends Activity implements K1000Link.Listener, 
             // Microphone only, only for the box's page (the phone-mic spectrum); never camera,
             // MIDI or protected media.
             String origin = String.valueOf(request.getOrigin());
-            boolean audioOnly = request.getResources().length > 0;
-            for (String r : request.getResources()) {
-                audioOnly &= PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r);
-            }
-            if (!audioOnly || !K1000Hosts.isBoxOrigin(origin)) {
+            if (!ShellRules.grantMic(origin, request.getResources())) {
                 Log.i(TAG, "denied page permission " + TextUtils.join(",", request.getResources()) + " for " + origin);
                 request.deny();
                 return;
             }
             if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                Log.i(TAG, "page permission: microphone granted for " + origin);
                 request.grant(new String[] {PermissionRequest.RESOURCE_AUDIO_CAPTURE});
                 return;
             }
+            // Android's own dialog, only now that the page asked (THIS PHONE › the phone mic).
+            Log.i(TAG, "page permission: microphone asked by " + origin + ", asking Android");
             if (pendingAudio != null) pendingAudio.deny();
             pendingAudio = request;
             requestPermissions(new String[] {Manifest.permission.RECORD_AUDIO}, REQ_AUDIO);
@@ -1357,6 +1356,9 @@ public final class MainActivity extends Activity implements K1000Link.Listener, 
         } else if (requestCode == REQ_AUDIO) {
             PermissionRequest r = pendingAudio;
             pendingAudio = null;
+            Log.i(TAG, "page permission: microphone " + (granted ? "allowed" : "refused") + " in Android's dialog"
+                    + (granted || shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO) ? ""
+                    : " (not asked again: App info › Permissions › Microphone)"));
             if (r != null) {
                 if (granted) r.grant(new String[] {PermissionRequest.RESOURCE_AUDIO_CAPTURE});
                 else r.deny();
@@ -1691,7 +1693,7 @@ public final class MainActivity extends Activity implements K1000Link.Listener, 
             }
         }, main);
         String ui = K1000Hosts.pathOf(web.getUrl()).startsWith(K1000Hosts.PATH_V2) ? "v2" : "v1";
-        web.postWebMessage(new WebMessage(Bridge.hello(BuildConfig.VERSION_NAME, BuildConfig.BUILD_TYPE, ui),
+        web.postWebMessage(new WebMessage(Bridge.hello(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, BuildConfig.BUILD_TYPE, ui),
                 new WebMessagePort[] {ch[1]}), Uri.parse(origin));
         handshakes++;
         Log.i(TAG, "bridge: handshake " + handshakes + " posted to " + origin);

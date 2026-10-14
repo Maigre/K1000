@@ -1,4 +1,4 @@
-# The K1000 app ↔ page bridge (v1, app 0.2)
+# The K1000 app ↔ page bridge (v1, app 0.2; `native.code` and the microphone notes: 0.2.2)
 
 The contract between the Android app (`android/`) and the phone page the box serves (`/v2/`, and
 `/` for v1). The page is the same code in Chrome and in the app. In the app it gets more: the
@@ -67,7 +67,7 @@ late.
 
 | `t` | Fields | When |
 |---|---|---|
-| `native` | `v` (bridge version, 1) · `app` (`"0.2.0"`, `"0.2.0-bench"`) · `build` (`release`, `bench`, `debug`, `smoke`) · `caps` · `ui` (`"v2"` or `"v1"`: the path this page was loaded at) | The handshake, with the port |
+| `native` | `v` (bridge version, 1) · `app` (the version name: `"0.2.2"`, `"0.2.2-bench"`) · `code` (the versionCode, a JSON integer: `5` for 0.2.2; **absent before 0.2.2**) · `build` (`release`, `bench`, `debug`, `smoke`) · `caps` · `ui` (`"v2"` or `"v1"`: the path this page was loaded at) | The handshake, with the port |
 | `back` | `id` (an integer) | Back was pressed, and the page said `ready` with `caps` holding `"back"`. Answer with `back_handled` within **400 ms** |
 | `insets` | `top`, `right`, `bottom`, `left` in CSS px | After `ready`, and whenever they change: what the page must keep clear itself. All zero unless the page took the cutout (`fullscreen` with `cutout:true`) |
 | `diag` | The diagnostics (below) | The answer to `{t:"diag"}` |
@@ -75,6 +75,12 @@ late.
 
 `caps` today: `haptic`, `fullscreen`, `exclusion`, `keep_awake`, `diag`, `back`, `set_ui`,
 `insets`.
+
+**`code` is what the box compares.** The page sends it as `hi.app` (`docs/14-phone-v2-protocol.md` §4.10; `null` when it
+is missing or not an integer, i.e. in Chrome and with an app before 0.2.2), and the box compares
+it with `hello.min_app`. `app` is for people (THIS PHONE, Diagnostics); never parse it. `code`
+only goes up: every APK the box may serve has a higher one than the APK before it (0.2.0 = 3,
+0.2.1 = 4, 0.2.2 = 5). A bench or smoke build has the same `code` as its release.
 
 ## Page → app
 
@@ -173,6 +179,47 @@ Answer `back` quickly. Do not animate before answering. Do not answer twice.
 | `cutout_safe`, `cutout_rects` | The display cutout (CSS px) |
 | `exclusion_rects` | The rects in force, read back from the WebView (CSS px) |
 | `page`, `page_choice`, `bridge`, `fullscreen`, `cutout_to_page`, `keep_awake`, `link`, `haptics_count` (`bench_host` in a bench build) | The app's own state |
+
+## The microphone (the phone mic on the v2 page, 0.2.2)
+
+No bridge message: the page uses the WebView's own `getUserMedia`, as in Chrome. The app decides
+two things, and the WebView a third.
+
+- **Who gets it.** `onPermissionRequest` grants the microphone (`RESOURCE_AUDIO_CAPTURE`) only
+  when it is the only thing asked for and the page is the box's (`https://10.42.0.1`,
+  `https://k1000.home.arpa`, port 443; a bench build adds its bench host). The camera, MIDI,
+  protected media, the microphone together with the camera, and every other origin are refused
+  whole, at once, with no dialog (`ShellRules.grantMic`, `ShellRulesTest`). A sandboxed frame
+  (opaque origin) is refused by the WebView itself before the app is asked.
+- **Android's dialog comes only when the page asks.** The app never asks for RECORD_AUDIO by
+  itself: the first `getUserMedia` from the box's page brings Android's own dialog
+  (*Allow K1000 to record audio?* · *While using the app* · *Only this time* · *Don't allow*).
+  Ask from a tap (THIS PHONE, DESIGN §7), never at load. *Don't allow* rejects the page's request
+  with `NotAllowedError`; a second *Don't allow* is final on Android 11+, and from then on the page
+  gets `NotAllowedError` at once, with no dialog: the user must allow it in Android's settings
+  (long-press the K1000 icon › App info › Permissions › Microphone). Say so in the page.
+  *Only this time* lasts while K1000 is in use: Android takes it back some time after K1000
+  leaves the screen, and the page's next ask brings the dialog again.
+- **The page is hidden while Android's dialog is up.** The dialog pauses the activity, and the
+  WebView hides the page then (`visibilitychange` → `hidden`, then `visible` once the dialog
+  closes). The `getUserMedia` promise resolves after the page is visible again. **Do not cancel a
+  pending request on `hidden`**; when it resolves while the page is still hidden, stop its tracks.
+- **Leaving the screen hides the page.** HOME, the screen turning off, and Back › Back (*hide
+  K1000*) all fire `visibilitychange` → `hidden` at once (the WebView follows the activity's
+  `onPause`), and `visible` when K1000 is back on screen. **The page stops its tracks on `hidden`**
+  (and its AudioContext); that releases the microphone at once, and Android's mic indicator goes
+  within about 3 s (its own minimum display time). Start again on `visible` only if the user had
+  the mic on. No `{t:"life"}` message is needed: seen on the Android 13 emulator (WebView 109) and
+  the Android 17 one (WebView 145), `docs/09-android.md` §8.
+- **A page that keeps its track in the background** gets silence, not an error: about 5 s after
+  K1000 leaves the screen Android silences the recording (the indicator then goes), the track stays
+  `live` and delivers zeros, and the recording comes back when K1000 is on screen again. So an
+  average that kept running there would average silence: pause on `hidden` (DESIGN §7, RESPONSE).
+- **What Android records.** The WebView opens the microphone at 48 kHz with the `CAMCORDER`
+  source when `echoCancellation`, `noiseSuppression` and `autoGainControl` are all false (seen
+  in Android's audio service on the Android 13 emulator), not `UNPROCESSED`; the page's track says
+  `sampleRate: 48000, channelCount: 1`. A phone's CAMCORDER path may still have its own tuning;
+  calibration comes later (DESIGN §7).
 
 ## The page choice (v1 / v2)
 

@@ -34,6 +34,12 @@ Connect screen does not claim the app is on K1000 and the fallback box gets the 
 screen reopened while a slow box answers asks again by itself; a relaunch with the K1000 the camera
 saved still in Settings; Android 17: the local network permission refused on the Connect screen,
 then allowed from its line.
+
+App 0.2.2: the handshake's `code` is the installed versionCode; the phone mic (`--only mic`, also in
+the full run): Android's microphone dialog only when the page asks, the microphone only and for
+the box's page only, and released when K1000 leaves the screen (HOME, screen off, Back Back: the
+page is hidden, stops its track, Android's recording and its mic indicator end). With
+--previous-apk, the release APK installs over the release before it.
 """
 import argparse
 import asyncio
@@ -405,6 +411,10 @@ async def bridge_checks(page, server, api, cidr):
            nat.get("t") == "native" and nat.get("v") == 1 and nat.get("ui") == "v2"
            and {"haptic", "fullscreen", "exclusion", "keep_awake", "diag", "back", "set_ui"} <= caps
            and str(nat.get("app", "")).startswith("0.2."), json.dumps(nat)[:200])
+    code = version_code(PKG)
+    result("bridge: native.code is the app's versionCode, a JSON integer (0.2.2: 5; the page sends it as hi.app)",
+           code is not None and code >= 5 and isinstance(nat.get("code"), int) and nat.get("code") == code,
+           f"native.code {nat.get('code')!r}, installed versionCode {code}")
     ready = wait(lambda: "bridge: ready v=1 caps=[back]" in logcat(), 15)
     result("bridge: the page's {t:'ready'} is heard by the app", bool(ready))
 
@@ -589,6 +599,208 @@ async def bridge_checks(page, server, api, cidr):
     time.sleep(0.5)
     smoke("hidepanels")
     await page.eval("__send({t: 'exclusion', rects: []})")
+
+
+def version_code(pkg):
+    """The installed package's versionCode (dumpsys), or None."""
+    m = re.search(r"versionCode=(\d+)", ashell(f"dumpsys package {pkg} | grep -m1 versionCode", check=False))
+    return int(m.group(1)) if m else None
+
+
+def mic_granted(pkg=PKG):
+    return "RECORD_AUDIO: granted=true" in ashell(f"dumpsys package {pkg} | grep 'RECORD_AUDIO: granted'", check=False)
+
+
+def mic_indicator():
+    """Android's microphone privacy indicator (the green chip, then dot) for the smoke app: True
+    while SystemUI's PrivacyItemController lists the app as using the microphone."""
+    s = ashell("dumpsys activity service com.android.systemui", check=False, timeout=60)
+    i = s.find("Privacy Items:")
+    j = s.find("Callbacks:", i)
+    return i >= 0 and any("TYPE_MICROPHONE" in ln and f"packageName={PKG}," in ln for ln in s[i:j].splitlines())
+
+
+def mic_records():
+    """The smoke app's recordings as Android's audio service sees them: [(active, silenced), ...]
+    (an empty list once the WebView released the microphone)."""
+    s = ashell("dumpsys audio", check=False, timeout=60)
+    i = s.find("RecordActivityMonitor")
+    j = s.find("Audio event log", i)
+    return [(m.group(1) == "true", m.group(3) == "true")
+            for m in re.finditer(r"riid \d+; active\? (\w+)\n\s*session:.*?pack:(\S+) .*?silenced:(\w+)", s[i:j])
+            if m.group(2) == PKG]
+
+
+def recording(recs):
+    """Android records for the app (active and not silenced)."""
+    return any(a and not s for a, s in recs)
+
+
+def tap_permission(button, *texts):
+    """Taps a button of Android's runtime permission dialog by its id, else by its text."""
+    return tap_text(button) or any(tap_text(t) for t in texts)
+
+
+async def mic_checks(server, api, cidr):
+    """App 0.2.2: the phone mic on the v2 page (getUserMedia with the raw constraints, DESIGN §7),
+    against tools/bridge_test.html at /v2/. Android's microphone dialog comes only when the page
+    asks; the microphone only, for the box's page only; and the microphone is released when K1000
+    leaves the screen (HOME, screen off, Back Back): the WebView hides the page (visibilitychange),
+    the page stops its tracks (as the v2 page does), Android's recording ends and its indicator goes."""
+    adb("shell", "am", "force-stop", PKG)
+    ashell(f"pm clear {PKG}", check=False)   # also resets the runtime permissions and their flags
+    ashell(f"pm grant {PKG} android.permission.CAMERA", check=False)
+    ashell(f"pm revoke {PKG} android.permission.RECORD_AUDIO", check=False)
+    if api >= 37:
+        ashell(f"pm grant {PKG} android.permission.ACCESS_LOCAL_NETWORK", check=False)
+    server.start("good")
+    wifi_stable(6)
+    adb("logcat", "-c")
+    start_app(cidr)
+    loaded = wait(lambda: "page loaded: https://10.42.0.1/v2/" in logcat(), 40)
+    page = Page()
+    await page.open()
+    pending = "__k.mic.state === 'asking' ? null : __k.mic"
+    try:
+        nat = await page_json(page, "__k.natives.slice(-1)[0] || null", timeout=15) or {}
+        code = version_code(PKG)
+        result("mic phase: the v2 page, bridged; native.code = the app's versionCode (an integer)",
+               bool(loaded) and code is not None and nat.get("code") == code and isinstance(nat.get("code"), int),
+               f"native.code {nat.get('code')!r}, installed versionCode {code}")
+
+        # Nothing asked at launch: the page has not asked for the microphone.
+        time.sleep(3)
+        txt = screen_text()
+        result("mic: no Android dialog at launch (RECORD_AUDIO is asked only when the page asks)",
+               "record audio" not in txt.lower() and "microphone asked" not in logcat() and not mic_granted(), txt[:80])
+
+        # The page asks: Android's own dialog. Don't allow: the page hears it.
+        await page.eval("__mic.start()", gesture=True)
+        dialog = wait(lambda: "record audio" in screen_text().lower() and screen_text(), 15) or ""
+        result("mic: the page's getUserMedia brings Android's own dialog, asked for https://10.42.0.1/",
+               bool(dialog) and "page permission: microphone asked by https://10.42.0.1/" in logcat(), dialog[:90])
+        tap_permission("permission_deny_button", "Don’t allow", "Don't allow", "Deny")
+        st = await page_json(page, pending, timeout=10) or {}
+        result("mic: 'Don't allow': the page hears NotAllowedError, nothing granted",
+               st.get("state") == "refused" and st.get("err") == "NotAllowedError" and not mic_granted(),
+               json.dumps({k: st.get(k) for k in ("state", "err")}))
+
+        # Never the camera, never the microphone together with it: refused at once, no dialog.
+        adb("logcat", "-c")
+        errs = []
+        for c in ("{video: true}", "{audio: true, video: true}"):
+            await page.eval(f"__mic.start({c})")
+            errs.append((await page_json(page, pending, timeout=10) or {}).get("err"))
+        txt = screen_text()
+        denied = re.findall(r"denied page permission (\S+) for (\S+)", logcat())
+        result("mic: the camera, and the microphone with the camera, refused at once (no dialog)",
+               errs == ["NotAllowedError", "NotAllowedError"] and len(denied) == 2 and "record audio" not in txt.lower()
+               and "take pictures" not in txt.lower(), f"{errs}; {denied}")
+        # A frame with an opaque origin (sandboxed): the WebView refuses it before the app is asked.
+        adb("logcat", "-c")
+        frame = await page.eval("""new Promise(res => {
+          const f = document.createElement('iframe');
+          f.setAttribute('sandbox', 'allow-scripts'); f.setAttribute('allow', 'microphone *');
+          f.srcdoc = "<script>navigator.mediaDevices.getUserMedia({audio:true}).then(s => {s.getTracks().forEach(t => t.stop()); parent.postMessage('mic: granted', '*')}).catch(e => parent.postMessage('mic: refused, ' + e.name, '*'))<\\/script>";
+          window.addEventListener('message', e => { if (typeof e.data === 'string' && e.data.startsWith('mic: ')) res(e.data + ' (frame origin ' + e.origin + ')'); });
+          document.body.appendChild(f); setTimeout(() => res('no answer'), 8000); })""", timeout=15)
+        asked = re.findall(r"(denied page permission .*|page permission: .*)", logcat())
+        result("mic: a sandboxed frame (opaque origin) asking for the mic gets nothing",
+               "granted" not in str(frame) and not any("granted" in a or "asked by" in a for a in asked),
+               f"{frame}; app: {asked or 'never asked'}")
+
+        # Asked again: allowed (a second refusal is final on Android 11+).
+        await page.eval("__k.vis = []")
+        await page.eval("__mic.start()", gesture=True)
+        dialog = wait(lambda: "record audio" in screen_text().lower() and screen_text(), 15) or ""
+        tap_permission("permission_allow_foreground_only_button", "While using the app", "Allow")
+        st = await page_json(page, pending, timeout=10) or {}
+        cfg = st.get("settings") or {}
+        result("mic: asked again, 'While using the app': one live track, raw (no echo cancellation, "
+               "noise suppression or AGC)",
+               bool(dialog) and st.get("state") == "live" and st.get("tracks") == ["audio"] and mic_granted()
+               and cfg.get("echoCancellation") is False and cfg.get("noiseSuppression") is False
+               and cfg.get("autoGainControl") is False, json.dumps(cfg)[:170])
+        vis = await page_json(page, "__k.vis.filter(v => v.what === 'visibilitychange')", timeout=3) or []
+        info("mic: the page while Android's dialog is up (the activity is paused)",
+             ("; ".join(f"{v['state']} at {v['t'] / 1000:.1f} s" for v in vis) or "no visibilitychange")
+             + f"; getUserMedia resolved at {(st.get('t') or 0) / 1000:.1f} s (page clock)")
+        time.sleep(1.5)
+        ind, recs = mic_indicator(), mic_records()
+        result("mic: recording in the foreground, Android's mic indicator on", ind and recording(recs),
+               f"indicator {ind}, recordings (active, silenced) {recs}")
+
+        # K1000 leaves the screen: HOME. The page is hidden, stops its track, the recording ends.
+        async def leaves(label, how, back, off_screen=True):
+            if await page.eval("__k.mic.state") != "live":
+                await page.eval("__mic.start()", gesture=True)
+                await page_json(page, pending, timeout=10)
+            await page.eval("__k.vis = []; __k.stopOnHidden = true")
+            t_page = await page.eval("Math.round(performance.now())")
+            t0 = time.time()
+            how()
+            hid = await page_json(page, "__k.vis.find(v => v.what === 'visibilitychange' && v.state === 'hidden') || null",
+                                  timeout=6)
+            mic = await page_json(page, "__k.mic", timeout=3) or {}
+            track = await page.eval("__mic.track()")
+            gone = wait(lambda: not mic_indicator(), 10, step=0.5)
+            dt = time.time() - t0
+            recs = mic_records()
+            top = ashell("dumpsys activity activities | grep -E -m1 'topResumedActivity|mResumedActivity'", check=False)
+            result(f"mic: {label}: the page is hidden (visibilitychange), stops its track, Android's recording "
+                   "ends, the mic indicator goes",
+                   bool(hid) and mic.get("why") == "hidden" and track == "none" and not recording(recs) and bool(gone)
+                   and (not off_screen or PKG + "/" not in top),
+                   f"hidden {hid['t'] - t_page if hid and isinstance(t_page, int) else '?'} ms after the key; "
+                   f"indicator gone {dt:.1f} s after; "
+                   f"recordings {recs}")
+            back()
+            vis = await page_json(page, "__k.vis.find(v => v.what === 'visibilitychange' && v.state === 'visible') || null",
+                                  timeout=10)
+            await page.eval("__mic.start()", gesture=True)
+            st = await page_json(page, pending, timeout=10) or {}
+            result(f"mic: {label}, then back: the page is visible again, its mic starts with no dialog",
+                   bool(vis) and st.get("state") == "live" and "record audio" not in screen_text().lower(),
+                   f"mic {st.get('state')}")
+
+        def reopen():
+            adb("shell", "am", "start", "-W", "-n", ACT)
+            time.sleep(1.5)
+
+        def wake():
+            ashell("input keyevent KEYCODE_WAKEUP")
+            ashell("wm dismiss-keyguard", check=False)
+            time.sleep(2)
+
+        def back_back():
+            ashell("input keyevent KEYCODE_BACK")   # the page is at its top level: the app's menu
+            time.sleep(0.8)
+            ashell("input keyevent KEYCODE_BACK")   # Back again: hide K1000 (moveTaskToBack)
+
+        await page.eval("__k.overlays = 0; __k.deaf = false")
+        await leaves("HOME", lambda: ashell("input keyevent KEYCODE_HOME"), reopen)
+        await leaves("screen off", lambda: ashell("input keyevent KEYCODE_SLEEP"), wake, off_screen=False)
+        await leaves("Back, Back (Hide K1000)", back_back, reopen)
+
+        # What Android does by itself with a page that keeps its track in the background (the v2 page
+        # does not; this says what would happen if it did).
+        await page.eval("__k.vis = []; __k.stopOnHidden = false")
+        t0 = time.time()
+        ashell("input keyevent KEYCODE_HOME")
+        on = mic_indicator()
+        gone = wait(lambda: not mic_indicator(), 15, step=0.5)
+        dt = time.time() - t0
+        recs = mic_records()
+        reopen()
+        track = await page.eval("__mic.track()")
+        recs_back = mic_records()
+        info("mic: a page that KEEPS its track after HOME (not the v2 page's way)",
+             f"indicator still on at first: {on}; gone {dt:.1f} s after HOME: {bool(gone)}; recordings then "
+             f"(active, silenced) {recs}: Android silences a background app; back on screen: track '{track}', "
+             f"recordings {recs_back}")
+        await page.eval("__k.stopOnHidden = true; __mic.stop('end')")
+    finally:
+        await page.close()
 
 
 def dismiss_request_dialog():
@@ -914,6 +1126,13 @@ async def run(a):
         adb("shell", "am", "force-stop", PKG)
         ashell(f"pm grant {PKG} android.permission.ACCESS_LOCAL_NETWORK")
 
+    if a.only == "mic":
+        # Only the phone mic (app 0.2.2; tools/smoke.sh with K1000_SMOKE_ONLY=mic).
+        wifi_stable(6)
+        await mic_checks(server, api, wait(wifi_subnet, 60, step=3))
+        server.stop()
+        return summary(api)
+
     if a.only == "boxwifi":
         # Only the K1000 Wi-Fi taken from the box (tools/smoke.sh with K1000_SMOKE_ONLY=boxwifi).
         wifi_stable(6)
@@ -1216,7 +1435,10 @@ async def run(a):
     result("a box without /v2/ (404): the app shows the classic page for the session",
            "/v2/" in paths and "/" in paths and bool(v1) and "no /v2/ on this box" in logcat(), str(paths[:6]))
 
-    # --- 4c. the K1000 Wi-Fi taken from the box (app 0.2.1)
+    # --- 4c. the phone mic on the v2 page (app 0.2.2)
+    await mic_checks(server, api, cidr)
+
+    # --- 4d. the K1000 Wi-Fi taken from the box (app 0.2.1)
     await box_wifi_checks(server, api, cidr)
 
     # --- 5. the app's own join: WifiNetworkSpecifier, Android's dialog, remembered approval
@@ -1290,6 +1512,34 @@ async def run(a):
     if a.release_apk:
         rel = "gr.trentesept.k1000"
         ract = rel + "/gr.trentesept.k1000.MainActivity"
+        if a.previous_apk:
+            # An update over the release before it (0.2.2 over 0.2.1 on Thomas's 4a): same key, a
+            # higher versionCode, installed as an update (the first install time stays). The way
+            # back is refused (a lower versionCode).
+            def install(apk, *flags):
+                r = subprocess.run(["adb", "install", *flags, apk], capture_output=True, text=True, timeout=240)
+                return (r.stdout + r.stderr).strip()
+
+            def installed():
+                d = ashell(f"dumpsys package {rel}", check=False)
+                first = re.search(r"firstInstallTime=([^\n]+)", d)
+                return version_code(rel), first.group(1).strip() if first else None
+
+            adb("uninstall", rel, check=False)
+            out_prev = install(a.previous_apk)
+            code_prev, first_prev = installed()
+            adb("shell", "am", "start", "-W", "-n", ract)
+            time.sleep(3)
+            adb("shell", "am", "force-stop", rel)
+            out_new = install(a.release_apk, "-r")
+            code_new, first_new = installed()
+            out_back = install(a.previous_apk, "-r")
+            result("release APK installs over the previous release as an update (same key, versionCode up); "
+                   "the previous one cannot go back over it",
+                   "Success" in out_prev and "Success" in out_new and code_prev is not None and code_new is not None
+                   and code_new > code_prev and first_new == first_prev and "VERSION_DOWNGRADE" in out_back,
+                   f"versionCode {code_prev} -> {code_new}; first install {first_prev} kept: {first_new == first_prev}; "
+                   f"back: {out_back.splitlines()[-1][-70:] if out_back else ''}")
         adb("install", "-r", a.release_apk, timeout=240)
         ashell(f"pm clear {rel}", check=False)
         ashell(f"pm grant {rel} android.permission.CAMERA", check=False)
@@ -1377,7 +1627,8 @@ def main():
     ap.add_argument("--static", required=True)
     ap.add_argument("--api", required=True)
     ap.add_argument("--release-apk", default="")
-    ap.add_argument("--only", default="", help="boxwifi: only the K1000 Wi-Fi taken from the box")
+    ap.add_argument("--previous-apk", default="", help="the release before: --release-apk must install over it")
+    ap.add_argument("--only", default="", help="boxwifi: only the K1000 Wi-Fi taken from the box; mic: only the phone mic")
     return asyncio.run(run(ap.parse_args()))
 
 

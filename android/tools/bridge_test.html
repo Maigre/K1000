@@ -83,6 +83,56 @@ document.querySelectorAll("#holds button").forEach((b) => {
   b.addEventListener("contextmenu", (e) => { e.preventDefault(); if (rec) rec.ctx = true; });
 });
 
+// Visibility as the page sees it (does the app's onPause/onStop hide the page?), and the app's
+// messages about it. The v2 page stops its microphone when it is hidden (K.stopOnHidden, the
+// default); the driver turns that off to see what Android and the WebView do by themselves.
+K.vis = [];
+K.stopOnHidden = true;
+const visRec = (what) => K.vis.push({ what, state: document.visibilityState, focus: document.hasFocus(),
+  t: Math.round(performance.now()) });
+document.addEventListener("visibilitychange", () => {
+  visRec("visibilitychange");
+  if (document.hidden && K.stopOnHidden) __mic.stop("hidden");
+});
+for (const ev of ["pagehide", "pageshow", "blur", "focus"]) window.addEventListener(ev, () => visRec(ev));
+for (const ev of ["freeze", "resume"]) document.addEventListener(ev, () => visRec(ev));
+
+// The phone mic as the v2 page asks for it (DESIGN §7: the raw signal, no voice processing), fed
+// to an analyser as the RTA does. K.mic: off | asking | live | refused | stopped, and why.
+K.mic = { state: "off", err: null, settings: null, why: null, ended: 0, asks: 0 };
+let micStream = null, micCtx = null, micAn = null;
+window.__mic = {
+  start(constraints) {
+    K.mic.asks++;
+    K.mic.state = "asking"; K.mic.err = null; K.mic.why = null;
+    const c = constraints || { audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, video: false };
+    navigator.mediaDevices.getUserMedia(c).then((s) => {
+      micStream = s;
+      const tr = s.getAudioTracks()[0];
+      K.mic.settings = tr ? tr.getSettings() : null;
+      K.mic.tracks = s.getTracks().map((t) => t.kind);
+      if (tr) tr.onended = () => { K.mic.ended++; };
+      try {
+        micCtx = new AudioContext();
+        micAn = micCtx.createAnalyser();
+        micCtx.createMediaStreamSource(s).connect(micAn);
+      } catch (e) { K.mic.ctxErr = e.name; }
+      K.mic.state = "live";
+      K.mic.t = Math.round(performance.now());
+    }).catch((e) => { K.mic.state = "refused"; K.mic.err = e.name; K.mic.t = Math.round(performance.now()); });
+    return true;
+  },
+  stop(why) {
+    if (micStream) micStream.getTracks().forEach((t) => t.stop());
+    if (micCtx) micCtx.close().catch(() => {});
+    micStream = null; micCtx = null; micAn = null;
+    if (K.mic.state === "live") { K.mic.state = "stopped"; K.mic.why = why || "asked"; }
+    return true;
+  },
+  // The track's own state ("live", "ended", or "none"): what the WebView holds open.
+  track() { const t = micStream && micStream.getAudioTracks()[0]; return t ? t.readyState + (t.muted ? " muted" : "") : "none"; },
+};
+
 // The driver's way in: send one message (an object, or a raw string to test refusals).
 window.__send = (m) => { if (!K.port) return false; K.port.postMessage(typeof m === "string" ? m : JSON.stringify(m)); return true; };
 // The newest app message of type t, or null.

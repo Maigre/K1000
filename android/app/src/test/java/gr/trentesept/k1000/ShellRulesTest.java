@@ -115,4 +115,54 @@ public class ShellRulesTest {
         assertFalse(ShellRules.pageTakesCutout(33, true, false));
         assertFalse(ShellRules.pageTakesCutout(33, false, true));
     }
+
+    /**
+     * 0.2.2, the phone mic on the v2 page: the microphone alone, for the box's page alone. Camera,
+     * MIDI, protected media, the microphone with any of them, and every other origin are refused.
+     */
+    @Test
+    public void micOnlyForTheBoxPage() {
+        // The constant is WebView's own (inlined from android.webkit.PermissionRequest).
+        assertEquals(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE, ShellRules.AUDIO_CAPTURE);
+        String mic = ShellRules.AUDIO_CAPTURE;
+        String cam = android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE;
+        String midi = android.webkit.PermissionRequest.RESOURCE_MIDI_SYSEX;
+        String drm = android.webkit.PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID;
+        String[] audio = {mic};
+        K1000Hosts.setBenchHost("");
+        // WebView gives the origin as "scheme://host[:port]/".
+        assertTrue(ShellRules.grantMic("https://10.42.0.1/", audio));
+        assertTrue(ShellRules.grantMic("https://k1000.home.arpa/", audio));
+        assertTrue(ShellRules.grantMic("https://10.42.0.1", audio));
+        assertTrue(ShellRules.grantMic("https://10.42.0.1:443/", audio));
+        assertTrue(ShellRules.grantMic("https://K1000.HOME.ARPA/", audio));
+        assertTrue(ShellRules.grantMic("https://10.42.0.1/", new String[] {mic, mic}));
+        // Never anything but the microphone, never the microphone together with something else.
+        assertFalse(ShellRules.grantMic("https://10.42.0.1/", new String[] {cam}));
+        assertFalse(ShellRules.grantMic("https://10.42.0.1/", new String[] {mic, cam}));
+        assertFalse(ShellRules.grantMic("https://10.42.0.1/", new String[] {cam, mic}));
+        assertFalse(ShellRules.grantMic("https://10.42.0.1/", new String[] {midi}));
+        assertFalse(ShellRules.grantMic("https://10.42.0.1/", new String[] {mic, drm}));
+        assertFalse(ShellRules.grantMic("https://10.42.0.1/", new String[] {"android.webkit.resource.FUTURE"}));
+        assertFalse(ShellRules.grantMic("https://10.42.0.1/", new String[] {mic, null}));
+        assertFalse(ShellRules.grantMic("https://10.42.0.1/", new String[0]));
+        assertFalse(ShellRules.grantMic("https://10.42.0.1/", null));
+        // Never another origin: plain http, another port, another host, look-alikes, opaque ones.
+        for (String o : new String[] {"http://10.42.0.1/", "https://10.42.0.1:8443/", "https://10.42.0.2/",
+                "https://10.42.0.1.evil.example/", "https://evil.example/", "https://k1000.home.arpa.evil.example/",
+                "https://user@10.42.0.1/", "https://192.168.8.54/", "null", "", "data:text/html,x", "file:///",
+                "about:blank", "https://10.42.0.1/?x", null}) {
+            assertFalse(String.valueOf(o), ShellRules.grantMic(o, audio));
+        }
+        // A bench build: its development host too (and still the box).
+        K1000Hosts.setBenchHost("192.168.8.54");
+        try {
+            assertTrue(ShellRules.grantMic("https://192.168.8.54/", audio));
+            assertTrue(ShellRules.grantMic("https://10.42.0.1/", audio));
+            assertFalse(ShellRules.grantMic("https://192.168.8.55/", audio));
+            assertFalse(ShellRules.grantMic("https://192.168.8.54/", new String[] {cam}));
+        } finally {
+            K1000Hosts.setBenchHost("");
+        }
+    }
 }

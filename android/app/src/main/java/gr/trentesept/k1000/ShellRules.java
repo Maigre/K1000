@@ -73,6 +73,28 @@ final class ShellRules {
         return sdk >= 30;
     }
 
+    /**
+     * WebView's name for the microphone ({@code PermissionRequest.RESOURCE_AUDIO_CAPTURE}; the
+     * unit test checks the two agree).
+     */
+    static final String AUDIO_CAPTURE = "android.webkit.resource.AUDIO_CAPTURE";
+
+    /**
+     * A page's permission request ({@code WebChromeClient.onPermissionRequest}): granted only when
+     * it asks for the microphone and nothing else, and comes from the box's page
+     * ({@link K1000Hosts#isBoxOrigin}: https, a box name, no port but 443). Anything else (camera,
+     * MIDI, protected media, the microphone together with any of them, another origin, an opaque
+     * one) is refused whole. Android's own microphone dialog comes after this, and only when the
+     * page asked (getUserMedia): the app never asks for RECORD_AUDIO by itself.
+     */
+    static boolean grantMic(String origin, String[] resources) {
+        if (resources == null || resources.length == 0) return false;
+        for (String r : resources) {
+            if (!AUDIO_CAPTURE.equals(r)) return false;
+        }
+        return K1000Hosts.isBoxOrigin(origin);
+    }
+
     /** The page draws under the cutout ({t:"fullscreen", cutout:true}): Android 11+ only. */
     static boolean pageTakesCutout(int sdk, boolean fullscreen, boolean cutout) {
         return fullscreen && cutout && cutoutShortEdges(sdk);
