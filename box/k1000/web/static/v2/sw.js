@@ -15,7 +15,7 @@ const BUILD = "__K1000_BUILD__";
 const CACHE = "k1000v2-" + BUILD;
 const SHELL = ["./", "app.css", "js/main.js", "js/util.js", "js/fields.js", "js/store.js", "js/link.js", "js/native.js",
   "js/haptics.js", "js/view.js", "js/hold.js", "js/touch.js", "js/nudge.js", "js/tile.js", "js/stepper.js", "js/bands.js",
-  "js/graph.js", "js/rta.js", "js/mute.js", "js/sheets.js"];
+  "js/graph.js", "js/rta.js", "js/mute.js", "js/sheets.js", "js/micmath.js", "js/mic.js", "js/measure.js"];
 const NET_MS = 2500;
 
 self.addEventListener("install", (event) => {

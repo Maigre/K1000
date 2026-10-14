@@ -1,10 +1,12 @@
 # 14 — Phone protocol 2: `/v2/ws` (the API contract of the v2 page)
 
-**Date:** 2026-10-13. **Status:** built on the box side (S1 of k1000#t-010, DESIGN §10/§11 P1).
+**Date:** 2026-10-13; RESPONSE (`hello.pgm`, `sub {pgm}`, the `pgm` frame: §3.6) 2026-10-14.
+**Status:** built on the box side (S1 of k1000#t-010, DESIGN §10/§11 P1).
 **Code:** `box/k1000/web/server.py` (`PhoneBridge.hello2` / `state_message2` / `apply2`,
-`PhoneServer`), `box/k1000/control.py` (`notch_helper`, `set_choice`, `set_mute`,
-`spectrum_wanted`), `box/k1000/ui/input_map.py` (`setup_schema`). **Tests:**
-`box/tests/test_web_v2.py`.
+`PhoneServer`, `pgm_message`), `box/k1000/control.py` (`notch_helper`, `set_choice`, `set_mute`,
+`spectrum_wanted`, `set_pgm_phones`, `set_pgm`, `pgm_info`), `box/k1000/rta.py`
+(`PgmAccumulator`), `box/k1000/ui/input_map.py` (`setup_schema`). **Tests:**
+`box/tests/test_web_v2.py`, `box/tests/test_pgm.py`.
 
 This is the contract the v2 page (`/v2/`, and the APK that wraps it) codes against. Every rule
 marked **box** is enforced by the box whatever the page sends; the page must not rely on its own
@@ -70,6 +72,8 @@ page                                     box
  │── hi {app, bridge, caps} ─────────────▶│ optional, once
  │── sub {rta: true} ────────────────────▶│ optional: box spectrum frames
  │◀────────────────────────────── rta ────│ ≤ 10 Hz, subscribers only, dropped first
+ │── sub {pgm: true} ────────────────────▶│ optional: RESPONSE program windows (§3.6)
+ │◀────────────────────────────── pgm ────│ 2 Hz, subscribers only, dropped first
  │◀──────────────────────────── unsub ────│ 10 s without a message from the page
  │── nudge / band / grab / choose / act / unlock / lock / mute ──▶│
  │◀──────────────────── ack {id, v} | err {id, code, why} ────────│
@@ -87,7 +91,10 @@ page                                     box
 - **Reconnection:** back off 0.5 s doubling to 3 s (3 s after a 4xxx close), reset to 0.5 s on
   `online` and when the page becomes visible. **A new connection is a new session:** the ALIGN
   unlock is gone (locked), the spectrum subscription is gone (send `sub` again), the phone
-  number (`hello.you`) may differ. Nothing the page sent before the drop is replayed by the box,
+  number (`hello.you`) may differ; the RESPONSE subscription is gone too (send `sub {pgm}` again).
+  The page keeps its RESPONSE average across a reconnect, so a short drop mid-walk loses
+  nothing; a change made in the meantime restarts it, as any change does (§3.6, point 4).
+  Nothing the page sent before the drop is replayed by the box,
   and the page must not replay it either (DESIGN §9.3).
 
 ## 3. Box → phone
@@ -110,6 +117,8 @@ page                                     box
  "notch": {"q": 8.651, "near_oct": 0.1667},
  "unlock_s": 30.0, "pick_window_s": 8.0, "undo_reset_s": 300.0, "fs": 48000,
  "rta": {"enabled": true, "src": "PGM", "hz": 10.0, "step_db": 0.5, "idle_s": 10.0},
+ "pgm": {"v": 1, "n": 264, "f0": 10.0, "f1": 20000.0, "rate": 48000, "fft": 8192, "est": "peak",
+         "win_s": 0.5},
  "limits": {"max_message": 1024, "rate_per_s": 30.0, "burst": 40, "max_phones": 4,
             "master_up_db_per_s": 6.0, "master_up_burst_db": 3.0,
             "guard_db": 6.0, "guard_window_s": 2.0},
@@ -133,7 +142,8 @@ page                                     box
 | `pick_window_s` | SETUP: a chosen value waits this long for its SET (D-013 `PICK_WINDOW_S`; also the stepper's idle close) |
 | `undo_reset_s` | How long *Undo all flat* lasts at most |
 | `fs` | Engine sample rate: one sample = 1000/fs ms (the DELAY fine step and its "samples" readout) |
-| `rta` | `enabled` false = k1000.yaml `spectrum.enabled: false` (no box spectrum at all); `src` the only source on Sunday; `hz` frame rate ceiling; `step_db` the byte step of §3.4; `idle_s` how long a subscription lasts without a message from the page (§4.8) |
+| `rta` | `enabled` false = k1000.yaml `spectrum.enabled: false` (no box spectrum at all); `src` the only source on Sunday; `hz` frame rate ceiling; `step_db` the byte step of §3.4; `idle_s` how long a subscription lasts without a message from the page (§4.8), the RESPONSE one included |
+| `pgm` | RESPONSE (§3.6): how the box computes the program side, so the page computes its mic side the same way. `v` 1; `n`, `f0`, `f1` the grid (the `rta` bins); `rate` the engine's sample rate in Hz (= `fs`); `fft` the engine's FFT length at that rate (the next power of two ≥ `rate / f0`: 8192 at 48 kHz); `est` `peak` (Hann window; each bin is the loudest FFT bin of its band); `win_s` the window (0.5 s). **`null`: the box cannot serve RESPONSE** (`spectrum.enabled: false`, or no spectrum task): hide it |
 | `limits` | The box's limits, for display and for the page's own mirror of the PA-up bucket (master and the trims): §6 |
 | `nudge` | The `nudge` allowlist: path → `[most negative, most positive]` detents in one message. Anything else is `err BAD` |
 
@@ -270,7 +280,7 @@ rest. Numbers are rounded, never NaN or infinite (`null` instead).
  "pills": ["LAPTOP OPEN 1:59", "OUT P2", "POL INV SUB"],
  "hint": "P2 OUT", "hint_s": 3, "ready": true, "in_clip": false,
  "mute_src": "", "mute_band": {"kind": "", "text": ""}, "mute_fallback": "use B4 on the box",
- "undo_reset_s": 0, "align_delay_ms": 1.25,
+ "undo_reset_s": 0, "align_delay_ms": 1.25, "sys_eq": "3f2a91c0",
  "setup": {"out_trim_db.2": 0.0, "out_trim_db.3": 0.0, "top_inverted": false, "lowcut_on": true,
            "out_trim_db.0": 0.0, "out_trim_db.1": 0.0, "sub_inverted": true, "mono_subs": true,
            "sub_lowpass_on": false, "sub_lowpass_hz": 120.0, "input_trim_db": 0.0,
@@ -298,6 +308,7 @@ rest. Numbers are rounded, never NaN or infinite (`null` instead).
 | `mute_fallback` | The words for "what else mutes": `use B4 on the box` with healthy knobs, else `turn the source down · bypass`. Never hard-code B4 |
 | `undo_reset_s` | Seconds the *Undo all flat* is still available (0 = none). Count down locally |
 | `align_delay_ms` | The signed D-011 delay: > 0 subs later, < 0 tops later, 0 ALIGNED |
+| `sys_eq` | The system EQ (the tune's PEQ bands, set from the laptop's `/tune` page) as an opaque 8-hex digest: it changes when they change. The page only compares it (RESPONSE restarts, §3.6); `null` = unknown |
 | `setup` | The current value of every SETUP `num`/`bool`/`choice` row, keyed by its `f`. A `choose` sends the one it showed as `seen` |
 | `spectrum` | `on`: SETUP › Spectrum (and not disabled); `src` `PGM`; `state` `off` · `waiting` · `live` · `unavailable` · `disabled`. Indicative: a subscriber gets the exact state in each `rta` frame |
 | `laptop` | `state` `off` (no such surface) · `closed` · `opening` · `open` · `closing` · `unavailable`; `s` seconds left while open (count down locally) |
@@ -354,6 +365,8 @@ Without a picture (`st` not `live`) the frame is `{"t":"rta","seq":…,"src":"PG
   than that plus one frame, never behind a pile of spectrum.
 - **Ballistics are the box's** (the same picture as the box screen). Smoothing, FAST/SLOW and
   FREEZE in the page act on the phone-mic line only.
+- **Not for measuring.** These bars are a picture (ballistics, 0.5 dB bytes, the display range).
+  RESPONSE uses the raw program windows of §3.6.
 
 ### 3.5 Replies
 
@@ -362,6 +375,7 @@ Without a picture (`st` not `live`) the frame is `{"t":"rta","seq":…,"src":"PG
 {"t": "err", "id": 18, "code": "LOCKED", "why": "LOCKED · HOLD 0.8 s TO EDIT", "v": 112.0}
 {"t": "locked", "what": "align", "why": "idle"}
 {"t": "unsub", "what": "rta", "why": "idle"}
+{"t": "unsub", "what": "pgm", "why": "idle"}
 {"t": "pong", "ts": 1729000000000}
 ```
 
@@ -374,8 +388,10 @@ Without a picture (`st` not `live`) the frame is `{"t":"rta","seq":…,"src":"PG
   phone** (5/s, burst 5): a page looping on errors gets silence. A refused **unmute** is never
   throttled.
 - **`locked`** (no `id`): this connection's ALIGN unlock ended by itself (30 s idle).
-- **`unsub`** (no `id`): this connection's spectrum subscription lapsed (`rta.idle_s` without
-  a message from the page, §4.8). A visible page sends `sub {rta: true}` again.
+- **`unsub`** (no `id`): this connection's spectrum subscription (`what` `rta`) or RESPONSE
+  subscription (`what` `pgm`) lapsed (`rta.idle_s` without a message from the page, §4.8): one
+  `unsub` per subscription that lapsed. A visible page sends `sub {rta: true}` again (and
+  `sub {pgm: true}` if it was measuring).
 
 | `code` | When |
 |---|---|
@@ -393,6 +409,63 @@ Without a picture (`st` not `live`) the frame is `{"t":"rta","seq":…,"src":"PG
 | `HELD` | An unmute while K1000 itself holds the mute on its way in (§5) |
 | `REFUSED` | The controller refused it (e.g. an engine-side rule) |
 | `INTERNAL` | A box bug (logged); nothing was half-applied by the bridge |
+
+### 3.6 `pgm`: the program side of RESPONSE (subscribers only)
+
+RESPONSE ("walk the room", DESIGN §7) is the phone mic minus what the box plays, both averaged
+over 10 or 20 s. The box gives the program side: CamillaDSP's capture spectrum of the program
+channels from **the same polls as §3.4** (one poller, one engine connection, no extra engine
+call), but **raw**: no ballistics, the engine's own estimator, dBFS, both program channels
+combined in power. **One accumulator, shared by every phone,** averages the polls **in power**
+over fixed windows of `hello.pgm.win_s` (0.5 s) and sends each window once it closes.
+
+```json
+{"t": "pgm", "seq": 41, "st": "live", "n": 264, "f0": 10.0, "f1": 20000.0,
+ "k": 5, "dt": 0.5, "prog": true, "m": "ee+l717wkvC58MDw…"}
+```
+
+| Key | Meaning |
+|---|---|
+| `seq` | The window's number (windows closed since k1000 started; a stale window, dropped by the box, is not counted). **A gap = windows this phone lost** (dropped under backpressure, or replaced by a newer one before they went out): never resent |
+| `st` | `live` (a window, with data), else `waiting`, `off`, `unavailable` or `disabled`: the spectrum's states, as in §3.4 |
+| `n`, `f0`, `f1` | The grid: the `rta` bins, as announced in `hello.pgm` |
+| `k` | Polls averaged in this window (5 at 10 Hz; fewer when the engine answers slowly) |
+| `dt` | Seconds of program the window covers: from its first poll to its last poll plus one poll interval (the mean interval of its polls; a single poll: the poller's 0.1 s), never past the poll that closed it. 0.5 when the poller keeps up; **a stall after the data is not counted**. Windows tile time while the data flows. **A window is never stale**: one whose data ended more than `win_s` before the poll that closes it (a stalled poller) is dropped, as is the window in progress on a grid change or any state other than `live` (never sent; `seq` does not move) |
+| `prog` | The program gate over the window (the gate of the box's PEAK: the program channels' capture RMS at `spectrum.program_floor_db`, default −60 dBFS, or above, 3 dB of hysteresis). With the PEAK's gate set off in k1000.yaml (−140), the box still asks the level while a phone measures (one call per poll, as the default setting does anyway) and judges it at −60, so RESPONSE keeps working. `true` every poll of the window said present; `false` at least one said absent; `null` the box could not tell for some poll and none said absent (an engine without `GetCaptureSignalRmsSince`) |
+| `m` | Base64 of `n` **little-endian int16**: bin `i` is `int16[i] / 100` dBFS (`round(dBFS × 100)`, clamped to −32768..32767). The engine's floor is −140 dBFS (−14000): digital silence |
+
+**Not live** (no window): `{"t":"pgm","seq":<the last window's>,"st":"off","n":0,"m":null,"k":0,"prog":null}`
+(exactly these keys: no `f0 f1 dt`). It comes once per change of state to the phones measuring,
+and at once to a phone that subscribes while the spectrum is not live. **Back to `live`, the
+next window says so**: no message without data. A phone that subscribes while it is live gets
+nothing until the next window (at most `win_s` later), never an older one.
+
+- **Rate:** one window per `win_s` (2 Hz), about 0.8 kB each: ≈ 1.7 kB/s per phone measuring.
+  Only to connections that sent `sub {pgm: true}` (§4.8); never to any other.
+- **Latest only, dropped first,** exactly like `rta` (§3.4): never queued behind another
+  window; dropped while more than 4 kB are on their way to this phone (kernel included); sent
+  after every pending reply, the state and the meters, and before a pending `rta` frame. A mute
+  ack never waits behind more than 4 kB plus one frame.
+- **What the page computes from it** (the RESPONSE contract; the page owns these rules):
+  1. Its mic spectrum **on the same grid with the same estimator**: Hann window, FFT length =
+     the next power of two ≥ `mic_rate / f0` (the same resolution as `hello.pgm.fft`), log-spaced
+     bins with band edges at the geometric midpoints between bin centres, each bin = the **peak**
+     FFT power within its band; averaged in power over the same span. A mismatched estimator
+     tilts the result by more than 3 dB.
+  2. The `pgm` windows it received, averaged in power over a sliding 10 or 20 s (each window is
+     already the power mean of `k` polls).
+  3. RESPONSE = mic − pgm per bin, smoothed for display (1/6 octave by default); 0 dB = the
+     median of 200 Hz–5 kHz; nothing drawn below 100 Hz.
+  4. **Pause** (add no window) while muted (`state.muted`), while `prog` is not `true`, while
+     the mic is off or the link is lost. **Restart** on any change to what the PA plays: any
+     live band `f`/`g`/`q`/`on`, the system PEQ (`state.sys_eq`), balance, Lo-Cut on or frequency, polarity,
+     delay, mono subs, the sub low-pass, the profile, the trims.
+- **Nothing else** leaves or enters the box for RESPONSE: no audio, no mic data. It is advisory:
+  the box never applies anything from it.
+- **Cost on the box:** while a phone measures, the spectrum is polled as for SHOW (the §4.8
+  gates); the accumulator adds about 15 µs per poll and the encoding about 130 µs per window,
+  once for every phone (bench PC, i7-3770K: 0.04 % of a core). The accumulator holds one
+  264-bin sum, whatever runs. Nobody measuring: it is idle and holds nothing.
 
 ## 4. Phone → box
 
@@ -476,7 +549,7 @@ does not move.**
 - **Box:** a nudge on `align_delay_ms` or `lowcut_hz` outside the window is `err LOCKED`,
   `v` = the value now, nothing moves.
 - **Per connection:** another phone's unlock does not unlock this one. **The phone's unlock never
-  unlocks the knobs** (ALIGN E3/E4 keep B2's hold), **and the knobs' unlock never unlocks a phone.**
+  unlocks the knobs** (ALIGN E2/E4 keep B2's hold), **and the knobs' unlock never unlocks a phone.**
   A reconnect starts locked.
 
 ### 4.5 `mute`: unchanged from v1 (§5)
@@ -519,14 +592,29 @@ apply unchanged.
 `reset_live` and `laptop_open` are 1 s holds on the page (the box asks two pushes). v1's
 `{"t":"reset_live","confirm":true}` is accepted too.
 
-### 4.8 `sub`: the box spectrum
+### 4.8 `sub`: the box spectrum and RESPONSE
 
 ```json
-{"t": "sub", "rta": true, "id": 29}   → {"t":"ack","id":29,"v":{"rta":true,"st":"off"}}
+{"t": "sub", "rta": true, "id": 29}              → {"t":"ack","id":29,"v":{"rta":true,"st":"off"}}
+{"t": "sub", "pgm": true, "id": 30}              → {"t":"ack","id":30,"v":{"pgm":true,"pgm_st":"live"}}
+{"t": "sub", "rta": false, "pgm": false, "id": 31} → {"t":"ack","id":31,"v":{"rta":false,"st":"live","pgm":false,"pgm_st":"live"}}
 ```
 
-(`st`: the spectrum state at that instant, often still `off` until the task wakes, ≤ 0.1 s; the
-frames say the rest.)
+(`st` / `pgm_st`: the spectrum state at that instant, often still `off` until the task wakes,
+≤ 0.1 s; the frames say the rest.)
+
+`sub` carries `rta`, `pgm` or both. **They are independent:** `sub {pgm: false}` leaves the `rta`
+subscription alone, and the reverse. Each key present must be a boolean, and at least one must
+be there, else `err BAD` (`sub needs rta: true/false`, `sub needs pgm: true/false`) and nothing
+changes. The ack's `v` has the keys of the message: `rta` and `st` for `rta`, `pgm` and `pgm_st`
+for `pgm`.
+
+`pgm: true` subscribes this connection to the RESPONSE windows (§3.6). While at least one phone
+holds it, the box polls the spectrum and feeds the shared accumulator, under the same gates as
+`rta` below (SETUP › Spectrum ON, engine processing, device present; `st` says which one stops
+it); `false` stops them. With nobody measuring, the accumulator is idle and its window in
+progress dropped. A disconnect unsubscribes. **The `pgm` subscription lapses exactly like
+`rta`'s** (`unsub` with `what` `pgm`), and the page unsubscribes it when hidden, like `rta`.
 
 `rta: true` subscribes this connection to `rta` frames (§3.4) and sends the latest frame at once
 when there is one; `false` stops them. While at least one phone is subscribed, the box polls the
@@ -626,6 +714,7 @@ and B4.
 | Trims up (`input_trim_db`, `out_trim_db.N`) | **master's bucket**: one 6 dB/s, burst 3 dB for master and the trims together (`up_limit.bucket` `pa`) | all phones, v1 and v2, with master | `err SLOW` (`TRIM: SLOW DOWN`) |
 | Detents per nudge | `hello.nudge` caps | — | `err BAD` |
 | RTA frames | 10 Hz; dropped beyond 4 kB in flight; the subscription lapses after 10 s without a message | per subscriber | dropped (§3.4), `unsub` (§4.8) |
+| RESPONSE windows (`pgm`) | 2 Hz; dropped beyond 4 kB in flight (latest only, never queued, after replies, state and meters); the subscription lapses after 10 s without a message | per subscriber | dropped: a `seq` gap (§3.6), `unsub` `pgm` (§4.8) |
 
 The page mirrors the PA-up bucket (master and the trims: one bucket) to say `SLOW DOWN` at once
 and **drops** the excess detents (it never queues them); the box's bucket and guard stay
@@ -636,7 +725,8 @@ authoritative.
 - Up to `limits.max_phones` (4) connections, v1 and v2 together; the fifth gets `bye` + 4002.
 - **Values are shared, the last writer wins**; every phone gets every state.
 - **Per phone:** the band selection (the page's own), the ALIGN unlock, the spectrum
-  subscription, the open stepper and sheet.
+  subscription, the RESPONSE subscription and its 10/20 s average (the page's own: the box
+  sends every phone measuring the same windows), the open stepper and sheet.
 - The mute generation is shared: phone 1's unmute based on a state older than phone 2's mute is
   refused. A mute made elsewhere shows in `mute_src` (`B4`, `phone 2`…): announce it.
 - SETUP › Phone off at the box closes every phone (4003); only the box switches it back on.
@@ -664,6 +754,13 @@ authoritative.
 - **`unsub`** (box → phone) and the subscription's 10 s idle lapse are added: a frozen page
   would otherwise keep the box polling and streaming to a pocketed phone (S1 review).
 - **`act` results** are objects (`changed`, `undo_s`, `state`, `s`).
+- **RESPONSE is served by the box's one poller** (`hello.pgm`, `sub {pgm}`, the `pgm` frame,
+  §3.6), not by `night/phone-rta`'s `progspec.py` (a second engine connection, 133 bins at 2 Hz):
+  DESIGN §7 "one poller, one engine connection". The box sends windows already averaged in
+  power (0.5 s, `k` polls) instead of single polls: the page needs averages, and 2 Hz of 0.8 kB
+  costs less than 10 Hz of raw spectra. The values are int16 hundredths of a dB, not `rta`'s
+  0.5 dB bytes under a moving display range: a measurement must not depend on a picture's
+  scale.
 - Not built (P2, after the gig): `surface` in k1000.yaml (it is derived from `--headless` /
   `--no-hw`), the operator token, spectrum sources other than PGM, the phone-mic calibration
   store.

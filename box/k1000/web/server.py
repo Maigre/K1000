@@ -46,10 +46,11 @@ Why it is shaped like this:
   `/v2/ws` and `/v2/` (its own build id and service-worker scope). Both sockets share this
   bridge and server: the phone count, the mute generation, the master bucket, the message
   buckets, phone on/off. v2 reaches more (ALIGN, SETUP numbers and choices, the SETUP actions,
-  the silent notch helper, the box spectrum), and every rule stays here: DELAY and LO-CUT
-  move only inside the connection's own 30 s unlock (`err LOCKED`), every ON/off and choice is
-  `Controller.set_choice` with the value the phone saw (`err STALE`), master and trims rise
-  through shared buckets, and the spectrum frames are dropped first, never ahead of a reply.
+  the silent notch helper, the box spectrum, the RESPONSE program windows), and every rule
+  stays here: DELAY and LO-CUT move only inside the connection's own 30 s unlock (`err
+  LOCKED`), every ON/off and choice is `Controller.set_choice` with the value the phone saw
+  (`err STALE`), master and trims rise through shared buckets, and the spectrum frames and
+  RESPONSE windows are dropped first, never ahead of a reply.
 """
 from __future__ import annotations
 
@@ -186,7 +187,7 @@ for _i in range(N_OUT):
     NUDGE_CAPS_V2[f"out_trim_db.{_i}"] = (-4, 4)
 NUDGE_CAPS_V2["input_trim_db"] = (-4, 4)
 NUDGE_CAPS_V2["sub_lowpass_hz"] = (-24, 24)
-# ALIGN E3/E4 on the box: locked unless THIS connection holds the unlock (UNLOCK_S of idle).
+# ALIGN E2/E4 on the box (D-015): locked unless THIS connection holds the unlock (UNLOCK_S of idle).
 LOCKED_V2: frozenset[str] = frozenset({"align_delay_ms", "lowcut_hz"})
 # Raising one of these raises the PA like master: it rises through master's own bucket (one
 # bucket for everything that raises the PA, every phone, v1 and v2: docs/14 §6).
@@ -203,6 +204,7 @@ RTA_MAX_BUFFERED = 4096               # bytes still on their way to a phone (asy
 RTA_SUB_IDLE_S = 10.0                 # a subscription lapses after this long without a message
                                       # from the phone (its pings stop when the page is frozen)
 RTA_STEP_DB = 0.5
+PGM_M_MIN, PGM_M_MAX = -32768, 32767  # the RESPONSE window's int16 (dB * 100) range (docs/14 §3.6)
 HI_MAX_CAPS, HI_CAP_LEN = 16, 24
 # fields{} (docs/14 §3.1.1): what a value tile needs. Stepper keys in normal detents (DESIGN
 # §5.4); accel caps from the knob that edits the field (input_map.KNOBS), else these.
@@ -484,6 +486,52 @@ def rta_message(frame: Any, state: str, seq: int) -> dict[str, Any]:
     return out
 
 
+def _pgm_m(levels: Any) -> str | None:
+    """dBFS levels -> base64 of little-endian int16, one per bin: round(dB * 100), clamped to
+    the int16 range (docs/14 §3.6; -inf and NaN read as the bottom). Pure Python."""
+    if levels is None:
+        return None
+    vals: list[int] = []
+    try:
+        for x in levels:
+            v = float(x) * 100.0
+            if math.isnan(v):
+                vals.append(PGM_M_MIN)
+            elif math.isinf(v):
+                vals.append(PGM_M_MAX if v > 0 else PGM_M_MIN)
+            else:
+                vals.append(max(PGM_M_MIN, min(PGM_M_MAX, int(round(v)))))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return base64.b64encode(struct.pack(f"<{len(vals)}h", *vals)).decode("ascii")
+
+
+def pgm_message(window: Any, state: str, seq: int = 0) -> dict[str, Any]:
+    """One RESPONSE program window for the v2 phones measuring (docs/14 §3.6), or, without a
+    usable window, the state only (`seq` = the last window's number; "live" without a usable
+    window says "waiting": a live frame always carries data)."""
+    st = str(state or "off")
+    out: dict[str, Any] = {"t": "pgm", "seq": int(seq), "st": "waiting" if st == "live" else st,
+                           "n": 0, "m": None, "k": 0, "prog": None}
+    if window is None:
+        return out
+    db = getattr(window, "db", None)
+    try:
+        n = len(db) if db is not None else 0
+    except TypeError:
+        n = 0
+    f0, f1 = _f(_as_float(getattr(window, "f0", None)), 3), _f(_as_float(getattr(window, "f1", None)), 3)
+    k, dt = getattr(window, "k", None), _f(_as_float(getattr(window, "dt", None)), 3)
+    m = _pgm_m(db) if n >= 2 else None
+    wseq = getattr(window, "seq", seq)
+    if (m is None or f0 is None or f1 is None or dt is None or not isinstance(k, int)
+            or isinstance(k, bool) or k < 1 or not isinstance(wseq, int)):
+        return out
+    prog = getattr(window, "prog", None)
+    return {"t": "pgm", "seq": wseq, "st": "live", "n": n, "f0": f0, "f1": f1, "k": k, "dt": dt,
+            "prog": prog if isinstance(prog, bool) else None, "m": m}
+
+
 def _as_float(v: Any) -> float | None:
     """A numpy scalar or a number -> float (None otherwise; bools are not numbers here)."""
     if v is None or isinstance(v, bool):
@@ -514,6 +562,21 @@ def _mute_band(st: Any, status: Any) -> dict[str, str]:
     return {"kind": "wait", "text": ""}
 
 
+def _sys_eq_id(st: Any) -> str | None:
+    """state.sys_eq (docs/14 §3.2): an opaque 8-hex digest of the system EQ (the tune's PEQ
+    bands, set from the laptop's /tune page). It changes when what the PA plays changes there,
+    so a page measuring RESPONSE restarts its average (§3.6) without the bands themselves.
+    None when the state has no readable system EQ."""
+    bands = getattr(st, "sys_peq", None)
+    if not isinstance(bands, (list, tuple)):
+        return None
+    try:
+        key = ";".join(f"{float(b.freq):.3f},{float(b.gain):.3f},{float(b.q):.4f}" for b in bands)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return hashlib.sha1(key.encode("ascii")).hexdigest()[:8]
+
+
 def _takes_kw(fn: Any, name: str) -> bool:
     """Does `fn` accept the keyword `name`? (older controllers and test stand-ins do not)"""
     try:
@@ -526,12 +589,14 @@ def _takes_kw(fn: Any, name: str) -> bool:
 @dataclass(eq=False)
 class PhoneSession:
     """What the box keeps per v2 connection (docs/14 §7): its number, its ALIGN unlock (on the
-    bridge's clock; 0 = locked), its spectrum subscription, when it last sent anything (on the
-    server's clock: a subscription lapses after RTA_SUB_IDLE_S of silence), what its `hi` said."""
+    bridge's clock; 0 = locked), its spectrum and RESPONSE subscriptions, when it last sent
+    anything (on the server's clock: a subscription lapses after RTA_SUB_IDLE_S of silence),
+    what its `hi` said."""
 
     n: int = 0
     unlock_until: float = 0.0
     rta: bool = False
+    pgm: bool = False
     seen: float = 0.0
     app: int | None = None
     bridge: int | None = None
@@ -1086,16 +1151,48 @@ class PhoneBridge:
             "rta": {"enabled": getattr(ctl, "spectrum_enabled", True) is not False, "src": "PGM",
                     "hz": round(1.0 / RTA_MIN_INTERVAL_S, 1), "step_db": RTA_STEP_DB,
                     "idle_s": RTA_SUB_IDLE_S},
+            "pgm": self._pgm_hello(),
             "limits": dict(limits or {}),
             "nudge": {k: list(v) for k, v in NUDGE_CAPS_V2.items()},
         }
+
+    def _pgm_hello(self) -> dict[str, Any] | None:
+        """hello.pgm (docs/14 §3.1): what the box serves for RESPONSE (`Controller.pgm_info`),
+        or None when it cannot (spectrum disabled, no spectrum task, an older controller)."""
+        fn = getattr(self.ctl, "pgm_info", None)
+        if not callable(fn):
+            return None
+        try:
+            info = fn()
+        except Exception as e:   # noqa: BLE001 - never worth the hello
+            log.debug("pgm_info: %s", e)
+            return None
+        if not isinstance(info, dict):
+            return None
+        out: dict[str, Any] = {}
+        for key in ("v", "n", "rate", "fft"):
+            v = info.get(key)
+            if not isinstance(v, int) or isinstance(v, bool):
+                return None
+            out[key] = v
+        for key in ("f0", "f1", "win_s"):
+            v = _as_float(info.get(key))
+            if v is None or not math.isfinite(v):
+                return None
+            out[key] = v
+        est = info.get("est")
+        if not isinstance(est, str):
+            return None
+        out["est"] = est
+        return {k: out[k] for k in ("v", "n", "f0", "f1", "rate", "fft", "est", "win_s")}
 
     @staticmethod
     def state_message2(snap: tuple[Any, Any, Any, Any], *, phone_on: bool, phones: int,
                        mute: tuple[bool, int] | None = None, knobs: bool = True) -> dict[str, Any]:
         """The v2 state (docs/14 §3.2): every v1 key, plus the alerts, pills, ALIGN and SETUP
-        values, the box's countdowns (whole seconds), who muted and what the box's MUTED band
-        says. `knobs`: the box has knobs (not --no-hw): the mute fallback names B4 then."""
+        values, the system EQ's digest (`sys_eq`), the box's countdowns (whole seconds), who
+        muted and what the box's MUTED band says. `knobs`: the box has knobs (not --no-hw): the
+        mute fallback names B4 then."""
         out = PhoneBridge.state_message(snap, phone_on=phone_on, phones=phones, mute=mute)
         _page, st, status, focus = snap
         alerts = []
@@ -1148,6 +1245,7 @@ class PhoneBridge:
                               else MUTE_FALLBACK_NONE),
             "undo_reset_s": _ceil_s(getattr(status, "undo_reset_s", 0.0)),
             "align_delay_ms": _f(value("align_delay_ms"), 6),
+            "sys_eq": _sys_eq_id(st),
             "setup": setup,
             "spectrum": {"on": bool(getattr(status, "spectrum_on", False)), "src": "PGM",
                          "state": str(getattr(status, "spectrum_state", "off") or "off")},
@@ -1577,6 +1675,7 @@ class _Client:
     n: int = 0                       # phone number (lowest free at connect): "phone 2"
     sess: PhoneSession | None = None     # v2 only: unlock, spectrum subscription, hi
     sent_rta: int = -1
+    sent_pgm: int = -1
 
     @property
     def name(self) -> str:
@@ -1664,6 +1763,14 @@ class PhoneServer:
         self._rta_t = -math.inf
         self._rta_dirty = False
         self._hooked = False
+        # RESPONSE (docs/14 §3.6): the latest pgm message for the phones measuring (encoded
+        # once), its own counter (never the window's: a state message is new too), the `st`
+        # it said, and the last window's number (a state message carries it)
+        self._pgm_json = ""
+        self._pgm_seq = 0
+        self._pgm_st: str | None = None
+        self._pgm_wseq = 0
+        self._pgm_hooked = False
         self.rx2: dict[str, int] = {}
         self._tls: ssl.SSLContext | None = None
         self.tls_error = ""
@@ -1697,7 +1804,8 @@ class PhoneServer:
         self._started = False
         self.stats: dict[str, int] = {"connects": 0, "refused": 0, "rate_limited": 0, "errors": 0,
                                       "dropped": 0, "dropped_replies": 0, "rta_sent": 0,
-                                      "rta_dropped": 0, "http_limited": 0, "wifi_sent": 0,
+                                      "rta_dropped": 0, "pgm_sent": 0, "pgm_dropped": 0,
+                                      "http_limited": 0, "wifi_sent": 0,
                                       "wifi_refused": 0, "wifi_held": 0, "apk_sent": 0}
         self.rx: dict[str, int] = {}
 
@@ -1831,6 +1939,10 @@ class PhoneServer:
         if isinstance(hooks, list) and self._on_spectrum not in hooks:
             hooks.append(self._on_spectrum)          # v2 phones' spectrum frames (docs/14 §3.4)
             self._hooked = True
+        pgm_hooks = getattr(self.ctl, "pgm_hooks", None)
+        if isinstance(pgm_hooks, list) and self._on_pgm not in pgm_hooks:
+            pgm_hooks.append(self._on_pgm)           # RESPONSE windows (docs/14 §3.6)
+            self._pgm_hooked = True
         try:
             self._tune_static, _ = await asyncio.to_thread(load_static, self.tune_dir)
         except Exception as e:  # noqa: BLE001 - the tune page is never worth the phone page
@@ -1885,6 +1997,7 @@ class PhoneServer:
         self._portal_servers.clear()
         self._clients.clear()
         self._rta_subs_changed()
+        self._pgm_subs_changed()
         self._tune_clients.clear()
         self.ports.clear()
         hooks = getattr(self.ctl, "spectrum_hooks", None)
@@ -1892,6 +2005,11 @@ class PhoneServer:
             with contextlib.suppress(ValueError):
                 hooks.remove(self._on_spectrum)
             self._hooked = False
+        pgm_hooks = getattr(self.ctl, "pgm_hooks", None)
+        if self._pgm_hooked and isinstance(pgm_hooks, list):
+            with contextlib.suppress(ValueError):
+                pgm_hooks.remove(self._on_pgm)
+            self._pgm_hooked = False
         self._started = False
         self._notify_ready()
 
@@ -2413,6 +2531,9 @@ class PhoneServer:
             if c.sess is not None and c.sess.rta:
                 c.sess.rta = False
                 self._rta_subs_changed()
+            if c.sess is not None and c.sess.pgm:
+                c.sess.pgm = False
+                self._pgm_subs_changed()
             sender.cancel()
             with contextlib.suppress(BaseException):
                 await sender
@@ -2698,20 +2819,93 @@ class PhoneServer:
         return ack
 
     def _sub(self, c: _Client, sess: PhoneSession, msg: dict[str, Any], mid: Any) -> dict[str, Any] | None:
-        """sub {rta}: this connection's spectrum subscription (docs/14 §4.8)."""
-        on = msg.get("rta")
-        if not isinstance(on, bool):
+        """sub {rta, pgm}: this connection's spectrum subscription (docs/14 §4.8) and its
+        RESPONSE subscription (§3.6), independent of each other; either key or both. Checked
+        whole before anything changes."""
+        has_rta, has_pgm = "rta" in msg, "pgm" in msg
+        on, pgm = msg.get("rta"), msg.get("pgm")
+        if has_pgm and not isinstance(pgm, bool):
+            return self._err2(c, mid, "BAD", "sub needs pgm: true/false")
+        if (has_rta or not has_pgm) and not isinstance(on, bool):
             return self._err2(c, mid, "BAD", "sub needs rta: true/false")
-        if on != sess.rta:
-            sess.rta = on
-            log.info("phone %s (%s): spectrum %s", c.peer, sess.name, "ON" if on else "off")
-            self._rta_subs_changed()
-        if on:
-            self._flush_rta(force=True)      # the latest picture (or state) at once
-            c.sent_rta = -1
+        v: dict[str, Any] = {}
+        if has_rta:
+            if on != sess.rta:
+                sess.rta = on
+                log.info("phone %s (%s): spectrum %s", c.peer, sess.name, "ON" if on else "off")
+                self._rta_subs_changed()
+            if on:
+                self._flush_rta(force=True)      # the latest picture (or state) at once
+                c.sent_rta = -1
+                c.kick.set()
+            v.update(rta=on, st=self._rta_state())
+        if has_pgm:
+            if pgm != sess.pgm:
+                sess.pgm = pgm
+                log.info("phone %s (%s): response %s", c.peer, sess.name, "ON" if pgm else "off")
+                self._pgm_subs_changed()
+            if pgm:
+                self._pgm_join(c)
+            v.update(pgm=pgm, pgm_st=self._rta_state())
+        return {"t": "ack", "id": mid, "v": v} if mid is not None else None
+
+    # ------------------------------------------------------------------ RESPONSE (docs/14 §3.6)
+    def _pgm_subs(self) -> list[_Client]:
+        return [c for c in self._clients if c.sess is not None and c.sess.pgm]
+
+    def _pgm_subs_changed(self) -> None:
+        n = len(self._pgm_subs())
+        fn = getattr(self.ctl, "set_pgm_phones", None)
+        if callable(fn):
+            try:
+                fn(n)
+            except Exception as e:   # noqa: BLE001
+                log.debug("set_pgm_phones: %s", e)
+        if n == 0:
+            self._pgm_st = None              # nobody to tell: a new subscriber gets the state
+
+    def _pgm_post(self, msg: dict[str, Any], subs: list[_Client]) -> None:
+        """The latest pgm message, encoded once, for every subscriber's sender (latest only:
+        one not sent yet is replaced, a window then simply lost: a `seq` gap)."""
+        self._pgm_seq += 1
+        self._pgm_json = json.dumps(msg)
+        self._pgm_st = str(msg.get("st"))
+        for c in subs:
             c.kick.set()
+
+    def _pgm_join(self, c: _Client) -> None:
+        """A phone (re)subscribed: live, it waits for the next window (never an old one, which
+        may be from before its sub); otherwise it gets the state now."""
         st = self._rta_state()
-        return {"t": "ack", "id": mid, "v": {"rta": on, "st": st}} if mid is not None else None
+        if st == "live":
+            c.sent_pgm = self._pgm_seq
+            return
+        if st != self._pgm_st or not self._pgm_json:
+            self._pgm_post(pgm_message(None, st, self._pgm_wseq), [c])
+        c.sent_pgm = -1
+        c.kick.set()
+
+    def _on_pgm(self) -> None:
+        """Controller.set_pgm: a RESPONSE window closed (a pgm hook)."""
+        w = getattr(self.ctl, "pgm_window", None)
+        if w is None:
+            return
+        wseq = getattr(w, "seq", None)
+        if isinstance(wseq, int) and not isinstance(wseq, bool):
+            self._pgm_wseq = wseq
+        subs = self._pgm_subs()
+        if subs:
+            self._pgm_post(pgm_message(w, "live", self._pgm_wseq), subs)
+
+    def _pgm_follow(self) -> None:
+        """The spectrum state moved: the phones measuring hear once that it is no longer live
+        (`st` off / waiting / unavailable / disabled). Back to live, the next window says so."""
+        st = self._rta_state()
+        if st == "live" or st == self._pgm_st:
+            return
+        subs = self._pgm_subs()
+        if subs:
+            self._pgm_post(pgm_message(None, st, self._pgm_wseq), subs)
 
     def _rta_subs_changed(self) -> None:
         n = sum(1 for c in self._clients if c.sess is not None and c.sess.rta)
@@ -2732,6 +2926,7 @@ class PhoneServer:
         """Controller.set_spectrum published a new picture or state (a spectrum hook)."""
         self._rta_dirty = True
         self._flush_rta()
+        self._pgm_follow()
 
     def _flush_rta(self, force: bool = False) -> None:
         """Encode the latest spectrum frame once for every subscriber, at most every
@@ -2768,9 +2963,9 @@ class PhoneServer:
         """A subscribed v2 phone that sent nothing for RTA_SUB_IDLE_S (a frozen page: its 2 s
         pings stopped, while the browser still answers the box's websocket pings) stops
         getting spectrum frames, and is told so (docs/14 §4.8): the box stops polling when
-        nobody looks."""
+        nobody looks. A RESPONSE subscription lapses the same way (`what` "pgm", §3.6)."""
         now = self._clock()
-        lapsed = False
+        lapsed = lapsed_pgm = False
         for c in list(self._clients):
             s = c.sess
             if s is not None and s.rta and now - s.seen > RTA_SUB_IDLE_S:
@@ -2779,8 +2974,16 @@ class PhoneServer:
                 self._queue(c, {"t": "unsub", "what": "rta", "why": "idle"})
                 log.info("phone %s (%s): spectrum off (nothing from the page for %.0f s)",
                          c.peer, s.name, now - s.seen)
+            if s is not None and s.pgm and now - s.seen > RTA_SUB_IDLE_S:
+                s.pgm = False
+                lapsed_pgm = True
+                self._queue(c, {"t": "unsub", "what": "pgm", "why": "idle"})
+                log.info("phone %s (%s): response off (nothing from the page for %.0f s)",
+                         c.peer, s.name, now - s.seen)
         if lapsed:
             self._rta_subs_changed()
+        if lapsed_pgm:
+            self._pgm_subs_changed()
 
     @staticmethod
     def _backlog(c: _Client) -> int:
@@ -2809,11 +3012,12 @@ class PhoneServer:
         return total
 
     async def _sender2(self, c: _Client) -> None:
-        """v2's sender: replies first, then the latest state, the latest meters, and the latest
-        spectrum frame last. Before each send it looks again, so a reply (a mute ack) queued
-        meanwhile goes before anything else; a spectrum frame is dropped, never queued, while
-        more than RTA_MAX_BUFFERED bytes are still on their way to the phone, kernel included
-        (_backlog): it never makes a later send wait."""
+        """v2's sender: replies first, then the latest state, the latest meters, the latest
+        RESPONSE window and the latest spectrum frame last. Before each send it looks again, so
+        a reply (a mute ack) queued meanwhile goes before anything else; a RESPONSE window or a
+        spectrum frame is dropped, never queued, while more than RTA_MAX_BUFFERED bytes are
+        still on their way to the phone, kernel included (_backlog): it never makes a later
+        send wait."""
         try:
             while True:
                 await c.kick.wait()
@@ -2829,6 +3033,15 @@ class PhoneServer:
                         seq, text = self._meter2_seq, self._meter2_json
                         await self._send(c, text)
                         c.sent_meter = seq
+                    elif (c.sess is not None and c.sess.pgm and c.sent_pgm != self._pgm_seq
+                          and self._pgm_json):
+                        seq, text = self._pgm_seq, self._pgm_json
+                        c.sent_pgm = seq
+                        if self._backlog(c) > RTA_MAX_BUFFERED:
+                            self.stats["pgm_dropped"] += 1
+                            continue
+                        await self._send(c, text)
+                        self.stats["pgm_sent"] += 1
                     elif (c.sess is not None and c.sess.rta and c.sent_rta != self._rta_seq
                           and self._rta_json):
                         seq, text = self._rta_seq, self._rta_json
@@ -2944,6 +3157,7 @@ class PhoneServer:
                 self._expire_subs()
                 if self._rta_dirty:
                     self._flush_rta()
+                self._pgm_follow()
             except Exception as e:  # noqa: BLE001 - the pump must survive anything
                 self.stats["errors"] += 1
                 log.warning("phone pump: %s: %s", type(e).__name__, e)
@@ -3008,5 +3222,5 @@ def _raw(status: int, body: bytes, ctype: str, extra: Iterable[tuple[str, str]] 
 __all__ = ["PhoneBridge", "PhoneScreenInfo", "PhoneServer", "PhoneSession", "PhoneSettings",
            "ap_is_up", "fields_v2", "iface_ipv4", "load_apk", "load_static", "load_static_all",
            "psk_id", "psk_on_air", "read_ap_info", "read_arp", "read_leases", "read_psk",
-           "rta_message", "setup_v2",
+           "pgm_message", "rta_message", "setup_v2",
            "NUDGE_CAPS", "NUDGE_CAPS_V2", "SET_NUMERIC", "SET_BOOL", "LOCKED_V2", "MESSAGE_TYPES_V2"]

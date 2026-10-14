@@ -3,7 +3,16 @@
    build stamp, Service-Worker-Allowed), and a fake protocol-2 socket (Playwright's
    routeWebSocket) that replays a hello / state recorded from the real server (fixtures.json,
    record.py), answers like the box (acks, errors, the ALIGN lock, the mute generation, rta
-   frames) and RECORDS every frame the page sends. Used by e2e.mjs. */
+   frames, RESPONSE's `pgm` windows) and RECORDS every frame the page sends. Used by e2e.mjs.
+
+   RESPONSE (docs/14 `pgm`, the contract of k1000#t-010's phone mic): hello.pgm = {v: 1, n: 264,
+   f0: 10, f1: 20000, rate, fft, est: "peak", win_s: 0.5} (opts.pgm null: an older box without
+   it, "absent": an older box); `sub {pgm}` (independent of `rta`); while subscribed and live, one
+   window per 0.5 s (not live: one frame per change of state, as the box does): the program
+   polled at 10 Hz with the ENGINE's estimator (micmath.EngineEstimator: Hann, FFT 8192, the peak
+   FFT bin per 1/24 oct band), power-averaged over the window, as base64 int16 of dBFS*100. The
+   program is a WAV (opts.pgmWav: the same pink noise the fake mic plays) read on at real time,
+   or a fixed pink-ish spectrum without one. pgmSt / pgmProg set the frames' st and prog. */
 
 import crypto from "node:crypto";
 import http from "node:http";
@@ -11,6 +20,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { EngineEstimator, encodePgm, powToDb } from "../../k1000/web/static/v2/js/micmath.js";
+import { readWav } from "./wav.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const BOX = path.resolve(HERE, "../..");
@@ -64,11 +75,23 @@ export function startStatic(root = STATIC, build = LAB_BUILD) {
 
 // ------------------------------------------------------------------ the fake box
 const LOCKED = new Set(["align_delay_ms", "lowcut_hz"]);
+export const PGM_HELLO = { v: 1, n: 264, f0: 10.0, f1: 20000.0, rate: 48000, fft: 8192, est: "peak", win_s: 0.5 };
 export class FakeBox {
   constructor(fx, opts = {}) {
     this.fx = fx;
     this.hello = clone(fx.hello);
     this.hello.build = opts.build || LAB_BUILD;
+    if (opts.pgm === "absent") delete this.hello.pgm;       // an older box: no RESPONSE
+    else if (opts.pgm === null) this.hello.pgm = null;      // this box cannot serve it (spectrum disabled)
+    else this.hello.pgm = Object.assign({}, PGM_HELLO, fx.hello.pgm || {}, opts.pgm || {});
+    this.pgmSub = false;
+    this.pgmTimer = 0;
+    this.pgmSeq = 0;
+    this.pgmSt = "live";         // the frames' st: live | waiting | off | unavailable | disabled
+    this.pgmProg = true;         // the frames' prog: true | false | null
+    this.pgmSent = 0;
+    this.pgmSrc = opts.pgmWav ? readWav(opts.pgmWav) : null;
+    this.pgmPos = 0;
     this.state = clone(fx.state);
     this.m = clone(fx.m);
     this.sent = [];              // every frame the page sent: {t, ...msg, at}
@@ -94,7 +117,7 @@ export class FakeBox {
     this.connects++;
     if (!this.accept) { setTimeout(() => ws.close({ code: 1011, reason: "lab: refused" }), 5); return; }
     this.sockets.push(ws);
-    this.unlocked = false; this.rtaSub = false;
+    this.unlocked = false; this.rtaSub = false; this.setPgm(false);
     ws.onMessage((raw) => this.onMessage(ws, raw));
     ws.onClose(() => { const i = this.sockets.indexOf(ws); if (i >= 0) this.sockets.splice(i, 1); });
     const you = 1;
@@ -105,6 +128,7 @@ export class FakeBox {
   out(ws, obj) { if (!this.silent && ws) { try { ws.send(JSON.stringify(obj)); } catch (e) { /* closed */ } } }
   broadcast() { for (const ws of this.sockets) this.out(ws, this.state); }
   push(patch) { Object.assign(this.state, patch); this.broadcast(); }
+  meters(patch) { Object.assign(this.m, patch); for (const ws of this.sockets) this.out(ws, this.m); }
   setup(patch) { Object.assign(this.state.setup, patch); this.broadcast(); }
   pushHello(patch) { Object.assign(this.hello, patch); for (const ws of this.sockets) this.out(ws, Object.assign(clone(this.hello), { you: 1 })); }
   close(code = 1001) { for (const ws of this.sockets.slice()) { try { ws.close({ code, reason: "lab" }); } catch (e) { /* fine */ } } this.sockets = []; }
@@ -227,12 +251,24 @@ export class FakeBox {
         this.broadcast();
         break;
       }
-      case "sub":
-        this.rtaSub = m.rta === true;
-        this.ack(ws, id, { rta: this.rtaSub, st: "live" });
-        clearInterval(this.rtaTimer);
-        if (this.rtaSub) this.rtaTimer = setInterval(() => { if (this.rtaSub) for (const w of this.sockets) this.out(w, this.rtaFrame()); }, 100);
+      case "sub": {
+        // `rta` and `pgm` are independent keys; each one present must be a boolean
+        const has = (k) => k in m;
+        // (a box whose hello.pgm is null accepts `pgm` too, as the box does: its frames say disabled)
+        if ((!has("rta") && !has("pgm")) || (has("rta") && typeof m.rta !== "boolean") || (has("pgm") && typeof m.pgm !== "boolean")) {
+          this.err(ws, id, "BAD", "sub needs rta / pgm: true/false"); break;
+        }
+        const v = { st: "live" };
+        if (has("rta")) {
+          this.rtaSub = m.rta;
+          v.rta = this.rtaSub;
+          clearInterval(this.rtaTimer);
+          if (this.rtaSub) this.rtaTimer = setInterval(() => { if (this.rtaSub) for (const w of this.sockets) this.out(w, this.rtaFrame()); }, 100);
+        }
+        if (has("pgm")) { this.setPgm(m.pgm); v.pgm = m.pgm; v.pgm_st = this.pgmState(); if (!has("rta")) delete v.st; }
+        this.ack(ws, id, v);
         break;
+      }
       default:
         this.err(ws, id, "UNKNOWN", "unknown message");
     }
@@ -249,7 +285,52 @@ export class FakeBox {
     return { t: "rta", seq: ++this.seq, src: "PGM", st: "live", n, f0: 10, f1: 20000, hi: -24, lo: -90, peak_hz: this.peakHz,
       b: Buffer.from(b).toString("base64"), h: Buffer.from(hgt).toString("base64") };
   }
-  stop() { clearInterval(this.rtaTimer); }
+  // ------------------------------------------------------------ RESPONSE's program windows
+  // the frames' st: pgmSt, or "disabled" on a box that cannot serve RESPONSE (hello.pgm null)
+  pgmState() { return this.hello.pgm ? this.pgmSt : "disabled"; }
+  setPgm(on) {
+    this.pgmSub = !!on;
+    clearInterval(this.pgmTimer); this.pgmTimer = 0;
+    this.pgmSaid = null;
+    if (!this.pgmSub) return;
+    const tick = () => {
+      if (!this.pgmSub) return;
+      const st = this.pgmState();
+      if (st !== "live" && this.pgmSaid === st) return;                    // not live: said once per change
+      this.pgmSaid = st;
+      for (const w of this.sockets) this.out(w, this.pgmFrame());
+    };
+    if (this.pgmState() !== "live") setTimeout(tick, 5);                 // at once to a new subscriber
+    this.pgmTimer = setInterval(tick, 500);
+  }
+  // one 0.5 s window: 5 polls at 10 Hz, each the engine's estimator on the last FFT-length
+  // samples (the WAV read on at real time), power-averaged
+  pgmWindow() {
+    const P = this.hello.pgm, n = P.n;
+    if (!this.pgmSrc) {
+      return Float64Array.from({ length: n }, (_, i) => { const f = P.f0 * Math.pow(P.f1 / P.f0, i / (n - 1)); return -40 - 3 * Math.log2(Math.max(f, 20) / 1000) + (Math.random() - 0.5); });
+    }
+    const { rate, x } = this.pgmSrc;
+    if (!this.est || !this.est.matches(rate, P.f0, P.f1, n)) this.est = new EngineEstimator(rate, P.f0, P.f1, n);
+    const N = this.est.n, hop = Math.round(rate / 10), buf = new Float32Array(N), acc = new Float64Array(n);
+    for (let k = 0; k < 5; k++) {
+      this.pgmPos = (this.pgmPos + hop) % x.length;
+      for (let i = 0; i < N; i++) buf[i] = x[(this.pgmPos - N + i + x.length) % x.length];
+      const b = this.est.bands(buf);
+      for (let i = 0; i < n; i++) acc[i] += b[i] / 5;
+    }
+    return Array.from(acc, (p) => powToDb(p));
+  }
+  pgmFrame() {
+    const P = this.hello.pgm;
+    this.pgmSent++;
+    const st = this.pgmState();
+    if (st !== "live") return { t: "pgm", seq: this.pgmSeq, st, n: 0, m: null, k: 0, prog: null };
+    const db = this.pgmWindow();
+    return { t: "pgm", seq: ++this.pgmSeq, st: "live", n: P.n, f0: P.f0, f1: P.f1, k: 5, dt: 0.5, prog: this.pgmProg,
+      m: encodePgm(db, (s) => Buffer.from(s, "binary").toString("base64")) };
+  }
+  stop() { clearInterval(this.rtaTimer); clearInterval(this.pgmTimer); }
 }
 
 // A show-like state (the prototype's values): cuts, an OUT-able band, a delay, a lowered master

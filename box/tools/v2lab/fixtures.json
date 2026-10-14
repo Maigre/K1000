@@ -3,7 +3,7 @@
   "t": "hello",
   "v": 2,
   "server": "k1000 0.1.0",
-  "build": "16c6613d2f04",
+  "build": "6428504b6077",
   "phone_on": true,
   "you": 1,
   "min_app": 0,
@@ -255,10 +255,10 @@
      12
     ],
     "stepper": [
-     -2,
+     -6,
      -1,
      1,
-     2
+     6
     ],
     "accel": {
      "up": 1,
@@ -360,10 +360,10 @@
      12
     ],
     "stepper": [
-     -2,
+     -6,
      -1,
      1,
-     2
+     6
     ],
     "accel": {
      "up": 1,
@@ -462,10 +462,10 @@
      12
     ],
     "stepper": [
-     -2,
+     -6,
      -1,
      1,
-     2
+     6
     ],
     "accel": {
      "up": 1,
@@ -911,6 +911,7 @@
    "step_db": 0.5,
    "idle_s": 10.0
   },
+  "pgm": null,
   "limits": {
    "max_message": 1024,
    "rate_per_s": 30.0,
@@ -1109,6 +1110,7 @@
   "mute_fallback": "use B4 on the box",
   "undo_reset_s": 0,
   "align_delay_ms": 0.0,
+  "sys_eq": "87b4f250",
   "setup": {
    "out_trim_db.2": 0.0,
    "out_trim_db.3": 0.0,

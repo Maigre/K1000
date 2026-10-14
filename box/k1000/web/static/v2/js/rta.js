@@ -1,21 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* The box spectrum on the phone (docs/14 §3.4, §4.8). The page subscribes only while LIVE is
    visible (page shown, portrait: no rotate notice over the graph, no sheet over it) and this
-   phone shows the box spectrum (the PGM ▾ popover, not FROZEN); it unsubscribes when hidden,
-   and subscribes again after the box's
+   phone shows the box spectrum (the PGM ▾ popover on BOX or BOTH, not FROZEN, not MEASURE's
+   RESPONSE); it unsubscribes when hidden, and subscribes again after the box's
    `unsub` (10 s without a ping) or a reconnect. The 2 s ping keeps a subscription alive.
    Ballistics, hold dots and the PEAK are the box's: the same picture as the box screen.
 
-   The phone mic (DESIGN §7) comes after the gig. Its hook is `mic` below: a MicSource (Chrome
-   getUserMedia, or the APK's raw mic) sets mic.source = {bins: Float32Array dBFS, f0, f1, peak_hz}
-   and calls render(); graph.js then draws it as the cyan line over the box bars. The mic is
-   asked for only from SETUP › THIS PHONE, never from LIVE (DESIGN §9.15). */
+   The phone mic (DESIGN §7, mic.js) and RESPONSE (measure.js) hang on the hooks below: `mic`
+   (the cyan line, its own PEAK, its peak snap) and `resp` (the RESPONSE line), drawn by graph.js;
+   `syncHooks` run with every syncSub (a sheet, the page hidden, a turn, a state), so the mic
+   and the program windows follow the same rules as this subscription. The mic is asked for
+   only from SETUP › THIS PHONE, never from LIVE (DESIGN §9.15). */
 
 import { K, UI, linked, render } from "./store.js";
 import { on, request } from "./link.js";
 import { num } from "./util.js";
 
-export const mic = { source: null };
+// mic.js fills these: shown() = the cyan line is on the graph now; peakHz() its PEAK; snap(f)
+// the nearest peak of its picture; draw(cx, g) the line
+export const mic = { source: null, draw: null, shown: () => false, peakHz: () => null, snap: null };
+export const resp = { draw: null, shown: () => false };     // measure.js: the RESPONSE line
+export const syncHooks = [];
 export const R = { frame: null, subscribed: false, asked: null, frames: 0 };
 
 function b64bytes(s) {
@@ -46,19 +51,22 @@ export const binHz = (fr, i) => fr.f0 * Math.pow(fr.f1 / fr.f0, i / (fr.n - 1));
 
 // the rotate notice covers the graph (app.css: the same query)
 const ROTATED = typeof matchMedia === "function" ? matchMedia("(orientation: landscape) and (max-height: 440px)") : null;
-const rotated = () => !!ROTATED && ROTATED.matches;
+export const rotated = () => !!ROTATED && ROTATED.matches;
 if (ROTATED) {
   const re = () => syncSub();
   if (ROTATED.addEventListener) ROTATED.addEventListener("change", re); else if (ROTATED.addListener) ROTATED.addListener(re);
 }
 
+// The box's bars are on the graph (PGM ▾ on BOX or BOTH, and not MEASURE's RESPONSE view)
+export const boxShown = () => (UI.prefs.rta === "box" || UI.prefs.rta === "both") && !resp.shown();
 // What this phone wants now
 export function wanted() {
   const H = K.hello;
-  return linked() && !document.hidden && !rotated() && !UI.sheet && !UI.freeze && UI.prefs.rta === "box" &&
+  return linked() && !document.hidden && !rotated() && !UI.sheet && !UI.freeze && boxShown() &&
     !!H && !(H.rta && H.rta.enabled === false);
 }
 export function syncSub() {
+  for (const f of syncHooks) { try { f(); } catch (e) { setTimeout(() => { throw e; }, 0); } }
   const want = wanted();
   if (R.asked === want && R.subscribed === want) return;
   if (!linked()) { R.asked = null; R.subscribed = false; return; }
@@ -77,15 +85,20 @@ on("rta", (m) => {
   R.frames++;
   render();
 });
-on("unsub", () => { R.subscribed = false; R.asked = null; syncSub(); });   // lapsed: again, if still wanted
+on("unsub", (m) => {                       // lapsed: again, if still wanted (`pgm` is measure.js's)
+  if (m && m.what != null && m.what !== "rta") return;
+  R.subscribed = false; R.asked = null; syncSub();
+});
 on("lost", () => { R.subscribed = false; R.asked = null; if (!UI.freeze) R.frame = null; });
 on("state", () => syncSub());
 on("visibility", () => syncSub());
 
-// The nearest detected peak within ±⅓ oct of `f` on the box picture (a long-press snaps to it):
-// a local maximum standing 3 dB over the bins 3 away on each side. Else `f` itself.
-export function snapToPeak(f) {
-  const fr = R.frame;
+// The nearest detected peak within ±⅓ oct of `f` on the picture shown (a long-press snaps to it):
+// the mic's when its line is shown, else the box's; a local maximum standing 3 dB over the bins
+// 3 away on each side. Else `f` itself.
+export function snapToPeak(f, frame) {
+  if (frame === undefined && mic.shown() && mic.snap) return mic.snap(f);
+  const fr = frame === undefined ? R.frame : frame;
   if (!fr || !fr.n) return f;
   const arr = fr.bins;
   let best = 0, bd = 1 / 3;
@@ -98,4 +111,11 @@ export function snapToPeak(f) {
   return best || f;
 }
 export const peakHz = () => (R.frame && R.frame.st === "live" ? R.frame.peak_hz : null);
+// The PEAK the ▼ tag and the marker show, and a grab takes: the mic's own when its line is shown
+// (DESIGN §7: the active source), else the box's. {hz, src: "mic" | "box"} or null.
+export function activePeak() {
+  if (mic.shown()) { const hz = mic.peakHz(); return hz ? { hz, src: "mic" } : null; }
+  if (boxShown()) { const hz = peakHz(); return hz ? { hz, src: "box" } : null; }
+  return null;
+}
 export const boxLive = () => !!R.frame && R.frame.st === "live" && R.frame.n > 0;

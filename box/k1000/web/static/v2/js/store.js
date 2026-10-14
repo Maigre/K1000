@@ -15,13 +15,17 @@ export const K = {
   heard: 0,                 // Date.now() of the last frame from the box (link.js)
 };
 
-const PREF_DEFAULTS = { side: "right", haptics: "full", sens: 1, rta: "box" };
+// rta: what LIVE's graph shows (PGM ▾: box | mic | both | off); mic: SETUP › THIS PHONE › Phone
+// mic ON / OFF (used only once the mic is allowed); mspeed / msmooth: the mic line's FAST / SLOW
+// and smoothing (1/12, 1/6, 1/3 oct: 12 | 6 | 3); mview: MEASURE's RTA | RESPONSE; avg: 10 | 20 s
+const PREF_DEFAULTS = { side: "right", haptics: "full", sens: 1, rta: "box", mic: "on", mspeed: "slow", msmooth: 6, mview: "rta", avg: 20 };
 export const UI = {
   sel: null,                // the selected live band: protocol index s (LIVE_SLOTS order); per phone
   field: null, host: null,  // the open stepper: tile key, and the tile it belongs to
   unlockUntil: 0,           // ALIGN: until when the box granted this connection's unlock (ms, now())
   unlockPending: false,
   sheet: null, tab: null, pick: null, popOpen: false, dragging: false, freeze: false,
+  measure: false,           // MEASURE mode (≋): the ALIGN row is the MEASURE row (measure.js)
   prefs: Object.assign({}, PREF_DEFAULTS, load("k1000v2.prefs", {})),
   native: null,             // the APK bridge's handshake (native.js), null in a browser
   diag: null,               // the APK's diagnostics, when read
@@ -68,6 +72,8 @@ export function cleanHello(m) {
   H.limits = isObj(m.limits) ? m.limits : {};
   H.surface = isObj(m.surface) ? m.surface : {};
   H.rta = isObj(m.rta) ? m.rta : {};
+  H.pgm = isObj(m.pgm) ? m.pgm : null;      // RESPONSE's program windows; null = a box without them
+  H.pgmKnown = "pgm" in m;                  // the key there (null = this box cannot serve them) or not (an older box)
   H.setup = (Array.isArray(m.setup) ? m.setup : []).filter((g) => isObj(g) && g.group != null)
     .map((g) => Object.assign({}, g, { group: String(g.group), items: (Array.isArray(g.items) ? g.items : []).filter(isObj) }));
   return H;

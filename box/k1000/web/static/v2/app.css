@@ -72,9 +72,14 @@ body.muted .setupbtn::before { background: var(--red-deep); border-color: #ff606
 .ostrip > button { pointer-events: auto; }
 .gtag { isolation: isolate; height: var(--hit); min-width: var(--hit); padding: 0 7px; display: flex; align-items: center; justify-content: center; gap: 4px; border-radius: 7px; font-size: 12px; font-weight: 800; background: transparent; border: 0; white-space: nowrap; flex: none; overflow: hidden; }
 .gtag::before { content: ""; position: absolute; left: 0; right: 0; top: 7px; bottom: 7px; z-index: -1; border-radius: 7px; background: rgba(0, 0, 0, .65); border: 1px solid #2c2c2c; }
-.gtag.src, .gtag.peak { color: var(--cyan); }
+.gtag.src, .gtag.peak, .gtag.meas { color: var(--cyan); }
+.gtag.meas span { font-size: 17px; line-height: 1; }
+.gtag.meas[aria-pressed="true"] { color: var(--ink); }
+.gtag.meas[aria-pressed="true"]::before { background: var(--cyan); border-color: var(--cyan); }
+.gtag.meas[aria-pressed="true"] span { font-size: 14px; }
 .gtag.peak { touch-action: none; }
 .gtag.peak .fill { top: 7px; bottom: 7px; border-radius: 7px; }
+.gtag.peak.mic::before { border-color: var(--cyan); }
 .gtag > span { position: relative; }
 .pills { flex: 1; min-width: 0; align-self: center; display: flex; gap: 4px; overflow: hidden; }
 .pill { height: 20px; padding: 0 4px; display: flex; align-items: center; border-radius: 4px; font-size: 10.5px; font-weight: 800; letter-spacing: .01em; white-space: nowrap; border: 1px solid var(--faint); color: var(--fg); background: rgba(0, 0, 0, .6); flex: none; }
@@ -82,8 +87,9 @@ body.muted .setupbtn::before { background: var(--red-deep); border-color: #ff606
 .pill.cy { border-color: var(--cyan); color: var(--cyan); }
 .pill.more { border-color: var(--fg); }
 .pill.out { border: 1.5px dashed var(--fg); }
-/* the slide HUD sits in the overlay strip's band (y 0-44): it never covers the curve */
-.hud { position: absolute; left: var(--gut); right: var(--gut); top: 0; height: var(--hit); display: flex; align-items: center; gap: 10px; padding: 0 12px; border-radius: 0 0 10px 10px; background: #000; border: 1px solid var(--fg); border-top: 0; white-space: nowrap; pointer-events: none; z-index: 4; }
+/* the slide HUD floats over the overlay strip's band (y 6-50, above the +6 dB line): a whole
+   framed card with a gap under the status strip, so it never reads as tucked under it */
+.hud { position: absolute; left: var(--gut); right: var(--gut); top: 6px; min-height: var(--hit); display: flex; align-items: center; gap: 10px; padding: 3px 12px; border-radius: 10px; background: #000; border: 1px solid var(--fg); white-space: nowrap; pointer-events: none; z-index: 4; box-shadow: 0 4px 14px rgba(0, 0, 0, .7); }
 .hud .hl { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 1px; overflow: hidden; }
 .hud b { font-size: 12px; color: var(--amber); letter-spacing: .06em; overflow: hidden; text-overflow: ellipsis; }
 .hud em { font-style: normal; font-size: 11px; color: var(--dim); font-weight: 700; letter-spacing: .03em; overflow: hidden; text-overflow: ellipsis; }
@@ -101,6 +107,17 @@ body.muted .setupbtn::before { background: var(--red-deep); border-color: #ff606
 .seg button { height: var(--hit); font-size: 12.5px; border-radius: 7px; white-space: nowrap; overflow: hidden; padding: 0 2px; }
 .seg button[aria-pressed="true"] { background: var(--fg); color: var(--ink); border-color: var(--fg); }
 .pop .wide { height: var(--hit); font-size: 13px; border-radius: 7px; }
+.pop .seg button { line-height: 1.05; }
+.pop .lab.sub { color: var(--dim); font-size: 10.5px; letter-spacing: .03em; margin-bottom: -4px; }
+.seg5 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) 6px repeat(3, minmax(0, 1fr)); gap: 4px; }
+.seg5 button { height: var(--hit); font-size: 12.5px; border-radius: 7px; white-space: nowrap; overflow: hidden; padding: 0 2px; }
+.seg5 button:nth-child(3) { grid-column: 4; }
+.seg5 button[aria-pressed="true"] { background: var(--cyan); color: var(--ink); border-color: var(--cyan); }
+/* the graph's note: MEASURE's state and pause reasons, LIVE's "ALLOW THE MIC" (never a key) */
+.gnote { position: absolute; left: 28px; right: var(--gut); top: 46px; z-index: 3; pointer-events: none; font-size: 11.5px; font-weight: 800;
+  letter-spacing: .02em; line-height: 1.25; color: var(--cyan); text-shadow: 0 0 3px #000, 0 0 3px #000; }
+.gnote.warn { color: var(--yellow); }
+.gnote.red { color: #ff6a6a; }
 .pop .wide[aria-pressed="true"] { background: var(--cyan); color: var(--ink); border-color: var(--cyan); }
 .note { font-size: 11.5px; color: var(--dim); line-height: 1.35; font-weight: 400; }
 
@@ -109,6 +126,8 @@ body.muted .setupbtn::before { background: var(--red-deep); border-color: #ff606
 .toast.red { background: var(--band-red); color: var(--fg); }
 .toast.white { background: var(--fg); color: var(--ink); }
 .toast.dim { background: #2a2a2a; color: var(--fg); border: 1px solid #555; }
+/* UNDO after a three-tap FLAT: above the toast, away from the chip row the thumb is on */
+.undo { position: absolute; left: 50%; bottom: 342px; transform: translateX(-50%); height: var(--hit); padding: 0 18px; border-radius: 9px; background: #000; color: var(--amber); border: 1.5px solid var(--amber); font-weight: 800; font-size: 14px; letter-spacing: .05em; white-space: nowrap; z-index: 46; box-shadow: 0 2px 12px rgba(0, 0, 0, .7); }
 
 /* ------------------------------------------------ control rows */
 .ctl { flex: none; display: flex; flex-direction: column; gap: 4px; padding: 4px var(--gut) 0; }
@@ -156,6 +175,20 @@ body.muted .setupbtn::before { background: var(--red-deep); border-color: #ff606
 .align .tile .tv { font-size: var(--v-align); line-height: 1.02; }
 .align .tile .ts { font-size: 10.5px; }
 .align .tile:not(.sliding) .rail { display: none; }
+/* the MEASURE row, in the ALIGN row's place: MIC ● | RTA · RESPONSE | FREEZE | AVG | RESET (taps, none changes the sound) */
+.mrow { height: var(--h-align); display: grid; gap: 4px;
+  grid-template-columns: minmax(44px, .85fr) minmax(44px, .8fr) minmax(0, 1.45fr) minmax(0, 1.1fr) minmax(44px, .9fr) minmax(44px, 1fr); }
+.mrow .mk { height: 100%; min-width: 0; font-size: 12px; letter-spacing: .02em; border-radius: 10px; white-space: nowrap; overflow: hidden; padding: 0 2px; line-height: 1.1; }
+.mrow .mk[aria-pressed="true"] { background: var(--cyan); color: var(--ink); border-color: var(--cyan); }
+.mrow .vw[data-view="rta"] { border-top-right-radius: 3px; border-bottom-right-radius: 3px; }
+.mrow .vw[data-view="resp"] { border-top-left-radius: 3px; border-bottom-left-radius: 3px; }
+.mrow .vw.na { color: var(--dim); border-style: dashed; }
+.mrow .mic i { font-style: normal; color: var(--faint); }
+.mrow .mic.on i { color: var(--green); }
+.mrow .mic.wait i { color: var(--amber); }
+.mrow .mic.no i, .mrow .mic.bad i { color: var(--red); }
+.mrow .avg small { display: block; font-size: 10px; color: var(--dim); }
+.mrow .avg span { display: block; font-size: 14px; }
 .rail { position: absolute; left: 9px; right: 9px; bottom: 3px; height: 4px; opacity: .7; background-image: linear-gradient(90deg, #4a4a4a 0 2px, transparent 2px); background-size: 14px 100%; background-repeat: repeat-x; pointer-events: none; }
 .rail i { position: absolute; left: 50%; bottom: 0; width: 3px; height: 9px; margin-left: -1px; background: var(--amber); display: none; }
 .rail::after { content: ""; position: absolute; left: 50%; bottom: 0; width: 2px; height: 11px; margin-left: -1px; background: var(--fg); display: none; }

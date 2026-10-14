@@ -8,7 +8,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="theme-color" content="#000000">
 <meta name="color-scheme" content="dark">
-<meta name="description" content="K1000 v2: the live page (master, mute, live EQ, ALIGN, SETUP) from the phone">
+<meta name="description" content="K1000 v2: the live page (master, mute, live EQ, ALIGN, SETUP, the phone mic and MEASURE) from the phone">
 <title>K1000 v2</title>
 <link rel="icon" href="/icons/icon-192.png" type="image/png">
 <link rel="stylesheet" href="app.css">
@@ -36,15 +36,22 @@
     <div class="ostrip">
       <button id="srcBtn" class="gtag src" type="button" aria-expanded="false">PGM &#9662;</button>
       <div id="pills" class="pills"></div>
+      <!-- ▼ PEAK comes and goes; ≋ stays at the right edge, so neither jumps under a finger -->
       <button id="peakTag" class="gtag peak" type="button" hidden><b class="fill"></b><span>&#9660; PEAK</span></button>
+      <button id="measBtn" class="gtag meas" type="button" aria-pressed="false" aria-label="MEASURE: the phone mic and RESPONSE"><span>&#8779;</span></button>
     </div>
+    <div id="gNote" class="gnote" hidden></div>
     <div id="hud" class="hud" hidden><div class="hl"><b></b><em></em></div><div class="hv"><span></span><small></small></div></div>
     <div id="readout" class="readout" hidden></div>
     <div id="ring" class="ring" hidden></div>
     <div id="pop" class="pop" hidden>
       <div class="ph"><span class="lab">SPECTRUM ON THIS PHONE</span><button id="popX" class="x" type="button" aria-label="Close">&#10005;</button></div>
       <div class="seg" id="popShow">
-        <button type="button" data-v="box">BOX</button><button type="button" data-v="off">OFF</button>
+        <button type="button" data-v="box">BOX</button><button type="button" data-v="mic">PHONE<br>MIC</button><button type="button" data-v="both">BOTH</button><button type="button" data-v="off">OFF</button>
+      </div>
+      <div class="lab sub">PHONE MIC LINE ONLY (the box's bars keep the box's own)</div>
+      <div class="seg5" id="popMic">
+        <button type="button" data-k="mspeed" data-v="fast">FAST</button><button type="button" data-k="mspeed" data-v="slow">SLOW</button><button type="button" data-k="msmooth" data-v="12">1/12</button><button type="button" data-k="msmooth" data-v="6">1/6</button><button type="button" data-k="msmooth" data-v="3">1/3</button>
       </div>
       <button id="popFreeze" class="wide" type="button" aria-pressed="false">FREEZE</button>
       <div id="popNote" class="note"></div>
@@ -58,6 +65,14 @@
     </div>
     <div id="tiles" class="row3 tiles"></div>
     <div id="alignRow" class="row3 align"></div>
+    <div id="measRow" class="mrow" hidden>
+      <button id="mMic" class="mk mic" type="button"><span>MIC <i>&#9679;</i></span></button>
+      <button class="mk vw" type="button" data-view="rta" aria-pressed="true">RTA</button>
+      <button class="mk vw" type="button" data-view="resp" aria-pressed="false">RESPONSE</button>
+      <button id="mFreeze" class="mk" type="button" aria-pressed="false">FREEZE</button>
+      <button id="mAvg" class="mk avg" type="button"><small>AVG</small><span>20 s</span></button>
+      <button id="mReset" class="mk" type="button">RESET</button>
+    </div>
   </div>
 
   <footer id="foot" class="foot">
@@ -73,6 +88,7 @@
   </section>
 
   <div id="toast" class="toast" hidden></div>
+  <button id="undo" class="undo" type="button" hidden>UNDO</button>
   <div id="frame" class="frame" hidden></div>
   <div id="rotate" class="rotate">Portrait for now (the APK locks it). MASTER, the meters and MUTE stay live below.</div>
 </div>

@@ -13,6 +13,7 @@
 
 import { K, UI, cleanHello, cleanState, render, linkSlow } from "./store.js";
 import { sget, sset } from "./util.js";
+import { onReady } from "./native.js";
 
 export const BUILD = "__K1000_BUILD__";
 const UNSTAMPED = "__K1000_" + "BUILD__";      // (split: the stamp replaces every whole mark)
@@ -190,7 +191,8 @@ function onMessage(data) {
       emit("m", m);
       break;
     case "rta":
-      emit("rta", m);
+    case "pgm":                   // RESPONSE's program windows (measure.js), subscribers only
+      emit(m.t, m);
       break;
     case "pong":
       if (typeof m.ts === "number") K.rtt = Math.max(0, Date.now() - m.ts);
@@ -260,12 +262,20 @@ async function reloadWhenIdle(tag) {
   go();
 }
 
-// say who is connecting (docs/14 §4.10). `app` is the APK's versionCode: the bridge's `native`
-// carries only the version name today (docs/15 §8, gap 2), so it is null until the app adds
-// `code` to its handshake
-on("hello", () => {
+// say who is connecting (docs/14 §4.10): on each hello, and again when the APK's handshake comes
+// after it (it often does: the app posts at onPageFinished). `app` is the APK's versionCode
+// (`native.code`, app 0.2.2 on: android/BRIDGE.md), null in Chrome and from an older app. The box
+// keeps the last `hi` of a connection.
+let hiKey = null;                 // what this connection's last hi said (null: none yet)
+function sayHi() {
   const caps = UI.native ? UI.native.caps.filter((c) => c.length <= 24).slice(0, 16) : [];
   const code = UI.native && Number.isInteger(UI.native.code) && UI.native.code >= 0 ? UI.native.code : null;
-  request({ t: "hi", app: code, bridge: UI.native ? (Number.isInteger(UI.native.v) ? UI.native.v : 1) : null, caps },
-    (ok, r) => { if (ok && r.v) K.appCheck = r.v; });
-});
+  const bridge = UI.native ? (Number.isInteger(UI.native.v) ? UI.native.v : 1) : null;
+  const key = JSON.stringify([code, bridge, caps]);
+  if (key === hiKey) return;
+  hiKey = key;
+  request({ t: "hi", app: code, bridge, caps }, (ok, r) => { if (ok && r.v) K.appCheck = r.v; });
+}
+on("hello", () => { hiKey = null; sayHi(); });
+on("lost", () => { hiKey = null; });
+onReady(() => { if (open && K.hello && hiKey !== null) sayHi(); });

@@ -724,9 +724,16 @@ class Controller:
         self.has_knobs = True             # False with --no-hw (the phone's hello.surface)
         self.spectrum_phones = 0
         self.spectrum_hooks: list[Callable[[], None]] = []
+        # RESPONSE (docs/14 §3.6): the v2 phones measuring (`set_pgm_phones`) also make the
+        # spectrum wanted; the task's shared accumulator hands each closed window to set_pgm
+        # (`pgm_window`, then `pgm_hooks`). Never in `version`, never wakes the screen.
+        self.pgm_phones = 0
+        self.pgm_window: Any = None
+        self.pgm_hooks: list[Callable[[], None]] = []
         # The meters' own counter (docs/14 §3.3): moves when the output meters as the screen
         # shows them, or the program inputs' capture peaks, move. `version` moves only for the
-        # former: an input meter moving under a muted output never wakes the screen.
+        # former (the phones' state does not carry the input peaks); the input peaks wake the
+        # render loop by themselves (`changed`) on SHOW and ALIGN, which draw IN L/R (D-015).
         self.meter_seq = 0
         self._in_key: Any = None
         # Extra persistent pills (e.g. the laptop access countdown): callables returning a
@@ -1398,11 +1405,12 @@ class Controller:
     # ------------------------------------------------------------------ spectrum (SHOW)
     def spectrum_wanted(self) -> bool:
         """The spectrum task polls only while this holds: someone looks at it (the box screen
-        on SHOW, or at least one v2 phone subscribed to its frames: docs/14 §4.8), SETUP >
-        Spectrum ON, the engine reachable and processing (Running, or Paused on silence),
-        device present."""
+        on SHOW, or at least one v2 phone subscribed to its frames: docs/14 §4.8, or measuring
+        RESPONSE: §3.6), SETUP > Spectrum ON, the engine reachable and processing (Running, or
+        Paused on silence), device present."""
         st = self.status
-        looked_at = (self.has_screen and self.page == "SHOW") or self.spectrum_phones > 0
+        looked_at = ((self.has_screen and self.page == "SHOW") or self.spectrum_phones > 0
+                     or self.pgm_phones > 0)
         return (self.spectrum_enabled and looked_at and bool(self.state.spectrum_on)
                 and bool(st.connected) and st.engine in ("Running", "Paused")
                 and st.device_present is not False)
@@ -1413,6 +1421,44 @@ class Controller:
         if (n > 0) != (self.spectrum_phones > 0):
             log.info("spectrum: %s", f"{n} phone(s) subscribed" if n else "no phone subscribed")
         self.spectrum_phones = n
+
+    # ------------------------------------------------------------------ RESPONSE (docs/14 §3.6)
+    def pgm_wanted(self) -> bool:
+        """A v2 phone measures RESPONSE: the spectrum task feeds its shared accumulator."""
+        return self.pgm_phones > 0
+
+    def set_pgm_phones(self, n: int) -> None:
+        """How many phones are subscribed to the RESPONSE windows now (web.PhoneServer)."""
+        n = max(0, int(n))
+        if (n > 0) != (self.pgm_phones > 0):
+            log.info("response: %s", f"{n} phone(s) measuring" if n else "no phone measuring")
+        self.pgm_phones = n
+        if n == 0:
+            self.pgm_window = None
+
+    def pgm_info(self) -> dict[str, Any] | None:
+        """hello.pgm: the grid, rate, FFT length, estimator and window the box serves, or None
+        when it cannot serve RESPONSE (spectrum disabled in k1000.yaml, no spectrum task)."""
+        fn = getattr(self.rta, "pgm_info", None) if self.spectrum_enabled else None
+        if not callable(fn):
+            return None
+        try:
+            info = fn()
+        except Exception as e:   # noqa: BLE001 - never worth the hello
+            self._log_once(("pgm_info", type(e).__name__), logging.ERROR, "pgm_info: %s", e)
+            return None
+        return dict(info) if isinstance(info, dict) else None
+
+    def set_pgm(self, window: Any) -> None:
+        """From the spectrum task: a RESPONSE window closed. Only the `pgm_hooks` (the phones)
+        hear it: no `version` bump, no screen wake-up."""
+        self.pgm_window = window
+        for fn in list(self.pgm_hooks):
+            try:
+                fn()
+            except Exception as e:   # noqa: BLE001 - a phone must never break the spectrum
+                self._log_once(("pgm hook", type(e).__name__), logging.ERROR,
+                               "pgm hook %r failed: %s", fn, e)
 
     def set_spectrum(self, frame: Any, state: str) -> None:
         """From the spectrum task: the frame to draw (None = no picture) and its state. Wakes

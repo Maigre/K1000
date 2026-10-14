@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* The graph (DESIGN §5.6, §7): the box spectrum (teal bars and hold dots, the box's own
-   ballistics), the PEAK, the EQ curve (OUT bands left out, a faint dashed ghost of what they
-   would add) and the band dots, all over a fixed +7 / −21 dB scale; y 0-44 is the overlay strip
-   (pills, PGM ▾, ▼ PEAK, the HUD), above +7 dB where no dot can be.
+   ballistics), the phone mic's cyan line (mic.js) or MEASURE's RESPONSE (measure.js), the PEAK
+   of the source shown (the mic's own when its line is on the graph, else the box's), the EQ
+   curve on top (OUT bands left out, a faint dashed ghost of what they would add) and the band
+   dots, all over a fixed +7 / −21 dB scale; y 0-44 is the overlay strip (PGM ▾, pills, ▼ PEAK,
+   ≋ fixed at the right edge so it never moves when the PEAK comes or goes, the HUD), above
+   +7 dB where no dot can be.
 
    gesture                       result
    tap a dot                     selects it; changes nothing
@@ -11,13 +14,19 @@
                                  axis, gain on a 0.5 dB grid with a 0 dB magnet, freq on 1/12 oct
    long-press 550 ms empty graph `grab {hz, s}`: the box's B3 helper at the nearest peak within
                                  ±⅓ oct (else the finger's frequency), silent; then the GAIN steps
-   long-press ▼ PEAK / marker    `grab {}`: the helper at the box's PEAK, exactly B3
+   long-press ▼ PEAK / marker    `grab {}`: the helper at the box's PEAK, exactly B3; on the mic's
+                                 PEAK `grab {hz}` (the box cannot see it): the same silent helper.
+                                 The PEAK is the one under the finger at TOUCH-DOWN: a mic PEAK
+                                 that goes during the hold (the music drops) still sends its own
+                                 hz, never the box's `grab {}`
    tap empty graph               closes the steps / the popover
    a second finger               stops it all: a drag sends nothing more (not even its last
                                  value; what was sent stays), a pending long-press is dropped */
 
-import { K, UI, band, bandKind, bandPath, canEdit, dotName, effGain, fieldOf, linked, nBands, render, setLocal, local, shortName, slide } from "./store.js";
-import { R, boxLive, binHz, mic, peakHz, snapToPeak, syncSub } from "./rta.js";
+import { K, UI, band, bandKind, bandPath, canEdit, dotName, effGain, fieldOf, linked, nBands, render, savePrefs, setLocal, local, shortName, slide } from "./store.js";
+import { R, activePeak, boxLive, boxShown, binHz, mic, resp, snapToPeak, syncSub } from "./rta.js";
+import { M as MIC, allowed as micAllowed, clearErr as micClearErr, frac as micFrac, sync as micSync } from "./mic.js";
+import { toggleMeasure } from "./measure.js";
 import { request, send } from "./link.js";
 import { hap } from "./haptics.js";
 import { editOk, toast } from "./view.js";
@@ -215,9 +224,11 @@ function draw() {
   cx.save();
   cx.beginPath(); cx.rect(PAD_L, 0, GW - PAD_L, yb + 1); cx.clip();
   if (!UI.dragging) {
-    if (boxLive()) drawBars(R.frame);
-    if (mic.source && typeof mic.draw === "function") mic.draw(cx, { xOf, yOf, yBot: yBot() });
-    const pk = peakHz();
+    if (boxShown() && boxLive()) drawBars(R.frame);
+    const lay = { xOf, yOf, top: Y_TOP - 8, bot: yb, cyan: C.cyan };
+    if (typeof mic.draw === "function") mic.draw(cx, lay);
+    if (typeof resp.draw === "function") resp.draw(cx, lay);
+    const ap = activePeak(), pk = ap ? ap.hz : null;
     if (pk) {
       const x = xOf(pk);
       cx.strokeStyle = C.cyan; cx.globalAlpha = 0.55; cx.setLineDash([3, 4]); cx.lineWidth = 1.5;
@@ -269,7 +280,8 @@ function tapHit(p) {
   }
   return best;
 }
-const peakHit = (p) => { const pk = peakHz(); return !!pk && Math.abs(p.x - xOf(pk)) <= 24; };
+// the PEAK marker under the finger: the PEAK itself ({hz, src}), recorded at touch-down, or null
+const peakHit = (p) => { const ap = activePeak(); return ap && Math.abs(p.x - xOf(ap.hz)) <= 24 ? { hz: ap.hz, src: ap.src } : null; };
 let ringRaf = 0;
 function ringStart(p, t0) {
   const ring = $("#ring");
@@ -291,7 +303,7 @@ function graphDown(e) {
   if (UI.popOpen) { closePop(); return; }
   const p = cvPt(e);
   const dh = linked() ? dragHit(p) : -1;
-  G = { pid: e.pointerId, p0: p, t0: now(), dh, th: tapHit(p), pk: peakHit(p), st: "pending", lp: 0, fired: false, sendT: 0, last: null };
+  G = { pid: e.pointerId, p0: p, t0: now(), dh, th: tapHit(p), ap: peakHit(p), st: "pending", lp: 0, fired: false, sendT: 0, last: null };
   try { cv.setPointerCapture(e.pointerId); } catch (err) { /* fine */ }
   if (dh < 0 && linked()) { G.lp = setTimeout(graphLong, 550); ringStart(p, G.t0); }
 }
@@ -361,8 +373,15 @@ function graphLong() {
   g.fired = true; g.lp = 0;
   ringStop();
   hap("arm");
-  if (g.pk) grab(null);
+  if (g.ap) grabPeak(g.ap);
   else grab(snapToPeak(clamp(fOf(g.p0.x), 20, 20000)));
+}
+// The PEAK pressed (recorded at touch-down, never re-read when the hold fires: the mic PEAK may
+// have gone meanwhile, and the box's PEAK is not what the finger is on): the box's = `grab {}`
+// (exactly B3); the mic's = `grab {hz}` at the frequency pressed, the same silent helper
+function grabPeak(ap) {
+  if (ap.src === "mic") grab(ap.hz, "mic");
+  else grab(null);
 }
 // stop: the drag ends WITHOUT sending what waits (a second finger, a stalled link)
 function graphUp(cancel, stop) {
@@ -387,9 +406,10 @@ function graphUp(cancel, stop) {
   }
 }
 
-// The box's notch helper (B3), silent: at `hz`, or at the box's PEAK when hz is null.
+// The box's notch helper (B3), silent: at `hz`, or at the box's PEAK when hz is null. src "mic":
+// hz is the phone mic's PEAK (said so).
 let grabbing = false;
-export function grab(hz) {
+export function grab(hz, src) {
   if (!editOk()) return;
   if (grabbing) return;
   grabbing = true;
@@ -405,7 +425,7 @@ export function grab(hz) {
       dirty = true;
       hap("ok");
       openStepper("gain", null);
-      const at = hz == null ? (v.peak ? "PEAK · " : "NO PEAK · Q only · ") : "";
+      const at = src === "mic" ? "MIC PEAK · " : hz == null ? (v.peak ? "PEAK · " : "NO PEAK · Q only · ") : "";
       toast(at + (v.new ? shortName(v.s) + " → " + fmtHz(v.f) + " · Q " + (num(v.q) ? v.q.toFixed(2) : "--") + " · silent · now cut"
         : shortName(v.s) + " already there · selected"), "white", 2600);
     } else if (!ok && r.code === "NOFREE") { toast("NO FREE BAND · FLAT one first", "red", 2600); hap("reject"); }
@@ -416,30 +436,43 @@ export function grab(hz) {
   if (id == null) grabbing = false;
 }
 
-// ------------------------------------------------------------------ the overlay strip: PGM ▾, ▼ PEAK
+// ------------------------------------------------------------------ the overlay strip: PGM ▾, ▼ PEAK, ≋
 export function openPop() { UI.popOpen = true; $("#pop").hidden = false; $("#srcBtn").setAttribute("aria-expanded", "true"); renderPop(); }
 export function closePop() { if (!UI.popOpen) return false; UI.popOpen = false; $("#pop").hidden = true; $("#srcBtn").setAttribute("aria-expanded", "false"); return true; }
+const SRC_WORD = { box: "PGM", mic: "MIC", both: "PGM+MIC", off: "RTA OFF" };
+const micChosen = () => UI.prefs.rta === "mic" || UI.prefs.rta === "both";
+function micWords() {
+  if (!micAllowed()) return MIC.perm === "denied" ? "Phone mic: BLOCKED. SETUP › THIS PHONE says how to allow it again. "
+    : MIC.perm === "unsupported" ? "Phone mic: " + (MIC.err || "not in this browser") + ". " : "Phone mic: ALLOW THE MIC: SETUP › THIS PHONE (asked there only, never from LIVE). ";
+  if (UI.prefs.mic === "off") return "Phone mic: OFF in SETUP › THIS PHONE. ";
+  return "Phone mic: the cyan line, uncalibrated, with its own PEAK" + (MIC.err ? " (" + MIC.err + ")" : "") + ". ";
+}
 function renderPop() {
   for (const b of $$("#popShow button")) b.setAttribute("aria-pressed", String(b.dataset.v === UI.prefs.rta));
+  for (const b of $$("#popMic button")) b.setAttribute("aria-pressed", String(b.dataset.k === "mspeed" ? b.dataset.v === (UI.prefs.mspeed === "fast" ? "fast" : "slow") : +b.dataset.v === micFrac()));
   $("#popFreeze").setAttribute("aria-pressed", String(UI.freeze));
   const H = K.hello, S = K.state;
   const st = R.frame ? R.frame.st : S && S.spectrum ? S.spectrum.state : "off";
   setText($("#popNote"), (H && H.rta && H.rta.enabled === false ? "Box spectrum DISABLED in k1000.yaml. "
     : "Box spectrum: PGM (" + st + "), with the box's own ballistics and PEAK" + (S && S.spectrum && S.spectrum.on === false ? ": OFF in SETUP › LIVE EQ. " : ". ")) +
-    "OUT and BOX MIC come after the gig. Phone mic: after the gig (SETUP › THIS PHONE). Advisory: nothing applies EQ by itself.");
+    micWords() + "Advisory: nothing applies EQ by itself.");
 }
 export function renderOverlay() {
   const S = K.state, H = K.hello, fr = R.frame;
-  let txt = "PGM";
-  if (UI.prefs.rta !== "box") txt = "RTA OFF";
-  else if (H && H.rta && H.rta.enabled === false) txt = "RTA OFF";
-  else if (UI.freeze) txt = "PGM ❄";
-  else if (fr && fr.st !== "live") txt = fr.st === "waiting" ? "PGM …" : fr.st === "unavailable" ? "NO RTA" : "RTA OFF";
-  else if (!fr && S && S.spectrum && S.spectrum.on === false) txt = "RTA OFF";
+  const src = SRC_WORD[UI.prefs.rta] ? UI.prefs.rta : "box";
+  let txt = SRC_WORD[src];
+  if (src === "box" || src === "both") {
+    if (H && H.rta && H.rta.enabled === false) txt = src === "both" ? "MIC" : "RTA OFF";
+    else if (UI.freeze) txt += " ❄";
+    else if (fr && fr.st !== "live") txt = src === "both" ? "MIC" : fr.st === "waiting" ? "PGM …" : fr.st === "unavailable" ? "NO RTA" : "RTA OFF";
+    else if (!fr && S && S.spectrum && S.spectrum.on === false) txt = src === "both" ? "MIC" : "RTA OFF";
+  } else if (src === "mic" && UI.freeze) txt += " ❄";
+  if (micChosen() && UI.prefs.mic !== "off" && !micAllowed()) txt = txt.replace("MIC", "MIC ?");
   setText($("#srcBtn"), txt + " ▾");
-  const pk = peakHz(), tag = $("#peakTag");
-  tag.hidden = !pk || UI.prefs.rta !== "box";
-  if (pk) setText(tag.querySelector("span"), "▼ PEAK " + fmtHz(pk));
+  const ap = activePeak(), tag = $("#peakTag");
+  tag.hidden = !ap;
+  if (ap) setText(tag.querySelector("span"), (ap.src === "mic" ? "▼ MIC " : "▼ PEAK ") + fmtHz(ap.hz));
+  tag.classList.toggle("mic", !!ap && ap.src === "mic");
   if (UI.popOpen) renderPop();
 }
 
@@ -458,18 +491,37 @@ export function initGraph() {
   window.addEventListener("pointercancel", (e) => { if (G && e.pointerId === G.pid) graphUp(true); });
   $("#srcBtn").addEventListener("click", () => (UI.popOpen ? closePop() : openPop()));
   $("#popX").addEventListener("click", closePop);
+  // a source: BOX · PHONE MIC · BOTH · OFF. PHONE MIC never asks for the mic here (DESIGN §9.15):
+  // without a grant it says where to allow it
   $("#popShow").addEventListener("click", (e) => {
     const b = e.target.closest("button");
     if (!b) return;
-    UI.prefs.rta = b.dataset.v === "off" ? "off" : "box";
-    try { localStorage.setItem("k1000v2.prefs", JSON.stringify(UI.prefs)); } catch (err) { /* fine */ }
-    syncSub(); dirty = true; render();
+    UI.prefs.rta = SRC_WORD[b.dataset.v] ? b.dataset.v : "box";
+    savePrefs();
+    if (micChosen()) {
+      micClearErr();
+      if (!micAllowed()) { toast(MIC.perm === "denied" ? "MIC BLOCKED: SETUP › THIS PHONE" : "ALLOW THE MIC: SETUP › THIS PHONE", "red", 2600); hap("reject"); }
+      else if (UI.prefs.mic === "off") toast("PHONE MIC IS OFF: SETUP › THIS PHONE", "red", 2600);
+    }
+    hap("tick");
+    syncSub(); micSync(); dirty = true; render();
+  });
+  // FAST / SLOW and the smoothing: the phone mic's line only (the box's bars keep the box's own)
+  $("#popMic").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.k === "mspeed") UI.prefs.mspeed = b.dataset.v === "fast" ? "fast" : "slow";
+    else UI.prefs.msmooth = [12, 6, 3].includes(+b.dataset.v) ? +b.dataset.v : 6;
+    savePrefs(); hap("tick"); dirty = true; render();
   });
   $("#popFreeze").addEventListener("click", () => { UI.freeze = !UI.freeze; syncSub(); dirty = true; render(); });
+  $("#measBtn").addEventListener("click", () => { closePop(); toggleMeasure(); dirty = true; });
+  // the tag's PEAK is fixed at touch-down too: in BOTH, a mic line that stops mid-hold turns the
+  // tag into the box's PEAK under the finger; the hold still grabs the mic PEAK it began on
   bindHold($("#peakTag"), {
     ms: 550, delay: 100,
-    begin: () => (linked() && peakHz() ? {} : null),
-    fire: () => { hap("arm"); grab(null); },
+    begin: () => { const ap = activePeak(); return linked() && ap ? { ap: { hz: ap.hz, src: ap.src } } : null; },
+    fire: (ctx) => { hap("arm"); grabPeak(ctx.ap); },
     early: () => toast("HOLD ▼ PEAK = notch helper there"),
   });
   if (window.ResizeObserver) new ResizeObserver(resize).observe(graphEl);

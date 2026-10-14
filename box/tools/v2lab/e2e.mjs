@@ -2,13 +2,16 @@
 /* The v2 page in headless Chromium against the fake box (fakebox.mjs): fit, gestures, the mute,
    two fingers, holds whose key leaves the page, choose-then-set, the ALIGN lock, the notch
    helper, a stalled link, link loss, odd hello / state shapes, the box-update reload, the
-   spectrum subscription, the APK bridge, and no console error anywhere.
+   spectrum subscription, the APK bridge, the phone mic, MEASURE and RESPONSE (full Chromium with
+   a fake mic playing a WAV made here: wav.mjs), and no console error anywhere.
      K1000_PLAYWRIGHT=/path/to/node_modules/playwright node box/tools/v2lab/e2e.mjs [fixtures.json] [--only=name,...] [--shots=dir]
    Prints one JSON object {ok, checks:[{name, ok, detail}]} on stdout; exit 1 on a failure. */
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { FakeBox, center, clone, finger, hands, loadFixtures, loadPlaywright, showState, sleep, startStatic } from "./fakebox.mjs";
+import { makeSignal, writeWav } from "./wav.mjs";
 import { stepValue } from "../../k1000/web/static/v2/js/fields.js";
 
 const args = process.argv.slice(2);
@@ -29,15 +32,39 @@ const UA = "Mozilla/5.0 (Linux; Android 13; Pixel 4a) AppleWebKit/537.36 (KHTML,
 const web = await startStatic();
 const browser = await chromium.launch();
 
+// opts.browser: another browser (the fake-mic ones); opts.permPrompt: the Permissions API says
+// "prompt" for the mic (as a phone that never allowed it, or the APK's WebView); opts.pgmWav: the
+// fake box's program for RESPONSE; opts.pgm: null = an older box (no hello.pgm). Every
+// getUserMedia call and its stream are recorded (window.__gum, window.__streams), and every
+// network request (t.reqs).
 async function open(opts = {}) {
   const vp = opts.vp || { width: 393, height: 851 };
-  const ctx = await browser.newContext({ viewport: vp, deviceScaleFactor: 2.75, isMobile: true, hasTouch: true, userAgent: UA, serviceWorkers: "block" });
+  const ctx = await (opts.browser || browser).newContext({ viewport: vp, deviceScaleFactor: 2.75, isMobile: true, hasTouch: true, userAgent: UA, serviceWorkers: "block" });
   if (opts.prefs) await ctx.addInitScript((p) => { try { localStorage.setItem("k1000v2.prefs", JSON.stringify(p)); } catch (e) { /* fine */ } }, opts.prefs);
+  if (opts.permPrompt) {
+    await ctx.addInitScript(() => {
+      const q = navigator.permissions.query.bind(navigator.permissions);
+      navigator.permissions.query = (d) => (d && d.name === "microphone" ? Promise.resolve({ state: "prompt", onchange: null }) : q(d));
+    });
+  }
+  await ctx.addInitScript(() => {
+    window.__gum = []; window.__streams = [];
+    const md = navigator.mediaDevices;
+    if (md && md.getUserMedia) {
+      const orig = md.getUserMedia.bind(md);
+      md.getUserMedia = (c) => {
+        window.__gum.push({ at: performance.now(), c: JSON.stringify(c) });
+        return orig(c).then((st) => { window.__streams.push(st); return st; });
+      };
+    }
+  });
   const f2 = Object.assign({}, fx, { state: opts.state || showState(fx) });
   if (opts.hello) f2.hello = opts.hello(clone(fx.hello));
-  const box = new FakeBox(f2, { stepValue });
+  const box = new FakeBox(f2, { stepValue, pgmWav: opts.pgmWav, pgm: opts.pgm });
   await box.attach(ctx);
   const page = await ctx.newPage();
+  const reqs = [];
+  page.on("request", (r) => reqs.push(r.method() + " " + r.url()));
   // opts.clock: the page's clock is Playwright's, paused: a slide's speed is then exact (headless
   // Chromium delivers touch moves in uneven bursts), and t.tick(ms) moves time
   if (opts.clock) await page.clock.install();
@@ -51,7 +78,7 @@ async function open(opts = {}) {
   const f = await finger(page);
   if (opts.hands) Object.assign(f, { two: await hands(page) });
   const tick = opts.clock ? async (ms) => { await page.clock.runFor(Math.max(1, Math.round(ms))); await sleep(5); } : (ms) => sleep(ms);
-  return { ctx, page, box, f, tick, clock: !!opts.clock, close: async () => { box.stop(); await ctx.close(); } };
+  return { ctx, page, box, f, tick, reqs, clock: !!opts.clock, close: async () => { box.stop(); await ctx.close(); } };
 }
 const ui = (page) => page.evaluate(() => K1000v2.ui());
 const toasts = (page) => page.evaluate(() => K1000v2.toasts.slice());
@@ -333,6 +360,67 @@ await run("chips", async () => {
   await f.hold(p3.x, p3.y, 750); await sleep(200);
   b = box.ofType("band");
   check("chips: the next hold brings it back IN", b.length === 1 && b[0].on === true, b);
+  await t.close();
+});
+
+// ================================================================== three taps = FLAT (Thomas, 14/10)
+await run("flat3", async () => {
+  const t = await open({ tag: "flat3" });
+  const { page, box, f } = t;
+  const chip = (s) => `#bands .chip[data-s="${s}"]`;
+  const setP3 = async (g, on = true) => { box.push({ bands: box.state.bands.map((b, i) => (i === 2 ? Object.assign(b, { g, on }) : b)) }); await sleep(200); };
+  const tap3 = async (c, gap = 150) => { for (let i = 0; i < 3; i++) { await f.tap(c.x, c.y, 50); await sleep(gap); } await sleep(250); };
+  const undoShown = () => page.isVisible("#undo");
+  const p3 = await center(page, chip(2)), p4 = await center(page, chip(3));
+  await setP3(-4);
+  await f.tap(p4.x, p4.y, 50); await sleep(700);                 // P4 selected
+  await tap3(p3);                                                // tap 1 selects P3: it counts for nothing
+  check("flat3: the tap that selects a chip starts no count (select + 2 taps: nothing)", !box.ofType("band").length && (await ui(page)).sel === 2, box.sent);
+  await sleep(700);
+  await tap3(p3);
+  let b = box.ofType("band");
+  check("flat3: three taps on the selected chip send band {s, g: 0, on: true}", b.length === 1 && b[0].s === 2 && b[0].g === 0 && b[0].on === true && !("f" in b[0]) && !("q" in b[0]), b);
+  check("flat3: the toast says P3 FLAT and UNDO shows", (await toasts(page)).includes("P3 FLAT") && (await undoShown()) && (await page.textContent("#undo")) === "UNDO P3 FLAT");
+  check("flat3: FLAT plays a click", (await haps(page)).some((x) => String(x).includes("click")), await haps(page));
+  box.clearSent();
+  await tapSel(t, page, "#undo"); await sleep(250);
+  b = box.ofType("band");
+  check("flat3: UNDO puts the cut back: band {s, g: -4, on: true}", b.length === 1 && b[0].s === 2 && b[0].g === -4 && b[0].on === true, b);
+  check("flat3: UNDO goes once used", !(await undoShown()));
+  box.clearSent(); await sleep(700);
+  for (let i = 0; i < 3; i++) { await f.tap(p3.x, p3.y, 50); await sleep(600); }
+  check("flat3: three slow taps (600 ms apart) do nothing", !box.ofType("band").length, box.sent);
+  await sleep(700);
+  await setP3(3);
+  await tap3(p3);
+  b = box.ofType("band");
+  check("flat3: a boost is flattened too", b.length === 1 && b[0].g === 0 && b[0].on === true, b);
+  check("flat3: but no UNDO for a boost that was IN (no rise from a tap)", !(await undoShown()) && (await toasts(page)).some((x) => /P3 FLAT · boost gone/.test(x)));
+  box.clearSent(); await sleep(700);
+  await tap3(p3);
+  check("flat3: on a flat band: nothing sent, ALREADY FLAT", !box.ofType("band").length && (await toasts(page)).includes("P3 ALREADY FLAT"), box.sent);
+  await sleep(700);
+  await setP3(5, false);
+  box.clearSent();
+  await tap3(p3);
+  check("flat3: an OUT band comes back IN flat, and UNDO is offered (OUT is silent)", box.ofType("band").length === 1 && (await undoShown()) && (await toasts(page)).includes("P3 FLAT · IN"));
+  box.clearSent();
+  await tapSel(t, page, "#undo"); await sleep(250);
+  b = box.ofType("band");
+  check("flat3: UNDO puts it back OUT with its gain: band {g: 5, on: false}", b.length === 1 && b[0].g === 5 && b[0].on === false, b);
+  await sleep(700);
+  await setP3(-6);
+  box.clearSent();
+  await tap3(p3);
+  check("flat3: UNDO shows again", await undoShown());
+  await setP3(-2);                                               // the box moved P3 meanwhile (B2 + E4)
+  check("flat3: UNDO goes when the band moves meanwhile", !(await undoShown()));
+  await sleep(700);
+  await setP3(-6);
+  await tap3(p3);
+  check("flat3: (and once more for the timeout)", await undoShown());
+  await sleep(5200);
+  check("flat3: UNDO goes after 5 s", !(await undoShown()));
   await t.close();
 });
 
@@ -1069,10 +1157,13 @@ await run("native", async () => {
     const ch = new MessageChannel();
     window.__port = ch.port1;
     ch.port1.onmessage = (e) => window.__app.push(JSON.parse(e.data));
-    window.postMessage(JSON.stringify({ t: "native", v: 1, app: "0.2.0", build: "bench", ui: "v2",
+    window.postMessage(JSON.stringify({ t: "native", v: 1, app: "0.2.2", code: 5, build: "bench", ui: "v2",
       caps: ["haptic", "fullscreen", "exclusion", "keep_awake", "diag", "back", "set_ui", "insets"] }), location.origin, [ch.port2]);
   });
   await sleep(400);
+  const his = t.box.ofType("hi");
+  check("native: a handshake after the hello says hi again with the app's versionCode (app 0.2.2: code 5)",
+    his.length === 2 && his[0].app === null && his[0].bridge === null && his[1].app === 5 && his[1].bridge === 1 && his[1].caps.includes("haptic"), his);
   const app = () => page.evaluate(() => window.__app.slice());
   let a = await app();
   check("native: the page answers ready {v: 1, caps: [back]}", a.some((m) => m.t === "ready" && m.v === 1 && Array.isArray(m.caps) && m.caps.includes("back")), a);
@@ -1093,11 +1184,11 @@ await run("native", async () => {
   check("native: Back at the top level answers handled: false", a.some((m) => m.t === "back_handled" && m.id === 8 && m.handled === false));
   await tapSel(t, page, "#setupBtn");
   await page.locator("#shTabs button.me").click(); await sleep(150);
-  await page.evaluate(() => window.__port.postMessage(JSON.stringify({ t: "diag", app: "0.2.0", build: "bench", model: "Pixel 4a", release: "13", sdk: 33,
+  await page.evaluate(() => window.__port.postMessage(JSON.stringify({ t: "diag", app: "0.2.2", build: "bench", model: "Pixel 4a", release: "13", sdk: 33,
     webview_version: "141.0", unprocessed_supported: true, has_vibrator: true, system_haptics: true, exclusion_rects: [[0, 1, 2, 3]], density: 2.75 })));
   await sleep(300);
   check("native: the app's diagnostics show in THIS PHONE", (await page.textContent("#shBody")).includes("Pixel 4a · Android 13"));
-  check("native: THIS PHONE shows the app's version and its UI v1 key", (await page.textContent("#shBody")).includes("app 0.2.0") && (await page.isVisible("#shBody button.act.go")));
+  check("native: THIS PHONE shows the app's version and its UI v1 key", (await page.textContent("#shBody")).includes("app 0.2.2") && (await page.locator("#shBody button.act.go", { hasText: "UI v1" }).isVisible()));
   await page.locator("#shBody button.act.go", { hasText: "UI v1" }).click(); await sleep(150);
   a = await app();
   check("native: UI v1 = set_ui {ui: v1}", a.some((m) => m.t === "set_ui" && m.ui === "v1"));
@@ -1143,6 +1234,534 @@ await run("sw", async () => {
   box.stop();
   await ctx.close();
 });
+
+// ================================================================== MEASURE fits, the popover fits (no mic needed)
+await run("fitm", async () => {
+  for (const vp of [{ width: 393, height: 851 }, { width: 393, height: 740 }, { width: 393, height: 600 }, { width: 360, height: 640 }, { width: 393, height: 544 }]) {
+    const L = vp.width + "x" + vp.height;
+    const t = await open({ vp, tag: "fitm " + L });
+    const { page } = t;
+    // ≋ sits at the strip's right edge, ▼ PEAK left of it: a PEAK coming or going never moves ≋
+    // under a finger (it used to jump ~100 px, and ▼ took its place)
+    const strip = () => page.evaluate(() => {
+      const r = (id) => { const b = document.getElementById(id).getBoundingClientRect(); return [Math.round(b.left), Math.round(b.right)]; };
+      return { meas: r("measBtn"), tag: document.getElementById("peakTag").hidden ? null : r("peakTag") };
+    });
+    await page.waitForSelector("#peakTag:not([hidden])", { timeout: 3000 });
+    const withPk = await strip();
+    t.box.peakHz = null;
+    await page.waitForSelector("#peakTag[hidden]", { state: "attached", timeout: 3000 });
+    const noPk = await strip();
+    t.box.peakHz = 3170;
+    await page.waitForSelector("#peakTag:not([hidden])", { timeout: 3000 });
+    check(`fitm ${L}: ≋ stays put when the PEAK comes or goes (▼ PEAK left of it)`,
+      withPk.tag && withPk.meas.join() === noPk.meas.join() && withPk.tag[1] <= withPk.meas[0] && withPk.meas[1] >= vp.width - 20, { withPk, noPk });
+    await tapSel(t, page, "#srcBtn");
+    await fitCheck(page, L + " PGM ▾ open");
+    const muteOnTop = () => page.evaluate(() => { const el = document.getElementById("mute"), b = el.getBoundingClientRect();
+      const e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!e && (e === el || el.contains(e)) && b.height >= 44; });
+    check(`fitm ${L}: MUTE uncovered with the popover open`, await muteOnTop());
+    if (L === "393x740") await shot(page, "popover-" + L);
+    await tapSel(t, page, "#popX");
+    await tapSel(t, page, "#measBtn");
+    check(`fitm ${L}: ≋ opens MEASURE (the MEASURE row in the ALIGN row's place)`, (await ui(page)).measure === true && (await page.isVisible("#measRow")) && (await page.isHidden("#alignRow")));
+    await fitCheck(page, L + " MEASURE RTA");
+    await shot(page, "measure-rta-" + L);
+    await page.locator("#measRow button[data-view=resp]").click(); await sleep(200);
+    await fitCheck(page, L + " MEASURE RESPONSE");
+    check(`fitm ${L}: MUTE uncovered in MEASURE`, await muteOnTop());
+    await tapSel(t, page, "#srcBtn");
+    await fitCheck(page, L + " MEASURE + PGM ▾");
+    await tapSel(t, page, "#popX");
+    await tapSel(t, page, "#measBtn");
+    check(`fitm ${L}: ≋ again leaves MEASURE`, (await ui(page)).measure === false && (await page.isVisible("#alignRow")));
+    await t.close();
+  }
+});
+
+// ================================================================== MEASURE without a mic, an older box
+await run("measure", async () => {
+  const t0 = await open({ tag: "measure-nopgm", pgm: null });
+  await tapSel(t0, t0.page, "#measBtn");
+  await t0.page.locator("#measRow button[data-view=resp]").click(); await sleep(250);
+  check("measure: hello.pgm null (this box cannot serve it): RESPONSE says so, nothing subscribed",
+    (await toasts(t0.page)).includes("RESPONSE: this box has no spectrum (k1000.yaml)") && !t0.box.ofType("sub").some((m) => "pgm" in m));
+  await t0.close();
+  const t = await open({ tag: "measure-old", pgm: "absent" });
+  const { page, box } = t;
+  await tapSel(t, page, "#measBtn");
+  await page.locator("#measRow button[data-view=resp]").click(); await sleep(250);
+  check("measure: an older box (no hello.pgm): RESPONSE says it needs the box update, nothing subscribed",
+    (await toasts(page)).includes("RESPONSE needs the box update") && !box.ofType("sub").some((m) => "pgm" in m) && (await ui(page)).prefs.mview !== "resp");
+  check("measure: its RESPONSE key is marked unavailable", (await page.getAttribute("#measRow button[data-view=resp]", "class")).includes("na"));
+  // the BAL steps open, then ≋: they close with their tile
+  await tapSel(t, page, "#measBtn");
+  await tapSel(t, page, "#alignRow .tile[data-f=bal]");
+  check("measure: the BAL steps open on LIVE", (await ui(page)).field === "bal");
+  await tapSel(t, page, "#measBtn");
+  check("measure: ≋ closes steps whose tile it hides (BAL)", (await ui(page)).field === null && (await ui(page)).measure === true);
+  // Back: the steps, then MEASURE (then nothing: handled false)
+  await tapSel(t, page, "#tiles .tile[data-f=gain]");
+  await page.keyboard.press("Escape"); await sleep(100);
+  check("measure: Back closes the steps first, MEASURE stays", (await ui(page)).field === null && (await ui(page)).measure === true);
+  await page.keyboard.press("Escape"); await sleep(100);
+  check("measure: Back then leaves MEASURE", (await ui(page)).measure === false && (await page.isVisible("#alignRow")));
+  await t.close();
+});
+
+// ================================================================== the phone mic: Chromium's fake capture plays a WAV made here
+const LABTMP = fs.mkdtempSync(path.join(os.tmpdir(), "k1000-v2lab-"));
+const WAV = {
+  pink: writeWav(path.join(LABTMP, "pink.wav"), makeSignal("pink")),
+  tone: writeWav(path.join(LABTMP, "tone-1k.wav"), makeSignal("tone", { hz: 1000, above: 15 })),
+  tilt: writeWav(path.join(LABTMP, "pink-tilt-2db-oct.wav"), makeSignal("tilt", { dbPerOct: 2 })),
+  // the box's PEAK rule finds this one on the engine's numbers (4 dB would do); the analyser's
+  // mean power per band, the first build's feed, needed 10 dB
+  tone8k: writeWav(path.join(LABTMP, "tone-8k.wav"), makeSignal("tone", { hz: 8000, above: 7 })),
+  // pink noise 6x over full scale: every block clips (a phone next to the PA)
+  clip: writeWav(path.join(LABTMP, "pink-clipped.wav"), makeSignal("pink", { peak: 3 })),
+};
+const micBrowser = (wav, ui = true) => chromium.launch({ channel: "chromium",
+  args: [...(ui ? ["--use-fake-ui-for-media-stream"] : []), "--use-fake-device-for-media-stream", `--use-file-for-fake-audio-capture=${wav}`] });
+const mic = (page) => page.evaluate(() => K1000v2.mic());
+const meas = (page) => page.evaluate(() => K1000v2.measure());
+const gum = (page) => page.evaluate(() => window.__gum.length);
+const tracksEnded = (page) => page.evaluate(() => window.__streams.every((s) => s.getTracks().every((tr) => tr.readyState === "ended")));
+const liveTracks = (page) => page.evaluate(() => window.__streams.reduce((n, s) => n + s.getTracks().filter((tr) => tr.readyState === "live").length, 0));
+async function until(page, fn, arg, ms = 6000) {
+  try { await page.waitForFunction(fn, arg, { timeout: ms, polling: 100 }); return true; } catch (e) { return false; }
+}
+const setHidden = (page, hidden) => page.evaluate((hd) => { Object.defineProperty(document, "hidden", { get: () => hd, configurable: true }); document.dispatchEvent(new Event("visibilitychange")); }, hidden);
+const pgmSubs = (box) => box.ofType("sub").filter((m) => "pgm" in m).map((m) => m.pgm);
+const lineSpread = (ln, lo, hi) => {
+  const v = ln.f.map((f, i) => [f, ln.db[i]]).filter(([f, d]) => f >= lo && f <= hi && d != null).map((x) => x[1]).sort((a, b) => a - b);
+  const med = v[v.length >> 1];
+  return { med, lo: v[0] - med, hi: v[v.length - 1] - med, n: v.length };
+};
+async function popPick(t, page, v) { await tapSel(t, page, "#srcBtn"); await page.locator(`#popShow button[data-v=${v}]`).click(); await sleep(150); await tapSel(t, page, "#popX"); }
+
+// A: never asked before (the Permissions API says "prompt"): no getUserMedia from LIVE, the popover
+// or MEASURE; SETUP › THIS PHONE › ALLOW asks (the fake UI accepts); then the line, the tracks'
+// life, RESPONSE against the fake box's program (the same pink noise, the engine's estimator)
+await run("mic", async () => {
+  const bA = await micBrowser(WAV.pink);
+  const t = await open({ browser: bA, tag: "mic", permPrompt: true, pgmWav: WAV.pink, prefs: { rta: "mic", mspeed: "slow", msmooth: 3 } });
+  const { page, box, f } = t;
+  try {
+    await sleep(400);
+    check("mic: PHONE MIC chosen but never allowed: the graph says ALLOW THE MIC: SETUP › THIS PHONE, the tag MIC ?",
+      (await page.textContent("#gNote")) === "ALLOW THE MIC: SETUP › THIS PHONE" && (await page.textContent("#srcBtn")).startsWith("MIC ?"), [await page.textContent("#gNote"), await page.textContent("#srcBtn")]);
+    await popPick(t, page, "both");
+    await popPick(t, page, "mic");
+    check("mic: picking PHONE MIC / BOTH in PGM ▾ says where to allow it", (await toasts(page)).includes("ALLOW THE MIC: SETUP › THIS PHONE"));
+    await tapSel(t, page, "#measBtn");
+    await tapSel(t, page, "#mMic");
+    await page.locator("#measRow button[data-view=resp]").click(); await sleep(300);
+    check("mic: MEASURE says it too (RESPONSE: MIC OFF, allow it in SETUP)", /ALLOW THE MIC: SETUP › THIS PHONE/.test(await page.textContent("#gNote")), await page.textContent("#gNote"));
+    check("mic: no getUserMedia from LIVE, the popover or MEASURE before the grant", (await gum(page)) === 0 && (await mic(page)).gum.length === 0);
+    // MUTE in MEASURE: hold 0.6 s mutes, 1.2 s unmutes, as everywhere
+    const mu = await center(page, "#mute");
+    await f.hold(mu.x, mu.y, 700); await sleep(200);
+    const m1 = box.ofType("mute");
+    await f.hold(mu.x, mu.y, 1350); await sleep(200);
+    const m2 = box.ofType("mute");
+    check("mic: MUTE works in MEASURE (mute, then unmute)", m1.length === 1 && m1[0].on === true && m2.length === 2 && m2[1].on === false, m2);
+    await page.locator("#measRow button[data-view=rta]").click(); await sleep(100);
+    await tapSel(t, page, "#measBtn");
+    // the one place that asks
+    await tapSel(t, page, "#setupBtn");
+    await page.locator("#shTabs button.me").click(); await sleep(150);
+    const row = '#shBody [data-row="phone_mic"]';
+    check("mic: SETUP › THIS PHONE › Phone mic reads NOT ALLOWED YET with an ALLOW THE MIC key", (await page.textContent(row + " .rv")) === "NOT ALLOWED YET" && (await page.isVisible(row + " button.act")));
+    await page.locator(row + " button.act").click();
+    await until(page, () => K1000v2.mic().session === true && K1000v2.mic().state === "off");
+    await sleep(300);
+    const m = await mic(page);
+    check("mic: ALLOW asks once, from SETUP › THIS PHONE", (await gum(page)) === 1 && m.gum.length === 1 && m.gum[0].from === "setup" && m.gum[0].sheet === "setup" && m.gum[0].tab === "THIS PHONE", m.gum);
+    check("mic: it asked echoCancellation, noiseSuppression and autoGainControl OFF",
+      /"echoCancellation":false/.test(await page.evaluate(() => window.__gum[0].c)) && /"noiseSuppression":false/.test(await page.evaluate(() => window.__gum[0].c)) && /"autoGainControl":false/.test(await page.evaluate(() => window.__gum[0].c)));
+    check("mic: SETUP shows what the browser kept (read back, all three OFF)", /read back: echo cancel OFF · noise suppr\. OFF · auto gain OFF/.test(await page.textContent(row)), await page.textContent(row));
+    check("mic: the row is now OFF / ON, ON", (await page.textContent(row + " .rv")) === "ON" && (await page.isHidden(row + " button.act")) && (await page.getAttribute(row + " .seg button:nth-child(2)", "aria-pressed")) === "true");
+    check("mic: the tracks are stopped while SETUP covers LIVE", (await tracksEnded(page)) && m.state === "off");
+    await tapSel(t, page, "#shX");
+    const on1 = await until(page, () => K1000v2.mic().state === "on" && K1000v2.mic().frames > 5);
+    const g2 = (await mic(page)).gum;
+    check("mic: back on LIVE (PHONE MIC chosen) it starts by itself, no prompt", on1 && g2.length === 2 && g2[1].from === "auto" && (await liveTracks(page)) === 1, g2);
+    await shot(page, "mic-live");
+    // the line: pink noise reads flat (band power), SLOW, 1/3 oct
+    await sleep(5000);
+    let ln = (await mic(page)).line;
+    const sp = lineSpread(ln, 200, 8000);
+    check("mic: pink noise -> the mic line flat within ±1.5 dB of its median, 200 Hz-8 kHz (SLOW, 1/3 oct)", ln && sp.lo >= -1.5 && sp.hi <= 1.5, sp);
+    const y = await page.evaluate(() => { const ln = K1000v2.mic().line; return ln.top; });
+    check("mic: the line is placed on the EQ grid (its loudest band at −3 dB), uncalibrated", typeof y === "number");
+    // the tracks' life: a sheet, the page hidden, the source off; back without a prompt
+    await tapSel(t, page, "#stBtn");
+    const offSheet = await until(page, () => K1000v2.mic().state === "off");
+    check("mic: a sheet over LIVE stops the tracks (track.stop)", offSheet && (await tracksEnded(page)));
+    await tapSel(t, page, "#shX");
+    check("mic: closing it restarts them, no prompt", (await until(page, () => K1000v2.mic().state === "on")) && (await liveTracks(page)) === 1);
+    await setHidden(page, true);
+    const offHidden = await until(page, () => K1000v2.mic().state === "off");
+    check("mic: the page hidden stops the tracks", offHidden && (await tracksEnded(page)));
+    await setHidden(page, false);
+    check("mic: visible again: restarted, no prompt", (await until(page, () => K1000v2.mic().state === "on")) && (await liveTracks(page)) === 1);
+    await popPick(t, page, "box");
+    check("mic: PGM ▾ › BOX (the mic not shown) stops the tracks", (await until(page, () => K1000v2.mic().state === "off")) && (await tracksEnded(page)));
+    await popPick(t, page, "mic");
+    check("mic: PGM ▾ › PHONE MIC again: restarted", (await until(page, () => K1000v2.mic().state === "on")) && (await liveTracks(page)) === 1);
+    check("mic: every getUserMedia after the grant was an automatic one (no new prompt possible)", (await mic(page)).gum.slice(1).every((x) => x.from === "auto"));
+    // MUTE with the popover open
+    await tapSel(t, page, "#srcBtn");
+    box.clearSent();
+    await f.hold(mu.x, mu.y, 700); await sleep(200);
+    check("mic: MUTE works with PGM ▾ open (the popover covers the graph only)", box.ofType("mute").length === 1 && (await ui(page)).popOpen, box.ofType("mute"));
+    box.push({ muted: false, hold: "mute", mute_src: "" }); await sleep(150);
+    await tapSel(t, page, "#popX");
+
+    // ---------------------------------------------------------------- RESPONSE
+    await popPick(t, page, "both");
+    check("resp: PGM ▾ › BOTH: the box's bars and the mic line (subscribed, the mic on)", (await until(page, () => K1000v2.rta().subscribed && K1000v2.mic().state === "on", null, 3000)));
+    await tapSel(t, page, "#measBtn");
+    box.clearSent();
+    await page.locator("#measRow button[data-view=resp]").click();
+    check("resp: RESPONSE shown = sub {pgm: true}", (await until(page, () => K1000v2.measure().frames > 0, null, 3000)) && pgmSubs(box)[0] === true, box.ofType("sub"));
+    check("resp: RESPONSE stops the box spectrum (one picture: sub {rta: false})", box.ofType("sub").filter((x) => "rta" in x).map((x) => x.rta).slice(-1)[0] === false && !(await page.evaluate(() => K1000v2.rta().subscribed)));
+    await shot(page, "resp-start");
+    const full = await until(page, () => K1000v2.measure().cover >= 20, null, 30000);
+    let r = await meas(page);
+    const rs = r.line ? lineSpread(r.line, 200, 5000) : null;
+    check("resp: the average fills to 20 s of windows", full && r.added >= 40, [r.cover, r.added, r.dropped, r.reason]);
+    check("resp: the same pink noise on both sides (matched estimators) -> RESPONSE flat within ±1 dB, 200 Hz-5 kHz", rs && rs.lo >= -1 && rs.hi <= 1 && Math.abs(rs.med) <= 0.5, rs);
+    check("resp: nothing drawn below 100 Hz or above 12 kHz (the phone's range, DESIGN §7), up to 12 kHz",
+      r.line && r.line.f.every((x, i) => (x >= 100 && x <= 12000) || r.line.db[i] === null) && r.line.f.some((x, i) => x > 10000 && x <= 12000 && r.line.db[i] !== null) && r.maxHz === 12000,
+      r.line && r.line.f.map((x, i) => [Math.round(x), r.line.db[i]]).filter(([x]) => x > 11000 && x < 13500));
+    check("resp: the graph says the coverage", /RESPONSE · 20 s of 20 · uncalibrated mic − program/.test(await page.textContent("#gNote")), await page.textContent("#gNote"));
+    await shot(page, "resp-pink");
+    // muted: paused (nothing added), said; unmuted: on again
+    let a0 = r.added;
+    box.push({ muted: true, hold: "unmute", mute_src: "B4", mute_seq: box.state.mute_seq + 1 });
+    await sleep(1600);
+    r = await meas(page);
+    check("resp: muted pauses it (no window added), the graph says PAUSED · MUTED", r.added === a0 && r.reason === "MUTED" && /PAUSED · MUTED · 20 s of 20/.test(await page.textContent("#gNote")), [r.added, a0, r.reason, await page.textContent("#gNote")]);
+    box.push({ muted: false, hold: "mute", mute_src: "" });
+    check("resp: unmuted, it adds windows again", await until(page, (n) => K1000v2.measure().added >= n + 2, a0, 3000));
+    // no program, no spectrum
+    box.pgmProg = false; await sleep(1300);
+    r = await meas(page); a0 = r.added; await sleep(1100);
+    check("resp: the box's prog false pauses it: PAUSED · NO PROGRAM · play music", (await meas(page)).added === a0 && (await meas(page)).reason === "NO PROGRAM" && /PAUSED · NO PROGRAM · play music/.test(await page.textContent("#gNote")));
+    box.pgmProg = null; await sleep(1300);
+    check("resp: prog null (the box cannot tell) pauses it too: BOX: PROGRAM NOT KNOWN", (await meas(page)).reason === "BOX: PROGRAM NOT KNOWN", (await meas(page)).reason);
+    box.pgmProg = true; box.pgmSt = "unavailable"; await sleep(1300);
+    r = await meas(page); a0 = r.added; await sleep(3000);
+    check("resp: a box without a spectrum (said once, no frames after): PAUSED · BOX: NO SPECTRUM, held", (await meas(page)).added === a0 && (await meas(page)).reason === "BOX: NO SPECTRUM" &&
+      /PAUSED · BOX: NO SPECTRUM/.test(await page.textContent("#gNote")), (await meas(page)).reason);
+    box.pgmSt = "waiting"; await sleep(800);
+    check("resp: waiting: PAUSED · BOX: SPECTRUM STARTING", (await meas(page)).reason === "BOX: SPECTRUM STARTING", (await meas(page)).reason);
+    box.pgmSt = "live";
+    await until(page, (n) => K1000v2.measure().added >= n + 2, a0, 3000);
+    // the master does not restart it; a band, BAL, a SETUP change do
+    r = await meas(page);
+    box.push({ master_db: box.state.master_db - 2 }); await sleep(400);
+    const rm = await meas(page);
+    check("resp: the master does not restart it (divided out of each mic tick)", rm.restarts === r.restarts && rm.cover >= 19);
+    check("resp: the mic ticks of the 0.8 s after a master move are not used (the engine's volume ramp)", rm.settled > r.settled, [r.settled, rm.settled]);
+    await sleep(600);
+    box.push({ bands: box.state.bands.map((b, i) => (i === 2 ? Object.assign({}, b, { g: -3 }) : b)) }); await sleep(300);
+    const rb = await meas(page);
+    check("resp: a band change restarts it (RESTARTED · the live EQ changed)", rb.restarts === r.restarts + 1 && rb.cover < 2 && /RESTARTED · the live EQ changed/.test(await page.textContent("#gNote")), [rb.restarts, rb.cover, await page.textContent("#gNote")]);
+    const fa = await until(page, () => K1000v2.measure().firstAddMs != null, null, 4000);
+    check("resp: after a restart the mic's first 0.4 s are not used (the change must reach the mic): its first window is kept 0.4 s or more after",
+      fa && (await meas(page)).firstAddMs >= 400, (await meas(page)).firstAddMs);
+    for (const [what, patch] of [["BAL", { balance_db: 0.5 }], ["the Lo-Cut", { lowcut_hz: 120 }], ["polarity", { setup: Object.assign({}, box.state.setup, { top_inverted: true }) }],
+      ["a band OUT", { bands: box.state.bands.map((b, i) => (i === 0 ? Object.assign({}, b, { on: false }) : b)) }],
+      ["the system EQ (/tune, state.sys_eq)", { sys_eq: "0badc0de" }]]) {
+      await sleep(1200);
+      const n0 = (await meas(page)).restarts;
+      box.push(patch); await sleep(300);
+      check("resp: " + what + " restarts it", (await meas(page)).restarts === n0 + 1);
+    }
+    check("resp: ...and says so: RESTARTED · the system EQ changed", /RESTARTED · the system EQ changed/.test(await page.textContent("#gNote")), await page.textContent("#gNote"));
+    // the box ramping Main in (boot, engine back): paused, said
+    await sleep(800);
+    box.push({ ramping: true }); await sleep(400);
+    r = await meas(page); a0 = r.added; await sleep(1200);
+    // (the note may still say the last RESTARTED for its 2.6 s first)
+    const rampSaid = await until(page, () => /PAUSED · BOX RAMPING IN/.test(document.getElementById("gNote").textContent), null, 3000);
+    check("resp: the box ramping in pauses it: PAUSED · BOX RAMPING IN", rampSaid && (await meas(page)).added === a0 && (await meas(page)).reason === "BOX RAMPING IN",
+      [(await meas(page)).added, a0, (await meas(page)).reason, await page.textContent("#gNote")]);
+    box.push({ ramping: false });
+    // RESET, AVG 10 s
+    await sleep(1500);
+    await tapSel(t, page, "#mReset");
+    check("resp: RESET empties it", (await meas(page)).cover < 1 && /AVERAGE RESET/.test(await page.textContent("#gNote")));
+    await tapSel(t, page, "#mAvg");
+    check("resp: AVG 10 s", (await meas(page)).span === 10 && (await page.textContent("#mAvg span")) === "10 s");
+    // the subscription's life: RTA view, a sheet, hidden, the box's lapse, leaving MEASURE
+    box.clearSent();
+    await page.locator("#measRow button[data-view=rta]").click(); await sleep(200);
+    check("resp: the RTA view = sub {pgm: false}", pgmSubs(box).slice(-1)[0] === false);
+    await page.locator("#measRow button[data-view=resp]").click(); await sleep(200);
+    await tapSel(t, page, "#setupBtn"); await sleep(100);
+    check("resp: a sheet = sub {pgm: false}", pgmSubs(box).slice(-1)[0] === false, pgmSubs(box));
+    await tapSel(t, page, "#shX"); await sleep(150);
+    await setHidden(page, true); await sleep(150);
+    await setHidden(page, false); await sleep(200);
+    check("resp: hidden = false, visible = true", pgmSubs(box).slice(-3).join() === "true,false,true", pgmSubs(box));
+    const n1 = pgmSubs(box).length;
+    box.setPgm(false);
+    box.ws.send(JSON.stringify({ t: "unsub", what: "pgm", why: "idle" }));
+    await sleep(250);
+    check("resp: the box's unsub {what: pgm} while shown = subscribe again (and the rta one is untouched)", pgmSubs(box).length === n1 + 1 && pgmSubs(box).slice(-1)[0] === true && box.pgmSub);
+    await tapSel(t, page, "#measBtn"); await sleep(150);
+    check("resp: leaving MEASURE = sub {pgm: false}", pgmSubs(box).slice(-1)[0] === false && !box.pgmSub);
+    // audio never leaves the phone
+    const sent = box.sent.map((m) => { const x = Object.assign({}, m); delete x.at; return x; });
+    const types = new Set(sent.map((m) => m.t));
+    const subsOk = sent.filter((m) => m.t === "sub").every((m) => Object.keys(m).sort().join() === "id,pgm,t" || Object.keys(m).sort().join() === "id,rta,t");
+    const big = sent.filter((m) => JSON.stringify(m).length > 200);
+    check("mic: audio never leaves the phone: only ping and sub {rta | pgm} went out here, every frame small",
+      [...types].every((x) => ["ping", "sub", "mute"].includes(x)) && subsOk && !big.length, { types: [...types], big: big.slice(0, 2) });
+    const other = t.reqs.filter((u) => !u.startsWith("GET " + web.url + "/v2/") && !u.startsWith("GET " + web.url + "/icons/"));
+    check("mic: no request other than the page's own files (GET /v2/…)", !other.length, other.slice(0, 6));
+    // a link lost for long (10 s) stops the tracks
+    await popPick(t, page, "mic");
+    await until(page, () => K1000v2.mic().state === "on");
+    box.accept = false; box.close();
+    await sleep(4000);
+    const still = (await mic(page)).state;
+    const offLost = await until(page, () => K1000v2.mic().state === "off", null, 9000);
+    check("mic: a short link loss keeps the line; one of 10 s stops the tracks", still === "on" && offLost && (await tracksEnded(page)), still);
+    box.accept = true;
+    check("mic: the link back: restarted, no prompt", (await until(page, () => K1000v2.linked() && K1000v2.mic().state === "on", null, 8000)) && (await mic(page)).gum.slice(1).every((x) => x.from === "auto"));
+  } finally {
+    await t.close();
+    await bA.close();
+  }
+});
+
+// B: a 1 kHz tone in pink noise, the permission granted by the browser: the mic's own PEAK, and the
+// notch helper on it through the same gestures and the same `grab` message as the box's PEAK
+await run("micpeak", async () => {
+  const bB = await micBrowser(WAV.tone);
+  const t = await open({ browser: bB, tag: "micpeak", prefs: { rta: "mic", msmooth: 6 } });
+  const { page, box, f } = t;
+  try {
+    check("micpeak: granted by the browser (Permissions API): the line starts on LIVE with no prompt possible",
+      (await until(page, () => K1000v2.mic().state === "on")) && (await mic(page)).perm === "granted");
+    await sleep(2500);
+    check("micpeak: no PEAK while the program is absent (the meters' input at −60 dBFS)", (await mic(page)).peak === null && (await mic(page)).prog === false);
+    box.meters({ i: [-18, -19] });
+    const found = await until(page, () => !!K1000v2.mic().peak, null, 6000);
+    const pk = (await mic(page)).peak;
+    check("micpeak: a 1 kHz tone -> the mic PEAK at ~1 kHz (within 1/24 oct), after its persistence", found && Math.abs(Math.log2(pk / 1000)) <= 1 / 24, pk);
+    check("micpeak: the ▼ tag reads ▼ MIC 1.00k (the bin refined)", await until(page, () => /▼ MIC (99[5-9]|1\.0[01]k)$/.test(document.querySelector("#peakTag").textContent) && !document.getElementById("peakTag").hidden, null, 2000),
+      await page.textContent("#peakTag"));
+    await shot(page, "mic-peak");
+    box.clearSent();
+    const tg = await center(page, "#peakTag");
+    await f.tap(tg.x, tg.y, 80); await sleep(150);
+    check("micpeak: ▼ MIC tapped does nothing", !box.ofType("grab").length);
+    await f.hold(tg.x, tg.y, 700); await sleep(300);
+    let gr = box.ofType("grab");
+    check("micpeak: ▼ MIC held = grab {hz: the mic PEAK} (the box's helper, silent)", gr.length === 1 && Math.abs(Math.log2(gr[0].hz / 1000)) <= 1 / 24 && !box.ofType("band").length && !box.ofType("nudge").length, gr);
+    check("micpeak: the toast says MIC PEAK, the GAIN steps open", (await toasts(page)).some((x) => x.startsWith("MIC PEAK · ")) && (await ui(page)).field === "gain");
+    await tapSel(t, page, "#stepper .sx");
+    box.clearSent();
+    const mk = await page.evaluate(() => {
+      const cv = document.getElementById("cv").getBoundingClientRect(), hz = K1000v2.mic().peak;
+      return { x: cv.left + 24 + Math.log10(hz / 20) / 3 * (cv.width - 28) + 10, y: cv.top + cv.height * 0.8 };
+    });
+    await f.hold(mk.x, mk.y, 750); await sleep(300);
+    gr = box.ofType("grab");
+    check("micpeak: a long-press on the PEAK marker (10 px off) = the same grab {hz}", gr.length === 1 && Math.abs(Math.log2(gr[0].hz / 1000)) <= 1 / 24, gr);
+    await tapSel(t, page, "#stepper .sx");
+    box.push({ muted: true, hold: "unmute", mute_src: "B4", mute_seq: box.state.mute_seq + 1 });
+    check("micpeak: muted (the program gate shut): the PEAK goes within its release", await until(page, () => K1000v2.mic().peak === null, null, 2000));
+    box.push({ muted: false, hold: "mute", mute_src: "" });
+    // the PEAK pressed is the one at TOUCH-DOWN. The music drops just before a long-press on the
+    // marker: the mic PEAK goes mid-hold (0.5 s after the gate shuts). Still grab {hz ≈ 1 kHz},
+    // never the box's grab {} (the box's own PEAK, 3.17k here, not even shown in PHONE MIC)
+    for (const lead of [150, 250]) {
+      box.meters({ i: [-18, -19] });
+      await until(page, () => !!K1000v2.mic().peak, null, 8000);
+      await sleep(500);
+      box.clearSent();
+      const at = await page.evaluate(() => {
+        const cv = document.getElementById("cv").getBoundingClientRect(), hz = K1000v2.mic().peak;
+        return { x: cv.left + 24 + Math.log10(hz / 20) / 3 * (cv.width - 28) + 6, y: cv.top + cv.height * 0.8 };
+      });
+      box.meters({ i: [-70, -70] });
+      await sleep(lead);
+      await f.hold(at.x, at.y, 750); await sleep(300);
+      const g = box.ofType("grab"), gone = (await mic(page)).peak === null;
+      check(`micpeak: the music drops ${lead} ms before a long-press on the mic PEAK marker (the PEAK goes mid-hold): still grab {hz ≈ 1 kHz}, never grab {}`,
+        gone && g.length === 1 && typeof g[0].hz === "number" && Math.abs(Math.log2(g[0].hz / 1000)) <= 1 / 24, { g, gone });
+      if ((await ui(page)).field) await tapSel(t, page, "#stepper .sx");
+    }
+    // the ▼ tag too: in BOTH, the mic line stops mid-hold (its track ended) and the tag turns into
+    // the box's ▼ PEAK under the finger: the hold still grabs the mic PEAK it began on
+    await popPick(t, page, "both");
+    box.meters({ i: [-18, -19] });
+    const onMic = await until(page, () => /▼ MIC/.test(document.querySelector("#peakTag").textContent) && !document.getElementById("peakTag").hidden, null, 8000);
+    box.clearSent();
+    const tg2 = await center(page, "#peakTag");
+    await page.evaluate(() => setTimeout(() => { const st = window.__streams[window.__streams.length - 1]; st.getAudioTracks()[0].dispatchEvent(new Event("ended")); }, 250));
+    await f.hold(tg2.x, tg2.y, 700); await sleep(300);
+    const g2 = box.ofType("grab"), tagNow = await page.textContent("#peakTag");
+    check("micpeak: BOTH, the mic stops mid-hold on ▼ MIC (the tag turns into the box's ▼ PEAK under the finger): still grab {hz ≈ 1 kHz}",
+      onMic && /▼ PEAK 3\.17k/.test(tagNow) && g2.length === 1 && typeof g2[0].hz === "number" && Math.abs(Math.log2(g2[0].hz / 1000)) <= 1 / 24, { onMic, g2, tagNow });
+    if ((await ui(page)).field) await tapSel(t, page, "#stepper .sx");
+    await popPick(t, page, "box");
+    check("micpeak: back on BOX the tag is the box's PEAK again", await until(page, () => /▼ PEAK 3\.17k/.test(document.querySelector("#peakTag").textContent), null, 3000));
+    box.clearSent();
+    const tb = await center(page, "#peakTag");
+    await f.hold(tb.x, tb.y, 700); await sleep(300);
+    gr = box.ofType("grab");
+    check("micpeak: and its hold is the box's grab {} (no hz), unchanged", gr.length === 1 && !("hz" in gr[0]), gr);
+  } finally {
+    await t.close();
+    await bB.close();
+  }
+});
+
+// D: the fake mic hears the pink noise through a known tilt (+2 dB/oct), the box's program is the
+// plain pink: RESPONSE shows that tilt
+await run("resptilt", async () => {
+  const bD = await micBrowser(WAV.tilt);
+  const t = await open({ browser: bD, tag: "resptilt", pgmWav: WAV.pink, prefs: { rta: "box", avg: 20, mview: "resp" } });
+  const { page } = t;
+  try {
+    await tapSel(t, page, "#measBtn");
+    const full = await until(page, () => K1000v2.measure().cover >= 20, null, 30000);
+    const r = await meas(page);
+    const pts = r.line ? r.line.f.map((x, i) => [Math.log2(x / 1000), r.line.db[i]]).filter(([o, d]) => d !== null && o >= Math.log2(0.2) && o <= Math.log2(5)) : [];
+    const n = pts.length, sx = pts.reduce((a, p) => a + p[0], 0), sy = pts.reduce((a, p) => a + p[1], 0);
+    const sxx = pts.reduce((a, p) => a + p[0] * p[0], 0), sxy = pts.reduce((a, p) => a + p[0] * p[1], 0);
+    const slope = (n * sxy - sx * sy) / (n * sxx - sx * sx), icpt = (sy - slope * sx) / n;
+    const resid = Math.max(...pts.map(([o, d]) => Math.abs(d - (icpt + slope * o))));
+    check("resptilt: a +2 dB/oct tilt on the mic shows as 2 ± 0.3 dB/oct (200 Hz-5 kHz), within ±1 dB of that line", full && Math.abs(slope - 2) <= 0.3 && resid <= 1,
+      { slope: slope.toFixed(2), resid: resid.toFixed(2), n });
+    await shot(page, "resp-tilt");
+  } finally {
+    await t.close();
+    await bD.close();
+  }
+});
+
+// E: an 8 kHz tone the box's rule sees on the engine's numbers: the mic PEAK runs on them too
+await run("micpeakhf", async () => {
+  const bE = await micBrowser(WAV.tone8k);
+  const t = await open({ browser: bE, tag: "micpeakhf", prefs: { rta: "mic", msmooth: 6 } });
+  const { page, box } = t;
+  try {
+    const on = await until(page, () => K1000v2.mic().state === "on");
+    box.meters({ i: [-18, -19] });
+    const found = await until(page, () => !!K1000v2.mic().peak, null, 8000);
+    const pk = (await mic(page)).peak;
+    check("micpeakhf: an 8 kHz tone 7 dB over its 1/24 oct band -> the mic PEAK at 8 kHz (the box's rule on the engine's estimator, as the box; the analyser's mean power needed 10 dB)",
+      on && found && Math.abs(Math.log2(pk / 8000)) <= 1 / 24, pk);
+  } finally {
+    await t.close();
+    await bE.close();
+  }
+});
+
+// F: the phone clipping (next to the PA): RESPONSE keeps nothing and says so; LIVE says it too
+await run("respclip", async () => {
+  const bF = await micBrowser(WAV.clip);
+  const t = await open({ browser: bF, tag: "respclip", pgmWav: WAV.pink, prefs: { rta: "box", avg: 20, mview: "resp" } });
+  const { page } = t;
+  try {
+    await tapSel(t, page, "#measBtn");
+    await until(page, () => K1000v2.measure().frames > 4 && K1000v2.mic().state === "on", null, 8000);
+    await sleep(1500);
+    const r = await meas(page), note = await page.textContent("#gNote");
+    check("respclip: a clipping mic pauses RESPONSE (no window kept): PAUSED · MIC CLIPPING · too loud for the phone: step back from the speakers",
+      r.frames > 4 && r.added === 0 && r.reason === "MIC CLIPPING" && /^PAUSED · MIC CLIPPING · too loud for the phone: step back from the speakers · 0 s of 20$/.test(note), [r.frames, r.added, r.reason, note]);
+    await tapSel(t, page, "#measBtn");
+    await popPick(t, page, "mic");
+    check("respclip: LIVE with the mic line says MIC CLIPPING too",
+      await until(page, () => /^MIC CLIPPING · too loud for the phone/.test(document.getElementById("gNote").textContent) && !document.getElementById("gNote").hidden, null, 5000), await page.textContent("#gNote"));
+  } finally {
+    await t.close();
+    await bF.close();
+  }
+});
+
+// C: the mic refused (no fake UI: Chromium dismisses the dialog): BLOCKED, said, never asked again outside SETUP
+await run("micdeny", async () => {
+  const bC = await micBrowser(WAV.pink, false);
+  const t = await open({ browser: bC, tag: "micdeny", prefs: { rta: "mic" } });
+  const { page } = t;
+  try {
+    await tapSel(t, page, "#setupBtn");
+    await page.locator("#shTabs button.me").click(); await sleep(150);
+    const row = '#shBody [data-row="phone_mic"]';
+    await page.locator(row + " button.act").click();
+    await until(page, () => K1000v2.mic().perm === "denied");
+    await sleep(200);
+    const txt = await page.textContent(row);
+    check("micdeny: refused: the row reads BLOCKED and says where to allow it, the key TRY AGAIN",
+      (await page.textContent(row + " .rv")) === "BLOCKED" && /MIC BLOCKED: /.test(txt) && (await page.textContent(row + " button.act")) === "TRY AGAIN", txt);
+    await tapSel(t, page, "#shX");
+    await sleep(400);
+    check("micdeny: LIVE says MIC BLOCKED: SETUP › THIS PHONE", /MIC BLOCKED: SETUP › THIS PHONE/.test(await page.textContent("#gNote")), await page.textContent("#gNote"));
+    await popPick(t, page, "both");
+    await tapSel(t, page, "#measBtn"); await tapSel(t, page, "#mMic"); await sleep(300);
+    check("micdeny: nothing asks again outside SETUP (one getUserMedia in all)", (await gum(page)) === 1 && (await toasts(page)).includes("MIC BLOCKED: SETUP › THIS PHONE"));
+  } finally {
+    await t.close();
+    await bC.close();
+  }
+});
+
+// G: the APK's WebView (android/BRIDGE.md, "The microphone", app 0.2.2 on two emulators): Android's
+// own mic dialog HIDES the page (visibilitychange) while it is up, and getUserMedia resolves 0.3 to
+// 0.5 s after the page is visible again. The pending request must survive that: no error, no
+// "denied", the grant kept; LIVE then starts the mic by itself, no second dialog. Simulated here:
+// the page hidden at the request, visible 0.5 s later, the answer 0.4 s after that.
+await run("micdialog", async () => {
+  const bG = await micBrowser(WAV.pink);
+  const t = await open({ browser: bG, tag: "micdialog", permPrompt: true, prefs: { rta: "mic" } });
+  const { page } = t;
+  try {
+    await page.evaluate(() => {
+      const md = navigator.mediaDevices, orig = md.getUserMedia.bind(md);
+      const vis = (hd) => { Object.defineProperty(document, "hidden", { get: () => hd, configurable: true }); document.dispatchEvent(new Event("visibilitychange")); };
+      window.__dialog = [];
+      let first = true;
+      md.getUserMedia = (c) => {
+        if (!first) return orig(c);
+        first = false;
+        vis(true); window.__dialog.push("hidden");                   // Android's dialog covers the WebView
+        return new Promise((res, rej) => setTimeout(() => {
+          vis(false); window.__dialog.push("visible");               // "While using the app"
+          setTimeout(() => { window.__dialog.push("answered"); orig(c).then(res, rej); }, 400);
+        }, 500));
+      };
+    });
+    await tapSel(t, page, "#setupBtn");
+    await page.locator("#shTabs button.me").click(); await sleep(150);
+    const row = '#shBody [data-row="phone_mic"]';
+    await page.locator(row + " button.act").click();
+    const got = await until(page, () => window.__dialog.length === 3 && K1000v2.mic().session === true, null, 4000);
+    await sleep(300);
+    const m = await mic(page);
+    check("micdialog: hidden while Android's dialog is up, the request survives: granted, no error, not denied",
+      got && m.session === true && m.err === "" && m.perm !== "denied" && m.state === "off" && (await page.textContent(row + " .rv")) === "ON",
+      { dialog: await page.evaluate(() => window.__dialog), perm: m.perm, session: m.session, err: m.err, state: m.state, row: await page.textContent(row + " .rv") });
+    await tapSel(t, page, "#shX");
+    const on = await until(page, () => K1000v2.mic().state === "on" && K1000v2.mic().frames > 3);
+    const g = (await mic(page)).gum;
+    check("micdialog: back on LIVE the mic starts by itself (one more getUserMedia, automatic: no second dialog)",
+      on && g.length === 2 && g[0].from === "setup" && g[1].from === "auto" && (await liveTracks(page)) === 1, g);
+  } finally {
+    await t.close();
+    await bG.close();
+  }
+});
+try { fs.rmSync(LABTMP, { recursive: true, force: true }); } catch (e) { /* fine */ }
 
 // ================================================================== no console errors, anywhere
 check("no console errors (CSP included)", !consoleErrors.length, consoleErrors.slice(0, 12));

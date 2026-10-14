@@ -10,7 +10,9 @@
    finger lifts (no inertia, no auto-repeat, no queue; nothing replayed after a link loss) ·
    master up 0.5 dB per 20 px, never accelerated · DELAY / LO-CUT only inside the box's unlock ·
    on a link loss the controls dim at once and the fallback is named · a box-update reload waits
-   for 2 s without a finger · the phone never asks for a permission from LIVE. */
+   for 2 s without a finger · the phone never asks for a permission from LIVE (the mic is asked
+   for in SETUP › THIS PHONE only: mic.js) · MUTE stays in the footer in MEASURE and under the
+   PGM ▾ popover. */
 
 import "./native.js";                // the APK handshake listener, registered at module top level
 import { K, UI, linkSlow, linked, onRender, render, renderNow } from "./store.js";
@@ -22,7 +24,9 @@ import { renderChips, selectBand } from "./bands.js";
 import { closePop, graphGesture, initGraph, markDirty, renderOverlay, stopGraphGesture } from "./graph.js";
 import { initMute, mutePending, renderMute } from "./mute.js";
 import { backInSheet, drawInMeter, initSheets, renderSheet, stateArrived } from "./sheets.js";
-import { R, syncSub } from "./rta.js";
+import { R, activePeak, syncSub } from "./rta.js";
+import { M as MIC, micLine } from "./mic.js";
+import { initMeasure, measureView, renderMeasure, setMeasure } from "./measure.js";
 import { dropHolds, holdActive } from "./hold.js";
 import { hapLog } from "./haptics.js";
 import { queue, relock } from "./nudge.js";
@@ -39,6 +43,7 @@ buildMeters();
 initGraph();
 initMute();
 initSheets();
+initMeasure();
 
 // ------------------------------------------------------------------ render
 // MUTE first, and every part on its own: a box message of an odd shape that breaks one part
@@ -52,6 +57,7 @@ function renderAll() {
   safely(renderStepper);
   safely(renderPills);
   safely(renderOverlay);
+  safely(renderMeasure);
   safely(renderSheet);
   $("#foot").classList.toggle("left", UI.prefs.side === "left");
   markDirty();
@@ -99,10 +105,12 @@ on("open", () => render());
 setBusyCheck(() => mutePending() || holdActive() || !!tileGesture() || !!graphGesture() || queue.size > 0);
 
 // ------------------------------------------------------------------ Back (APK) and Esc (browser)
+// the steps, then the popover, then a pending choice and the sheet, then MEASURE (DESIGN §4.2)
 function back() {
   if (stepperOpen()) { closeStepper(); return true; }
   if (closePop()) { render(); return true; }
   if (backInSheet()) return true;
+  if (UI.measure) { setMeasure(false); return true; }
   return false;
 }
 setBackHandler(back);
@@ -112,7 +120,7 @@ window.addEventListener("keydown", (e) => { if (e.key === "Escape") back(); });
 function exclusion() {
   if (!can("exclusion")) return;
   const W = window.innerWidth;
-  const rows = UI.sheet ? ["#sheet", "#foot"] : ["#slot", "#tiles", "#alignRow", "#foot"];
+  const rows = UI.sheet ? ["#sheet", "#foot"] : ["#slot", "#tiles", UI.measure ? "#measRow" : "#alignRow", "#foot"];
   const rects = [];
   for (const sel of rows) {
     const el = $(sel);
@@ -166,8 +174,12 @@ window.K1000v2 = {
   state: () => K.state, hello: () => K.hello, link: () => K.link, linked, slow: linkSlow, native: () => (UI.native ? Object.assign({}, UI.native) : null),
   nativeRefused: () => nativeRefused.slice(),
   ui: () => ({ sel: UI.sel, field: UI.field, sheet: UI.sheet, tab: UI.tab, pick: UI.pick ? { f: UI.pick.f, v: UI.pick.v } : null,
-    unlocked: UI.unlockUntil > now(), unlockLeft: Math.max(0, UI.unlockUntil - now()), prefs: Object.assign({}, UI.prefs), popOpen: UI.popOpen }),
-  rta: () => ({ subscribed: R.subscribed, frames: R.frames, st: R.frame ? R.frame.st : null, peak: R.frame ? R.frame.peak_hz : null }),
+    unlocked: UI.unlockUntil > now(), unlockLeft: Math.max(0, UI.unlockUntil - now()), prefs: Object.assign({}, UI.prefs), popOpen: UI.popOpen,
+    measure: UI.measure, freeze: UI.freeze }),
+  rta: () => ({ subscribed: R.subscribed, frames: R.frames, st: R.frame ? R.frame.st : null, peak: R.frame ? R.frame.peak_hz : null, active: activePeak() }),
+  mic: () => ({ perm: MIC.perm, session: MIC.session, state: MIC.state, err: MIC.err, settings: MIC.settings, rate: MIC.rate, frames: MIC.frames,
+    starts: MIC.starts, stops: MIC.stops, suspended: MIC.suspended, gum: MIC.gum.slice(), peak: MIC.peak, prog: MIC.prog, clipAt: MIC.clipAt, line: micLine() }),
+  measure: () => measureView(),
   tiles: () => TILES.map((t) => ({ tk: t._tk, sheet: t._sheet, v: t.querySelector(".tv span").textContent })),
   select: (s) => selectBand(s),
 };

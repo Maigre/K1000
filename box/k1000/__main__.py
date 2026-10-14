@@ -516,11 +516,14 @@ def open_spectrum(ctl: Controller, url: str) -> Any:
 
         # No PEAK on silence: k1000.yaml spectrum.peak_floor_db / program_floor_db.
         peak_floor, program_floor = peak_floors(ctl.settings)
+        # RESPONSE (docs/14 §3.6): the same polls feed the phones' program windows, on this
+        # same connection: one poller, one engine link for every spectrum.
         task = SpectrumTask(url, wanted=ctl.spectrum_wanted,
                             channels=lambda: list(getattr(ctl.profile, "input_map", ()) or ()),
                             publish=ctl.set_spectrum, client_factory=client,
                             ballistics=Ballistics(peak_floor_db=peak_floor),
-                            program_floor_db=program_floor)
+                            program_floor_db=program_floor,
+                            pgm_wanted=ctl.pgm_wanted, publish_pgm=ctl.set_pgm)
         task.start()
         return task
     except Exception as e:   # noqa: BLE001

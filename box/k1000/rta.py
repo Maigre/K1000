@@ -48,9 +48,22 @@ Why it is shaped like this:
   (the bench HiFiBerry reads -95..-108 dBFS RMS, its noise-floor bins about -114) shows no
   PEAK; when the program stops, a shown PEAK goes after RELEASE_S like any other lost peak.
   An engine that cannot say the RMS leaves the level floor alone in charge (logged once).
+- **RESPONSE windows for the phones** (`PgmAccumulator`, docs/14 §3.6): while a v2 phone
+  measures (`pgm_wanted()`), the same polls also feed ONE shared accumulator: the raw combined
+  program spectrum of each poll (before the ballistics: the engine's own peak-per-band
+  estimator, dBFS) averaged IN POWER over fixed PGM_WIN_S windows, with whether the program
+  was present over the window. Each closed window goes to `publish_pgm`. No extra engine call,
+  no second connection: the phone's mic spectrum is compared with this. A window's `dt` is the
+  time its polls cover, never a stall after them; a window that comes more than PGM_MAX_GAP_S
+  after its data (a stalled poller) is stale and dropped, and so is the window in progress on
+  a non-live state or when nobody measures. Fixed size (one n-bin sum): nothing grows.
+  The program gate for RESPONSE is the PEAK's; with the PEAK's gate set off in k1000.yaml
+  (`program_floor_db` -140) RESPONSE still asks the level, at PROGRAM_FLOOR_DB, while a phone
+  measures: otherwise no window would ever say the program is there.
 
 Frames are `eqgraph.RtaFrame` objects built fresh for every publish (their arrays are never
-written again), so the render thread may keep one while the next is computed.
+written again), so the render thread may keep one while the next is computed. `PgmWindow`s
+are built fresh too.
 """
 from __future__ import annotations
 
@@ -58,11 +71,13 @@ import asyncio
 import logging
 import math
 import time
+from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
 import numpy as np
 
 from .cdsp import CdspError, CdspUnavailable
+from .state import SAMPLERATE
 from .ui.eqgraph import RtaFrame, combine_power
 
 log = logging.getLogger(__name__)
@@ -95,6 +110,14 @@ PROGRAM_FLOOR_DB = -60.0     # no PEAK unless the program's capture RMS reaches 
 PROGRAM_WINDOW_S = 0.5       # the RMS window (GetCaptureSignalRmsSince)
 PROGRAM_HYST_DB = 3.0        # program present: kept down to PROGRAM_FLOOR_DB - this
 FLOOR_RANGE = (-140.0, -20.0)   # k1000.yaml values outside this -> the default
+# RESPONSE (docs/14 §3.6): the program spectrum for the phones, averaged in power per window
+PGM_WIN_S = 0.5              # one window: the power mean of the polls of this many seconds
+PGM_MAX_GAP_S = PGM_WIN_S    # a hole longer than this in a window, or a window closed this long
+                             # after its data: dropped (the phone pairs a window with its mic's last
+                             # half second)
+PGM_VERSION = 1              # hello.pgm.v
+PGM_ESTIMATOR = "peak"       # the engine's (spectrum.rs): each band = its loudest FFT bin
+_T_EPS = 1e-6                # window/gap comparisons: a clock's float noise is not a hole
 
 # States (Controller.status.spectrum_state)
 OFF, WAITING, LIVE, UNAVAILABLE = "off", "waiting", "live", "unavailable"
@@ -314,6 +337,123 @@ class Ballistics:
                         top - self.span_db, top, self.peak_hz, source)
 
 
+# =========================================================================== RESPONSE windows
+def fft_length(rate: float, min_freq: float = MIN_FREQ) -> int:
+    """The engine's FFT length for GetSpectrum (spectrum.rs): the next power of two at or above
+    rate / min_freq (48 kHz, 10 Hz: 8192). The phone matches its mic's resolution to this."""
+    need = max(1, int(math.ceil(float(rate) / float(min_freq) - 1e-9)))
+    n = 1
+    while n < need:
+        n <<= 1
+    return n
+
+
+def pgm_info(rate: float = SAMPLERATE, n_bins: int = N_BINS, win_s: float = PGM_WIN_S) -> dict[str, Any]:
+    """hello.pgm (docs/14 §3.1): the grid, the engine's rate and FFT length, its estimator and
+    the window, so the phone computes its mic spectrum the same way on the same bins."""
+    return {"v": PGM_VERSION, "n": int(n_bins), "f0": MIN_FREQ, "f1": MAX_FREQ, "rate": int(rate),
+            "fft": fft_length(rate, MIN_FREQ), "est": PGM_ESTIMATOR, "win_s": float(win_s)}
+
+
+@dataclass(frozen=True, eq=False)
+class PgmWindow:
+    """One closed RESPONSE window: `db` is the power mean of `k` polls (dBFS per bin, a fresh
+    array never written again), `dt` the seconds its polls cover (`PgmAccumulator`), `prog`
+    the program gate over it (True: every poll said present; False: one said absent; None: the
+    gate could not tell for some poll and none said absent)."""
+
+    seq: int
+    f0: float
+    f1: float
+    k: int
+    dt: float
+    prog: bool | None
+    db: np.ndarray
+
+    @property
+    def n(self) -> int:
+        return len(self.db)
+
+
+class PgmAccumulator:
+    """The ONE shared RESPONSE accumulator (pure; `now` given): `add()` one poll's combined
+    program spectrum (dBFS), get back the window that poll closed, or None.
+
+    Windows are fixed `win_s` slices that tile the time the data flows: the first poll at or
+    after `start + win_s` closes the window (without itself) and starts the next one. That
+    close comes first, before any hole test, so a stall after a full window loses nothing:
+    - `dt` is the time the window's polls cover: from its first poll to its last poll plus one
+      poll interval (the mean interval of its polls; one poll: `poll_s`, the poller's period),
+      never past the poll that closed it. A stall after the data is not counted.
+    - A window whose data ended more than `max_gap_s` before the poll that closes it is stale
+      (the phone pairs each window with its own mic's last half second): dropped, never sent.
+    - Before its close, a gap between polls longer than `max_gap_s`, a poll on another grid or
+      a clock going back drops the window in progress (never sent).
+    Memory is one n-bin sum, whatever runs. `seq` counts the windows sent (a phone sees a gap
+    where it lost some)."""
+
+    def __init__(self, win_s: float = PGM_WIN_S, max_gap_s: float = PGM_MAX_GAP_S,
+                 poll_s: float = 1.0 / RATE_HZ) -> None:
+        self.win_s = float(win_s)
+        self.max_gap_s = float(max_gap_s)
+        self.poll_s = float(poll_s)
+        self.seq = 0
+        self.reset()
+
+    def reset(self) -> None:
+        """Drop the window in progress (nothing is sent for it)."""
+        self._pow: np.ndarray | None = None
+        self._k = 0
+        self._t0 = 0.0
+        self._t_last = 0.0
+        self._f0 = self._f1 = 0.0
+        self._any_false = False
+        self._any_none = False
+
+    @property
+    def active(self) -> bool:
+        return self._pow is not None
+
+    def add(self, freqs: Any, mags_db: Any, program: bool | None, now: float) -> PgmWindow | None:
+        m = np.asarray(mags_db, dtype=np.float64)
+        out: PgmWindow | None = None
+        if self._pow is not None:
+            if now < self._t_last or len(m) != len(self._pow):
+                self.reset()                               # a clock that went back, a new grid
+            elif now - self._t0 >= self.win_s - _T_EPS:
+                out = self._close(now)                     # due: before any hole test (or stale)
+            elif now - self._t_last > self.max_gap_s + _T_EPS:
+                self.reset()                               # a hole before the window was full
+        p = np.power(10.0, m * 0.1)
+        if self._pow is None:
+            self._pow, self._k, self._t0 = p, 0, now
+            self._f0, self._f1 = float(freqs[0]), float(freqs[-1])
+        else:
+            self._pow += p
+        self._k += 1
+        self._t_last = now
+        if program is False:
+            self._any_false = True
+        elif program is None:
+            self._any_none = True
+        return out
+
+    def _close(self, now: float) -> PgmWindow | None:
+        """The window in progress, closed by a poll at `now`: sent, or None when stale."""
+        assert self._pow is not None and self._k > 0
+        step = (self._t_last - self._t0) / (self._k - 1) if self._k > 1 else self.poll_s
+        end = min(now, self._t_last + step)                # where its data ends (no stall)
+        if now - end > self.max_gap_s + _T_EPS:
+            self.reset()                                   # stale: the poller stalled after it
+            return None
+        db = 10.0 * np.log10(np.maximum(self._pow / self._k, 1e-30))
+        prog = False if self._any_false else (None if self._any_none else True)
+        self.seq += 1
+        w = PgmWindow(self.seq, self._f0, self._f1, self._k, end - self._t0, prog, db)
+        self.reset()
+        return w
+
+
 # =========================================================================== the task
 def _default_client(url: str) -> Any:
     from .cdsp import CamillaClient
@@ -327,7 +467,10 @@ class SpectrumTask:
     followed). `client_factory(url)` builds the task's OWN client (a CamillaClient surface:
     connect(timeout), connected, command(name, value=...), close()). `program_floor_db`: the
     program gate of the PEAK (module docstring); the level floor is the ballistics'
-    `peak_floor_db`. Never raises out of its loop; `stop()` cancels it and closes the client.
+    `peak_floor_db`. `pgm_wanted()`: a phone measures RESPONSE: each live poll also feeds the
+    shared `PgmAccumulator` (`self.pgm`), and every window it closes goes to
+    `publish_pgm(window)` (docs/14 §3.6). Never raises out of its loop; `stop()` cancels it and
+    closes the client.
     """
 
     def __init__(self, url: str, *, wanted: Callable[[], bool], channels: Callable[[], Iterable[int]],
@@ -336,7 +479,10 @@ class SpectrumTask:
                  n_bins: int = N_BINS, clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], Any] = asyncio.sleep,
                  ballistics: Ballistics | None = None,
-                 program_floor_db: float = PROGRAM_FLOOR_DB) -> None:
+                 program_floor_db: float = PROGRAM_FLOOR_DB,
+                 pgm_wanted: Callable[[], bool] | None = None,
+                 publish_pgm: Callable[[PgmWindow], None] | None = None,
+                 pgm_win_s: float = PGM_WIN_S) -> None:
         self.url = url
         self.wanted = wanted
         self.channels = channels
@@ -363,7 +509,14 @@ class SpectrumTask:
         self._warm_fresh = False                 # the last answer was "no audio data"
         self._warm_first: float | None = None    # first warm-up answer since data / a new link
         self._program = False                    # the program gate's last verdict
+        self.pgm_wanted = pgm_wanted
+        self.publish_pgm = publish_pgm
+        self.pgm = PgmAccumulator(pgm_win_s, max(pgm_win_s, PGM_MAX_GAP_S), self.period)
         self._logged: set[Any] = set()
+
+    def pgm_info(self) -> dict[str, Any]:
+        """hello.pgm for this task's grid (docs/14 §3.1)."""
+        return pgm_info(SAMPLERATE, self.n_bins, self.pgm.win_s)
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
@@ -450,7 +603,8 @@ class SpectrumTask:
                 return
             spectra.append(parsed)
         self._warm_since, self._warm_fresh, self._warm_first = None, False, None
-        program = await self._program_present(client, chans)
+        measuring = self._measuring()
+        program, heard = await self._program_present(client, chans, measuring)
         freqs = spectra[0][0]
         mags = [m for f, m in spectra if len(f) == len(freqs)]
         combined = mags[0] if len(mags) == 1 else combine_power(*mags)
@@ -458,35 +612,65 @@ class SpectrumTask:
         self.polls += 1
         self._last_data = now
         self._set_state(LIVE)
+        self._feed_pgm(freqs, combined, heard, now, measuring)
         self._pending = True
         if now >= self._pause_until:
             self._publish_now()
 
     # ------------------------------------------------------------------ helpers
-    async def _program_present(self, client: Any, chans: list[int]) -> bool | None:
-        """The PEAK's program gate: the program channels' capture RMS over PROGRAM_WINDOW_S at
-        `program_floor_db` or above (PROGRAM_HYST_DB of hysteresis). None = cannot tell (the
-        engine refused the command, or said nothing about these channels): the level floor
-        alone then gates the PEAK. `program_floor_db` at FLOOR_RANGE's bottom: the gate is off
-        (None, and the level is not asked; digital silence reads -inf, below any floor)."""
-        if self.program_floor_db <= FLOOR_RANGE[0]:
+    def _measuring(self) -> bool:
+        """A v2 phone measures RESPONSE (`pgm_wanted()`; a broken callback: no)."""
+        try:
+            return self.pgm_wanted is not None and bool(self.pgm_wanted())
+        except Exception:   # noqa: BLE001
+            return False
+
+    def _feed_pgm(self, freqs: np.ndarray, combined: np.ndarray, program: bool | None,
+                  now: float, on: bool) -> None:
+        """RESPONSE: one live poll into the shared accumulator, while a phone measures (`on`); a
+        window it closes goes to `publish_pgm` at once (not held by the knob pause: it never
+        reaches the screen). Nobody measuring: the window in progress is dropped."""
+        if not on:
+            if self.pgm.active:
+                self.pgm.reset()
+            return
+        w = self.pgm.add(freqs, combined, program, now)
+        if w is not None and self.publish_pgm is not None:
+            try:
+                self.publish_pgm(w)
+            except Exception as e:   # noqa: BLE001 - a phone must never break the spectrum
+                self._log_once(("publish_pgm", str(e)), logging.ERROR, "spectrum publish_pgm: %s", e)
+
+    async def _program_present(self, client: Any, chans: list[int],
+                               measuring: bool = False) -> tuple[bool | None, bool | None]:
+        """The program gate -> (for the PEAK, for RESPONSE): the program channels' capture RMS
+        over PROGRAM_WINDOW_S at `program_floor_db` or above (PROGRAM_HYST_DB of hysteresis).
+        None = cannot tell (the engine refused the command, or said nothing about these
+        channels): the level floor alone then gates the PEAK, and RESPONSE windows say null.
+        `program_floor_db` at FLOOR_RANGE's bottom: the PEAK's gate is off (None; digital
+        silence reads -inf, below any floor), and the level is not asked unless a phone
+        `measuring` RESPONSE needs it: RESPONSE then judges at the default PROGRAM_FLOOR_DB
+        (with the gate off it would never see the program, docs/14 §3.6)."""
+        gate_off = self.program_floor_db <= FLOOR_RANGE[0]
+        if gate_off and not measuring:
             self.program_db = None
-            return None
+            return None, None
         try:
             value = await client.command("GetCaptureSignalRmsSince", value=PROGRAM_WINDOW_S)
         except CdspUnavailable:
-            return None
+            return None, None
         except CdspError as e:
             self._log_once(("program", str(e)), logging.WARNING, "spectrum: no program level (%s): "
                            "PEAK gated by its level floor only", e)
-            return None
+            return None, None
         db = program_level(value, chans)
         self.program_db = db
         if db is None:
-            return None
-        floor = self.program_floor_db - (PROGRAM_HYST_DB if self._program else 0.0)
+            return None, None
+        floor = (PROGRAM_FLOOR_DB if gate_off else self.program_floor_db) \
+            - (PROGRAM_HYST_DB if self._program else 0.0)
         self._program = db >= floor
-        return self._program
+        return (None if gate_off else self._program), self._program
 
     async def _ensure_client(self) -> Any:
         if self.client is None:
@@ -526,8 +710,10 @@ class SpectrumTask:
             self._emit()
 
     def _clear(self, state: str) -> None:
-        """No picture (never a frozen one): ballistics restart from the next data."""
+        """No picture (never a frozen one): ballistics restart from the next data, and so does
+        the RESPONSE window in progress (dropped, never sent)."""
         self.ballistics.reset()
+        self.pgm.reset()
         self._pending = False
         changed = self.frame is not None or state != self.state
         self.frame, self.state = None, state

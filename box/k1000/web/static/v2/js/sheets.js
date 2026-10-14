@@ -23,6 +23,7 @@ import { forgetSheetTiles, makeTile, renderTile } from "./tile.js";
 import { closeStepper } from "./stepper.js";
 import { can, hasNative, nativeSend, refused as refusedNative, requestDiag } from "./native.js";
 import { syncSub } from "./rta.js";
+import { M as MIC, allowFromSetup, allowed as micAllowed, running as micRunning, setMic } from "./mic.js";
 import { closePop } from "./graph.js";
 import { $, $$, clamp, fmtDb, fmtHz, h, mmss, now, num, setText } from "./util.js";
 
@@ -445,7 +446,7 @@ function buildMe() {
     rowSeg("Fullscreen", () => UI.prefs.fullscreen || "on", [["off", "OFF"], ["on", "ON"]],
       (v) => { UI.prefs.fullscreen = v; savePrefs(); nativeSend({ t: "fullscreen", on: v === "on" }); }, "Hides the system bars: more graph, no shade pulled mid-slide.");
   }
-  rowInfo("Phone mic", "after the gig", "The box spectrum only for now. The phone asks for the mic here, never from LIVE (its dialog would cover MUTE).");
+  rowMic();
   rowGestures();
   // diagnostics: the APK's own (BRIDGE.md `diag`)
   const r = srow();
@@ -493,12 +494,55 @@ function buildMe() {
   setText(note(p), "The escape hatch for the field test: the v1 page at https://10.42.0.1/ (MUTE, master, balance, the live EQ).");
 }
 
+// THIS PHONE › Phone mic: the ONE place the page asks for the mic (DESIGN §7, §9.15: a system
+// dialog from LIVE would cover MUTE). ALLOW until it is allowed, then OFF / ON; it says what the
+// browser kept of the processing the page asked off (echo cancellation, noise suppression, auto gain).
+const PROC = [["echoCancellation", "echo cancel"], ["noiseSuppression", "noise suppr."], ["autoGainControl", "auto gain"]];
+function procWords() {
+  const st = MIC.settings;
+  if (!st) return "Asked with echo cancel, noise suppression and auto gain OFF; what the browser kept shows after ALLOW.";
+  const kept = PROC.filter(([k]) => st[k] === true).map(([, w]) => w);
+  const rate = num(st.sampleRate) ? " · " + (st.sampleRate / 1000).toFixed(1).replace(/\.0$/, "") + " kHz" : "";
+  return (kept.length ? "The browser KEPT " + kept.join(", ").toUpperCase() + " ON (the line may breathe or gate): " : "Processing asked OFF, read back: ") +
+    PROC.map(([k, w]) => w + " " + (st[k] === true ? "ON" : st[k] === false ? "OFF" : "?")).join(" · ") + rate + ".";
+}
+function rowMic() {
+  const r = srow("phone_mic");
+  const rv = head(r, "Phone mic");
+  const ask = h("button", "act go", "<span></span>");
+  ask.addEventListener("click", () => { allowFromSetup(); hap("tick"); render(); });
+  const seg = h("div", "seg");
+  const btns = [["off", "OFF"], ["on", "ON"]].map(([v, t]) => {
+    const b = h("button");
+    b.textContent = t;
+    b.addEventListener("click", () => { setMic(v === "on"); hap("tick"); render(); });
+    seg.append(b);
+    return [v, b];
+  });
+  const n = note(r), n2 = note(r);
+  r.append(ask, seg, n, n2);
+  upd.push(() => {
+    const a = micAllowed();
+    ask.hidden = a;
+    seg.hidden = !a;
+    setText(ask.querySelector("span"), MIC.state === "starting" ? "ASKING…" : MIC.perm === "denied" ? "TRY AGAIN" : "ALLOW THE MIC");
+    ask.disabled = MIC.perm === "unsupported" || MIC.state === "starting";
+    for (const [v, b] of btns) b.setAttribute("aria-pressed", String(v === (UI.prefs.mic === "off" ? "off" : "on")));
+    setText(rv, !a ? (MIC.perm === "denied" ? "BLOCKED" : MIC.perm === "unsupported" ? "UNAVAILABLE" : "NOT ALLOWED YET")
+      : UI.prefs.mic === "off" ? "OFF" : micRunning() ? "ON · LISTENING" : "ON");
+    setText(n, (MIC.err ? MIC.err + ". " : "") + (a ? "ON: the cyan line (PGM ▾ › PHONE MIC or BOTH) and MEASURE (≋). It listens only while it is shown." :
+      "Asked here only, never from LIVE (the dialog would cover MUTE). Then PGM ▾ › PHONE MIC, or ≋ MEASURE."));
+    setText(n2, procWords() + " Audio stays on this phone: nothing is sent.");
+  });
+}
+
 // the prototype's "?" legend, kept here: how every gesture on LIVE works
 const GESTURES = [
   ["Tap a value", "its steps open in the band row (✕, a tap on the graph, Back or 8 s closes them)"],
   ["Slide ◀ ▶", "on any value, like a knob: slow = fine steps, quick = bigger; master up is 0.5 dB per 20 px, never faster"],
-  ["Band", "tap = select · hold 0.6 s = band IN / OUT (kept, not acting; FLAT brings it back IN) · moving 12 px cancels"],
-  ["Graph", "drag a dot · long-press = notch helper (silent bell, Q 8.65, then cut) · hold ▼ PEAK = notch at the peak"],
+  ["Band", "tap = select · hold 0.6 s = band IN / OUT (kept, not acting; FLAT brings it back IN) · 3 quick taps on the selected chip = FLAT (UNDO 5 s) · moving 12 px cancels"],
+  ["Graph", "drag a dot · long-press = notch helper (silent bell, Q 8.65, then cut) · hold ▼ PEAK = notch at the peak (the mic's own PEAK when its line is shown)"],
+  ["≋", "MEASURE: the phone mic and RESPONSE (walk the room) in the ALIGN row's place · ≋ or Back leaves"],
   ["ALIGN", "hold DELAY or LO-CUT 0.8 s to unlock both for 30 s · LOCK in their steps relocks"],
   ["MUTE", "hold 0.6 s · unmute: hold 1.2 s · moving 12 px cancels · works while another key is held"],
   ["SETUP", "tap a choice, then the red SET key below it"],
@@ -551,6 +595,8 @@ function buildStatus() {
     return (u.mono_subs === true ? "ON" : u.mono_subs === false ? "OFF" : "--") + " · " +
       (u.sub_lowpass_on === false ? "OFF" : num(u.sub_lowpass_hz) ? fmtHz(u.sub_lowpass_hz) + " Hz" : "--");
   });
+  kv("Phone mic", () => (!micAllowed() ? (MIC.perm === "denied" ? "blocked" : "not allowed (SETUP › THIS PHONE)") : UI.prefs.mic === "off" ? "off"
+    : micRunning() ? "listening · " + (MIC.rate / 1000).toFixed(1) + " kHz" : "on, not shown now") + (MIC.err ? " · " + MIC.err : ""));
   kv("On the graph", () => pillList().map((x) => x[1]).join(" · ") || "no pills");
   kv("Box says", () => String(S().hint || "") || "—");
   grp("LINK");
@@ -563,7 +609,8 @@ function buildStatus() {
   grp("BUILDS");
   kv("Box", () => (K.hello ? String(K.hello.server || "--") + " · v2 build " + String(K.hello.build || "--") : "--"));
   kv("Page", () => "v2 " + BUILD);
-  kv("App", () => (hasNative() ? "K1000 app " + UI.native.app + " (" + UI.native.build + ")" : "browser"));
+  kv("App", () => (hasNative() ? "K1000 app " + UI.native.app + (Number.isInteger(UI.native.code) ? " · code " + UI.native.code : "") + " (" + UI.native.build + ")" +
+    (K.appCheck && K.appCheck.app_ok === false ? " · BOX WANTS code " + K.appCheck.min_app + "+" : "") : "browser"));
   kv("Haptics sent", () => hapLog.slice(-6).join(" ") || "—");
 }
 
