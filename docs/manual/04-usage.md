@@ -2,8 +2,8 @@
 
 How to run a show with K1000: the panel, the three pages, the mute, the phone, the end of the
 night and the bypass. This chapter follows the code as built (UI v1, decision D-009 in
-[`DECISIONS.md`](../../DECISIONS.md); the buttons and SETUP, D-013). The pictures are drawn by that
-code (`docs/ui/`).
+[`DECISIONS.md`](../../DECISIONS.md); the buttons and SETUP, D-013; the knob layout and the input
+meters, D-015). The pictures are drawn by that code (`docs/ui/`).
 
 Two printed pages go in the case: the [quick start](../13-quick-start.md) for someone who has
 never seen the box, and the [operator card](../04-operator-card.md) for the operator. Print them
@@ -27,7 +27,7 @@ small grey tag by each label (the built-in default, as in the pictures), `bright
 | Gesture | Means |
 |---|---|
 | Turn | One click = one step. Only FREQ, the Lo-Cut frequency and master **down** speed up on a fast turn (up to ×4); master **up** never does |
-| Push held + turn | Fine steps, where the value has them (frequencies, Q, delays). The edit box says `FINE`. Releasing a push after turning never selects anything |
+| Push held + turn | Fine steps, where the value has them (frequencies, Q, delays). A cyan `FINE` shows it, on the inner side: in the label row of a top knob (E1, E3), in the value box's inner corner for a bottom one (E2, E4). Releasing a push after turning never selects anything |
 | Tap a button | Its action on this page |
 | Hold a button | Fires at **0.8 s**, while still held |
 
@@ -37,8 +37,11 @@ small grey tag by each label (the built-in default, as in the pictures), `bright
   the profile and device (`M4 · MOTU M4`), the engine (● `RUNNING` green, `STARTING` / `PAUSED`
   yellow, red when down) and its load (`DSP 2.0%`). A system alert takes the bar in its own colour
   ([§7](#7-alerts-hints-and-pills)).
-- **The values**, each next to its knob, in white. The one being edited turns amber for 2.5 s.
-- **The meter**: Sub L, Sub R, Top L, Top R ([§3.5](#35-the-meter-and-clipping)).
+- **The values**, each next to its knob, in white, flush to its corner's outer edge (left corners
+  left-aligned, right corners right-aligned) with its unit beside it. The one being edited turns
+  amber for 2.5 s.
+- **The meters**: IN L R (the program input), SUB L R, TOP L R
+  ([§3.5](#35-the-meters-and-clipping)).
 - **The amber strip**: hints, what your own press just did.
 - **The pills** (SHOW only): states that last, on the bottom row.
 
@@ -55,7 +58,7 @@ SETUP and a hold to SHOW; on the Knob test any hold but B4 goes back to SETUP.
 | Button | SHOW | ALIGN | SETUP |
 |---|---|---|---|
 | B1 | tap: ALIGN · hold: SETUP | tap: SHOW · hold: SETUP | tap or hold: SHOW |
-| B2 | tap: next band | **hold: unlock E3/E4** · tap: lock again | hint only |
+| B2 | tap: next band | **hold: unlock E2/E4** (DELAY, LO-CUT) · tap: lock again | hint only |
 | B3 | tap: **notch helper** · **hold: the selected band IN / OUT** | hint only | hint only |
 | B4 | **hold: mute / unmute** (a tap only shows a hint) | the same | the same, also on PHONE and the Knob test |
 
@@ -89,20 +92,20 @@ or `NO SAVED STATE · CHECK MASTER`: check master and balance before you unmute
 
 ## 3. SHOW, the front page
 
-Everything a show needs: the master, the live EQ, the meter and the spectrum.
+Everything a show needs: the master, the live EQ, the meters and the spectrum.
 
 | Knob | Does | Step | Fine (push held) |
 |---|---|---|---|
 | E1 **MASTER** | The Main fader, −80 … 0 dB | 0.5 dB; down speeds up, up never | — |
 | E2 **FREQ** | Frequency of the selected band | 1/12 octave, speeds up | 1/48 octave |
-| E3 **GAIN** | Gain of the selected band: bells −20 … +6 dB, shelves −12 … +6 dB | 0.5 dB | — |
-| E4 **Q** | Width of the selected band (shelves: `SLOPE`) | Q × 1.12 (1/6 octave) | Q × 1.03 (1/24 octave) |
+| E3 **Q** | Width of the selected band (shelves: `SLOPE`) | Q × 1.12 (1/6 octave) | Q × 1.03 (1/24 octave) |
+| E4 **GAIN** | Gain of the selected band: bells −20 … +6 dB, shelves −12 … +6 dB | 0.5 dB | — |
 | B2 tap | Next band: **LS → 1 → 2 → 3 → 4 → HS**, then LS again | | |
 | B3 tap | The notch helper ([§3.2](#32-notching-a-ring-in-3-gestures)) | | |
 | B3 hold | The selected band **IN / OUT** ([§3.6](#36-a-band-in-or-out)): `P2 OUT`, `P2 IN`, once the Knob test confirmed the buttons | | |
 
-Under the Q value, the width in octaves (`8.65` = `1/6 oct`). The E3 label names the band
-(`PEQ 2 GAIN`, `LO SHELF GAIN`).
+Beside the Q value, the width in octaves (`8.65` `1/6 oct`). The E3 label names the band
+(`PEQ 2 Q`, `LO SHELF SLOPE`). Until D-015 (2026-10-14) GAIN was E3 and Q E4.
 
 **The band chips.** The selected band is filled amber. A band in use is outlined orange (a cut) or
 green (a boost); a free band (0 dB) is faint. The live EQ is four bells (P1–P4) and a low and a
@@ -136,21 +139,21 @@ Master, balance and the mute move with a 0.1 s fade.
 
 ### 3.2 Notching a ring in 3 gestures
 
-**B3, E3 down, E4 up.**
+**B3, E4 down, E3 up.**
 
 1. **B3** (tap). The notch helper takes a **free bell** (P1–P4 at exactly 0 dB: the selected band
    if it is free, else the first free one; never a shelf). It sets its Q to **8.65 (1/6 octave)**
    and, if a PEAK is shown, its frequency to the PEAK. **The gain stays at 0 dB**, so nothing is
-   audible yet. The band is selected, GAIN is highlighted, and the strip says
-   `P3 · 2.44k · E3 TO CUT` for 4 s.
-2. **E3 down**: the cut. 12 clicks = −6 dB.
-3. **E4 up**: narrower. 6 clicks take Q from 8.65 to 16, the maximum. To centre it, E2 with its
+   audible yet. The band is selected, GAIN (bottom right) is highlighted, and the strip says
+   `P3 · 2.44k · E4 TO CUT` for 4 s.
+2. **E4 down**: the cut. 12 clicks = −6 dB.
+3. **E3 up**: narrower. 6 clicks take Q from 8.65 to 16, the maximum. To centre it, E2 with its
    push held (1/48 octave per click).
 
 | Case | What B3 does |
 |---|---|
-| The PEAK sits within 1/6 octave of a bell **already in use** | Selects that bell and changes nothing (cut it deeper with E3) |
-| No PEAK (nothing on the spectrum, or Spectrum OFF) | Sets the free bell up at its own frequency: `P2 · 1.00k · NO PEAK · E3 TO CUT`. **Cut first, then sweep**: E3 down (about −6 dB; at 0 dB the bell is inaudible wherever it sits), then E2 until the ring drops (250 Hz → 2.5 kHz is about 40 clicks), then E4 up to narrow |
+| The PEAK sits within 1/6 octave of a bell **already in use** | Selects that bell and changes nothing (cut it deeper with E4) |
+| No PEAK (nothing on the spectrum, or Spectrum OFF) | Sets the free bell up at its own frequency: `P2 · 1.00k · NO PEAK · E4 TO CUT`. **Cut first, then sweep**: E4 down (about −6 dB; at 0 dB the bell is inaudible wherever it sits), then E2 until the ring drops (250 Hz → 2.5 kHz is about 40 clicks), then E3 up to narrow |
 | `NO FREE BAND` | All four bells are in use. Reuse one (B2 to select it), or reset the live EQ in SETUP |
 
 Nothing on SHOW resets the live EQ (that is SETUP › LIVE EQ, with its undo). A bell switched OUT
@@ -187,10 +190,14 @@ access). Example: `MASTER: SLOW DOWN`.
 
 ![A hint](../ui/hint.png)
 
-### 3.5 The meter and clipping
+### 3.5 The meters and clipping
 
-Four bars, Sub L, Sub R, Top L, Top R, −60 … 0 dBFS: green below −18, yellow to −6, red above. A
-red box on top = that output clipped. ALIGN shows the same meter, larger.
+Six bars in three pairs (D-015), −60 … 0 dBFS: green below −18, yellow to −6, red above.
+**IN L R** is the program input as it reaches the M4's converter, before any K1000 gain (the
+spectrum's source); **SUB L R** and **TOP L R** are the outputs. A red box on top = that output
+clipped; on the IN pair, `IN CLIP`. ALIGN shows the same meters, larger.
+
+![The input clipping: IN CLIP, the IN pair red](../ui/input_clip.png)
 
 | Shows | Means | Do |
 |---|---|---|
@@ -231,13 +238,18 @@ The system settings you set before the doors and leave alone: balance, the sub/t
 | Knob | Does | Step | Fine (push held) |
 |---|---|---|---|
 | E1 **MASTER** | As on SHOW | 0.5 dB | — |
-| E2 **BALANCE** | Subs against tops, −12 … +12 dB; + = subs up. Subs get +b/2, tops −b/2 (`subs +1.5 · tops -1.5`) | 0.5 dB | — |
-| E3 **DELAY** | Which side is late, and by how much: clockwise from 0 the **subs**, anticlockwise the **tops**, up to 50 ms either way. The size big, the side and the distance under it (`SUBS LATER · 0.81 m`, `TOPS LATER · 0.43 m`, `ALIGNED`) | 0.1 ms | 1 sample (1/48 ms) |
+| E2 **DELAY** | Which side is late, and by how much: clockwise from 0 the **subs**, anticlockwise the **tops**, up to 50 ms either way. The size big, the side and the distance over it (`SUBS LATER · 0.81 m`, `TOPS LATER · 0.43 m`, `ALIGNED`) | 0.1 ms | 1 sample (1/48 ms) |
+| E3 **BALANCE** | Subs against tops, −12 … +12 dB; + = subs up. Subs get +b/2, tops −b/2 (`subs +1.5 · tops -1.5`) | 0.5 dB | — |
 | E4 **LO-CUT** | The tops' high-pass, 12 dB/oct, 20 … 300 Hz | 2 Hz, speeds up (8 Hz on a fast spin) | 1 Hz |
 
-**E3 and E4 are locked.** A turn shows `LOCKED · HOLD B2 TO EDIT` and changes nothing.
+Until D-015 (2026-10-14) BALANCE was E2 and DELAY E3. The meters in the middle: IN L R, SUB L R,
+TOP L R ([§3.5](#35-the-meters-and-clipping)).
 
-- **Hold B2**: unlocked (`DELAY + LO-CUT UNLOCKED`). An amber `EDIT 0:30` badge counts down.
+**E2 and E4, the two bottom knobs, are locked.** A turn shows `LOCKED · HOLD B2 TO EDIT` and
+changes nothing. The bottom row says so between their labels: `DELAY ── LOCKED · HOLD B2 ── LO-CUT`.
+
+- **Hold B2**: both unlocked (`DELAY + LO-CUT UNLOCKED`). The badge turns into an amber
+  `EDIT 0:30` that counts down.
 - Any knob or button on ALIGN renews it, so **30 s without input locks again**.
 - **A B2 tap** locks at once (`DELAY + LO-CUT LOCKED`). Leaving ALIGN locks too.
 
@@ -536,7 +548,7 @@ on/off. It has no spectrum.
 
 ## 9. During a show
 
-- Stay on **SHOW**. Master on E1; ring control with B3, E3, E4.
+- Stay on **SHOW**. Master on E1; ring control with B3, E4 (gain), E3 (Q).
 - Leave ALIGN locked and SETUP alone, except Reset live EQ / Undo reset.
 - No CamillaGUI Apply, and Laptop access closed.
 - Never Mono L+R, Profile or Audition: they rebuild the pipeline (a click).
@@ -545,7 +557,7 @@ on/off. It has no spectrum.
 | Emergency | Do |
 |---|---|
 | Silence now | **Hold B4** |
-| Feedback | On SHOW: **B3**, **E3 down**, **E4 up** (no B1 needed). From ALIGN or SETUP: tap B1, wait for the cyan PEAK (about 2 s), then B3 |
+| Feedback | On SHOW: **B3**, **E4 down**, **E3 up** (no B1 needed). From ALIGN or SETUP: tap B1, wait for the cyan PEAK (about 2 s), then B3 |
 | `KNOBS OFFLINE` (B4 dead) | The phone's mute if the alert says so; else the source down. Then bypass |
 | Any doubt about the sound | **Bypass** ([§11](#11-the-bypass)) |
 

@@ -191,7 +191,7 @@ to `E4` (D-011). One key, in its own `ui:` section:
 | `ui.knob_tags` | Looks like | For |
 |---|---|---|
 | `dim` (default) | A small dark-grey `E1` before the label: secondary to it, legible up close | Most boxes |
-| `off` | No tag; the label moves into the corner where the tag was | A sticker on the shell names the knobs: E1 top-left, E2 bottom-left, E3 top-right, E4 bottom-right. Put the sticker on first: the hints still name the knobs (`E3 TO CUT`, the PHONE page's `E1 turn`) |
+| `off` | No tag; the label moves into the corner where the tag was | A sticker on the shell names the knobs: E1 top-left, E2 bottom-left, E3 top-right, E4 bottom-right. Put the sticker on first: the hints still name the knobs (`E4 TO CUT`, the PHONE page's `E1 turn`) |
 | `bright` | The cyan `E1` of UI v1 as first shipped | A new operator learning the knobs |
 
 ```yaml
@@ -336,12 +336,12 @@ Logical outputs, wherever four values appear: 0 Sub L, 1 Sub R, 2 Top L, 3 Top R
 |---|---|---|---|
 | `master_db` | −80 … 0 dB, 0.5 dB steps | −20 | E1 on SHOW and ALIGN, phone |
 | `muted` | bool | false | Hold B4, phone |
-| `balance_db` | −12 … +12 dB, + = subs up | 0 | ALIGN E2, phone. Subs get +b/2, tops −b/2 |
+| `balance_db` | −12 … +12 dB, + = subs up | 0 | ALIGN E3, phone. Subs get +b/2, tops −b/2 |
 | `input_trim_db` | −24 … +12 dB | 0 | SETUP › INPUT › Trim |
 | `mono_subs` | bool | false | SETUP › SUBS › Mono L+R (rebuilds the pipeline: chosen with E2, set by a push). Both subs get (L+R) at −6 dB each |
 | `sub_inverted`, `top_inverted` | bool | false | SETUP › SUBS › Polarity, TOPS › Polarity |
-| `sub_delay_ms` | 0 … 50 ms | 0 | ALIGN E3 (unlocked): DELAY clockwise of 0, `SUBS LATER` |
-| `top_delay_ms` | 0 … 50 ms | 0 | ALIGN E3 (unlocked): DELAY anticlockwise of 0, `TOPS LATER` |
+| `sub_delay_ms` | 0 … 50 ms | 0 | ALIGN E2 (unlocked): DELAY clockwise of 0, `SUBS LATER` |
+| `top_delay_ms` | 0 … 50 ms | 0 | ALIGN E2 (unlocked): DELAY anticlockwise of 0, `TOPS LATER` |
 | `lowcut_on` | bool | **true** | SETUP › TOPS › Lo-Cut (chosen with E2, set by a push), phone (with a confirm) |
 | `lowcut_hz` | 20 … 300 Hz, 2 Hz steps (push: 1 Hz) | 100 | ALIGN E4 (unlocked), phone. Tops only, 12 dB/oct |
 | `sub_lowpass_on` | bool | false | SETUP › SUBS › Low-pass |
@@ -358,12 +358,12 @@ Logical outputs, wherever four values appear: 0 Sub L, 1 Sub R, 2 Top L, 3 Top R
 "Off" for the Lo-Cut and the sub low-pass is a frequency move (10 Hz and 20 kHz), never a pipeline
 change. Delays are applied in whole samples at 48 kHz.
 
-**The two delays are one knob** (D-011). ALIGN E3 shows `sub_delay_ms − top_delay_ms`: 0.1 ms a
-click, one sample (1/48 ms) with the push, stopping one click on `ALIGNED` (0) before crossing to
-the other side. A knob move sets the late side and zeroes the other. A file with both set (written
-by hand, by CamillaGUI or by a build before D-011) keeps both until the first E3 change (the
-wake-up click aside), which moves the net value one step, writes it to the late side and zeroes
-the other: sub 2.0 / top 0.5 shows `1.50 ms`, `SUBS LATER · 0.51 m`, and one click clockwise
+**The two delays are one knob** (D-011). ALIGN E2 (E3 until D-015) shows
+`sub_delay_ms − top_delay_ms`: 0.1 ms a click, one sample (1/48 ms) with the push, stopping one
+click on `ALIGNED` (0) before crossing to the other side. A knob move sets the late side and zeroes
+the other. A file with both set (written by hand, by CamillaGUI or by a build before D-011) keeps
+both until the first DELAY change (the wake-up click aside), which moves the net value one step,
+writes it to the late side and zeroes the other: sub 2.0 / top 0.5 shows `1.50 ms`, `SUBS LATER · 0.51 m`, and one click clockwise
 stores sub 1.6, top 0. A `lowcut_hz` between the 2 Hz steps (e.g. 112.25) also stays as it is until its first
 click, which lands on the next step in the turn's direction (114 up, 112 down). Reset live EQ puts
 the four bells and both shelves back to the defaults above.

@@ -361,8 +361,8 @@ the Friday rig test; on a no-go the AP goes fully off and the knobs carry the sh
 - Phone (compact view): `http://<box-ip>:5005/gui/index.html?compactview`
   - **Levels only**: Main volume, mute and the meters. These are runtime commands, so they never
     send a config. k1000 follows the Main fader.
-  - Live EQ, Lo-Cut, the sub/top delay and the sub/top balance are on the knobs (balance = E2,
-    delay = E3 on the ALIGN page). The phone has no sliders for them on purpose: in CamillaGUI v5 beta.2 every
+  - Live EQ, Lo-Cut, the sub/top delay and the sub/top balance are on the knobs (delay = E2,
+    balance = E3 on the ALIGN page, D-015). The phone has no sliders for them on purpose: in CamillaGUI v5 beta.2 every
     slider move sends the whole config as the page loaded it, which would put back old knob
     values (a feedback notch), the pre-tune system EQ, or even the old audio device.
 - **Phone rule.** The compact view has two small icons at the top, "Change to normal view" and
@@ -377,7 +377,7 @@ the Friday rig test; on a no-go the AP goes fully off and the knobs carry the sh
       and k1000 ramps Main back in over 3 s: about 2 s of silence, then the ramp.
     - Apply automatically turns every later edit into a whole-config Apply.
 - The GUI's Aux1/Aux2 faders (normal and dashboard views) are k1000's sub and top groups, not
-  a balance control: use E2. k1000 pulls a raise on them back down to its balance, but keeps a
+  a balance control: use ALIGN E3. k1000 pulls a raise on them back down to its balance, but keeps a
   cut or a mute (the box screen then shows e.g. SUBS GROUP MUTED) until it is undone in the GUI.
 - The Main slider goes up to 0 dB (`volume_max` in `box/camillagui/gui-config.yml`), and one
   swipe can get there in about half a second. **After Friday's gain-structure step**, set
@@ -444,7 +444,9 @@ switches the selected band IN/OUT. `k1000-m4-bringup.sh` warns while the default
 What each button and knob does per page (SHOW · ALIGN · SETUP) is the operator card,
 `docs/04-operator-card.md`. In short (D-013): B1 tap = SHOW ↔ ALIGN (SETUP → SHOW), hold = SETUP ·
 B2 = next band on SHOW, a hold unlocks the delay and Lo-Cut on ALIGN · B3 = the notch helper on SHOW
-· B4 hold = mute/unmute (every page). ALIGN's E3 DELAY (D-011) is one setting for both sides:
+· B4 hold = mute/unmute (every page). The knobs (D-015): SHOW E1 MASTER · E2 FREQ · E3 Q · E4 GAIN
+of the selected band; ALIGN E1 MASTER · E2 DELAY · E3 BALANCE · E4 LO-CUT, the two bottom ones
+(DELAY, LO-CUT) locked. ALIGN's E2 DELAY (D-011) is one setting for both sides:
 clockwise from 0 delays the subs (`SUBS LATER`), anticlockwise the tops (`TOPS LATER`); it writes
 `sub_delay_ms` or `top_delay_ms` and zeroes the other (SETUP has no Top delay any more). The Lo-Cut
 moves 2 Hz a click (1 Hz with the push).
@@ -487,7 +489,7 @@ The program spectrum behind SHOW's EQ curve (D-009) polls the engine on a second
 while SHOW is displayed and SETUP › LIVE EQ › Spectrum is ON (`docs/03-v0-architecture.md` §8).
 
 - **SETUP › LIVE EQ › Spectrum** switches it at run time (saved in `state.json`; E2 chooses, a push
-  sets). Off, SHOW draws the curve alone and B3 still sets a notch up (`NO PEAK`: E3 down first,
+  sets). Off, SHOW draws the curve alone and B3 still sets a notch up (`NO PEAK`: E4 down first,
   about −6 dB, then sweep E2 until the ring drops; at 0 dB the sweep is silent).
 - **Out entirely** (Friday's no-go, or anything odd): `spectrum: enabled: false` in
   `/etc/k1000/k1000.yaml`, then `sudo systemctl restart k1000` between shows. No task and no second

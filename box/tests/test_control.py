@@ -606,7 +606,7 @@ def test_fast_turns_coalesce_while_a_plan_runs(tmp_path: Path) -> None:
         ctl, cl = make(tmp_path, State(), playing=True, sleep=asyncio.sleep)
         await boot(ctl)
         n = len(cl.log)
-        for _ in range(12):                 # 12 detents in 60 ms (a fast E3 turn)
+        for _ in range(12):                 # 12 detents in 60 ms (a fast DELAY turn, ALIGN E2)
             ctl.nudge("sub_delay_ms", 1)
             await asyncio.sleep(0.005)
         assert await ctl.settle(5.0)
@@ -1046,7 +1046,7 @@ def test_knob_and_button_events_through_input_map(tmp_path: Path) -> None:
         assert ctl.state.muted is False                               # B2 is not the mute any more
         ctl.handle_event(_sw_ev(5, "long"))                           # B2 hold on SHOW: nothing
         assert ctl.focus.slot == 1 and ctl.state.muted is False and ctl.page == "SHOW"
-        ctl.handle_event(_enc_ev(2, -2))                              # E3 = gain of PEQ 2
+        ctl.handle_event(_enc_ev(3, -2))                              # E4 = gain of PEQ 2 (D-015)
         assert ctl.state.live_peq[1].gain == -1.0
         ctl.handle_event(_sw_ev(6, "long"))                           # B3 hold: P2 OUT (D-014),
         assert ctl.state.live_peq[1].gain == -1.0 and ctl.state.live_peq[1].on is False   # no reset
@@ -1777,7 +1777,7 @@ def test_notch_helper_takes_a_free_bell_at_the_peak_and_never_touches_gain(tmp_p
         b = ctl.state.live_peq[2]
         assert b.freq == 2440.0 and b.q == pytest.approx(8.651, abs=0.001) and b.gain == 0.0
         assert ctl.focus.slot == 2 and ctl.focus.editing_now() == "live_peq.2.gain"
-        assert ctl.focus.hint_now() == "P3 · 2.44k · E3 TO CUT"
+        assert ctl.focus.hint_now() == "P3 · 2.44k · E4 TO CUT"
         assert await ctl.settle(5.0)
         assert _gain_writes(cl.log[n:]) == []         # inaudible: freq and Q only
         assert cl.cfg["filters"]["live_peq_3"]["parameters"]["freq"] == 2440.0
@@ -1792,7 +1792,7 @@ def test_notch_helper_takes_a_free_bell_at_the_peak_and_never_touches_gain(tmp_p
         before, n = ctl.state.to_dict(), len(cl.log)
         assert ctl.notch_helper() == 2
         assert ctl.state.to_dict() == before and ctl.focus.slot == 2
-        assert ctl.focus.hint_now() == "P3 · 2.44k · E3 TO CUT"
+        assert ctl.focus.hint_now() == "P3 · 2.44k · E4 TO CUT"
         assert await ctl.settle(5.0)
         assert nomark(cl.log[n:]) == []
         # a peak elsewhere: the first free bell (never a shelf, even selected and flat)
@@ -1812,7 +1812,7 @@ def test_notch_helper_without_a_peak_or_a_free_band(tmp_path: Path) -> None:
         ctl.focus.slot = 1
         assert ctl.notch_helper() == 1                # no spectrum: Q only, the freq stays
         assert ctl.state.live_peq[1].freq == 1000.0 and ctl.state.live_peq[1].q == pytest.approx(8.651, abs=1e-3)
-        assert ctl.focus.hint_now() == "P2 · 1.00k · NO PEAK · E3 TO CUT"
+        assert ctl.focus.hint_now() == "P2 · 1.00k · NO PEAK · E4 TO CUT"
         ctl.set_spectrum(_Frame(3000.0), "live")
         ctl.state.spectrum_on = False                 # SETUP > Spectrum OFF: no peak target
         ctl.focus.slot = 3
@@ -1915,7 +1915,7 @@ def test_reset_undo_survives_inaudible_edits_and_says_when_it_is_lost(tmp_path: 
         assert ctl.undo_left() == pytest.approx(300.0)
         ctl.set_spectrum(_Frame(2440.0), "live")
         assert ctl.notch_helper() == 0 and ctl.state.live_peq[0].freq == 2440.0
-        ctl.nudge("live_peq.2.freq", 7)               # E2 / E4 on a flat band
+        ctl.nudge("live_peq.2.freq", 7)               # E2 / E3 on a flat band
         ctl.nudge("live_peq.2.q", -3)
         ctl.nudge("live_highshelf.freq", 2)
         assert ctl.undo_left() == pytest.approx(300.0)
@@ -1928,7 +1928,7 @@ def test_reset_undo_survives_inaudible_edits_and_says_when_it_is_lost(tmp_path: 
         # the first audible edit ends it, said on the screen
         ctl.reset_live()
         ctl.notch_helper()
-        ctl.nudge("live_peq.0.gain", -1)              # E3: the cut
+        ctl.nudge("live_peq.0.gain", -1)              # E4: the cut
         assert ctl.focus.hint_now() == ctl_mod.HINT_UNDO_LOST == "RESET UNDO LOST"
         assert ctl.undo_left() == 0.0 and ctl.undo_reset() is False
         # an expiry is silent
@@ -2005,11 +2005,11 @@ def test_align_lock_relocks_when_leaving_and_after_idle(tmp_path: Path) -> None:
         ctl.goto_page("SHOW")
         ctl.goto_page("ALIGN")
         assert ctl.snapshot()[2].align_locked is True             # leaving ALIGN relocked
-        ctl.handle_event(EncoderEvent(2, 3, time.monotonic()))
+        ctl.handle_event(EncoderEvent(1, 3, time.monotonic()))    # E2 = DELAY (D-015)
         assert ctl.state.sub_delay_ms == 1.0
         ctl.handle_event(SwitchEvent(5, "long", time.monotonic()))
         ctl.focus.unlock_until = time.monotonic() - 0.01          # 30 s of idle went by
-        ctl.handle_event(EncoderEvent(2, 3, time.monotonic()))
+        ctl.handle_event(EncoderEvent(1, 3, time.monotonic()))
         assert ctl.state.sub_delay_ms == 1.0 and ctl.snapshot()[2].align_locked is True
         await ctl.stop()
 
@@ -3031,6 +3031,38 @@ def test_invisible_meter_changes_do_not_wake_the_screen(tmp_path: Path) -> None:
     run(body())
 
 
+def test_input_peaks_wake_the_screen_on_show_and_align(tmp_path: Path) -> None:
+    """D-015: SHOW and ALIGN draw the program input (IN L R): a visible change of its capture
+    peaks wakes the render loop (`changed`), never `version` (the phones' state does not carry
+    it); a change under one meter step wakes nothing, and no change does on a page without the
+    meters."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        for page in ("SHOW", "ALIGN"):
+            ctl.goto_page(page)
+            cl.cap_peaks = [-30.0, -30.0]
+            await ctl.meter_once()
+            ctl.changed.clear()
+            v = ctl.version
+            cl.cap_peaks = [-30.05, -29.95]                       # under one meter step
+            await ctl.meter_once()
+            assert not ctl.changed.is_set(), page
+            cl.cap_peaks = [-12.0, -14.0]
+            await ctl.meter_once()
+            assert ctl.changed.is_set() and ctl.version == v, page
+            assert ctl.snapshot()[2].in_peak_db == [-12.0, -14.0]
+        ctl.goto_page("SETUP")
+        ctl.changed.clear()
+        cl.cap_peaks = [-6.0, -6.0]
+        await ctl.meter_once()
+        assert not ctl.changed.is_set()                           # SETUP draws no meter
+        assert ctl.snapshot()[2].in_peak_db == [-6.0, -6.0]       # (stored all the same)
+        await ctl.stop()
+
+    run(body())
+
+
 def test_input_clip_is_latched_from_the_program_inputs(tmp_path: Path) -> None:
     async def body() -> None:
         ctl, cl = make(tmp_path, State(), playing=True)
@@ -3471,7 +3503,7 @@ def _engine_delays(cl: FakeClient) -> tuple[float, float]:
 
 
 def test_signed_delay_one_engine_update_per_click_and_the_late_side_dips(tmp_path: Path) -> None:
-    """ALIGN E3 (D-011): every click is ONE config write, under a dip of the group whose delay
+    """ALIGN E2 (D-011): every click is ONE config write, under a dip of the group whose delay
     changes (subs = Aux1, tops = Aux2); crossing zero stops on ALIGNED; the engine never holds
     both delays after a move."""
     async def body() -> None:
@@ -3565,23 +3597,25 @@ def test_signed_delay_through_the_knobs_lock_and_wake_unchanged(tmp_path: Path) 
         ctl, cl = make(tmp_path, State(sub_delay_ms=0.1), playing=True)
         await boot(ctl)
         ctl.goto_page("ALIGN")
-        ctl.handle_event(_enc_ev(2, -1))                                 # locked: hint only
+        ctl.handle_event(_enc_ev(1, -1))                       # E2 = DELAY (D-015): locked, hint only
         assert ctl.state.sub_delay_ms == 0.1 and ctl.focus.hint_now() == "LOCKED · HOLD B2 TO EDIT"
         ctl.handle_event(_sw_ev(5, "long"))                              # B2 hold: unlock
         assert ctl.focus.hint_now() == "DELAY + LO-CUT UNLOCKED"
-        ctl.handle_event(_enc_ev(2, -1))                                 # the wake-up detent
+        ctl.handle_event(_enc_ev(1, -1))                                 # the wake-up detent
         assert ctl.state.sub_delay_ms == 0.1 and ctl.focus.hint_now() == "DELAY · TURN AGAIN TO CHANGE"
         assert ctl.focus.editing_now() == "align_delay_ms"
         for want in ((0.0, 0.0), (0.0, 0.1), (0.0, 0.2)):              # ALIGNED, then the tops
             n = len(cl.log)
-            ctl.handle_event(_enc_ev(2, -1))
+            ctl.handle_event(_enc_ev(1, -1))
             assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == want
             assert await ctl.settle(3.0)
             assert len(_config_writes(cl.log[n:])) == 1
         assert _engine_delays(cl) == (0.0, dc.delay_on_grid(0.2))
         ctl.handle_event(_sw_ev(5, "short"))                             # B2 tap: locked again
-        ctl.handle_event(_enc_ev(2, 1))
+        ctl.handle_event(_enc_ev(1, 1))
         assert ctl.state.top_delay_ms == 0.2
+        ctl.handle_event(_enc_ev(2, 1))                                  # E3 = BALANCE: live
+        assert ctl.state.balance_db == 0.5 and ctl.state.top_delay_ms == 0.2
         await ctl.stop()
 
     run(body())
@@ -4037,7 +4071,7 @@ def test_b3_hold_on_show_switches_the_selected_band(tmp_path: Path) -> None:
         assert ctl.state.to_dict() == before
         # a knob moving a band that is OUT: stored, inaudible, and said
         ctl.goto_page("SHOW")
-        ctl.handle_event(EncoderEvent(2, -2, time.monotonic()))        # E3 GAIN on LS
+        ctl.handle_event(EncoderEvent(3, -2, time.monotonic()))        # E4 GAIN on LS
         assert ctl.state.live_lowshelf.gain == -1.0 and ctl.state.live_lowshelf.on is False
         assert ctl.focus.hint_now() == "LS OUT · HOLD B3 = IN"
         assert await ctl.settle(5.0)
@@ -4071,7 +4105,7 @@ def test_b3_hold_is_only_a_hint_until_the_button_map_is_confirmed(tmp_path: Path
         assert ctl.focus.hint_now() == "B3 HOLD: IN/OUT AFTER KNOB TEST"
         assert ctl.pills() == []
         assert ctl.set_band_on(1, False, source="phone") is False     # the phone's chip hold
-        ctl.handle_event(EncoderEvent(2, -1, time.monotonic()))        # E3 GAIN on P2 (OUT)
+        ctl.handle_event(EncoderEvent(3, -1, time.monotonic()))        # E4 GAIN on P2 (OUT)
         assert ctl.focus.hint_now() == "P2 OUT · IN FROM THE PHONE"
         ctl.handle_event(SwitchEvent(7, "long", time.monotonic()))    # B4 hold: still the mute
         assert ctl.state.muted is True
@@ -4106,7 +4140,7 @@ def test_notch_helper_reads_the_effective_gain_and_keeps_an_out_cut(tmp_path: Pa
         b0, b1 = ctl.state.live_peq[0], ctl.state.live_peq[1]
         assert b0.on is True and b0.freq == 2440.0 and b0.gain == 0.0
         assert (b1.on, b1.freq, b1.gain, b1.q) == (False, 2520.0, -6.5, 8.0)
-        assert ctl.focus.hint_now() == "P1 · 2.44k · E3 TO CUT"
+        assert ctl.focus.hint_now() == "P1 · 2.44k · E4 TO CUT"
         assert await ctl.settle(5.0)
         assert _gain_writes(cl.log[n:]) == []                           # still silent
         # P2 back IN: now in use, so its peak selects it and writes nothing

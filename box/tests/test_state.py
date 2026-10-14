@@ -316,8 +316,8 @@ def test_lowcut_off_grid_value_is_never_rewritten_at_load(tmp_path):
 
 
 def test_align_delay_is_sub_minus_top_and_not_a_stored_field():
-    """D-011: ALIGN E3 is one signed delay over the two stored ones (state.json, dspconfig and
-    CamillaGUI keep sub_delay_ms and top_delay_ms)."""
+    """D-011: ALIGN E2 (E3 until D-015) is one signed delay over the two stored ones
+    (state.json, dspconfig and CamillaGUI keep sub_delay_ms and top_delay_ms)."""
     assert State(sub_delay_ms=2.35).get(st.ALIGN_DELAY) == 2.35
     assert State(top_delay_ms=1.25).get(st.ALIGN_DELAY) == -1.25
     assert State(sub_delay_ms=1.0, top_delay_ms=0.25).get(st.ALIGN_DELAY) == 0.75

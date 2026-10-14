@@ -147,7 +147,7 @@ for n in ("GetCaptureSignalPeakSince","GetPlaybackSignalPeakSince"):
 |---|---|---|
 | Program path | tone in LINE IN 3 | Capture: only index 2 live. Playback: index 0 (out1 Top L) and index 2 (out3 Sub L) at about the input level −20 dB; 1 and 3 at the floor. M4 LCD: In 3, Out 1, Out 3 move |
 | Right side | tone in LINE IN 4 | Capture index 3; outs 2 and 4 |
-| Tops vs subs | ALIGN (B1 tap), E2 BALANCE up to +12 (fully to subs) | out3/4 +6 dB, out1/2 −6 dB (against balance 0) |
+| Tops vs subs | ALIGN (B1 tap), E3 BALANCE up to +12 (fully to subs; E2 until D-015) | out3/4 +6 dB, out1/2 −6 dB (against balance 0) |
 | Lo-Cut | 60 Hz tone; ALIGN, hold B2 (`EDIT 0:30`), E4 LO-CUT up to 300 Hz (2 Hz a click, 8 Hz on fast spins: spin it). E4 reads `OFF`: SETUP › TOPS › Lo-Cut ON first (choose, push) | out1/2 far below out3/4 |
 | Mute | hold B4 (Knob test not done: Main mute in CamillaGUI instead) | all four outputs at the floor. Then restore balance (0), the Lo-Cut frequency, unmute |
 | Loop (MONITOR = unity) | TRS cable from out N into front INPUT 1 (GAIN 1 fully counter-clockwise, 48V off, MON 1 unlit) | Capture index 0 within about ±0.5 dB of playback index N−1, for N = 1…4; out1 equal to out3 (Mono L+R off) |
@@ -209,7 +209,7 @@ the `sw`/`enc` index shown and the name the code gives it (`= B1` … `= B4`) (t
 brings SHOW back; later, a Knob test is left with a B1 hold, to SETUP, then a B1 tap, to SHOW).
 Write `controls:` in `/etc/k1000/k1000.yaml`, `sudo systemctl restart k1000`, then check: hold B4
 mutes and unmutes on every page, a B1 tap flips SHOW ↔ ALIGN and a B1 hold opens SETUP, a B2 tap on
-SHOW moves the selected band, a B3 tap on SHOW shows the notch hint (`P1 · … · E3 TO CUT`, nothing
+SHOW moves the selected band, a B3 tap on SHOW shows the notch hint (`P1 · … · E4 TO CUT` since D-015, nothing
 audible). Label the shell: B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE (D-013, the operator card's
 labels). Fill in the "Where" line and the bypass patch of `docs/04-operator-card.md` and the bypass
 patch of `docs/13-quick-start.md`, then print both (`tools/make-print.sh`). Knob labels drawn at the

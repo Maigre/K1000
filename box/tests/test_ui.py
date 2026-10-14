@@ -383,7 +383,7 @@ def test_muted_band_is_full_width_red():
     s = st.State()
     s.muted = True
     img = pages.render("MAIN", s, pages.ScreenStatus(**OK), Focus())
-    y = pages.MID_Y1 + 16                             # inside the band, below its text
+    y = pages.ALIGN_MUTED_BAND[1] - 2                 # inside the band, below its text
     assert all(img.getpixel((x, y)) == pages.BAND_RED for x in range(480))
     assert img.getpixel((2, 100)) == pages.BAND_RED   # red frame too
 
@@ -415,6 +415,19 @@ def test_hwtest_muted_shows_a_red_tag():
 SETUP_LIST_Y = (pages.STATUS_H + 30, pages.STATUS_H + 30 + 8 * 28)
 SETUP_HEAD_X, SETUP_LABEL_X, SETUP_VALUE_X = 10, 24, pages.W - 18
 SETUP_FOOTER_Y = pages.H - pages.FOOTER_H // 2
+
+
+def _ink(page, state, status, focus, now=0.0, tags=None):
+    """Draw SHOW or ALIGN's body and return where each knob's texts landed (pages._Ctx.ink:
+    knob -> {label, tag, value, unit, sub, fine} -> (x0, y0, x1, y1); -1 -> the ALIGN badge)."""
+    c = pages._Ctx(focus, now, tags or pages.knob_tags(status))
+    {"SHOW": pages._page_show, "ALIGN": pages._page_align}[im.page_name(page)](c, state, status)
+    return c.ink
+
+
+def _overlap(a, b) -> bool:
+    """Two (x0, y0, x1, y1) boxes share any pixel."""
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
 def _drawn(page, state, status, focus, now=0.0):
@@ -518,21 +531,28 @@ def test_setup_muted_keeps_selected_row_visible(item, mode):
     assert _setup_selected(img, drawn, it.label)[2] == bar             # the row stays
 
 
-@pytest.mark.parametrize("page,editing,region", [
-    # SHOW: E4 (Q) bottom-right box, FINE at its top-right corner
-    ("SHOW", "live_peq.1.q", [(x, y) for x in range(452, 471) for y in range(259, 270)]),
-    # ALIGN (the v0 band): E4 (LO-CUT) bottom-right quadrant
-    ("ALIGN", "lowcut_hz", [(x, y) for x in range(430, 471) for y in range(276, 289)]),
+@pytest.mark.parametrize("page,editing,e,ink", [
+    # SHOW (D-015): E3 Q top right, FINE in its label row (cyan); E4 GAIN bottom right, FINE at
+    # its box's inner top corner (black on the amber box)
+    ("SHOW", "live_peq.1.q", 2, pages.CYAN),
+    ("SHOW", "live_peq.1.gain", 3, pages.BG),
+    # ALIGN (the v0 band): E3 BALANCE top right (label row), E4 LO-CUT bottom right (on its box)
+    ("ALIGN", "balance_db", 2, pages.CYAN),
+    ("ALIGN", "lowcut_hz", 3, pages.BG),
 ])
-def test_fine_marker_stays_visible_under_the_muted_band(page, editing, region):
+def test_fine_marker_stays_visible_under_the_muted_band(page, editing, e, ink):
     s = st.State()
     s.muted = True
     st_ = pages.ScreenStatus(muted=True, **OK)
-    base = dict(slot=1, editing=editing, edit_until=math.inf)           # E4 = bottom-right
-    with_fine = pages.render(page, s, st_, Focus(held={3}, **base), now=0.0)
+    base = dict(slot=1, editing=editing, edit_until=math.inf)
+    f = Focus(held={e}, **base)
+    box = _ink(page, s, st_, f)[e]["fine"]
+    region = [(x, y) for x in range(int(box[0]), int(box[2])) for y in range(int(box[1]), int(box[3]))]
+    with_fine = pages.render(page, s, st_, f, now=0.0)
     without = pages.render(page, s, st_, Focus(**base), now=0.0)
-    assert sum(with_fine.getpixel(p) == pages.BG for p in region) > 10   # FINE (BG on AMBER)
-    assert all(without.getpixel(p) == pages.AMBER for p in region)
+    assert sum(with_fine.getpixel(p) == ink for p in region) > 10        # FINE
+    assert sum(without.getpixel(p) == ink for p in region) == 0
+    assert not any(with_fine.getpixel(p) == pages.BAND_RED for p in region)
 
 
 def _band_line(state, status, focus=None):
@@ -630,23 +650,34 @@ def test_clip_and_input_clip_pills_in_the_status_bar():
 
 
 @pytest.mark.parametrize("slot", [1, 4])          # a bell (unit '1/6 oct'), a shelf ('Q')
-def test_fine_label_never_covers_the_value_or_its_unit(slot):
+@pytest.mark.parametrize("e", [0, 1, 2, 3])
+def test_fine_label_never_covers_the_value_or_its_unit(slot, e):
+    """FINE sits on the INNER side (D-015: the value is flush to the outer one): a top block's
+    in its label row, a bottom block's at its box's inner top corner, in a column the value and
+    its unit keep clear of. A top block keeps its whole value size with FINE held."""
     s = st.State()
     s.live_peq[1].q = 8.0
-    fld = im.live_field(slot, "q")
-    f = Focus(slot=slot, editing=fld, edit_until=math.inf, held={3})
-    img = pages.render("SHOW", s, pages.ScreenStatus(**OK), f, now=0.0)
-    d = pages._Draw(Image.new("RGB", (10, 10)))
-    fine_left = int(pages.W - 10 - d.textlength("FINE", font=pages.font(14)))
-    # FINE (BG on the amber box) has its own column at the right edge, at the box's top: the
-    # value's digits and unit stay left of that column on every row
-    y0, y1 = pages.BOT_BOX
-    fine_rows = range(y0 + 3, y0 + 17)
-    assert any(img.getpixel((x, y)) == pages.BG for x in range(fine_left, pages.W - 6)
-               for y in fine_rows)                                                  # FINE
-    assert not any(img.getpixel((x, y)) == pages.BG          # (the box's round corners aside)
-                   for x in range(fine_left - 2, pages.W - 9) for y in range(y0 + 3, y1 - 2)
-                   if y not in fine_rows)
+    fld = [im.F_MASTER, im.live_field(slot, "freq"), im.live_field(slot, "q"),
+           im.live_field(slot, "gain")][e]
+    f = Focus(slot=slot, editing=fld, edit_until=math.inf, held={e})
+    ink = _ink("SHOW", s, pages.ScreenStatus(**OK), f)
+    plain = _ink("SHOW", s, pages.ScreenStatus(**OK), Focus(slot=slot, editing=fld,
+                                                            edit_until=math.inf))
+    fine = ink[e]["fine"]
+    for k, parts in ink.items():
+        for part, box in parts.items():
+            if (k, part) != (e, "fine"):
+                assert not _overlap(fine, box), (k, part)
+    left = im.KNOB_CORNERS[e][1] == "l"
+    if im.KNOB_CORNERS[e][0] == "t":                                      # in the label row,
+        label = ink[e].get("tag", ink[e]["label"]) if not left else ink[e]["label"]
+        assert (fine[0] > label[2]) if left else (fine[2] < label[0])    # inner end
+        assert fine[3] <= pages.TOP_BOX[0] + 1
+        assert ink[e]["value"] == plain[e]["value"]                       # nothing shrank
+    else:                                                                 # at the box's inner side
+        value = ink[e]["value"]
+        assert (fine[0] > value[2]) if left else (fine[2] < value[0])
+        assert pages.BOT_BOX[0] <= fine[1] and fine[3] <= pages.BOT_BOX[1]
 
 
 def test_lowcut_toggle_highlights_the_lowcut_quadrant():
@@ -840,7 +871,7 @@ def test_show_labels_the_0db_line_and_the_db_scale_at_the_right_edge():
 def test_show_muted_band_leaves_the_0db_line_and_every_value_visible():
     s = st.State()
     s.live_peq[1].gain = -6.5
-    f = Focus(slot=1, editing="live_peq.1.gain", edit_until=INF, held={2})
+    f = Focus(slot=1, editing="live_peq.1.gain", edit_until=INF, held={2, 3})
     fr = pages.demo_spectrum()
     clean = pages.render("SHOW", s, pages.ScreenStatus(spectrum=fr, **RUN), f, now=0.0)
     muted = pages.render("SHOW", st.State.from_dict({**s.to_dict(), "muted": True}),
@@ -849,10 +880,13 @@ def test_show_muted_band_leaves_the_0db_line_and_every_value_visible():
     assert all(muted.getpixel((x, b0 + 4)) == pages.BAND_RED for x in range(pages.W))
     y0 = _zero_db_y()
     assert b1 < y0 - 1
-    kept = [(8, pages.TOP_BOX[0], 196, pages.TOP_BOX[1] + 1),           # E1 MASTER
-            (288, pages.TOP_BOX[0], 472, pages.TOP_BOX[1] + 1),         # E3 GAIN (edited, FINE)
+    mx0, mx1 = pages.METER_BOX[0], pages.METER_BOX[2]
+    top = pages.STATUS_H + 4                                            # (under the red frame)
+    kept = [(8, top, mx0 - 4, pages.TOP_BOX[1] + 1),                    # E1 MASTER
+            (mx1 + 4, top, 472, pages.TOP_BOX[1] + 1),                  # E3 Q (FINE in its label row)
+            (mx0, top, mx1, pages.METER_BOX[3]),                         # IN SUB TOP meters
             (8, pages.BOT_BOX[0], 236, pages.BOT_BOX[1] + 1),           # E2 FREQ
-            (246, pages.BOT_BOX[0], 472, pages.BOT_BOX[1] + 1),         # E4 Q
+            (246, pages.BOT_BOX[0], 472, pages.BOT_BOX[1] + 1),         # E4 GAIN (edited, FINE)
             (8, y0 - 1, 472, y0 + 18)]                                  # 0 dB line + its label
     for box in kept:
         assert (_crop(clean, box) == _crop(muted, box)).all(), box
@@ -994,18 +1028,23 @@ def test_risky_pills_are_orange_and_fold_into_plus_n_last():
     assert _count(calm, region, pages.PILL_BG) > 100
 
 
-@pytest.mark.parametrize("field, xs, ys, colour", [
-    (im.F_ALIGN_DELAY, (pages.METER_X1 + 20, pages.W - 20), (124, 137), pages.FG),  # E3, under
-    (im.F_BALANCE, (20, pages.METER_X0 - 20), (203, 217), pages.DIM),              # E2, above
+@pytest.mark.parametrize("field, e, colour", [
+    (im.F_ALIGN_DELAY, 1, pages.FG),        # E2 (bottom left, D-015): the sub-line over it
+    (im.F_BALANCE, 2, pages.DIM),           # E3 (top right, D-015): the sub-line under it
 ])
-def test_align_edit_box_stops_short_of_the_sub_line(field, xs, ys, colour):
+def test_align_edit_box_stops_short_of_the_sub_line(field, e, colour):
     """UX-9: '≈ 0.81 m' was drawn half over the amber edit box (grey on amber, cut in two).
     The delay's sub-line ('SUBS LATER · 0.81 m') is white while unlocked: it says the side."""
     s = st.State(sub_delay_ms=2.35, balance_db=3.0)
-    img = pages.render("ALIGN", s, pages.ScreenStatus(align_locked=False, align_unlock_s=20.0, **RUN),
-                       Focus(editing=field, edit_until=INF), now=0.0)
-    assert _count(img, (xs[0], ys[0], xs[1], ys[1]), pages.AMBER) == 0
-    assert _count(img, (xs[0], ys[0], xs[1], ys[1]), colour) > 20        # the sub-line is there
+    status = pages.ScreenStatus(align_locked=False, align_unlock_s=20.0, **RUN)
+    f = Focus(editing=field, edit_until=INF)
+    img = pages.render("ALIGN", s, status, f, now=0.0)
+    sub = _ink("ALIGN", s, status, f)[e]["sub"]
+    box = (int(sub[0]), int(sub[1]), int(sub[2]) + 1, int(sub[3]) + 1)
+    assert _count(img, box, pages.AMBER) == 0
+    assert _count(img, box, colour) > 20                                  # the sub-line is there
+    assert _count(img, (box[0], box[3] + 4, box[2], box[3] + 12) if e == 1 else
+                  (box[0], box[1] - 12, box[2], box[1] - 4), pages.AMBER) > 50   # the box is there
 
 
 def test_the_notch_pictures_are_what_the_real_notch_helper_does():
@@ -1016,7 +1055,7 @@ def test_the_notch_pictures_are_what_the_real_notch_helper_does():
     assert f1.slot == 2 and f1.editing == "live_peq.2.gain" and f1.hint.startswith("P3 · ")
     assert fresh.live_peq[2].gain == 0.0 and fresh.live_peq[2].q == pytest.approx(8.651, abs=1e-3)
     _n, _p, again, _s, f2 = cases["show_notch_reselect"]
-    assert f2.slot == 1 and f2.hint == "P2 · 2.52k · E3 TO CUT"
+    assert f2.slot == 1 and f2.hint == "P2 · 2.52k · E4 TO CUT"
     assert again.to_dict() == cases["show"][2].to_dict()                 # nothing written
 
 
@@ -1044,26 +1083,41 @@ def test_screen_alerts_from_a_controller_status_or_an_older_one():
     assert pages.screen_alerts(pages.ScreenStatus(alerts=[]))[0][1].startswith("STATUS ?")
 
 
-def test_align_locks_e3_e4_and_counts_the_unlock_down():
+def test_align_locks_e2_e4_and_counts_the_unlock_down():
+    """D-015: the locked knobs are the two bottom ones (E2 DELAY, E4 LO-CUT); the LOCKED ·
+    HOLD B2 badge sits on the bottom row between their labels, joined to both by a line, and
+    turns into the amber EDIT m:ss countdown once a B2 hold unlocked them."""
     s = st.State(sub_delay_ms=2.35, lowcut_hz=112.0)
     locked = pages.render("ALIGN", s, pages.ScreenStatus(**RUN), Focus(), now=0.0)
     by_status = pages.render("ALIGN", s, pages.ScreenStatus(align_locked=False, align_unlock_s=27.4,
                                                             **RUN), Focus(), now=0.0)
     by_focus = pages.render("ALIGN", s, pages.ScreenStatus(**RUN), Focus(unlock_until=100.0),
                             now=72.6)
-    e3 = (pages.METER_X1 + 4, 60, pages.W - 4, 122)          # SUB DELAY value
-    e4 = (pages.METER_X1 + 4, 222, pages.W - 4, 284)         # LO-CUT value
-    badge = (pages.METER_X1 + 4, 148, pages.W - 4, 186)
-    for box in (e3, e4):
+    e2 = (4, 214, pages.METER_X0 - 4, 276)                    # DELAY value, bottom left
+    e4 = (pages.METER_X1 + 4, 214, pages.W - 4, 276)          # LO-CUT value, bottom right
+    badge = (pages.METER_X0, pages.LOCK_Y0, pages.METER_X1, pages.LOCK_Y1 + 1)
+    for box in (e2, e4):
         assert _count(locked, box, pages.FG) == 0 and _count(locked, box, pages.DIM) > 200
         assert _count(by_status, box, pages.FG) > 200
     assert _count(locked, badge, pages.AMBER) == 0 and _count(locked, badge, pages.DIM) > 100
     assert _count(by_status, badge, pages.AMBER) > 1000                        # EDIT 0:28
     assert (_crop(by_status, badge) == _crop(by_focus, badge)).all()
-    # master and balance are live either way: never dimmed
+    # the badge covers both locked knobs: it lies between their labels, and a line in its
+    # colour runs from each label to it
+    ink = _ink("ALIGN", s, pages.ScreenStatus(**RUN), Focus())
+    bx0, by0, bx1, by1 = ink[-1]["badge"]
+    lab2, lab4 = ink[1]["label"], ink[3]["label"]
+    assert lab2[2] < bx0 and bx1 < lab4[0] and by0 <= (lab2[1] + lab2[3]) / 2 <= by1
+    assert abs((bx0 + bx1) / 2 - (lab2[2] + lab4[0]) / 2) < 2
+    cy = round((pages.LOCK_Y0 + pages.LOCK_Y1) / 2)
+    row = np.asarray(locked)[cy - 1:cy + 2]
+    for xa, xb in ((lab2[2] + 12, bx0 - 6), (bx1 + 6, lab4[0] - 12)):
+        span = (row[:, int(xa):int(xb)] == np.array(pages.DIM, np.uint8)).all(axis=2).any(axis=0)
+        assert span.mean() > 0.9, (xa, xb)
+    # master and balance (the top knobs) are live either way: never dimmed
     for img in (locked, by_status):
-        assert _count(img, (8, 60, pages.METER_X0 - 4, 122), pages.FG) > 200
-        assert _count(img, (8, 222, pages.METER_X0 - 4, 284), pages.FG) > 200
+        assert _count(img, (8, 55, pages.METER_X0 - 4, 118), pages.FG) > 200
+        assert _count(img, (pages.METER_X1 + 4, 55, pages.W - 4, 118), pages.FG) > 200
     # the status saying locked wins over a stale focus deadline in the past
     assert pages.align_unlock_left(pages._Ctx(Focus(unlock_until=5.0), 10.0),
                                    pages.ScreenStatus(align_locked=True)) == 0.0
@@ -1194,7 +1248,7 @@ def _item(field: str) -> int:
     return next(i for i, it in enumerate(im.SETUP_ITEMS) if it.field == field)
 
 
-UNLOCKED = math.inf          # Focus(unlock_until=UNLOCKED): ALIGN's E3/E4 editable
+UNLOCKED = math.inf          # Focus(unlock_until=UNLOCKED): ALIGN's E2/E4 editable
 
 
 def test_field_names_exist_in_state():
@@ -1309,18 +1363,19 @@ def test_pages_and_v0_aliases():
     assert set(im.ALL_PAGES) == {"SHOW", "ALIGN", "SETUP", "HWTEST", "PHONE"}
     assert im.page_name("MAIN") == "ALIGN" and im.page_name("LIVE") == "SHOW"
     assert im.page_name("SETUP") == "SETUP" and im.page_name(None) is None
-    assert map_event("MAIN", Focus(), Enc(1, 1)) == [Nudge("balance_db", 1, False)]
-    assert map_event("LIVE", Focus(), Enc(2, 1)) == [Nudge("live_peq.0.gain", 1, False)]
-    assert im.knob_labels("LIVE") == im.knob_labels("SHOW") == ["MASTER", "FREQ", "GAIN", "Q"]
-    assert im.knob_labels("ALIGN") == ["MASTER", "BALANCE", "DELAY", "LO-CUT"]
+    assert map_event("MAIN", Focus(), Enc(2, 1)) == [Nudge("balance_db", 1, False)]
+    assert map_event("LIVE", Focus(), Enc(3, 1)) == [Nudge("live_peq.0.gain", 1, False)]
+    # D-015: SHOW's Q on E3, GAIN on E4; ALIGN's DELAY on E2, BALANCE on E3
+    assert im.knob_labels("LIVE") == im.knob_labels("SHOW") == ["MASTER", "FREQ", "Q", "GAIN"]
+    assert im.knob_labels("ALIGN") == ["MASTER", "DELAY", "BALANCE", "LO-CUT"]
 
 
 def test_show_knobs_follow_the_selected_band():
     f = Focus()
     assert map_event("SHOW", f, Enc(0, 1, ts=0.0)) == [Nudge("master_db", 1, False)]
     assert map_event("SHOW", f, Enc(1, 1, ts=1.0)) == [Nudge("live_peq.0.freq", 1, False)]
-    assert map_event("SHOW", f, Enc(2, -1, ts=2.0)) == [Nudge("live_peq.0.gain", -1, False)]
-    assert map_event("SHOW", f, Enc(3, 1, ts=3.0)) == [Nudge("live_peq.0.q", 1, False)]
+    assert map_event("SHOW", f, Enc(2, 1, ts=2.0)) == [Nudge("live_peq.0.q", 1, False)]      # E3 Q
+    assert map_event("SHOW", f, Enc(3, -1, ts=3.0)) == [Nudge("live_peq.0.gain", -1, False)]  # E4
     f.slot = 4
     assert map_event("SHOW", f, Enc(1, 1, ts=4.0)) == [Nudge("live_lowshelf.freq", 1, False)]
     assert map_event("SHOW", f, Sw(1, "press")) == []             # E2 push = fine frequency
@@ -1330,7 +1385,8 @@ def test_show_knobs_follow_the_selected_band():
         assert map_event("SHOW", f, Sw(n, "press")) == [] and map_event("SHOW", f, Sw(n, "short")) == []
     assert map_event("SHOW", f, Enc(0, 0, ts=6.0)) == []
     f.slot = 101                                                  # tolerant: wraps (101 % 6 = HS)
-    assert map_event("SHOW", f, Enc(2, 1, ts=7.0)) == [Nudge("live_highshelf.gain", 1, False)]
+    assert map_event("SHOW", f, Enc(3, 1, ts=7.0)) == [Nudge("live_highshelf.gain", 1, False)]
+    assert map_event("SHOW", f, Enc(2, 1, ts=8.0)) == [Nudge("live_highshelf.q", 1, False)]  # SLOPE
 
 
 def test_b2_on_show_cycles_the_bands_low_to_high_and_wraps():
@@ -1382,17 +1438,21 @@ def test_b3_on_show_is_the_notch_helper_never_a_reset():
         assert acts == [ShowHint(im.HINT_B3_OFF_SHOW)], page
 
 
-def test_align_master_and_balance_are_live_e3_e4_locked():
+def test_align_master_and_balance_are_live_e2_e4_locked():
+    """D-015: the two locked knobs are the bottom ones, E2 DELAY and E4 LO-CUT; E1 MASTER and
+    E3 BALANCE (top) are live."""
     f = Focus()
     assert map_event("ALIGN", f, Enc(0, 1, ts=10.0)) == [Nudge("master_db", 1, False)]
-    assert map_event("ALIGN", f, Enc(1, -1, ts=11.0)) == [Nudge("balance_db", -1, False)]
-    for e in (2, 3):
+    assert map_event("ALIGN", f, Enc(2, -1, ts=11.0)) == [Nudge("balance_db", -1, False)]
+    assert [k.locked for k in im.KNOBS["ALIGN"]] == [False, True, False, True]
+    assert [im.KNOB_CORNERS[e] for e, k in enumerate(im.KNOBS["ALIGN"]) if k.locked] == ["bl", "br"]
+    for e in (1, 3):
         for d in (1, -3):
             assert map_event("ALIGN", f, Enc(e, d, ts=12.0)) == [ShowHint(im.HINT_LOCKED)]
-    map_event("ALIGN", f, Sw(2, "press"))                         # FINE held: still locked
-    assert map_event("ALIGN", f, Enc(2, 1, ts=12.5)) == [ShowHint(im.HINT_LOCKED)]
-    map_event("ALIGN", f, Sw(2, "release"))
-    assert 2 not in f.last_turn and 3 not in f.last_turn          # a locked turn records nothing
+    map_event("ALIGN", f, Sw(1, "press"))                         # FINE held: still locked
+    assert map_event("ALIGN", f, Enc(1, 1, ts=12.5)) == [ShowHint(im.HINT_LOCKED)]
+    map_event("ALIGN", f, Sw(1, "release"))
+    assert 1 not in f.last_turn and 3 not in f.last_turn          # a locked turn records nothing
     assert map_event("ALIGN", f, Sw(5, "short", ts=13.0)) == [ShowHint(im.HINT_LOCKED)]   # B2 tap
     assert not f.unlocked(13.0) and f.unlock_left(13.0) == 0.0
     assert im.HINT_LOCKED == "LOCKED · HOLD B2 TO EDIT"
@@ -1406,9 +1466,10 @@ def test_b2_hold_unlocks_align_until_30_s_of_idle():
     assert apply_focus(f, acts[0], now=100.0) is True
     assert f.unlocked(100.0) and f.hint_now(100.1) == im.HINT_UNLOCKED
     assert f.unlock_left(110.0) == pytest.approx(20.0)
-    # the delay keeps v0's wake-up detent, then edits; Lo-Cut edits at once
-    assert map_event("ALIGN", f, Enc(2, 1, ts=101.0)) == [ShowHint(im.HINT_ARM.format("DELAY"))]
-    assert map_event("ALIGN", f, Enc(2, 1, ts=101.5)) == [Nudge("align_delay_ms", 1, False)]
+    # one hold unlocks BOTH bottom knobs (D-015: E2 DELAY, E4 LO-CUT). The delay keeps v0's
+    # wake-up detent, then edits; Lo-Cut edits at once
+    assert map_event("ALIGN", f, Enc(1, 1, ts=101.0)) == [ShowHint(im.HINT_ARM.format("DELAY"))]
+    assert map_event("ALIGN", f, Enc(1, 1, ts=101.5)) == [Nudge("align_delay_ms", 1, False)]
     assert map_event("ALIGN", f, Enc(3, -1, ts=102.0)) == [Nudge("lowcut_hz", -1, False)]
     # every input on ALIGN renews the 30 s; any 30 s of idle relocks
     map_event("ALIGN", f, Enc(0, -1, ts=125.0))                   # master: renewed to 155
@@ -1424,6 +1485,7 @@ def test_b2_hold_unlocks_align_until_30_s_of_idle():
     assert apply_focus(f, acts[0], now=206.0) is True
     assert not f.unlocked(206.0) and f.hint_now(206.1) == im.HINT_RELOCKED
     assert map_event("ALIGN", f, Enc(3, 1, ts=207.0)) == [ShowHint(im.HINT_LOCKED)]
+    assert map_event("ALIGN", f, Enc(1, 1, ts=207.5)) == [ShowHint(im.HINT_LOCKED)]
     # only B2 on ALIGN unlocks anything (B3, the old unlock, no longer does)
     for page in im.ALL_PAGES:
         for sw in range(4, 8):
@@ -1437,10 +1499,10 @@ def test_b2_hold_unlocks_align_until_30_s_of_idle():
 def test_align_knobs_when_unlocked():
     f = Focus(unlock_until=UNLOCKED)
     assert map_event("ALIGN", f, Enc(0, 1, ts=10.0)) == [Nudge("master_db", 1, False)]
-    assert map_event("ALIGN", f, Enc(1, -1, ts=11.0)) == [Nudge("balance_db", -1, False)]
-    arm = map_event("ALIGN", f, Enc(2, 2, ts=12.0))               # the delay: wakes up first
+    assert map_event("ALIGN", f, Enc(2, -1, ts=11.0)) == [Nudge("balance_db", -1, False)]
+    arm = map_event("ALIGN", f, Enc(1, 2, ts=12.0))               # the delay: wakes up first
     assert arm == [ShowHint(im.HINT_ARM.format("DELAY"))] and f.editing_now(12.1) == "align_delay_ms"
-    assert map_event("ALIGN", f, Enc(2, 2, ts=12.5)) == [Nudge("align_delay_ms", 2, False)]
+    assert map_event("ALIGN", f, Enc(1, 2, ts=12.5)) == [Nudge("align_delay_ms", 2, False)]
     assert map_event("ALIGN", f, Enc(3, -1, ts=13.0)) == [Nudge("lowcut_hz", -1, False)]
     assert map_event("ALIGN", f, Enc(0, 0, ts=14.0)) == []
 
@@ -1449,25 +1511,25 @@ def test_sub_delay_brushed_once_does_not_change_it():
     """Every settled delay change dips the subs or the tops (delay guard): even unlocked, one
     brushed detent must not. A detent after ARM_WINDOW_S of rest only wakes the knob again."""
     f = Focus(unlock_until=UNLOCKED)
-    assert not any(isinstance(a, Nudge) for a in map_event("ALIGN", f, Enc(2, 1, ts=100.0)))
-    assert map_event("ALIGN", f, Enc(2, 1, ts=101.0)) == [Nudge("align_delay_ms", 1, False)]
-    assert map_event("ALIGN", f, Enc(2, -1, ts=103.0)) == [Nudge("align_delay_ms", -1, False)]
+    assert not any(isinstance(a, Nudge) for a in map_event("ALIGN", f, Enc(1, 1, ts=100.0)))
+    assert map_event("ALIGN", f, Enc(1, 1, ts=101.0)) == [Nudge("align_delay_ms", 1, False)]
+    assert map_event("ALIGN", f, Enc(1, -1, ts=103.0)) == [Nudge("align_delay_ms", -1, False)]
     later = 103.0 + im.ARM_WINDOW_S + 0.1                         # at rest again: wake first
-    assert not any(isinstance(a, Nudge) for a in map_event("ALIGN", f, Enc(2, 1, ts=later)))
+    assert not any(isinstance(a, Nudge) for a in map_event("ALIGN", f, Enc(1, 1, ts=later)))
     # the other knobs act on their first detent
-    assert map_event("ALIGN", Focus(), Enc(1, 1, ts=0.0)) == [Nudge("balance_db", 1, False)]
-    assert map_event("SHOW", Focus(), Enc(2, 1, ts=0.0)) == [Nudge("live_peq.0.gain", 1, False)]
+    assert map_event("ALIGN", Focus(), Enc(2, 1, ts=0.0)) == [Nudge("balance_db", 1, False)]
+    assert map_event("SHOW", Focus(), Enc(3, 1, ts=0.0)) == [Nudge("live_peq.0.gain", 1, False)]
 
 
 def test_fine_while_push_held():
     f = Focus(unlock_until=UNLOCKED)
-    assert map_event("ALIGN", f, Sw(2, "press")) == []            # sw2 = E3 push
-    assert map_event("ALIGN", f, Enc(2, 1, ts=1.0)) == [Nudge("align_delay_ms", 1, True)]  # deliberate
-    assert map_event("ALIGN", f, Sw(2, "long")) == []             # still held
-    assert map_event("ALIGN", f, Enc(2, 1, ts=1.01)) == [Nudge("align_delay_ms", 1, True)]  # no accel
-    map_event("ALIGN", f, Sw(2, "release"))
-    assert map_event("ALIGN", f, Enc(2, 1, ts=2.0)) == [Nudge("align_delay_ms", 1, False)]
-    assert map_event("ALIGN", f, Enc(2, 1, ts=5.0)) == [ShowHint(im.HINT_ARM.format("DELAY"))]
+    assert map_event("ALIGN", f, Sw(1, "press")) == []            # sw1 = E2 push (DELAY, D-015)
+    assert map_event("ALIGN", f, Enc(1, 1, ts=1.0)) == [Nudge("align_delay_ms", 1, True)]  # deliberate
+    assert map_event("ALIGN", f, Sw(1, "long")) == []             # still held
+    assert map_event("ALIGN", f, Enc(1, 1, ts=1.01)) == [Nudge("align_delay_ms", 1, True)]  # no accel
+    map_event("ALIGN", f, Sw(1, "release"))
+    assert map_event("ALIGN", f, Enc(1, 1, ts=2.0)) == [Nudge("align_delay_ms", 1, False)]
+    assert map_event("ALIGN", f, Enc(1, 1, ts=5.0)) == [ShowHint(im.HINT_ARM.format("DELAY"))]
 
 
 def test_acceleration_master_down_only_and_frequency():
@@ -1484,15 +1546,15 @@ def test_acceleration_master_down_only_and_frequency():
     assert map_event("ALIGN", f, Enc(3, 1, ts=2.01)) == [Nudge("lowcut_hz", 1, False)]
     assert map_event("ALIGN", f, Enc(3, 1, ts=2.02)) == [Nudge("lowcut_hz", 4, False)]
     assert map_event("ALIGN", f, Enc(3, 3, ts=2.07)) == [Nudge("lowcut_hz", 12, False)]  # coalesced
-    map_event("ALIGN", f, Enc(2, 1, ts=3.0))                      # the delay: never accelerated
-    assert map_event("ALIGN", f, Enc(2, 1, ts=3.01)) == [Nudge("align_delay_ms", 1, False)]
-    map_event("ALIGN", f, Enc(1, 1, ts=4.0))                      # balance: never accelerated
-    assert map_event("ALIGN", f, Enc(1, 1, ts=4.005)) == [Nudge("balance_db", 1, False)]
+    map_event("ALIGN", f, Enc(1, 1, ts=3.0))                      # the delay: never accelerated
+    assert map_event("ALIGN", f, Enc(1, 1, ts=3.01)) == [Nudge("align_delay_ms", 1, False)]
+    map_event("ALIGN", f, Enc(2, 1, ts=4.0))                      # balance: never accelerated
+    assert map_event("ALIGN", f, Enc(2, 1, ts=4.005)) == [Nudge("balance_db", 1, False)]
     g = Focus()                                                   # SHOW: FREQ accelerates, GAIN/Q never
     map_event("SHOW", g, Enc(1, 1, ts=0.0))
     map_event("SHOW", g, Enc(1, 1, ts=0.01))
     assert map_event("SHOW", g, Enc(1, 1, ts=0.02)) == [Nudge("live_peq.0.freq", 4, False)]
-    for e, p in ((2, "gain"), (3, "q")):
+    for e, p in ((3, "gain"), (2, "q")):                          # D-015: E4 GAIN, E3 Q
         acts = [map_event("SHOW", g, Enc(e, -1, ts=1.0 + e + k * 0.01)) for k in range(6)]
         assert acts == [[Nudge(f"live_peq.0.{p}", -1, False)]] * 6, p
 
@@ -2204,12 +2266,13 @@ def test_align_delay_reads_the_two_stored_delays_tolerantly():
     assert pages.align_delay({"sub_delay_ms": "x", "top_delay_ms": 0.5}) == -0.5
 
 
-def test_align_e3_shows_size_big_and_side_in_words():
+def test_align_e2_shows_size_big_and_side_in_words():
     """Subs 1.25 ms later and tops 1.25 ms later draw the same big value; only the sub-line
-    (white while unlocked, grey while locked) tells them apart."""
+    (white while unlocked, grey while locked) tells them apart. D-015: the delay is E2, bottom
+    left, its sub-line over it."""
     on = pages.ScreenStatus(align_locked=False, align_unlock_s=20.0, **RUN)
-    value = (pages.METER_X1 + 4, 60, pages.W - 4, 122)
-    subline = (pages.METER_X1 + 4, 123, pages.W - 4, 138)
+    value = (4, 214, pages.METER_X0 - 4, 276)
+    subline = (4, 194, pages.METER_X0 - 4, 211)
     subs = pages.render("ALIGN", st.State(sub_delay_ms=1.25), on, Focus(), now=0.0)
     tops = pages.render("ALIGN", st.State(top_delay_ms=1.25), on, Focus(), now=0.0)
     zero = pages.render("ALIGN", st.State(), on, Focus(), now=0.0)
@@ -2222,21 +2285,23 @@ def test_align_e3_shows_size_big_and_side_in_words():
     assert _count(locked, subline, pages.FG) == 0 and _count(locked, subline, pages.DIM) > 20
 
 
-def test_align_e3_is_the_signed_delay_knob():
-    k = im.KNOBS["ALIGN"][2]
+def test_align_e2_is_the_signed_delay_knob():
+    k = im.KNOBS["ALIGN"][1]                                      # D-015: E2 (E3 until then)
     assert (k.label, k.field, k.arm, k.locked, k.accel_up, k.accel_down) == \
         ("DELAY", im.F_ALIGN_DELAY, True, True, 1, 1)
+    b = im.KNOBS["ALIGN"][2]
+    assert (b.label, b.field, b.locked) == ("BALANCE", im.F_BALANCE, False)
     assert im.F_ALIGN_DELAY == st.ALIGN_DELAY
     lc = im.KNOBS["ALIGN"][3]
     assert (lc.field, lc.locked, lc.accel_up, lc.accel_down) == (im.F_LOWCUT_FREQ, True, 4, 4)
     assert im.HINT_UNLOCKED == "DELAY + LO-CUT UNLOCKED" and im.HINT_RELOCKED == "DELAY + LO-CUT LOCKED"
     f = Focus()                                                   # locked: nothing, as before
-    assert map_event("ALIGN", f, Enc(2, -1, ts=1.0)) == [ShowHint(im.HINT_LOCKED)]
+    assert map_event("ALIGN", f, Enc(1, -1, ts=1.0)) == [ShowHint(im.HINT_LOCKED)]
     f = Focus(unlock_until=UNLOCKED)
-    assert map_event("ALIGN", f, Enc(2, -1, ts=1.0)) == [ShowHint(im.HINT_ARM.format("DELAY"))]
-    assert map_event("ALIGN", f, Enc(2, -1, ts=1.2)) == [Nudge("align_delay_ms", -1, False)]
-    assert map_event("ALIGN", f, Enc(2, -1, ts=1.21)) == [Nudge("align_delay_ms", -1, False)]
-    assert map_event("ALIGN", f, Enc(2, -1, ts=1.22)) == [Nudge("align_delay_ms", -1, False)]  # x1
+    assert map_event("ALIGN", f, Enc(1, -1, ts=1.0)) == [ShowHint(im.HINT_ARM.format("DELAY"))]
+    assert map_event("ALIGN", f, Enc(1, -1, ts=1.2)) == [Nudge("align_delay_ms", -1, False)]
+    assert map_event("ALIGN", f, Enc(1, -1, ts=1.21)) == [Nudge("align_delay_ms", -1, False)]
+    assert map_event("ALIGN", f, Enc(1, -1, ts=1.22)) == [Nudge("align_delay_ms", -1, False)]  # x1
     s = st.State(sub_delay_ms=0.1)                                # what the controller then does
     s.nudge("align_delay_ms", -1)
     s.nudge("align_delay_ms", -1)
@@ -2650,9 +2715,10 @@ def test_show_draws_an_out_band_dark_dashed_with_out_its_values_grey():
     # the selected band OUT: its FREQ / GAIN / Q are grey (stored, not playing), never white
     sel_on = pages.render("SHOW", s_on, pages.ScreenStatus(**RUN), Focus(slot=1), now=0.0)
     sel_out = pages.render("SHOW", s_out, pages.ScreenStatus(**RUN), Focus(slot=1), now=0.0)
-    gain = (pages.METER_BOX[2] + 4, pages.TOP_BOX[0], pages.W - 4, pages.TOP_BOX[1])
-    freq = (4, pages.BOT_BOX[0], pages.W // 2 - 4, pages.BOT_BOX[1])
-    for box in (gain, freq):
+    q = (pages.METER_BOX[2] + 4, pages.TOP_BOX[0] + 3, pages.W - 4, pages.TOP_BOX[1])  # E3
+    freq = (4, pages.BOT_BOX[0], pages.W // 2 - 4, pages.BOT_BOX[1])                  # E2
+    gain = (pages.W // 2 + 4, pages.BOT_BOX[0], pages.W - 4, pages.BOT_BOX[1])        # E4
+    for box in (q, freq, gain):
         assert _count(sel_on, box, pages.FG) > 200 and _count(sel_out, box, pages.FG) == 0
         assert _count(sel_out, box, pages.DIM) > 200
 
@@ -2679,3 +2745,269 @@ def test_demo_cases_include_the_d014_pictures():
     assert list(status.pills) == ["OUT P2"]
     _n, page, s2, _status, f2 = cases["show_band_out_hint"]
     assert f2.hint == "P2 OUT" and s2.to_dict() == s.to_dict()
+
+
+# --- D-015: Q on E3 / GAIN on E4, DELAY on E2 / BALANCE on E3, flush values, IN meters --------
+def test_d015_knob_maps():
+    """Thomas on the box, 2026-10-14: SHOW E3 = Q (a shelf's SLOPE), E4 = GAIN; ALIGN E2 = the
+    signed DELAY (locked, wake-up detent), E3 = BALANCE; LO-CUT stays E4 (locked)."""
+    show = im.KNOBS["SHOW"]
+    assert [(k.label, k.field) for k in show] == [
+        ("MASTER", im.F_MASTER), ("FREQ", "{slot}.freq"), ("Q", "{slot}.q"), ("GAIN", "{slot}.gain")]
+    align = im.KNOBS["ALIGN"]
+    assert [(k.label, k.field, k.locked, k.arm) for k in align] == [
+        ("MASTER", im.F_MASTER, False, False), ("DELAY", im.F_ALIGN_DELAY, True, True),
+        ("BALANCE", im.F_BALANCE, False, False), ("LO-CUT", im.F_LOWCUT_FREQ, True, False)]
+    # the corners they are drawn at: GAIN bottom right, Q top right; both locked knobs at the
+    # bottom (E2 bottom left, E4 bottom right)
+    assert im.KNOB_CORNERS[3] == "br" and im.KNOB_CORNERS[2] == "tr" and im.KNOB_CORNERS[1] == "bl"
+    # what the phone's slide reads (docs/14): the per-field acceleration is unchanged
+    assert im.knob_accel("live_peq.2.gain") == (1, 1) and im.knob_accel("live_peq.2.q") == (1, 1)
+    assert im.knob_accel("live_peq.2.freq") == (4, 4) and im.knob_accel(im.F_ALIGN_DELAY) == (1, 1)
+    # E3 on a shelf is its slope
+    f = Focus(slot=4)
+    assert map_event("SHOW", f, Enc(2, -1, ts=0.0)) == [Nudge("live_lowshelf.q", -1, False)]
+    assert map_event("SHOW", f, Enc(3, -1, ts=1.0)) == [Nudge("live_lowshelf.gain", -1, False)]
+
+
+def _module_strings(mod) -> list[tuple[str, str]]:
+    return [(n, v) for n, v in vars(mod).items() if isinstance(v, str) and n.isupper()]
+
+
+def test_every_hint_naming_the_gain_knob_says_e4():
+    """D-015: GAIN is E4. The notch helper's strip says which knob cuts; no box string still
+    sends the operator to E3 for a cut, nor names E3/E4 as ALIGN's locked pair."""
+    assert ctl_mod.HINT_NOTCH.format(band="P3", hz="2.44k") == "P3 · 2.44k · E4 TO CUT"
+    assert ctl_mod.HINT_NOTCH_NO_PEAK.format(band="P2", hz="1.00k") == \
+        "P2 · 1.00k · NO PEAK · E4 TO CUT"
+    for mod in (ctl_mod, im, pages):
+        for name, text in _module_strings(mod):
+            assert "E3 TO CUT" not in text and "E3/E4" not in text, (mod.__name__, name)
+            if "TO CUT" in text:
+                assert "E4 TO CUT" in text, (mod.__name__, name)
+    # the strip it shows fits the chip row at a readable size
+    for t in (ctl_mod.HINT_NOTCH.format(band="P4", hz="20.0k"),
+              ctl_mod.HINT_NOTCH_NO_PEAK.format(band="P4", hz="20.0k")):
+        size, shown = pages._fit_ellipsis(t, 19, pages.W - 16)
+        assert shown == t and size >= 15, (t, size)
+
+
+def test_align_locked_turns_show_the_lock_hint_and_one_b2_hold_unlocks_both():
+    """D-015: E2 (DELAY) and E4 (LO-CUT) are the locked pair: a turn of either shows the lock
+    hint and changes nothing; one B2 hold unlocks both; a B2 tap relocks both."""
+    f = Focus()
+    for e in (1, 3):
+        assert map_event("ALIGN", f, Enc(e, 1, ts=1.0)) == [ShowHint(im.HINT_LOCKED)]
+    for e, fld in ((0, "master_db"), (2, "balance_db")):              # the top pair: live
+        assert map_event("ALIGN", f, Enc(e, -1, ts=1.5)) == [Nudge(fld, -1, False)]
+    acts = map_event("ALIGN", f, Sw(5, "long", ts=2.0))
+    assert acts == [Unlock(im.UNLOCK_S)] and apply_focus(f, acts[0], now=2.0)
+    assert map_event("ALIGN", f, Enc(1, 1, ts=3.0)) == [ShowHint(im.HINT_ARM.format("DELAY"))]
+    assert map_event("ALIGN", f, Enc(1, 1, ts=3.2)) == [Nudge("align_delay_ms", 1, False)]
+    assert map_event("ALIGN", f, Enc(3, 1, ts=3.4)) == [Nudge("lowcut_hz", 1, False)]
+    acts = map_event("ALIGN", f, Sw(5, "short", ts=4.0))
+    assert acts == [Lock()] and apply_focus(f, acts[0], now=4.0)
+    for e in (1, 3):
+        assert map_event("ALIGN", f, Enc(e, 1, ts=5.0 + e)) == [ShowHint(im.HINT_LOCKED)]
+    # the screen draws the locked pair dimmed with the badge between them
+    s = st.State(sub_delay_ms=2.35, lowcut_hz=112.0, balance_db=3.0)
+    ink = _ink("ALIGN", s, pages.ScreenStatus(**RUN), Focus(), tags="off")
+    assert {e: ink[e]["label"] for e in range(4)}[1][1] > pages.H / 2      # DELAY: bottom
+    assert ink[3]["label"][1] > pages.H / 2 and ink[2]["label"][3] < pages.H / 2
+
+
+def _bar_box(page: str, i: int) -> tuple[int, int, int, int]:
+    """Pixel box of meter bar `i` (0, 1 = IN L R; 2..5 = SUB L R, TOP L R), clip box excluded."""
+    if page == "SHOW":
+        x0, y0, x1, y1 = pages.METER_BOX
+        xs, _c = pages._bar_xs((x0 + x1) / 2, 10, 3, 8)
+        top, bot = y0 + 8, y1 - 12
+    else:
+        xs, _c = pages._bar_xs((pages.METER_X0 + pages.METER_X1) / 2, 10, 3, 10)
+        top, bot = pages.STATUS_H + 8 + 13, pages.H - 54
+    return int(xs[i]), int(top), int(xs[i]) + 10, int(bot) + 1
+
+
+def _clip_box(page: str, i: int) -> tuple[int, int, int, int]:
+    x0, y0, x1, _y1 = _bar_box(page, i)
+    cy0 = pages.METER_BOX[1] if page == "SHOW" else pages.STATUS_H + 8
+    return x0, cy0, x1, cy0 + 5
+
+
+@pytest.mark.parametrize("page", ["SHOW", "ALIGN"])
+def test_in_meters_are_drawn_left_of_the_outputs_with_in_clip(page):
+    """D-015: the program input's capture peaks (status.in_peak_db) as IN L R, left of SUB L R
+    and TOP L R, same -60..0 dBFS scale and colours; IN CLIP lights the IN pair's clip boxes."""
+    s = st.State()
+    quiet = pages.ScreenStatus(levels=(-100.0,) * 4, in_peak_db=(-100.0, -100.0), **RUN)
+    loud = pages.ScreenStatus(levels=(-100.0,) * 4, in_peak_db=(-3.0, -12.0), **RUN)
+    clip = pages.ScreenStatus(levels=(-100.0,) * 4, in_peak_db=(-0.1, -0.2), in_clip=True, **RUN)
+    old = pages.ScreenStatus(levels=(-100.0,) * 4, **RUN)          # no in_peak_db: the floor
+    imgs = {k: pages.render(page, s, v, Focus(), now=0.0)
+            for k, v in (("quiet", quiet), ("loud", loud), ("clip", clip), ("old", old))}
+    for i in (0, 1):
+        box = _bar_box(page, i)
+        assert _count(imgs["quiet"], box, pages.GREEN) == 0
+        assert _count(imgs["loud"], box, pages.GREEN) > 50
+        assert _count(imgs["clip"], _clip_box(page, i), pages.RED) > 10
+        assert _count(imgs["loud"], _clip_box(page, i), pages.RED) == 0
+        assert (_crop(imgs["old"], box) == _crop(imgs["quiet"], box)).all()
+    l_box, r_box = _bar_box(page, 0), _bar_box(page, 1)               # L at -3: into the red
+    assert _count(imgs["loud"], l_box, pages.RED) > 0 and _count(imgs["loud"], r_box, pages.RED) == 0
+    assert _count(imgs["loud"], r_box, pages.YELLOW) > 0               # R at -12: yellow
+    for i in range(2, 6):                                              # outputs untouched
+        assert (_crop(imgs["loud"], _bar_box(page, i)) == _crop(imgs["quiet"], _bar_box(page, i))).all()
+        assert _count(imgs["clip"], _clip_box(page, i), pages.RED) == 0
+    _img, drawn = _drawn(page, s, loud, Focus())
+    labels = sorted((x, t) for t, x, y, _f in drawn if t in pages.METER_PAIRS)
+    assert [t for _x, t in labels] == ["IN", "SUB", "TOP"]             # IN left of SUB, TOP
+    # meter_bars: the order and the latch, tolerant of an older or odd status
+    bars = pages.meter_bars(pages.ScreenStatus(levels=(-1.0, -2.0, -3.0, -4.0), in_peak_db=(-5.0,),
+                                               clip=(False, True), in_clip=True))
+    assert bars == [(-5.0, True), (-5.0, True), (-1.0, False), (-2.0, True), (-3.0, False),
+                    (-4.0, False)]
+    assert pages.meter_bars(None) == [(pages.METER_FLOOR_DB, False)] * 6
+
+
+def test_the_controller_status_carries_the_input_peaks_to_the_screen():
+    """control.Status names the field the screen reads (in_peak_db), as ScreenStatus does."""
+    status = ctl_mod.Status()
+    assert len(status.in_peak_db) == 2 and "in_peak_db" in pages.ScreenStatus.__dataclass_fields__
+    status.in_peak_db = [-6.0, -9.0]
+    assert pages.meter_bars(status)[:2] == [(-6.0, False), (-9.0, False)]
+
+
+def _edges_check(ink, e: int, tags: str) -> None:
+    """Knob `e`'s value group is flush to its corner's outer border: from x 10 on a left corner
+    (with its label when tags are off), ending at W - 10 on a right one; above the label on a
+    bottom corner, under it on a top one."""
+    v, h = im.KNOB_CORNERS[e]
+    parts = ink[e]
+    first = parts["value"]
+    last = parts.get("unit", parts["value"])
+    label = parts["label"]
+    if h == "l":
+        assert abs(first[0] - 10) <= 4, (e, first)
+        if tags == "off":
+            assert abs(first[0] - label[0]) <= 3, (e, first, label)
+    else:
+        assert abs(last[2] - (pages.W - 10)) <= 3, (e, last)
+        if tags == "off":
+            assert abs(last[2] - label[2]) <= 3, (e, last, label)
+    if v == "t":
+        assert first[1] > label[3], e
+    else:
+        assert first[3] < label[1], e
+
+
+@pytest.mark.parametrize("tags", ["off", "dim", "bright"])
+def test_every_corner_value_is_flush_to_its_outer_border(tags):
+    """D-015 (Thomas: '120Hz to the left above FREQ and 0.17 Q to the right above SLOPE'):
+    SHOW and ALIGN draw each value flush to its corner's outer border, its unit beside it."""
+    s = st.State(master_db=-14.0, balance_db=3.0, sub_delay_ms=2.35, lowcut_hz=112.0)
+    s.live_peq[1].freq, s.live_peq[1].gain, s.live_peq[1].q = 120.0, -6.5, 8.0
+    s.live_lowshelf.freq, s.live_lowshelf.q = 120.0, 0.71
+    for page, slot in (("SHOW", 1), ("SHOW", 4), ("ALIGN", 0)):
+        ink = _ink(page, s, pages.ScreenStatus(knob_tags=tags, **RUN), Focus(slot=slot))
+        for e in range(4):
+            _edges_check(ink, e, tags)
+    # the SHOW pair Thomas named: the frequency left above FREQ, the slope right under SLOPE
+    ink = _ink("SHOW", s, pages.ScreenStatus(knob_tags="off", **RUN), Focus(slot=4))
+    assert ink[1]["label"][0] < 14 and ink[1]["value"][0] < 14
+    assert ink[2]["label"][2] > pages.W - 14 and ink[2]["unit"][2] > pages.W - 14
+
+
+@pytest.mark.parametrize("tags", ["off", "dim", "bright"])
+def test_the_band_name_beside_fine_gives_way_to_its_short_name_never_cut(tags):
+    """D-015 review: E3's push held (fine Q, or a shelf's fine SLOPE) puts FINE in E3's label
+    row. A shelf's name beside SLOPE then reads 'LS' / 'HS' (LIVE_SLOT_SHORT), at the tag's
+    full size, never cut to 'LO SHE…' or 'HI…'; a bell's 'PEQ 2' beside Q still fits whole,
+    and without FINE every band shows its whole name."""
+    marked: list[tuple[int, str, str, int]] = []
+    real = pages._Ctx.mark
+
+    def spy(self, e, part, xy, text, f, anchor):
+        if part == "tag":
+            marked.append((e, part, text, f.size))
+        return real(self, e, part, xy, text, f, anchor)
+
+    s = st.State()
+    status = pages.ScreenStatus(knob_tags=tags, **RUN)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(pages._Ctx, "mark", spy)
+        for slot in range(len(im.LIVE_SLOTS)):
+            for held in (frozenset(), frozenset({2}), frozenset({2, 3}), frozenset({0, 1, 2, 3})):
+                marked.clear()
+                ink = _ink("SHOW", s, status, Focus(slot=slot, held=set(held)))
+                shelf_fine = slot >= 4 and 2 in held
+                want = im.LIVE_SLOT_SHORT[slot] if shelf_fine else im.LIVE_SLOT_LABELS[slot]
+                assert marked == [(2, "tag", want, pages.TAG_PX)], (tags, slot, held, marked)
+                if 2 in held:                          # and it keeps clear of FINE
+                    assert not _overlap(ink[2]["tag"], ink[2]["fine"]), (tags, slot, held)
+
+
+def _layout_ok(name: str, page: str, ink) -> None:
+    """Nothing cut, nothing run into: every text box on screen under the status bar, no two
+    knob texts (labels, tags, values, units, sub-lines, FINE, the badge) sharing a pixel, none
+    in the meters, a SHOW value in its box (never into the chips or the graph)."""
+    items = [(e, part, box) for e, parts in ink.items() for part, box in parts.items()]
+    for e, part, box in items:
+        assert 0 <= box[0] and box[2] <= pages.W, (name, e, part, box)
+        assert pages.STATUS_H <= box[1] and box[3] <= pages.H - 1, (name, e, part, box)
+    for i, (e1, p1, b1) in enumerate(items):
+        for e2, p2, b2 in items[i + 1:]:
+            assert not _overlap(b1, b2), (name, (e1, p1, b1), (e2, p2, b2))
+    meters = (pages.METER_BOX if page == "SHOW" else
+              (pages.METER_X0, pages.STATUS_H + 8, pages.METER_X1, pages.LOCK_Y0 - 2))
+    for e, part, box in items:
+        if e >= 0:
+            assert not _overlap(box, meters), (name, e, part, box)
+    if page == "SHOW":
+        for e in range(4):
+            vbox = ink[e]["value"]
+            lo, hi = pages.TOP_BOX if im.KNOB_CORNERS[e][0] == "t" else pages.BOT_BOX
+            assert lo <= vbox[1] and vbox[3] <= hi, (name, e, vbox)
+
+
+def test_nothing_is_cut_or_run_into_in_any_screenshot():
+    """Every SHOW and ALIGN picture of docs/ui (the longest values among them: -120.0 dB, 20.0k
+    Hz, Q 0.10 and 16.0, a shelf's SLOPE, a band OUT, muted, FINE held on every knob), with
+    each knob-tag style: every text fits the 480 x 320 screen and its own place."""
+    cases = [c for c in pages.demo_cases() if im.page_name(c[1]) in ("SHOW", "ALIGN")]
+    assert {"show_long_values", "show_long_q", "show_long_slope", "align_long_values",
+            "show_shelf", "show_band_out", "muted", "align_muted"} <= {c[0] for c in cases}
+    for name, page, state, status, focus in cases:
+        for tags in ("off", "dim", "bright"):
+            _layout_ok(f"{name}/{tags}", im.page_name(page),
+                       _ink(page, state, status, focus, tags=tags))
+    # and the long values keep a size readable at arm's length
+    cases = {c[0]: c for c in cases}
+    for name, min_h in (("show_long_values", 20), ("show_long_q", 20), ("align_long_values", 26)):
+        _n, page, state, status, focus = cases[name]
+        ink = _ink(page, state, status, focus, tags="off")
+        for e in range(4):
+            v = ink[e]["value"]
+            assert v[3] - v[1] >= min_h, (name, e, v)
+
+
+def test_show_legends_and_values_are_smaller_and_the_graph_taller():
+    """D-015: legends 20 -> 17 px, values 44/40 -> 38/36 px, the graph 130 -> 152 px high;
+    still readable at arm's length (legends >= 16 px, values >= 34 px)."""
+    assert 16 <= pages.LABEL_PX < 20
+    assert 36 <= pages.TOP_VALUE_PX < 44 and 34 <= pages.BOT_VALUE_PX < 40
+    assert pages.GRAPH[3] - pages.GRAPH[1] == 152
+    assert pages.CHIP_Y1 < pages.GRAPH[1] and pages.METER_BOX[3] < pages.CHIP_Y0
+    assert pages.TOP_BOX[1] < pages.CHIP_Y0 and pages.GRAPH[3] <= pages.BOT_BOX[0]
+    # MUTED still leaves the 0 dB line and its label in sight
+    assert pages.SHOW_MUTED_BAND[1] < _zero_db_y() - 1
+
+
+def test_demo_cases_include_the_d015_pictures():
+    cases = {c[0]: c for c in pages.demo_cases()}
+    assert {"input_clip", "align_input_clip", "show_long_values", "show_long_q",
+            "show_long_slope", "align_long_values"} <= set(cases)
+    _n, _p, _s, status, _f = cases["align_input_clip"]
+    assert status.in_clip is True and max(status.in_peak_db) > -1.0
+    _n, _p, _s, status, _f = cases["show"]
+    assert max(status.in_peak_db) > -60.0                     # the IN meters show something
+

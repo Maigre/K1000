@@ -188,6 +188,10 @@ parametric bands + the spectrum serve live notching better on 4 knobs).
     INPUT, LIVE EQ, PHONE, BOX), every ON/off or choice chosen with E2 and set by a push; buttons
     B1 PAGE (tap SHOW ↔ ALIGN, hold SETUP) · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE. On the box
     since 14:31 (`dd740ce`).
+  - Thomas's bench asks, Wed 14 (D-015): SHOW Q on E3 and GAIN on E4 (`E4 TO CUT`); ALIGN DELAY on
+    E2 and BALANCE on E3 (the locked pair at the bottom, one badge between them); every value flush
+    to its corner's outer border; smaller legends and values (SHOW's graph 130 → 152 px); IN L R
+    input meters beside SUB/TOP on both pages. Built, not on the box yet.
   - Knob fast-turn fix.
   - Design: `docs/07-live-ui-v1.md` + `docs/ui/v1/`. Knob analysis: `docs/08-knob-precision.md`.
 - **Phone PWA on the box's own AP** (D-007): live EQ curve with draggable bands, "notch here",

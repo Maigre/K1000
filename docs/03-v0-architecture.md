@@ -9,12 +9,17 @@ build proved different is fixed in place below and listed in §7. Operator view:
 
 **UI v1 (D-009), accepted on the box 2026-10-13**: the panel pages, buttons, fader ramp, master-up
 guard and the SHOW spectrum changed this contract. They are fixed in place below, and §8 lists them.
-**D-011 (same day)**: the Lo-Cut moves 2 Hz a click, ALIGN E3 is one signed sub/top delay (SETUP
-has no Top delay), and the E1–E4 tags follow k1000.yaml `ui.knob_tags`; fixed in place below.
+**D-011 (same day)**: the Lo-Cut moves 2 Hz a click, ALIGN's DELAY knob (E3 then, E2 since D-015)
+is one signed sub/top delay (SETUP has no Top delay), and the E1–E4 tags follow k1000.yaml
+`ui.knob_tags`; fixed in place below.
 **D-013 (same day) supersedes the buttons and SETUP**: B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH ·
 B4 MUTE (a B1 tap flips SHOW ↔ ALIGN, a hold opens SETUP; mute moves to B4, band and unlock to B2,
 the notch helper to B3), and SETUP is grouped by speaker floor with choose-then-set. Fixed in place
 in §2–§4; §7 keeps the v0 comparison, and §8 says where D-013 changed D-009.
+**D-015 (2026-10-14) moves knob roles**: SHOW E3 = Q (a shelf's slope), E4 = GAIN, so the notch
+hint says `E4 TO CUT`; ALIGN E2 = DELAY, E3 = BALANCE, and the locked pair (DELAY, Lo-Cut) is
+E2/E4. The screen puts each value flush to its corner and adds the IN L/R input meters. Fixed in
+place in §4's knob table and buttons; §8 keeps the D-009 history.
 
 ## 1. Proven hardware facts (on the box, 2026-10-12)
 
@@ -228,12 +233,12 @@ when it fits (m4: [2, 3]), else (0, 1); any input/output-map warning raises the 
 | `tune.py` | the `/tune` page's import (docs/06 §11) | `parse_filters(text) -> Import` (REW / EqualizerAPO / typed lines: peaking only, ≤ 8, clamped, skipped and notes listed); `plan_bands`, `curve`; `TuneDesk(ctl)`: `preview`, `apply` / `undo` through `Controller.set_system_eq` |
 | `__main__.py` | wiring | asyncio main; GIL switch interval 1 ms before any thread (`configure_gil`: the knob worker needs the GIL 3–4 times per read, PERF-1); systemd-friendly logging; retries (§2); `--stdin` bench console (incl. `ev enc` / `ev sw` real knob events), `--headless`, `--no-hw`, `--test-devices`; never mutes on exit |
 
-### Knob semantics (UI v1, D-009, as built 2026-10-13; buttons and SETUP D-013; v0 in git history)
+### Knob semantics (UI v1, D-009, as built 2026-10-13; buttons and SETUP D-013; knob roles D-015; v0 in git history)
 
 | Page | E1 | E2 | E3 | E4 |
 |---|---|---|---|---|
-| SHOW (front) | master (0.5 dB; ×4 down, never accelerated up; master-up guard: at most +6 dB per 2 s, `controls.master_up_guard_db`) | frequency of the selected band (1/12 oct, push = 1/48; ×4) | gain of the selected band (0.5 dB, never accelerated) | Q (1/6 oct log steps, push = 1/24; shelves: slope) |
-| ALIGN | master (as on SHOW) | balance (0.5 dB) | DELAY (D-011): `align_delay_ms` = `sub_delay_ms − top_delay_ms`, −50 … +50 ms, 0.1 ms, push = 1 sample, never accelerated; a move writes the late side and zeroes the other, and stops on 0 before crossing; **locked**; unlocked, the first detent after 2.5 s at rest only wakes it | Lo-Cut freq (D-011: 2 Hz on a 2 Hz grid, push = 1 Hz; an off-grid value snaps on its first move, never at load; ×4): **locked** |
+| SHOW (front) | master (0.5 dB; ×4 down, never accelerated up; master-up guard: at most +6 dB per 2 s, `controls.master_up_guard_db`) | frequency of the selected band (1/12 oct, push = 1/48; ×4) | Q (1/6 oct log steps, push = 1/24; shelves: slope) | gain of the selected band (0.5 dB, never accelerated) |
+| ALIGN | master (as on SHOW) | DELAY (D-011): `align_delay_ms` = `sub_delay_ms − top_delay_ms`, −50 … +50 ms, 0.1 ms, push = 1 sample, never accelerated; a move writes the late side and zeroes the other, and stops on 0 before crossing; **locked**; unlocked, the first detent after 2.5 s at rest only wakes it | balance (0.5 dB) | Lo-Cut freq (D-011: 2 Hz on a 2 Hz grid, push = 1 Hz; an off-grid value snaps on its first move, never at load; ×4): **locked** |
 | SETUP (D-013) | item select (headers skipped, clamps) | value: numbers turn (push = fine); ON/off and choices are chosen, one choice per event, and set by an E1/E2 push | group: the next group's first item; back = this group's first item first (clamps) | — |
 
 Acceleration (input_map): ×1 below 20 detents/s, the knob's cap from 40, the rate taken from the
@@ -243,12 +248,12 @@ Buttons (D-013: B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE): B1 **tap** (o
 ALIGN, SETUP → SHOW, PHONE → SETUP; **hold** = SETUP from SHOW or ALIGN, SHOW from SETUP or PHONE;
 the press itself does nothing. ALIGN and SETUP return to SHOW after 60 s without input (not while a
 SETUP choice or confirm waits; PHONE and HWTEST never). B2: on SHOW a tap selects the next band, LS
-· 1 · 2 · 3 · 4 · HS (wraps, no previous); on ALIGN a hold unlocks E3/E4 for 30 s (renewed by input
+· 1 · 2 · 3 · 4 · HS (wraps, no previous); on ALIGN a hold unlocks E2/E4 for 30 s (renewed by input
 on ALIGN, so any 30 s idle relocks), a tap relocks, leaving ALIGN relocks; elsewhere a hint. B3: on
 SHOW a tap is the **notch helper** (`Controller.notch_helper`: a free bell at 0 dB, the selected one
 first, gets Q 8.65 and the spectrum PEAK's frequency when there is one; a PEAK within 1/6 oct of a
 bell in use selects that bell and writes nothing; the gain is never touched; GAIN gets the edit
-highlight and the hint `P3 · 2.44k · E3 TO CUT`, or `NO FREE BAND`); a B3 hold only says the reset
+highlight and the hint `P3 · 2.44k · E4 TO CUT`, or `NO FREE BAND`); a B3 hold only says the reset
 is in SETUP; elsewhere a hint. B4 **mute** (long press, every page including PHONE and HWTEST; asks
 for the opposite of the mute the screen showed at the press; a short press shows a hint). Encoder
 pushes: fine mode while held; on SETUP an E1/E2 push released **without turning** sets the value E2

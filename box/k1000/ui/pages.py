@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Screen pages for the 480x320 ZynScreen (UI v1, D-009): render(page, state, status, focus).
 
-Pages: SHOW (the front page: master, FREQ/GAIN/Q of the selected live band, the EQ curve over
-the program spectrum), ALIGN (master, balance, the signed sub/top delay, Lo-Cut; E3/E4 locked
-until a B2 hold), SETUP (the list), PHONE (drawn by ui/qr.py) and HWTEST (the knob test). The v0
-names MAIN and LIVE are aliases of ALIGN and SHOW.
+Pages: SHOW (the front page: master, FREQ/Q/GAIN of the selected live band, the EQ curve over
+the program spectrum), ALIGN (master, the signed sub/top delay, balance, Lo-Cut; E2/E4, the two
+bottom knobs, locked until a B2 hold), SETUP (the list), PHONE (drawn by ui/qr.py) and HWTEST
+(the knob test). The v0 names MAIN and LIVE are aliases of ALIGN and SHOW.
 
 Design rules (why it looks like this):
 - Read at arm's length, outdoors, by someone mixing: black background, white digits, amber
@@ -12,7 +12,9 @@ Design rules (why it looks like this):
   clip, a critical system alert. Orange = a system warning. Cyan = the spectrum PEAK (and the
   knob tags in their `bright` style).
 - The screen mirrors the knobs: each encoder's value sits next to its corner (KNOB_CORNERS in
-  input_map, confirmed on the box). The "E1".."E4" tag next to each label follows k1000.yaml
+  input_map, confirmed on the box), flush to that corner's OUTER border with its unit beside it
+  (D-015: left corners left-aligned, right corners right-aligned, under or over their legend;
+  FINE goes to the box's inner side). The "E1".."E4" tag next to each label follows k1000.yaml
   `ui.knob_tags` (status.knob_tags): dim (default, small dark grey), off (the label takes the
   corner; a sticker on the shell names the knobs), bright (cyan, as v1 shipped).
 - System alerts (KNOBS OFFLINE, NO DEVICE, ENGINE DOWN, CANNOT SAVE, pipeline/device fixes)
@@ -27,7 +29,10 @@ Design rules (why it looks like this):
 - A live band switched OUT (D-014: a B3 hold, or a chip hold on the phone) keeps its settings:
   its chip is drawn dark with a dashed outline and a small OUT, its marker hollow and dashed at
   its stored gain, the curve without it, and the pill row says OUT P2.
-- The 4-bar output meter stays on SHOW and ALIGN: clipping must be visible while notching.
+- The output meters (SUB L R, TOP L R) stay on SHOW and ALIGN: clipping must be visible while
+  notching. D-015: the program input's capture peaks (status.in_peak_db) are drawn left of them,
+  IN L R, on the same -60..0 dBFS scale and colours; IN CLIP (the ADC clipped, latched) turns
+  their clip boxes red, as an output's clip does.
 - Overlays are derived from the status, never a page the controller must remember to show:
   NO DEVICE > ENGINE DOWN replace the body. MUTED is a red pill in the status bar plus a red
   frame on every page; on SHOW also a red band over the chip row and the top of the graph (the
@@ -110,28 +115,43 @@ RISKY_PILLS: tuple[str, ...] = ("LAPTOP OPEN", "LO-CUT OFF", "OUT ", "POL INV")
 PILL_MIN_PX = 13
 
 STATUS_H = 30
-METER_X0, METER_X1 = 206, 274          # ALIGN: centre column
-MID_Y0, MID_Y1 = 150, 200              # ALIGN: middle strip (hints / MUTED band)
+METER_X0, METER_X1 = 195, 285          # ALIGN: centre column (IN, SUB, TOP meters; D-015)
+MID_Y0, MID_Y1 = 147, 183              # ALIGN: middle strip (hints)
+# ALIGN (D-015): the MUTED band between the top sub-line and the bottom ones (the delay's side
+# stays readable), and the LOCKED / EDIT badge on the bottom row, between the two locked knobs'
+# labels (DELAY E2, LO-CUT E4), joined to both by a line.
+ALIGN_MUTED_BAND = (138, 192)
+LOCK_Y0, LOCK_Y1 = 294, 315
 OVERLAYS: tuple[str, ...] = ("NO DEVICE", "ENGINE DOWN", "MUTED")
 METER_LABELS: tuple[str, ...] = ("Sub L", "Sub R", "Top L", "Top R")
+# D-015: the meters as drawn, left to right: the program input (status.in_peak_db, IN CLIP),
+# then the outputs (status.levels / clip in METER_LABELS order).
+METER_PAIRS: tuple[str, ...] = ("IN", "SUB", "TOP")
 METER_FLOOR_DB = -60.0
 ENGINE_OK = ("RUNNING", "PAUSED", "STARTING")
 ENGINE_DOWN_STATES = ("INACTIVE", "STALLED", "DOWN")
 ENGINE_UNKNOWN = "Unknown"             # status did not say (missing field, no status at all)
 FOOTER_H = 28                          # SETUP footer row (E2 label / hint / MUTED strip)
 
-# SHOW geometry (480 x 320; docs/07 §2.1, the mockups' constants)
+# SHOW geometry (480 x 320; docs/07 §2.1). D-015 (Thomas, 2026-10-14): legends 20 -> 17 px,
+# values 44/40 -> 38/36 px, chips 24 -> 22 px tall: the graph 130 -> 152 px high.
+LABEL_PX = 17                          # SHOW and ALIGN knob legends (SETUP keeps 20)
+TAG_PX = 15                            # SHOW: the band's name beside the Q legend
+UNIT_PX = 16                           # SHOW: a value's unit
+TOP_VALUE_PX, BOT_VALUE_PX = 38, 36    # SHOW: E1/E3 values, E2/E4 values
 TOP_Y0 = STATUS_H                      # E1 / E3 blocks: label row, then the value box
-TOP_BOX = (51, 95)
-CHIP_Y0, CHIP_Y1 = 98, 122             # band chips LS 1 2 3 4 HS; hints take this row
-GRAPH = (0, 124, W, 254)               # x0, y0, x1, y1 (exclusive)
-BOT_Y0 = 254                           # E2 / E4 blocks: the value box, then the label row
-BOT_BOX = (255, 294)
-METER_BOX = (200, 31, 280, 96)         # compact 4-bar meter, top centre
-PILL_Y0, PILL_Y1 = 296, 315            # SHOW: persistent pills, between the bottom labels
+TOP_BOX = (48, 86)
+CHIP_Y0, CHIP_Y1 = 88, 110             # band chips LS 1 2 3 4 HS; hints take this row
+CHIP_PX = 18
+GRAPH = (0, 112, W, 264)               # x0, y0, x1, y1 (exclusive)
+BOT_Y0 = 264                           # E2 / E4 blocks: the value box, then the label row
+BOT_BOX = (264, 296)
+METER_BOX = (195, 31, 285, 86)         # compact 6-bar meter (IN, SUB, TOP), top centre
+PILL_Y0, PILL_Y1 = 297, 315            # SHOW: persistent pills, between the bottom labels
 # MUTED on SHOW: the chip row and the graph's top (+9..+0.6 dB: live boosts stop at +6), so
-# the 0 dB line (y 162.7), the curve's cuts and every value stay visible.
-SHOW_MUTED_BAND = (CHIP_Y0, 160)
+# the 0 dB line, the curve's cuts and every value stay visible.
+SHOW_MUTED_BAND = (CHIP_Y0, int(eg.DbAxis(GRAPH[1], GRAPH[3] - 1, eg.STYLE.top_db,
+                                          eg.STYLE.bottom_db).y(0.6)))
 CHIP_TEXT: dict[int, str] = {4: "LS", 0: "1", 1: "2", 2: "3", 3: "4", 5: "HS"}
 OUT_CHIP_BG = (18, 18, 18)             # D-014: a band switched OUT: a dark chip, dashed outline
 
@@ -156,11 +176,13 @@ class ScreenStatus:
     ramping: a boot ramp is pending or running (K1000 brings Main in by itself).
     alert:  the controller's most urgent message (shown inside the MUTED band).
     in_clip: the INPUT (ADC) clipped recently (latched by the controller).
+    in_peak_db: the program input's capture peaks, L R (dBFS, before any gain): the IN meters
+            (D-015). Missing or short: the meters read the floor.
     UI v1 (D-009), same names as control.Status:
     alerts: [(level, text)] most urgent first, for the status bar; None = derived from
             `alert`/`message` (an older status).
     pills:  persistent non-default states for SHOW; None = derived from the state.
-    align_unlock_s: seconds left of the ALIGN E3/E4 unlock (the EDIT pill); the focus's
+    align_unlock_s: seconds left of the ALIGN E2/E4 unlock (the EDIT badge); the focus's
             unlock_until counts too.
     undo_reset_s: SETUP > Undo reset, seconds left (0 = nothing to undo).
     spectrum_on / spectrum_state / spectrum: SETUP > Spectrum, the task's state, and the
@@ -184,6 +206,7 @@ class ScreenStatus:
     ramping: bool = False
     alert: str = ""
     in_clip: bool = False
+    in_peak_db: Sequence[float] = (-100.0, -100.0)
     alerts: Sequence[tuple[str, str]] | None = None
     pills: Sequence[str] | None = None
     align_locked: bool | None = None
@@ -471,6 +494,12 @@ def _textlength(text: str, f: ImageFont.FreeTypeFont) -> float:
 
 
 @lru_cache(maxsize=512)
+def _text_box(text: str, f: ImageFont.FreeTypeFont, anchor: str) -> tuple[int, int, int, int]:
+    """The box `text` covers around its anchor point (ImageDraw.textbbox at (0, 0))."""
+    return tuple(f.getbbox(text, anchor=anchor))  # type: ignore[return-value]
+
+
+@lru_cache(maxsize=512)
 def _text_mask(text: str, f: ImageFont.FreeTypeFont, anchor: str):
     """Rasterised text as an 'L' mask + its offset from the anchor point.
 
@@ -527,9 +556,9 @@ def fmt_ms(v: float | None) -> str:
 
 
 def fmt_align_delay(v: float | None) -> tuple[str, str]:
-    """ALIGN E3, the signed delay (sub - top, ms): (big value, sub-line). The direction is in
-    words, never a bare minus sign: 1.25 -> ('1.25', 'SUBS LATER · 0.43 m'), -1.25 -> ('1.25',
-    'TOPS LATER · 0.43 m'), 0 -> ('0.00', 'ALIGNED')."""
+    """ALIGN E2 (D-015), the signed delay (sub - top, ms): (big value, sub-line). The direction
+    is in words, never a bare minus sign: 1.25 -> ('1.25', 'SUBS LATER · 0.43 m'), -1.25 ->
+    ('1.25', 'TOPS LATER · 0.43 m'), 0 -> ('0.00', 'ALIGNED')."""
     if v is None:
         return "--", ""
     if abs(v) < 0.005:
@@ -587,7 +616,18 @@ class _Ctx:
         self.editing = ed(now) if callable(ed) else None
         held = getattr(focus, "held", ())
         self.held = set(held) if held else set()
-        self.bottom_label_end: dict[str, float] = {}   # SHOW: where the bottom labels reach
+        self.bottom_label_end: dict[str, float] = {}   # SHOW/ALIGN: where the bottom labels reach
+        # Where each knob's texts landed (knob -> {"label", "tag", "value", "unit", "sub"} ->
+        # (x0, y0, x1, y1)): the tests check the flush alignment and that nothing is cut.
+        self.ink: dict[int, dict[str, tuple[float, float, float, float]]] = {}
+
+    def mark(self, e: int, part: str, xy: tuple[float, float], text: str,
+             f: ImageFont.FreeTypeFont, anchor: str) -> None:
+        """Record the box of `text` drawn at `xy` (see `ink`; cached: SHOW draws at 10 fps)."""
+        if text:
+            left, top, right, bottom = _text_box(text, f, anchor)
+            x, y = xy
+            self.ink.setdefault(e, {})[part] = (x + left, y + top, x + right, y + bottom)
 
 
 def _hint(c: _Ctx) -> str | None:
@@ -607,15 +647,16 @@ def _focus_slot(focus: Any) -> int:
 
 
 def _knob_label(c: _Ctx, e: int, label: str, x_edge: float, y: float, right: bool,
-                fill=AMBER) -> float:
+                fill=AMBER, size: int = 20) -> float:
     """A knob's label at its screen corner, after its "E1".."E4" tag in the `c.tags` style;
     returns the x where the label ends on the inner side.
 
     `x_edge` is the corner side (padding included), `y` the tag's top as v1 drew it. bright: the
     v1 cyan tag (font 16) and the label TAG_W further in. dim: a small dark-grey tag on the
-    label's baseline, the label where it was. off: no tag, the label at the corner."""
+    label's baseline, the label where it was. off: no tag, the label at the corner. `size`: the
+    label's font (SETUP 20; SHOW and ALIGN LABEL_PX since D-015)."""
     d = c.d
-    flab = font(20)
+    flab = font(size)
     anchor = "ra" if right else "la"
     lx = x_edge
     if c.tags != "off":
@@ -629,23 +670,59 @@ def _knob_label(c: _Ctx, e: int, label: str, x_edge: float, y: float, right: boo
                    anchor="rs" if right else "ls")
         lx = x_edge - TAG_W if right else x_edge + TAG_W
     d.text((lx, y - 2), label, font=flab, fill=fill, anchor=anchor)
+    c.mark(e, "label", (lx, y - 2), label, flab, anchor)
     lw = d.textlength(label, font=flab)
     return lx - lw if right else lx + lw
 
 
-# ---- v0 quadrant layout (ALIGN) ------------------------------------------------------------
-# Quadrant geometry: x range and the vertical anchors for label / value / sub-line.
+def _cap_px(f: ImageFont.FreeTypeFont) -> int:
+    """Height of a digit above the baseline: a value and its unit share a baseline, the value
+    centred on its box by its digits (not by the font's ascender)."""
+    return -f.getbbox("8", anchor="ls")[1]
+
+
+def _value_group(c: _Ctx, e: int, x0: float, x1: float, cy: float, value: str, unit: str, *,
+                 size: int, unit_px: int, right: bool, fill, unit_fill, reserve: float = 0.0,
+                 pad: int = 10, gap: int = 5) -> tuple[float, float]:
+    """D-015: a knob's value and its unit, flush to the corner's OUTER border: from x0 + pad
+    on a left corner, ending at x1 - pad (the unit's end) on a right one; the digits centred on
+    `cy`, the unit on their baseline. `reserve` px on the inner side stay free (FINE). The value
+    shrinks to fit. Returns the group's (left, right)."""
+    d = c.d
+    funit = font(unit_px)
+    unit_w = d.textlength(unit, font=funit) + gap if unit else 0.0
+    room = (x1 - x0) - 2 * pad - reserve
+    fval = _fit(d, value, size, max(10, int(room - unit_w)))
+    vw = d.textlength(value, font=fval)
+    total = vw + unit_w
+    vx = x1 - pad - total if right else x0 + pad
+    base = cy + _cap_px(fval) / 2
+    d.text((vx, base), value, font=fval, fill=fill, anchor="ls")
+    c.mark(e, "value", (vx, base), value, fval, "ls")
+    if unit:
+        d.text((vx + vw + gap, base), unit, font=funit, fill=unit_fill, anchor="ls")
+        c.mark(e, "unit", (vx + vw + gap, base), unit, funit, "ls")
+    return vx, vx + total
+
+
+# ---- quadrant layout (ALIGN) ---------------------------------------------------------------
+# Quadrant geometry: x range and the vertical anchors for label / value / sub-line. D-015:
+# legends LABEL_PX, values ALIGN_VALUE_PX (was 60), everything flush to the outer border.
+ALIGN_VALUE_PX = 52
+ALIGN_UNIT_PX = 18
+ALIGN_SUB_PX = 17
 _QX = {"l": (0, METER_X0), "r": (METER_X1, W)}
 _QY = {  # (label_y, value_center_y, sub_y) ; label sits at the outer (screen) edge
-    "t": (STATUS_H + 4, 92, 130),
-    "b": (H - 26, 252, 210),
+    "t": (STATUS_H + 3, 88, 128),
+    "b": (H - 23, 240, 202),
 }
 
 
 def _quadrant(c: _Ctx, e: int, label: str, value: str, unit: str, sub: str,
-              field_key: str | None, *, dim: bool = False, value_size: int = 60,
-              shift: int = 0, box_half: int = 38, sub_strong: bool = False) -> None:
-    """Draw one knob's quadrant: 'E1 MASTER' at the corner, big value, unit + sub-line.
+              field_key: str | None, *, dim: bool = False, value_size: int = ALIGN_VALUE_PX,
+              shift: int = 0, box_half: int = 36, sub_strong: bool = False) -> None:
+    """Draw one knob's quadrant: 'E1 MASTER' at the corner, big value, unit + sub-line, all
+    flush to the quadrant's outer border (D-015).
 
     `shift` moves the value towards the screen edge; `box_half` is the half-height of the edit
     highlight. `sub_strong`: the sub-line carries meaning the value does not (the delay's side):
@@ -653,23 +730,28 @@ def _quadrant(c: _Ctx, e: int, label: str, value: str, unit: str, sub: str,
     """
     corner = KNOB_CORNERS[e]
     vpos, hpos = corner[0], corner[1]
+    right = hpos == "r"
     x0, x1 = _QX[hpos]
     label_y, val_cy, sub_y = _QY[vpos]
     val_cy += -shift if vpos == "t" else shift
     d = c.d
     pad = 10
     # label at the outer corner (after its E1..E4 tag, per ui.knob_tags)
-    _knob_label(c, e, label, x0 + pad if hpos == "l" else x1 - pad, label_y, hpos == "r")
+    end = _knob_label(c, e, label, x1 - pad if right else x0 + pad, label_y, right,
+                      size=LABEL_PX)
+    if vpos == "b":
+        c.bottom_label_end[hpos] = end
     # value (highlighted while being edited; switching the Lo-Cut highlights its frequency)
     edited = field_key is not None and (c.editing == field_key or (
         field_key == F_LOWCUT_FREQ and c.editing == F_LOWCUT_ON))
     fine = e in c.held
     box = (x0 + 4, val_cy - box_half, x1 - 4, val_cy + box_half)
-    fs = _fit(d, sub, 18, (x1 - x0) - 2 * pad, FONT_REG) if sub else None
+    fs = _fit(d, sub, ALIGN_SUB_PX, (x1 - x0) - 2 * pad, FONT_REG) if sub else None
+    sx, sa = (x1 - pad, "rm") if right else (x0 + pad, "lm")
     if sub and fs is not None:
-        # the edit box stops short of the sub-line ('≈ 0.81 m' under SUB DELAY), never half
-        # over it: grey on amber, cut in two
-        _l, st, _r, sb = d.textbbox(((x0 + x1) / 2, sub_y), sub, font=fs, anchor="mm")
+        # the edit box stops short of the sub-line ('SUBS LATER · 0.81 m' over DELAY), never
+        # half over it: grey on amber, cut in two
+        _l, st, _r, sb = d.textbbox((sx, sub_y), sub, font=fs, anchor=sa)
         if vpos == "t":
             box = (box[0], box[1], box[2], min(box[3], st - 3))
         else:
@@ -677,28 +759,23 @@ def _quadrant(c: _Ctx, e: int, label: str, value: str, unit: str, sub: str,
     if edited:
         d.rounded_rectangle(box, radius=8, fill=AMBER)
     fg = BG if edited else (DIM if dim else FG)
-    unit_w = 0
-    if unit:
-        funit = font(20)
-        unit_w = int(d.textlength(unit, font=funit)) + 6
-    # FINE sits at the box's right edge: keep the value clear of it (a unit-less value such as
-    # Q would otherwise run under it).
-    fine_w = int(d.textlength("FINE", font=font(14))) + 12 if fine else 0
-    room = (x1 - x0) - fine_w
-    fval = _fit(d, value, value_size, room - 16 - unit_w)
-    vw = d.textlength(value, font=fval)
-    total = vw + unit_w
-    vx = x0 + (room - total) / 2
-    d.text((vx, val_cy), value, font=fval, fill=fg, anchor="lm")
-    if unit:
-        d.text((vx + vw + 6, val_cy + 14), unit, font=font(20), fill=BG if edited else DIM,
-               anchor="ls")
-    if fine:   # at the box's outer edge (top or bottom): the MUTED band never covers it
-        fy, fa = (box[1] + 4, "ra") if vpos == "t" else (box[3] - 4, "rd")
-        d.text((box[2] - 6, fy), "FINE", font=font(14), fill=BG if edited else CYAN, anchor=fa)
+    # FINE at the INNER side (the value is flush to the outer one), where the MUTED band never
+    # covers it and the value keeps its whole width: a top quadrant's in its label row, a
+    # bottom one's under the digits, at the box's bottom edge.
+    _value_group(c, e, x0, x1, val_cy, value, unit, size=value_size, unit_px=ALIGN_UNIT_PX,
+                 right=right, fill=fg, unit_fill=BG if edited else DIM)
+    if fine:
+        ffine = font(14)
+        if vpos == "t":
+            fy, on_box = label_y - 2 + font(LABEL_PX).getmetrics()[0], False
+        else:
+            fy, on_box = box[3] - 4, edited
+        fx, fa = (x0 + pad, "ls") if right else (x1 - pad, "rs")
+        d.text((fx, fy), "FINE", font=ffine, fill=BG if on_box else CYAN, anchor=fa)
+        c.mark(e, "fine", (fx, fy), "FINE", ffine, fa)
     if sub and fs is not None:
-        d.text(((x0 + x1) / 2, sub_y), sub, font=fs, fill=FG if sub_strong and not dim else DIM,
-               anchor="mm")
+        d.text((sx, sub_y), sub, font=fs, fill=FG if sub_strong and not dim else DIM, anchor=sa)
+        c.mark(e, "sub", (sx, sub_y), sub, fs, sa)
 
 
 # ---- status bar ----------------------------------------------------------------------------
@@ -815,82 +892,87 @@ def _level(levels: list, i: int) -> float:
 _METER_ZONES = ((METER_FLOOR_DB, -18.0, GREEN), (-18.0, -6.0, YELLOW), (-6.0, 0.0, RED))
 
 
-def _meter(c: _Ctx, status: Any, y0: int = STATUS_H + 8, y1: int = H - 30) -> None:
-    """ALIGN: 4 vertical peak bars (Sub L, Sub R, Top L, Top R), -60..0 dBFS, clip box on top."""
-    d = c.d
+def meter_bars(status: Any) -> list[tuple[float, bool]]:
+    """The six meters as drawn (D-015), left to right: IN L, IN R (the program input's capture
+    peaks, status.in_peak_db; IN CLIP lights both clip boxes), SUB L, SUB R, TOP L, TOP R
+    (status.levels / clip). (dBFS, clipped) each; anything unreadable reads the floor. A single
+    input peak (an older status) is drawn on both IN bars."""
+    ins = _seq(_get(status, "in_peak_db", None))
+    if len(ins) == 1:
+        ins = ins * 2
+    in_clip = bool(_truth(_get(status, "in_clip", None)))
     levels = _seq(_get(status, "levels", None))     # numpy arrays welcome (no `x or ()`)
     clips = _seq(_get(status, "clip", None))
-    bw, gap = 11, 5
-    x = (METER_X0 + METER_X1) / 2 - (4 * bw + 3 * gap) / 2 + 1
-    clip_h = 10
-    top = y0 + clip_h + 4
-    span = y1 - top
-
-    def y_of(db: float) -> float:
-        db = max(METER_FLOOR_DB, min(0.0, db))
-        return y1 - span * (db - METER_FLOOR_DB) / -METER_FLOOR_DB
-
-    for db_tick in (-6, -20, -40):
-        yt = y_of(db_tick)
-        d.line((METER_X0 + 4, yt, METER_X1 - 4, yt), fill=FAINT)
+    out = [(_level(ins, i), in_clip) for i in range(2)]
     for i in range(4):
-        xi = int(x + i * (bw + gap)) + (3 if i >= 2 else 0) - 1
-        lv = _level(levels, i)
-        d.rectangle((xi, top, xi + bw - 1, y1), fill=BAR_BG)
-        if lv > METER_FLOOR_DB:
-            for lo, hi, col in _METER_ZONES:
-                if lv <= lo:
-                    break
-                d.rectangle((xi, y_of(min(lv, hi)), xi + bw - 1, y_of(lo)), fill=col)
-        clipped = bool(_truth(clips[i])) if i < len(clips) else False
-        if clipped:
-            d.rectangle((xi - 1, y0, xi + bw, y0 + clip_h), fill=RED)
-        else:
-            d.rectangle((xi, y0, xi + bw - 1, y0 + clip_h), outline=FAINT)
-    # labels: SUB under bars 0-1, TOP under 2-3
-    fl = font(13)
-    cx_sub = x + bw + gap / 2 - 1
-    cx_top = x + 2 * (bw + gap) + bw + gap / 2 + 2
-    # (kept clear of the 4 px MUTED frame at the bottom edge)
-    d.text((cx_sub, y1 + 2), "SUB", font=fl, fill=DIM, anchor="ma")
-    d.text((cx_top, y1 + 2), "TOP", font=fl, fill=DIM, anchor="ma")
-    d.text((cx_sub, y1 + 13), "L R", font=font(11), fill=FAINT, anchor="ma")
-    d.text((cx_top, y1 + 13), "L R", font=font(11), fill=FAINT, anchor="ma")
+        out.append((_level(levels, i), bool(_truth(clips[i])) if i < len(clips) else False))
+    return out
+
+
+def _bar(d: Any, x: float, bw: int, top: float, bot: float, clip_y0: float, clip_y1: float,
+         db: float, clipped: bool) -> None:
+    """One meter bar, -60..0 dBFS from `bot` up to `top`, its clip box above it."""
+    def y_of(v: float) -> float:
+        v = max(METER_FLOOR_DB, min(0.0, v))
+        return bot - (bot - top) * (v - METER_FLOOR_DB) / -METER_FLOOR_DB
+
+    xi = int(x)
+    d.rectangle((xi, top, xi + bw - 1, bot), fill=BAR_BG)
+    if db > METER_FLOOR_DB:
+        for lo, hi, col in _METER_ZONES:
+            if db <= lo:
+                break
+            d.rectangle((xi, y_of(min(db, hi)), xi + bw - 1, y_of(lo)), fill=col)
+    if clipped:
+        d.rectangle((xi - 1, clip_y0, xi + bw, clip_y1), fill=RED)
+    else:
+        d.rectangle((xi, clip_y0, xi + bw - 1, clip_y1), outline=FAINT)
+
+
+def _bar_xs(cx: float, bw: int, gap: int, pair_gap: int) -> tuple[list[float], list[float]]:
+    """x of each of the six bars (three L R pairs centred on `cx`) and each pair's centre."""
+    total = 6 * bw + 3 * gap + 2 * pair_gap
+    x = cx - total / 2
+    xs, centres = [], []
+    for _pair in range(3):
+        xs += [x, x + bw + gap]
+        centres.append(x + bw + gap / 2)
+        x += 2 * bw + gap + pair_gap
+    return xs, centres
+
+
+def _meter(c: _Ctx, status: Any, y0: int = STATUS_H + 8, y1: int = H - 54) -> None:
+    """ALIGN: 6 vertical peak bars, IN L R (the program input), SUB L R, TOP L R, -60..0 dBFS,
+    a clip box on top of each (IN CLIP lights the IN pair's), the labels under them."""
+    d = c.d
+    bars = meter_bars(status)
+    bw = 10
+    clip_h = 9
+    top = y0 + clip_h + 4
+    for db_tick in (-6, -20, -40):
+        yt = y1 - (y1 - top) * (db_tick - METER_FLOOR_DB) / -METER_FLOOR_DB
+        d.line((METER_X0 + 2, yt, METER_X1 - 2, yt), fill=FAINT)
+    xs, centres = _bar_xs((METER_X0 + METER_X1) / 2, bw, 3, 10)
+    for x, (db, clipped) in zip(xs, bars):
+        _bar(d, x, bw, top, y1, y0, y0 + clip_h, db, clipped)
+    # labels: IN, SUB, TOP under their pairs, then L R (clear of the badge row under them)
+    for cx, name in zip(centres, METER_PAIRS):
+        d.text((cx, y1 + 2), name, font=font(12), fill=DIM, anchor="ma")
+        d.text((cx, y1 + 13), "L R", font=font(10), fill=FAINT, anchor="ma")
 
 
 def _mini_meter(c: _Ctx, status: Any) -> None:
-    """SHOW: the same 4 bars (Sub L R, Top L R) compacted into METER_BOX, top centre."""
+    """SHOW: the same 6 bars (IN L R, SUB L R, TOP L R) compacted into METER_BOX, top centre."""
     d = c.d
     x0, y0, x1, y1 = METER_BOX
-    levels = _seq(_get(status, "levels", None))
-    clips = _seq(_get(status, "clip", None))
-    bw, gap, pair = 12, 3, 9
-    total = 4 * bw + 2 * gap + pair
-    bx = (x0 + x1) / 2 - total / 2
-    top, bot = y0 + 9, y1 - 13
-
-    def y_of(db: float) -> float:
-        db = max(METER_FLOOR_DB, min(0.0, db))
-        return bot - (bot - top) * (db - METER_FLOOR_DB) / -METER_FLOOR_DB
-
-    for i in range(4):
-        xi = int(bx + i * (bw + gap) + (pair - gap if i >= 2 else 0))
-        lv = _level(levels, i)
-        d.rectangle((xi, top, xi + bw - 1, bot), fill=BAR_BG)
-        if lv > METER_FLOOR_DB:
-            for lo, hi, col in _METER_ZONES:
-                if lv <= lo:
-                    break
-                d.rectangle((xi, y_of(min(lv, hi)), xi + bw - 1, y_of(lo)), fill=col)
-        clipped = bool(_truth(clips[i])) if i < len(clips) else False
-        if clipped:
-            d.rectangle((xi - 1, y0, xi + bw, y0 + 6), fill=RED)
-        else:
-            d.rectangle((xi, y0, xi + bw - 1, y0 + 6), outline=FAINT)
-    fl = font(11)
-    d.text((bx + bw + gap / 2, bot + 2), "SUB", font=fl, fill=DIM, anchor="ma")
-    d.text((bx + 3 * bw + 2 * gap + pair - gap / 2 + 0.5 * gap, bot + 2), "TOP", font=fl,
-           fill=DIM, anchor="ma")
+    bars = meter_bars(status)
+    bw = 10
+    top, bot = y0 + 8, y1 - 12
+    xs, centres = _bar_xs((x0 + x1) / 2, bw, 3, 8)
+    for x, (db, clipped) in zip(xs, bars):
+        _bar(d, x, bw, top, bot, y0, y0 + 5, db, clipped)
+    for cx, name in zip(centres, METER_PAIRS):
+        d.text((cx, bot + 2), name, font=font(11), fill=DIM, anchor="ma")
 
 
 def _middle(c: _Ctx, status: Any = None) -> None:
@@ -907,12 +989,14 @@ def _middle(c: _Ctx, status: Any = None) -> None:
 # SHOW
 # ------------------------------------------------------------------------------------------
 def _block(c: _Ctx, e: int, label: str, value: str, unit: str, field_key: str | None, *,
-           size: int = 44, dim: bool = False, tag: str = "", tag_hot: bool = False,
-           value_dim: bool = False) -> None:
+           size: int = TOP_VALUE_PX, dim: bool = False, tag: str = "", tag_hot: bool = False,
+           tag_short: str = "", value_dim: bool = False) -> None:
     """One encoder's block on SHOW: 'E1 MASTER' on the outer edge, the value in a box next to
-    its knob (amber while edited, FINE while its push is held). `tag` (the band's name) sits
-    next to the label, amber-filled right after the band changed. `value_dim`: the value is
-    grey (the selected band is OUT, D-014: stored, not playing)."""
+    its knob (amber while edited, FINE while its push is held), flush to the outer border with
+    its unit beside it (D-015). `tag` (the band's name) sits next to the label, amber-filled
+    right after the band changed; `tag_short` ('LS', 'P2') replaces it when FINE leaves too
+    little room for the whole name. `value_dim`: the value is grey (the selected band is OUT,
+    D-014: stored, not playing)."""
     corner = KNOB_CORNERS[e]
     top = corner[0] == "t"
     left = corner[1] == "l"
@@ -924,52 +1008,66 @@ def _block(c: _Ctx, e: int, label: str, value: str, unit: str, field_key: str | 
         label_y, (by0, by1) = H - 23, BOT_BOX
     d = c.d
     pad = 10
-    fx = font(16)
+    fx = font(TAG_PX)
     lab_col = DIM if dim else AMBER
+    fine = e in c.held
+    ffine = font(14)
+    fine_tw = d.textlength("FINE", font=ffine)
+    # the tag and a top block's FINE share the label's baseline
+    base = label_y - 2 + font(LABEL_PX).getmetrics()[0]
+    if fine and top:
+        # a top block's FINE sits in its label row, at the inner end: the value row keeps its
+        # whole width (a long Q and its '1/11 oct' would shrink to nothing next to it)
+        fxy, fa = ((x1 - pad, base), "rs") if left else ((x0 + pad, base), "ls")
+        d.text(fxy, "FINE", font=ffine, fill=CYAN, anchor=fa)
+        c.mark(e, "fine", fxy, "FINE", ffine, fa)
     if left:
-        end = _knob_label(c, e, label, x0 + pad, label_y, False, lab_col)
+        end = _knob_label(c, e, label, x0 + pad, label_y, False, lab_col, LABEL_PX)
         if tag:
             tx = end + 8
             tw = d.textlength(tag, font=fx)
             if tag_hot:
-                d.rounded_rectangle((tx - 4, label_y - 2, tx + tw + 4, label_y + 16), radius=3,
+                d.rounded_rectangle((tx - 4, label_y - 1, tx + tw + 4, base + 3), radius=3,
                                     fill=AMBER)
-            d.text((tx, label_y), tag, font=fx, fill=BG if tag_hot else FG, anchor="la")
+            d.text((tx, base), tag, font=fx, fill=BG if tag_hot else FG, anchor="ls")
+            c.mark(e, "tag", (tx, base), tag, fx, "ls")
             end = tx + tw
         if not top:
             c.bottom_label_end["l"] = end
     else:
-        end = _knob_label(c, e, label, x1 - pad, label_y, True, lab_col)
+        end = _knob_label(c, e, label, x1 - pad, label_y, True, lab_col, LABEL_PX)
         if tag:
-            tw = d.textlength(tag, font=fx)
             tx = end - 8
+            if fine and top:              # the band's name keeps clear of FINE
+                room = int(max(1.0, tx - (x0 + pad + fine_tw + 8)))
+                if tag_short and d.textlength(tag, font=fx) > room:
+                    tag = tag_short       # 'HI SHELF' beside SLOPE and FINE: 'HS', never 'HI…'
+                tsize, tag = _fit_ellipsis(tag, TAG_PX, room, min_size=11)
+                fx = font(tsize)
+            tw = d.textlength(tag, font=fx)
             if tag_hot:
-                d.rounded_rectangle((tx - tw - 4, label_y - 2, tx + 4, label_y + 16), radius=3,
+                d.rounded_rectangle((tx - tw - 4, label_y - 1, tx + 4, base + 3), radius=3,
                                     fill=AMBER)
-            d.text((tx, label_y), tag, font=fx, fill=BG if tag_hot else FG, anchor="ra")
+            d.text((tx, base), tag, font=fx, fill=BG if tag_hot else FG, anchor="rs")
+            c.mark(e, "tag", (tx, base), tag, fx, "rs")
             end = tx - tw
         if not top:
             c.bottom_label_end["r"] = end
-    cy = (by0 + by1) // 2
+    cy = (by0 + by1) / 2
     edited = field_key is not None and c.editing == field_key
-    fine = e in c.held
     if edited:
         d.rounded_rectangle((x0 + 4, by0, x1 - 4, by1), radius=8, fill=AMBER)
     fg = BG if edited else (DIM if dim or value_dim else FG)
-    funit = font(18)
-    unit_w = int(d.textlength(unit, font=funit)) + 6 if unit else 0
-    # FINE has its own column at the box's right edge (the value and its unit stay left of it)
-    # and sits at the box's top, clear of the unit's baseline row.
-    fine_w = int(d.textlength("FINE", font=font(14))) + 16 if fine else 0
-    room = (x1 - x0) - fine_w
-    fval = _fit(d, value, size, room - 16 - unit_w)
-    vw = d.textlength(value, font=fval)
-    vx = x0 + (room - (vw + unit_w)) / 2
-    d.text((vx, cy), value, font=fval, fill=fg, anchor="lm")
-    if unit:
-        d.text((vx + vw + 6, cy + 13), unit, font=funit, fill=BG if edited else DIM, anchor="ls")
-    if fine:
-        d.text((x1 - 10, by0 + 4), "FINE", font=font(14), fill=BG if edited else CYAN, anchor="ra")
+    # A bottom block's FINE has its own column at the box's INNER edge (the value and its unit
+    # are flush to the outer one) and sits at the box's top, clear of the unit's baseline row.
+    low_fine = fine and not top
+    fine_w = fine_tw + 14 if low_fine else 0.0
+    _value_group(c, e, x0, x1, cy, value, unit, size=size, unit_px=UNIT_PX, right=not left,
+                 fill=fg, unit_fill=BG if edited else DIM, reserve=fine_w, pad=pad)
+    if low_fine:
+        fxy, fa = ((x1 - 10, by0 + 3), "ra") if left else ((x0 + 10, by0 + 3), "la")
+        d.text(fxy, "FINE", font=ffine, fill=BG if edited else CYAN, anchor=fa)
+        c.mark(e, "fine", fxy, "FINE", ffine, fa)
 
 
 def _dashed_rect(d: Any, box: tuple[float, float, float, float], fill: Any, width: int = 2,
@@ -1010,16 +1108,17 @@ def _chips(c: _Ctx, sel: int, bands: Sequence[eg.Band]) -> None:
             col = AMBER if slot == sel else acol if active else DIM
             d.rounded_rectangle(box, radius=4, fill=OUT_CHIP_BG)
             _dashed_rect(d, box, col, width=2)
-            d.text((bx0 + (bx1 - bx0) * 0.36, cxy[1]), label, font=font(20), fill=col, anchor="mm")
+            d.text((bx0 + (bx1 - bx0) * 0.36, cxy[1]), label, font=font(CHIP_PX), fill=col,
+                   anchor="mm")
             d.text((bx1 - 5, cxy[1] + 1), "OUT", font=font(11), fill=col, anchor="rm")
             continue
         if slot == sel:
             d.rounded_rectangle(box, radius=4, fill=AMBER)
-            d.text(cxy, label, font=font(20), fill=BG, anchor="mm")
+            d.text(cxy, label, font=font(CHIP_PX), fill=BG, anchor="mm")
         else:
             d.rounded_rectangle(box, radius=4, outline=acol if active else FAINT,
                                 width=2 if active else 1)
-            d.text(cxy, label, font=font(20), fill=acol if active else DIM, anchor="mm")
+            d.text(cxy, label, font=font(CHIP_PX), fill=acol if active else DIM, anchor="mm")
 
 
 def _peak_label(c: _Ctx, geo: dict[str, Any], rta: eg.RtaFrame | None) -> None:
@@ -1104,17 +1203,19 @@ def _pills_row(c: _Ctx, pills: Sequence[str], x0: float, x1: float) -> None:
 
 
 def _strip(c: _Ctx, text: str, fill=AMBER, fg=BG) -> None:
-    """A hint (amber) over SHOW's chip row: the marker and the GAIN label still say the band.
+    """A hint (amber) over SHOW's chip row: the marker and the band's name by the Q legend
+    (E3) still say the band.
     A critical system alert takes it in its own colour when no hint is up (_page_show)."""
     d = c.d
     d.rectangle((0, CHIP_Y0, W, CHIP_Y1), fill=fill)
-    size, text = _fit_ellipsis(text, 20, W - 16)
+    size, text = _fit_ellipsis(text, 19, W - 16)
     d.text((W // 2, (CHIP_Y0 + CHIP_Y1) // 2 + 1), text, font=font(size), fill=fg, anchor="mm")
 
 
 def _page_show(c: _Ctx, state: Any, status: Any) -> None:
-    """SHOW: E1 MASTER, E2/E3/E4 = FREQ/GAIN/Q of the selected band, chips, meter, and the
-    live-EQ curve (the engine's own biquads, eqgraph) over the program spectrum."""
+    """SHOW: E1 MASTER, E2/E3/E4 = FREQ/Q/GAIN of the selected band (D-015: Q, or a shelf's
+    SLOPE, top right with the band's name; GAIN bottom right), chips, the IN/SUB/TOP meters,
+    and the live-EQ curve (the engine's own biquads, eqgraph) over the program spectrum."""
     slot = _focus_slot(c.focus)
     bands = eg.live_bands(state)
     rta = spectrum_frame(status)
@@ -1126,17 +1227,18 @@ def _page_show(c: _Ctx, state: Any, status: Any) -> None:
     labels = knob_labels("SHOW")
     base = LIVE_SLOTS[slot]
     out = slot < len(bands) and not bands[slot].on       # D-014: its values are stored, not played
-    _block(c, 0, labels[0], fmt_db(_num(state, F_MASTER)), "dB", F_MASTER, size=44)
+    _block(c, 0, labels[0], fmt_db(_num(state, F_MASTER)), "dB", F_MASTER, size=TOP_VALUE_PX)
     _mini_meter(c, status)
-    _block(c, 2, labels[2], fmt_db(_num(state, base + ".gain")), "dB", base + ".gain", size=44,
-           tag=LIVE_SLOT_LABELS[slot], tag_hot=c.editing == F_SLOT, value_dim=out)
-    _block(c, 1, labels[1], fmt_hz(_num(state, base + ".freq")), "Hz", base + ".freq", size=40,
-           value_dim=out)
     q = _num(state, base + ".q")
-    if slot < 4:
-        _block(c, 3, labels[3], fmt_q(q), fmt_oct(q), base + ".q", size=40, value_dim=out)
-    else:     # shelves: the same knob is the slope (a Q of 0.4..1.5)
-        _block(c, 3, "SLOPE", fmt_q(q), "Q", base + ".q", size=40, value_dim=out)
+    # E3 (top right): Q, or the slope of a shelf (a Q of 0.4..1.5), with the band's name
+    qlab, qunit = (labels[2], fmt_oct(q)) if slot < 4 else ("SLOPE", "Q")
+    _block(c, 2, qlab, fmt_q(q), qunit, base + ".q", size=TOP_VALUE_PX,
+           tag=LIVE_SLOT_LABELS[slot], tag_short=LIVE_SLOT_SHORT[slot],
+           tag_hot=c.editing == F_SLOT, value_dim=out)
+    _block(c, 1, labels[1], fmt_hz(_num(state, base + ".freq")), "Hz", base + ".freq",
+           size=BOT_VALUE_PX, value_dim=out)
+    _block(c, 3, labels[3], fmt_db(_num(state, base + ".gain")), "dB", base + ".gain",
+           size=BOT_VALUE_PX, value_dim=out)
     lx = c.bottom_label_end.get("l", 110.0) + 12
     rx = c.bottom_label_end.get("r", W - 70.0) - 12
     _pills_row(c, screen_pills(state, status), lx, rx)
@@ -1158,7 +1260,7 @@ def _page_show(c: _Ctx, state: Any, status: Any) -> None:
 # ALIGN
 # ------------------------------------------------------------------------------------------
 def align_unlock_left(c: _Ctx, status: Any) -> float:
-    """Seconds left of ALIGN's E3/E4 unlock: the status's figure or the focus's own deadline,
+    """Seconds left of ALIGN's E2/E4 unlock: the status's figure or the focus's own deadline,
     whichever says more (0 = locked)."""
     s = _num(status, "align_unlock_s", 0.0) or 0.0
     fn = getattr(c.focus, "unlock_left", None)
@@ -1172,32 +1274,40 @@ def align_unlock_left(c: _Ctx, status: Any) -> float:
 
 
 def _lock_badge(c: _Ctx, left_s: float) -> None:
-    """Between E3 (DELAY) and E4 (LO-CUT), in their column: LOCKED (grey, how to unlock)
-    or EDIT m:ss (amber, the unlock's countdown)."""
+    """D-015: on the bottom row, between the two locked knobs' labels (E2 DELAY bottom left,
+    E4 LO-CUT bottom right) and joined to both by a line: LOCKED · HOLD B2 (grey, how to
+    unlock) or EDIT m:ss (amber, the unlock's countdown)."""
     d = c.d
-    corner3, corner4 = KNOB_CORNERS[2][1], KNOB_CORNERS[3][1]
-    x0, x1 = _QX[corner3] if corner3 == corner4 else (0, W)
-    cx, cy = (x0 + x1) / 2, (MID_Y0 + MID_Y1) // 2 - 5
-    if left_s > 0:
-        t, f = f"EDIT {fmt_mmss(left_s)}", font(20)
-        tw = d.textlength(t, font=f)
-        d.rounded_rectangle((cx - tw / 2 - 10, cy - 15, cx + tw / 2 + 10, cy + 15), radius=6,
-                            fill=AMBER)
+    lx = c.bottom_label_end.get("l", 90.0) + 8
+    rx = c.bottom_label_end.get("r", W - 90.0) - 8
+    cy = (LOCK_Y0 + LOCK_Y1) / 2
+    cx = (lx + rx) / 2
+    unlocked = left_s > 0
+    t = f"EDIT {fmt_mmss(left_s)}" if unlocked else "LOCKED · HOLD B2"
+    col = AMBER if unlocked else DIM
+    size, t = _fit_ellipsis(t, 16, int(max(40.0, rx - lx - 50)), min_size=12)
+    f = font(size)
+    tw = d.textlength(t, font=f)
+    bx0, bx1 = cx - tw / 2 - 9, cx + tw / 2 + 9
+    for a, b in ((lx, bx0 - 4), (bx1 + 4, rx)):          # the line to each locked knob
+        if b - a >= 6:
+            d.line((a, cy, b, cy), fill=col, width=2)
+    if unlocked:
+        d.rounded_rectangle((bx0, LOCK_Y0, bx1, LOCK_Y1), radius=6, fill=AMBER)
         d.text((cx, cy), t, font=f, fill=BG, anchor="mm")
     else:
-        t = "LOCKED · HOLD B2"
-        f = _fit(d, t, 16, (x1 - x0) - 30)
-        tw = d.textlength(t, font=f)
-        d.rounded_rectangle((cx - tw / 2 - 9, cy - 13, cx + tw / 2 + 9, cy + 13), radius=6,
-                            outline=DIM, width=2)
+        d.rounded_rectangle((bx0, LOCK_Y0, bx1, LOCK_Y1), radius=6, fill=BG, outline=DIM,
+                            width=2)
         d.text((cx, cy), t, font=f, fill=DIM, anchor="mm")
+    c.ink.setdefault(-1, {})["badge"] = (bx0, LOCK_Y0, bx1, LOCK_Y1)
 
 
 def _page_align(c: _Ctx, state: Any, status: Any) -> None:
-    """ALIGN: E1 MASTER and E2 BALANCE live; E3 DELAY and E4 LO-CUT dimmed while locked
-    (a B2 hold unlocks them for 30 s of idle: the EDIT badge counts it down). Lo-Cut on/off
-    is a SETUP item now: said here, not offered. E3 is the signed sub/top delay (D-011): its
-    size big, which side is late in words under it (SUBS LATER / TOPS LATER / ALIGNED)."""
+    """ALIGN: E1 MASTER and E3 BALANCE live; E2 DELAY and E4 LO-CUT, the two bottom knobs, dimmed
+    while locked (a B2 hold unlocks them for 30 s of idle: the badge between them counts it
+    down). Lo-Cut on/off is a SETUP item: said here, not offered. E2 is the signed sub/top delay
+    (D-011): its size big, which side is late in words over it (SUBS LATER / TOPS LATER /
+    ALIGNED). The meters in the centre: IN L R (the program input), SUB L R, TOP L R (D-015)."""
     master = _num(state, F_MASTER)
     bal = _num(state, F_BALANCE)
     ad_val, ad_sub = fmt_align_delay(align_delay(state))
@@ -1206,17 +1316,17 @@ def _page_align(c: _Ctx, state: Any, status: Any) -> None:
     left = align_unlock_left(c, status)
     locked = left <= 0.0
     labels = knob_labels("ALIGN")
+    _meter(c, status)
     _quadrant(c, 0, labels[0], fmt_db(master), "dB", "", F_MASTER)
+    _quadrant(c, 1, labels[1], ad_val, "ms", ad_sub, F_ALIGN_DELAY, dim=locked, sub_strong=True)
     bsub = "subs = tops" if bal is None or abs(bal) < 0.05 else \
         f"subs {bal / 2:+.1f} · tops {-bal / 2:+.1f}"
-    _quadrant(c, 1, labels[1], fmt_db(bal), "dB", bsub, F_BALANCE)
-    _quadrant(c, 2, labels[2], ad_val, "ms", ad_sub, F_ALIGN_DELAY, dim=locked, sub_strong=True)
+    _quadrant(c, 2, labels[2], fmt_db(bal), "dB", bsub, F_BALANCE)
     if lc_on:
         _quadrant(c, 3, labels[3], fmt_hz(lc), "Hz", "tops · 12 dB/oct", F_LOWCUT_FREQ, dim=locked)
     else:
         _quadrant(c, 3, labels[3], "OFF", "", f"{fmt_hz(lc)} Hz · on/off in SETUP", F_LOWCUT_FREQ,
                   dim=True)
-    _meter(c, status)
     _lock_badge(c, left)
     _middle(c, status)
 
@@ -1561,9 +1671,10 @@ def _overlay_muted(c: _Ctx, state: Any, status: Any, page: str = "ALIGN") -> Non
 
     SHOW: a red band over the chip row and the graph's top (+9..+0.6 dB, where live boosts
     stop), so the 0 dB line, the cuts, every value, the edit box and FINE stay visible.
-    ALIGN (and the v0 names): the v0 full-width band across the middle strip and the bottom
-    sub-lines. SETUP: red frame + red footer strip (a band would cover the selected row and its
-    'PUSH AGAIN'); an active hint takes the footer for its 2.5 s. HWTEST: frame + red tag.
+    ALIGN (and the v0 names): the v0 full-width band across the middle strip, between the top
+    sub-line and the bottom ones (D-015: the delay's side stays readable). SETUP: red frame +
+    red footer strip (a band would cover the selected row and its 'PUSH AGAIN'); an active hint
+    takes the footer for its 2.5 s. HWTEST: frame + red tag.
     """
     d = c.d
     d.rectangle((0, STATUS_H, W - 1, H - 1), outline=BAND_RED, width=4)
@@ -1590,9 +1701,9 @@ def _overlay_muted(c: _Ctx, state: Any, status: Any, page: str = "ALIGN") -> Non
         d.rectangle((0, y0, W, y1), fill=BAND_RED)
         _band_text(c, y0, y1, 44, 22, 18, hint or unmute)
         return
-    y0, y1 = MID_Y0 - 10, MID_Y1 + 22   # covers the sub-lines whole, never half a line
+    y0, y1 = ALIGN_MUTED_BAND   # between the sub-lines, never half over one (D-015)
     d.rectangle((0, y0, W, y1), fill=BAND_RED)
-    _band_text(c, y0, y1, 56, 22, 18, hint or unmute)
+    _band_text(c, y0, y1, 52, 22, 18, hint or unmute)
 
 
 _PAGES = {"SHOW": _page_show, "ALIGN": _page_align, "SETUP": _page_setup, "HWTEST": _page_hwtest}
@@ -1775,7 +1886,8 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
     peak = spec.peak_hz if spec is not None and spec.peak_hz else 2440.0
     run = ScreenStatus(profile="m4", device="MOTU M4", device_present=True, engine="Running",
                        load=2.0, levels=(-14.0, -15.5, -9.0, -12.5), clip=(False,) * 4,
-                       ready=True, spectrum=spec, spectrum_state="live")
+                       ready=True, spectrum=spec, spectrum_state="live",
+                       in_peak_db=(-11.0, -12.5))
 
     def with_(base: ScreenStatus, **kw: Any) -> ScreenStatus:
         return ScreenStatus(**{**base.__dict__, **kw})
@@ -1817,6 +1929,17 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
     mono_pick = dict(pick="mono_subs", pick_value=not bool(s.mono_subs), pick_until=inf, readonly=ro)
     tops_later = State.from_dict({**s.to_dict(), "sub_delay_ms": 0.0, "top_delay_ms": 1.25})
     aligned = State.from_dict({**s.to_dict(), "sub_delay_ms": 0.0, "top_delay_ms": 0.0})
+    # D-015: the input clipping in the ADC (IN CLIP latched, the IN bars at full scale), and the
+    # longest values each corner can show (none is ever cut or runs into its neighbour)
+    in_clip = with_(run, in_clip=True, in_peak_db=(-0.2, -1.5))
+    longest = State.from_dict(s.to_dict())
+    longest.master_db, longest.balance_db = -120.0, -12.0
+    longest.sub_delay_ms, longest.top_delay_ms, longest.lowcut_hz = 0.0, 50.0, 300.0
+    longest.live_peq[1].freq, longest.live_peq[1].gain, longest.live_peq[1].q = 20000.0, -20.0, 0.1
+    p3 = longest.live_peq[2]
+    p3.freq, p3.gain, p3.q = 10500.0, -12.5, 16.0
+    longest.live_highshelf.freq, longest.live_highshelf.gain = 16000.0, -12.0
+    longest.live_highshelf.q = 1.5
     return [
         # SHOW: the front page
         ("show", "SHOW", s, run, Focus(slot=1)),
@@ -1846,12 +1969,21 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
          Focus(slot=1)),
         ("hint", "SHOW", s, run, Focus(slot=1, editing=F_MASTER, edit_until=inf,
                                        hint="MASTER: SLOW DOWN", hint_until=inf)),
-        ("input_clip", "SHOW", s, with_(run, in_clip=True), Focus(slot=1)),
+        ("input_clip", "SHOW", s, in_clip, Focus(slot=1)),
+        # D-015: the longest values; show_long_values as they rest (no edit, no FINE),
+        # show_long_q with FINE held on all four knobs (the worst case for room: FINE takes a
+        # bottom box's inner corner and a top knob's label row), show_long_slope a shelf's SLOPE
+        # with FINE held on E3 and E4 (the band's name gives way to its short name, 'HS')
+        ("show_long_values", "SHOW", longest, run_clip, Focus(slot=1)),
+        ("show_long_q", "SHOW", longest, run, Focus(slot=2, editing="live_peq.2.q",
+                                                    edit_until=inf, held={0, 1, 2, 3})),
+        ("show_long_slope", "SHOW", longest, run, Focus(slot=5, editing="live_highshelf.gain",
+                                                        edit_until=inf, held={2, 3})),
         ("alert_warning", "SHOW", s, with_(run, alerts=[("warning", "PIPELINE CHANGED (GUI)")],
                                            message="PIPELINE CHANGED (GUI)"), Focus(slot=1)),
         ("muted", "SHOW", muted, run_muted, Focus(slot=1)),
         ("muted_fine", "SHOW", muted, run_muted, Focus(slot=1, editing="live_peq.1.q",
-                                                       edit_until=inf, held={3})),
+                                                       edit_until=inf, held={2})),
         # K1000 holds Main before its own boot ramp: not 'READY · hold B4 to unmute'
         ("muted_ramp_hold", "SHOW", s, with_(run, engine="Starting", muted=True, ramping=True,
                                              ready=False, levels=(-100.0,) * 4, clip=(False,) * 4,
@@ -1888,6 +2020,10 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
          Focus(editing=F_ALIGN_DELAY, edit_until=inf)),
         ("align_lowcut_off", "ALIGN", lc_off, run, Focus()),
         ("align_muted", "ALIGN", muted, run_muted, Focus()),
+        ("align_input_clip", "ALIGN", s, in_clip, Focus()),
+        ("align_long_values", "ALIGN", longest, with_(run_clip, align_locked=False,
+                                                      align_unlock_s=27.4),
+         Focus(editing=F_ALIGN_DELAY, edit_until=inf, held={0, 1, 2, 3})),
         # SETUP
         # SETUP (D-013): grouped by speaker floor; E2 chooses, a push sets
         ("setup", "SETUP", s, dev, Focus(item=tpol_i, readonly=ro)),

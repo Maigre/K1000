@@ -49,6 +49,21 @@
 > from B2 to B4. SETUP is grouped by speaker floor (TOPS, SUBS, INPUT, LIVE EQ, PHONE, BOX; E3 jumps
 > a group); every ON/off or choice is chosen with E2 (the row shows `now → chosen`) and set by a
 > push, so Lo-Cut on/off has no double push. Details: `DECISIONS.md` D-013, `docs/manual/04-usage.md`.
+>
+> **Changed by D-015** (2026-10-14, Thomas at the bench): the knob roles and the layout of §2.1,
+> §2.2 and §3. **SHOW: E3 = Q** (a shelf's `SLOPE`), with the band's name beside its label
+> (`PEQ 2 Q`); **E4 = GAIN**, so the notch strip says `P3 · 2.44k · E4 TO CUT` and the notch is
+> B3, E4 down, E3 up. **ALIGN: E2 = DELAY, E3 = BALANCE**: the two locked knobs (DELAY, LO-CUT) are
+> the bottom pair, and the `LOCKED · HOLD B2` / `EDIT 0:30` badge sits on the bottom row between
+> their labels, joined to both by a line; the MUTED band leaves the sub-lines visible. **Every
+> corner value is flush to its outer border** with its unit beside it (left corners
+> left-aligned, right corners right-aligned); FINE moves to the inner side (a top knob's into its
+> label row). **Smaller legends and values**: labels 20 → 17 px, SHOW values 44/40 → 38/36 px,
+> ALIGN values 60 → 52 px, chips 24 → 22 px tall: the graph is **152 px high** (y 112–264; it was
+> 130, y 124–254). **Input meters**: IN L R (the program input's capture peaks, before any gain)
+> left of SUB L R and TOP L R on both pages, the same scale and colours, `IN CLIP` lighting their
+> clip boxes. §2.1's diagram and §2.2's table below are the D-009 layout. Details: `DECISIONS.md`
+> D-015, `docs/manual/04-usage.md`.
 
 2026-10-12 evening, answering Thomas's notes on the v0 panel. Status: **design and prototype,
 nothing wired** (superseded by the note above). The engine and panel figures were measured on the

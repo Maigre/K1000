@@ -116,7 +116,7 @@ PERSIST_DEBOUNCE_S = 1.0
 PERSIST_MAX_DELAY_S = 5.0
 URGENT_SAVE_GAP_S = 0.25        # saves toward silence (mute, master down): not more often
 # Delay/polarity edits are applied under a group-fader mute (smooth_ops guard). Waiting for the
-# knob to pause first turns a fast E3 turn into one dip instead of one dip per detent.
+# knob to pause first turns a fast DELAY turn (ALIGN E2) into one dip instead of one per detent.
 GUARD_SETTLE_S = 0.15
 GUARD_SETTLE_MAX_S = 0.6
 RESTORE_MIN_INTERVAL_S = 30.0   # at most one automatic pipeline restore per interval
@@ -159,8 +159,9 @@ HINT_UNDO_LOST = "RESET UNDO LOST"
 HINT_MUTE_CHANGED = "MUTE CHANGED · LOOK, HOLD B4 AGAIN"
 HINT_MASTER_SLOW = "MASTER: SLOW DOWN"
 HINT_NO_FREE_BAND = "NO FREE BAND"
-HINT_NOTCH = "{band} · {hz} · E3 TO CUT"              # D-009: "P3 · 2.44k · E3 TO CUT"
-HINT_NOTCH_NO_PEAK = "{band} · {hz} · NO PEAK · E3 TO CUT"
+# The notch strip names the gain knob: E4 since D-015 (E3 before).
+HINT_NOTCH = "{band} · {hz} · E4 TO CUT"              # D-009: "P3 · 2.44k · E4 TO CUT"
+HINT_NOTCH_NO_PEAK = "{band} · {hz} · NO PEAK · E4 TO CUT"
 HINT_BAND_OUT = "{band} OUT"                         # D-014: B3 hold on SHOW, the phone's chip hold
 HINT_BAND_IN = "{band} IN"
 HINT_EDIT_OUT = "{band} OUT · HOLD B3 = IN"          # a knob moves a band that is OUT: inaudible
@@ -324,7 +325,7 @@ class Status:
     band: int = 0                    # selected live band, LIVE_SLOTS index (0-3 P1-P4, 4 LS, 5 HS)
     band_label: str = LIVE_SLOT_LABELS[0]
     band_short: str = LIVE_SLOT_SHORT[0]
-    align_locked: bool = True        # ALIGN E3/E4 (delay, Lo-Cut) locked
+    align_locked: bool = True        # ALIGN E2/E4 (delay, Lo-Cut) locked
     align_unlock_s: float = 0.0      # seconds left of the unlock (0 = locked): the EDIT pill
     pills: list[str] = field(default_factory=list)       # persistent non-default states, in order
     alerts: list[tuple[str, str]] = field(default_factory=list)   # (level, text), urgent first
@@ -927,7 +928,7 @@ class Controller:
 
         The UI v1 fields of the status are refreshed here (the render contract):
         - page; band / band_label / band_short: the selected live band (Focus.slot);
-        - align_locked / align_unlock_s: ALIGN's E3/E4 lock and the EDIT countdown;
+        - align_locked / align_unlock_s: ALIGN's E2/E4 lock and the EDIT countdown;
         - pills: persistent non-default states: `pill_sources` first (the laptop-access
           countdown: the only sign that SSH and CamillaGUI are open on the K1000 Wi-Fi), then
           LO-CUT OFF, OUT <bands> (D-014: live bands switched OUT), POL INV SUB|TOP|SUB+TOP,
@@ -1216,7 +1217,7 @@ class Controller:
         """Seconds the reset undo stays available (0.0 = none). It ends at the first AUDIBLE
         live EQ edit after the reset (a gain moved off 0 dB, by a knob, the phone or CamillaGUI
         adopted; freq/Q of a band at 0 dB is inaudible and keeps it: the notch helper's B3, an
-        E2/E4 turn on a flat band), or after UNDO_RESET_S. Undo then restores the whole live
+        E2/E3 turn on a flat band), or after UNDO_RESET_S. Undo then restores the whole live
         EQ from before the reset, over any such inaudible move. Dropped by an edit, it says
         so (RESET UNDO LOST)."""
         u = self._undo
@@ -1259,14 +1260,14 @@ class Controller:
            that bell, write nothing.
         2. Else a free bell (stored gain exactly 0, IN or OUT; never a shelf): Q = NOTCH_Q (1/6
            octave), freq = the target if there is one, and IN if it was OUT. The gain is never
-           touched: a 0 dB peaking biquad is exactly unity, so this is inaudible until E3 cuts.
+           touched: a 0 dB peaking biquad is exactly unity, so this is inaudible until E4 cuts.
            A bell OUT with a stored cut or boost is NOT free: it keeps its settings for its way
            back IN. Which free bell: with `select` (B3) the selected band if it is one, else the
            first of P1..P4; without (the phone) `prefer` if it is one, else the free bell
            nearest the target, else the first.
         3. Else: NO FREE BAND, nothing changes.
         With `select` (B3) the selected band moves there, its GAIN gets the edit highlight and
-        the hint says "P3 · 2.44k · E3 TO CUT" (or NO FREE BAND). `select=False` (a phone): the
+        the hint says "P3 · 2.44k · E4 TO CUT" (or NO FREE BAND). `select=False` (a phone): the
         box's own band selection, highlight and hint stay as they are; the phone says it."""
         if target is None:
             target = self._peak_target()
@@ -1322,7 +1323,7 @@ class Controller:
         self.state.set(f"{base}.q", NOTCH_Q)
         if target is not None:
             self.state.set(f"{base}.freq", target)
-        self.state.set(f"{base}.on", True)        # at 0 dB: IN is inaudible, and E3 then cuts
+        self.state.set(f"{base}.on", True)        # at 0 dB: IN is inaudible, and E4 then cuts
         if setup() != old:
             self._local_edit()
         log.info("notch helper (%s): P%d at %.0f Hz, Q %.2f%s%s (gain untouched)", source, i + 1,
@@ -1480,7 +1481,7 @@ class Controller:
 
     def goto_page(self, page: str) -> str:
         """Show `page` (v0 names MAIN/LIVE are aliases of ALIGN/SHOW). Leaving ALIGN locks its
-        E3/E4 again; a page change drops a pending SETUP confirm."""
+        E2/E4 again; a page change drops a pending SETUP confirm."""
         page = page_name(page)
         if page not in ALL_PAGES:
             log.warning("unknown page %r", page)
@@ -2997,6 +2998,8 @@ class Controller:
         if in_key != self._in_key:
             self._in_key = in_key
             self.meter_seq += 1
+            if self.has_screen and self.page in ("SHOW", "ALIGN"):   # the IN meters (D-015)
+                self.changed.set()
         if key != self._meter_key:
             self._meter_key = key
             self.meter_seq += 1

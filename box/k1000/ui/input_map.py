@@ -16,12 +16,14 @@ ALIGN lock) and, when that returns False, hands the action to the Controller.
 Pages (D-009, buttons D-013): SHOW (front) <-> ALIGN on a B1 tap; SETUP on a B1 hold; PHONE and
 HWTEST reached from SETUP.
 - Buttons (D-013): B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE.
-- SHOW: E1 MASTER, E2/E3/E4 = FREQ/GAIN/Q of the selected live band. B2 tap = next band in
+- SHOW: E1 MASTER, E2/E3/E4 = FREQ/Q/GAIN of the selected live band (D-015: GAIN on E4, Q or
+  the shelf's SLOPE on E3; GAIN was E3 until then). B2 tap = next band in
   LS 1 2 3 4 HS order (wraps). B3 tap = the notch helper (Controller.notch_helper); B3 hold =
   the selected band IN/OUT (D-014, Controller.toggle_band). An encoder push is FINE while held,
   never a select.
-- ALIGN: E1 MASTER and E2 BALANCE live; E3 DELAY (the signed sub/top alignment, D-011) and E4
-  LO-CUT are LOCKED: a turn shows HINT_LOCKED and changes nothing. A B2 hold unlocks them for
+- ALIGN: E1 MASTER and E3 BALANCE live; E2 DELAY (the signed sub/top alignment, D-011) and E4
+  LO-CUT, the two bottom knobs, are LOCKED (D-015: DELAY on E2, BALANCE on E3; the other way
+  round until then): a turn shows HINT_LOCKED and changes nothing. A B2 hold unlocks them for
   UNLOCK_S, renewed by every input on ALIGN (so any UNLOCK_S of idle relocks); a B2 tap relocks
   at once; leaving ALIGN relocks.
 - SETUP (D-013): the items grouped by speaker floor (TOPS, SUBS, INPUT, LIVE EQ, PHONE, BOX).
@@ -187,14 +189,14 @@ class ToggleBand:
 
 @dataclass(frozen=True)
 class Unlock:
-    """ALIGN, B2 hold: E3/E4 (delay, Lo-Cut) editable until `seconds` without input on
+    """ALIGN, B2 hold: E2/E4 (delay, Lo-Cut) editable until `seconds` without input on
     ALIGN. UI-local (Focus.unlock_until)."""
     seconds: float = 30.0          # UNLOCK_S
 
 
 @dataclass(frozen=True)
 class Lock:
-    """ALIGN, B2 tap while unlocked: E3/E4 locked again at once. UI-local."""
+    """ALIGN, B2 tap while unlocked: E2/E4 locked again at once. UI-local."""
 
 
 @dataclass(frozen=True)
@@ -229,8 +231,8 @@ Action = (Nudge | Toggle | SetChoice | SelectSlot | SelectBand | SelectItem | Se
 F_MASTER = "master_db"         # Main fader
 F_BALANCE = "balance_db"       # macro: Aux1 = +b/2, Aux2 = -b/2
 F_SUB_DELAY = "sub_delay_ms"
-# E3 on ALIGN (D-011): one signed delay, sub - top (> 0 = subs later, < 0 = tops later), computed
-# by k1000.state over the two stored delays.
+# E2 on ALIGN (D-011; E3 until D-015): one signed delay, sub - top (> 0 = subs later, < 0 = tops
+# later), computed by k1000.state over the two stored delays.
 F_ALIGN_DELAY = "align_delay_ms"
 F_LOWCUT_FREQ = "lowcut_hz"    # E4 on ALIGN
 F_LOWCUT_ON = "lowcut_on"      # SETUP > Lo-Cut (confirmed)
@@ -256,7 +258,7 @@ AUTO_HOME_PAGES: tuple[str, ...] = ("ALIGN", "SETUP")
 B1_TAP: dict[str, str] = {"SHOW": "ALIGN", "ALIGN": "SHOW", "SETUP": "SHOW", "PHONE": "SETUP"}
 B1_HOLD: dict[str, str] = {"SHOW": "SETUP", "ALIGN": "SETUP"}
 HOME_AFTER_S = 60.0           # ALIGN/SETUP -> SHOW after this long without a knob/button event
-UNLOCK_S = 30.0               # ALIGN E3/E4 unlock, renewed by every input on ALIGN
+UNLOCK_S = 30.0               # ALIGN E2/E4 unlock, renewed by every input on ALIGN
 
 
 def page_name(page: Any) -> Any:
@@ -435,18 +437,20 @@ class Knob:
     locked: bool = False
 
 
-# E1..E4 per page — the contract's knob table, as data.
+# E1..E4 per page — the contract's knob table, as data. D-015 (Thomas on the box, 2026-10-14):
+# SHOW's Q on E3 and GAIN on E4 (GAIN was E3); ALIGN's DELAY on E2 and BALANCE on E3 (the other
+# way round before), so the two LOCKED knobs, DELAY and LO-CUT, are the two bottom ones.
 KNOBS: dict[str, tuple[Knob, Knob, Knob, Knob]] = {
     "SHOW": (
         Knob("MASTER", F_MASTER, accel_up=1, accel_down=4),
         Knob("FREQ", "{slot}.freq", accel_up=4, accel_down=4),
-        Knob("GAIN", "{slot}.gain"),
         Knob("Q", "{slot}.q"),
+        Knob("GAIN", "{slot}.gain"),
     ),
     "ALIGN": (
         Knob("MASTER", F_MASTER, accel_up=1, accel_down=4),
-        Knob("BALANCE", F_BALANCE),
         Knob("DELAY", F_ALIGN_DELAY, arm=True, locked=True),
+        Knob("BALANCE", F_BALANCE),
         Knob("LO-CUT", F_LOWCUT_FREQ, accel_up=4, accel_down=4, locked=True),
     ),
     "SETUP": (
@@ -693,7 +697,7 @@ class Focus:
     # B4 press (mute, D-013): (the mute B4 acts against, its generation) as the operator saw
     # them when the press STARTED. B4 long fires 0.8 s later, while still held: it acts on that.
     b2_seen: tuple[Any, Any] | None = None
-    # ALIGN: E3/E4 (delay, Lo-Cut) editable until this deadline (time.monotonic()); 0 = locked.
+    # ALIGN: E2/E4 (delay, Lo-Cut) editable until this deadline (time.monotonic()); 0 = locked.
     unlock_until: float = 0.0
     # SETUP items whose confirm is waived right now (set by the Controller): Laptop access
     # while it is open, so that closing it, the safe direction, is a single push.
@@ -724,7 +728,7 @@ class Focus:
         self.pick, self.pick_value, self.pick_until = None, None, 0.0
 
     def unlocked(self, now: float | None = None) -> bool:
-        """ALIGN's E3/E4 (delay, Lo-Cut) are editable now."""
+        """ALIGN's E2/E4 (delay, Lo-Cut) are editable now."""
         now = time.monotonic() if now is None else now
         return now < self.unlock_until
 

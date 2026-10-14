@@ -101,13 +101,13 @@ On SHOW the strip covers the band chips, on ALIGN the middle, on SETUP the foote
 |---|---|
 | `HOLD B4 TO MUTE / UNMUTE` | B4 was only tapped |
 | `MASTER: SLOW DOWN` | The master-up guard refused some up-clicks: master rises at most 6 dB within any 2 s (`controls.master_up_guard_db`). Down is never limited |
-| `P3 · 2.44k · E3 TO CUT` (4 s) | B3 on SHOW set P3 up as a notch at the PEAK (gain still 0 dB), or selected the bell already cutting there |
-| `P2 · 1.00k · NO PEAK · E3 TO CUT` (4 s) | The same, but no PEAK was shown: the band kept its frequency. E3 down first (about −6 dB: at 0 dB the bell is inaudible), then sweep E2 until the ring drops, then E4 up |
+| `P3 · 2.44k · E4 TO CUT` (4 s) | B3 on SHOW set P3 up as a notch at the PEAK (gain still 0 dB), or selected the bell already cutting there. E4 (GAIN, bottom right) cuts, E3 (Q) narrows |
+| `P2 · 1.00k · NO PEAK · E4 TO CUT` (4 s) | The same, but no PEAK was shown: the band kept its frequency. E4 down first (about −6 dB: at 0 dB the bell is inaudible), then sweep E2 until the ring drops, then E3 up |
 | `NO FREE BAND` (4 s) | B3: all four bells are in use |
 | `P2 OUT` / `P2 IN` | B3 held on SHOW (map confirmed): the selected band switched OUT (kept, silent) or back IN (D-014) |
 | `B3 HOLD: IN/OUT AFTER KNOB TEST` | B3 held on SHOW while the button map is unconfirmed: nothing changed. Knob test, then `buttons_confirmed: true` |
 | `B2: NEXT BAND ON SHOW`, `B3: NOTCH HELPER ON SHOW` | B2 or B3 on a page where it does nothing |
-| `LOCKED · HOLD B2 TO EDIT` | ALIGN: E3/E4 turned (or B2 tapped) while locked. Nothing changed |
+| `LOCKED · HOLD B2 TO EDIT` | ALIGN: E2 (DELAY) or E4 (LO-CUT) turned (or B2 tapped) while locked. Nothing changed |
 | `DELAY + LO-CUT UNLOCKED` / `DELAY + LO-CUT LOCKED` | ALIGN: a B2 hold unlocked them for 30 s of idle; a B2 tap locked them |
 | `DELAY · TURN AGAIN TO CHANGE` | ALIGN's DELAY was at rest for 2.5 s: the first click only wakes it |
 | `PUSH TO SET ON`, `PUSH TO SET INVERTED`… (footer, while it waits) | SETUP: E2 chose a value (the row, red, shows `now → chosen`); a push of E1 or E2 sets it. Nothing changes until then; it lapses after 8 s or when E1/E3 moves |
@@ -131,7 +131,7 @@ On SHOW the strip covers the band chips, on ALIGN the middle, on SETUP the foote
 | `ENGINE REFUSED THE CHANGE` | CamillaDSP rejected an edit; K1000 re-reads the engine |
 | `SETUP INTERRUPTED` / `SETUP FAILED` / `PROFILE M4 FAILED` | A setup action did not complete; the previous setting is kept |
 | `PHONE CONTROL ON` / `PHONE OFF · KNOBS ONLY` / `PHONE DISABLED (k1000.yaml / --no-phone)` | SETUP › PHONE › Phone |
-| `STATE REBUILT · CHECK MASTER` (15 s) | `state.json` was unreadable: the tune was rebuilt from `active.yml`, master and balance are defaults, the box is **muted**. Check master (E1) and balance (ALIGN E2), then hold B4 |
+| `STATE REBUILT · CHECK MASTER` (15 s) | `state.json` was unreadable: the tune was rebuilt from `active.yml`, master and balance are defaults, the box is **muted**. Check master (E1) and balance (ALIGN E3), then hold B4 |
 | `NO SAVED STATE · CHECK MASTER` (15 s) | `state.json` was missing on a box that was set up before: defaults, **muted**. Same check |
 
 ### Pills (SHOW's bottom row)
@@ -146,14 +146,17 @@ On SHOW the strip covers the band chips, on ALIGN the middle, on SETUP the foote
 |---|---|---|
 | No spectrum, no message | SETUP › LIVE EQ › Spectrum is off, or the engine has just started (it comes back within a few seconds) | — |
 | Grey `NO SPECTRUM` | The engine refuses to give one (or was still warming up after 10 s) | The sound is not affected: SETUP › LIVE EQ › Spectrum off. Later: `journalctl -u k1000 \| grep -i spectrum` |
-| No cyan PEAK pointer | No narrow peak, or the program is silent (the PEAK needs the peak band at −80 dBFS and the program at −60 dBFS RMS, [chapter 3 §7](03-configuration.md#7-spectrum)) | B3 then says `NO PEAK`: E3 down first, then find the ring with E2, then E4 up |
+| No cyan PEAK pointer | No narrow peak, or the program is silent (the PEAK needs the peak band at −80 dBFS and the program at −60 dBFS RMS, [chapter 3 §7](03-configuration.md#7-spectrum)) | B3 then says `NO PEAK`: E4 down first, then find the ring with E2, then E3 up |
 | SETUP › LIVE EQ › Spectrum reads `DISABLED` | `spectrum: enabled: false` in `k1000.yaml` | Expected after a spectrum no-go |
 
-### The meter
+### The meters
 
-Four bars: Sub L, Sub R, Top L, Top R, −60 … 0 dBFS. Green below −18 dBFS, yellow to −6, red above.
-A red box on top of a bar = that output clipped. The Meyers start limiting around −14 dBFS at the
-M4 outputs (research, [chapter 5](05-tuning.md#3-gain-structure)).
+Six bars in three pairs (D-015): **IN L R** (the program input, before any K1000 gain), **SUB L R**,
+**TOP L R** (the outputs), −60 … 0 dBFS. Green below −18 dBFS, yellow to −6, red above. A red box
+on top of a bar = that output clipped; on the IN pair = `IN CLIP` (the source is too hot for the
+M4's converter). IN moving and SUB/TOP still: K1000 is muted or the master is down. The Meyers
+start limiting around −14 dBFS at the M4 outputs (research,
+[chapter 5](05-tuning.md#3-gain-structure)).
 
 ### The PHONE page
 
@@ -186,10 +189,10 @@ ssh k1000 'journalctl -u camilladsp -n 40 --no-pager'
 ### No sound at all
 
 1. The screen: NO DEVICE, ENGINE DOWN, or MUTED? Act on that first (§1).
-2. **The box meters move?**
-   - **No**: no program reaches K1000. The source, its cables into LINE IN 3/4, the M4's input
-     meters. `IN CLIP` or nothing at all? On the bench, `input_map` in `k1000.yaml` must name the
-     inputs the program uses (`m4`: `[2, 3]` = LINE IN 3/4).
+2. **The box meters move?** The IN pair (left) is what comes in, SUB and TOP what goes out.
+   - **No**: no program reaches K1000 (IN still). The source, its cables into LINE IN 3/4, the
+     M4's input meters. `IN CLIP` or nothing at all? On the bench, `input_map` in `k1000.yaml`
+     must name the inputs the program uses (`m4`: `[2, 3]` = LINE IN 3/4).
    - **Yes**: the problem is after K1000. The M4's output meters, the output cables (TRS → XLR,
      never TS), the speakers' power and their own input settings. Outs 1-2 also follow the M4's
      MONITOR knob: it must be fully clockwise.

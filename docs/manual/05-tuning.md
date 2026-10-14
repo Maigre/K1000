@@ -92,8 +92,8 @@ says polarity reversal and/or delay may be needed.
 | Subs stacked under the tops, fronts in one plane | **0 ms** | same (both normal) |
 | Off-plane by 1.5 m or more | Delay the element **nearer** to the audience by distance ÷ 343 m/s: **2.9 ms per metre** | check (below) |
 
-Where the delay is: **ALIGN E3, DELAY**, one setting for either side (D-011), locked until a
-**B2 hold** unlocks it (30 s of idle locks it again). Clockwise from 0 delays the **subs** (subs
+Where the delay is: **ALIGN E2, DELAY** (bottom left; E3 until D-015), one setting for either
+side (D-011), locked until a **B2 hold** unlocks it (30 s of idle locks it again). Clockwise from 0 delays the **subs** (subs
 nearer the audience: `SUBS LATER`), anticlockwise from 0 delays the **tops** (tops nearer:
 `TOPS LATER`); up to 50 ms either way, and only the late side is delayed. 0.1 ms per click, push
 held = one sample (1/48 ms); after 2.5 s at rest the first click only wakes it. The screen shows
@@ -144,7 +144,7 @@ a fast spin goes 8 Hz a click: 100 → 160 Hz is 30 clicks, or a few fast turns)
 ## 6. Before the EQ: what not to fix with it
 
 - A level difference between sides or boxes: output trims.
-- Sub/top balance: ALIGN E2 (balance), not EQ.
+- Sub/top balance: ALIGN E3 (balance), not EQ.
 - A cancellation (a deep, narrow dip that moves when the mic moves): position and alignment, not a
   boost.
 
@@ -236,21 +236,21 @@ adopt (a group fader, a fixed gain, a value out of range) is pulled back down in
 The live EQ: four bells (cut down to −20 dB, boost at most +6 dB) and two shelves, on top of the
 system EQ. A band at 0 dB is free and inaudible.
 
-**On SHOW, in 3 gestures: B3, E3 down, E4 up** (on ALIGN or SETUP: a B1 tap first, then wait for
+**On SHOW, in 3 gestures: B3, E4 down, E3 up** (on ALIGN or SETUP: a B1 tap first, then wait for
 the cyan PEAK, about 2 s, since the spectrum runs only while SHOW is on screen):
 
 1. **B3**: the notch helper sets a free bell to Q 8.65 (1/6 octave) and, if the cyan PEAK pointer
    is up, to its frequency. The gain stays at 0 dB, so nothing is audible yet; the strip says
-   `P3 · 2.44k · E3 TO CUT`. A PEAK within 1/6 octave of a bell already in use selects that bell
+   `P3 · 2.44k · E4 TO CUT`. A PEAK within 1/6 octave of a bell already in use selects that bell
    instead.
-2. **E3 down**: the cut (12 clicks = −6 dB).
-3. **E4 up**: narrower, until the ring goes without dulling the program (6 clicks = Q 16, the
-   maximum). Centre it with E2, push held (1/48 octave per click).
+2. **E4 down** (GAIN, bottom right): the cut (12 clicks = −6 dB).
+3. **E3 up** (Q, top right): narrower, until the ring goes without dulling the program (6 clicks
+   = Q 16, the maximum). Centre it with E2, push held (1/48 octave per click).
 
 With no PEAK (`NO PEAK` in the hint: the program is silent, the ring is not in the program, or
-Spectrum is OFF) the bell stays at its own frequency. **Cut first, then sweep**: E3 down (about
+Spectrum is OFF) the bell stays at its own frequency. **Cut first, then sweep**: E4 down (about
 −6 dB; at 0 dB the bell is inaudible wherever it sits), then E2 until the ring drops (250 Hz →
-2.5 kHz is about 40 clicks), then E4 up to narrow it. The spectrum is the program input, before the EQ: it shows a ring
+2.5 kHz is about 40 clicks), then E3 up to narrow it. The spectrum is the program input, before the EQ: it shows a ring
 that feeds back through a microphone in the program, not a room resonance, and it does not drop
 when you cut. Details and pictures: [chapter 4 §3.2](04-usage.md#32-notching-a-ring-in-3-gestures).
 

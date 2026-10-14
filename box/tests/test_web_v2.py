@@ -1372,8 +1372,8 @@ def test_v1_worker_never_answers_for_v2() -> None:
     assert re.search(r'url\.pathname\.startsWith\(\s*"/v2/"\s*\)', first_return), first_return
 
 
-def test_input_meter_moves_without_waking_the_screen(tmp_path: Path) -> None:
-    """The capture peaks reach v2's `m.i` through Controller.meter_seq, not `version`."""
+def test_input_meter_moves_without_bumping_version(tmp_path: Path) -> None:
+    """The capture peaks reach v2's `m.i` through Controller.meter_seq, not `version` (since D-015 they do wake the box screen)."""
     async def go() -> None:
         ctl, eng = make_ctl(tmp_path)
         await boot(ctl)

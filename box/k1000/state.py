@@ -144,7 +144,8 @@ RANGES: dict[str, Range] = {
     "out_trim_db": Range(-24.0, 6.0, 0.5, default=0.0, unit="dB"),
 }
 
-# ALIGN E3 (D-011): ONE signed alignment delay over the two stored ones, value = sub - top.
+# ALIGN E2 (D-011; E3 until D-015): ONE signed alignment delay over the two stored ones,
+# value = sub - top.
 # > 0: the subs are delayed (subs in front of the tops); < 0: the tops are delayed. Not a stored
 # field (state.json, dspconfig, CamillaGUI keep sub_delay_ms and top_delay_ms): `State.get`
 # computes it, and `State.set`/`State.nudge` write sub = max(v, 0), top = max(-v, 0), so after

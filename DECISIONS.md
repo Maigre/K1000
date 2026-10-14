@@ -198,6 +198,8 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   soak runs v1 with the spectrum on.
 - **Superseded in part by D-013** (2026-10-13): the button assignments (B1 PAGE · B2 BAND/UNLOCK ·
   B3 NOTCH · B4 MUTE now) and the SETUP list (grouped by speaker floor, choose-then-set).
+- **Superseded in part by D-015** (2026-10-14): SHOW's "E2/E3/E4 = frequency/gain/Q" is now
+  frequency/Q/gain (GAIN on E4), so the notch is "inaudible until E4 cuts".
 
 ## D-010 — Sunday settings, and the bypass as the only fallback · decided 2026-10-13
 
@@ -275,6 +277,8 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   delay). Its venue change lines can word the delay with `fmt_align_delay`.
 - **Superseded in part by D-013** (2026-10-13): the SETUP list wording (19 items, now grouped by
   speaker floor: TOPS, SUBS, INPUT, LIVE EQ, PHONE, BOX).
+- **Superseded in part by D-015** (2026-10-14): the DELAY is ALIGN **E2** (it was E3); the balance
+  moved to E3. The delay itself (signed, locked, the wake-up click, the dips) is unchanged.
 
 ## D-012 — Output patch: out3 feeds both subs, out4 spare · decided 2026-10-13
 
@@ -444,3 +448,67 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
 - **Supersedes** D-013's "B3 … SHOW hold = `RESET LIVE EQ: IN SETUP`". Everything else in D-013
   stands.
 - **Gate**: the Sunday field test, beside the knobs and the bypass.
+
+## D-015 — SHOW Q on E3 and GAIN on E4, ALIGN DELAY on E2, values flush to their corner, input meters · decided 2026-10-14
+
+- **Ask** (Thomas at the bench, 2026-10-14, a note on the box): "on show page, the selected PEQ
+  freq and Q could be aligned to the border (120Hz to the left above FREQ and 0.17 Q to the right
+  above SLOPE) also those yellow legend and white values could be slightly smaller so we can get
+  slightly bigger spectrum area. I'd like to inver E3 and E4 on EQ mode: having Q on E3 and GAIN on
+  E4. also i'll need inputs level too somewhere. on ALIGN page i'd switch E2 and E3 to have
+  BALANCE on E3 and DELAY on E2." The same note's phone items (the slide overlay under the fixed
+  header, flattening a band now that a chip hold is IN/OUT) go with the phone work, not here.
+- **Decided** (Thomas asked for each change; where the input meters go and where the ALIGN lock
+  badge goes are Claude's calls): built as below, **not on the box yet**.
+  - **SHOW knobs**: E1 MASTER · E2 FREQ · **E3 Q** (a shelf's `SLOPE`) · **E4 GAIN**. Everything
+    that names the gain knob follows it: the notch strip `P3 · 2.44k · E4 TO CUT` (and `… NO PEAK
+    · E4 TO CUT`), so the notch is **B3, E4 down, E3 up**; the band's name (`PEQ 2`, `LO SHELF`)
+    now sits by the Q legend, top right. Steps, fine steps and acceleration are the field's, as
+    before (GAIN and Q never accelerate).
+  - **ALIGN knobs**: E1 MASTER · **E2 DELAY** (signed, D-011) · **E3 BALANCE** · E4 LO-CUT. The two
+    locked knobs are now the **bottom pair** (DELAY, LO-CUT): a locked turn of either shows
+    `LOCKED · HOLD B2 TO EDIT` and changes nothing, one B2 hold unlocks both (`EDIT 0:30`, 30 s of
+    idle), a tap relocks both. DELAY keeps its wake-up click. The `LOCKED · HOLD B2` badge (amber
+    `EDIT m:ss` once unlocked) sits on the **bottom row between the DELAY and LO-CUT labels**,
+    joined to each by a line. DELAY's side (`SUBS LATER · 0.81 m`) is over its value; the MUTED
+    band now lies between the sub-lines, so that side stays readable while muted.
+  - **Every corner value is flush to its outer border**, its unit beside it, on SHOW and ALIGN:
+    left corners left-aligned at the label's edge (the band's FREQ right above `FREQ`, MASTER under
+    `MASTER`), right corners right-aligned (GAIN right above `GAIN`, Q under its legend, `0.71 Q`
+    under `SLOPE`). FINE moves to the inner side: a top knob's into its label row (the value keeps
+    its size), a bottom one's at its box's inner corner. Beside `SLOPE` and FINE there is no room
+    for `LO SHELF` / `HI SHELF`: the band's name then reads `LS` / `HS`, whole, never cut.
+  - **Smaller legends and values, a taller graph**: legends 20 → 17 px, SHOW values 44/40 → 38/36
+    px, the band chips 24 → 22 px tall (font 18); ALIGN to match (values 60 → 52 px, units 18,
+    sub-lines 17). **SHOW's graph: 130 → 152 px high** (y 124–254 → 112–264), so the spectrum gets
+    17 % more height. SETUP is unchanged.
+  - **Input meters**: the program input's capture peaks (`in_peak_db`, already polled for the
+    phone and IN CLIP) drawn as **IN L R left of SUB L R and TOP L R**, on SHOW (the compact meter,
+    labelled `IN SUB TOP`) and on ALIGN (the big meters), the same −60 … 0 dBFS scale and colours.
+    **IN CLIP** (the latch) lights the IN pair's clip boxes, as an output clip lights its own; the
+    `IN CLIP` pill stays. The screen now wakes when the input level visibly moves on SHOW or ALIGN
+    (`Controller.changed`, not `version`: the phones' state does not carry it).
+- **What did not change**: the knobs' corners (E1 top-left, E2 bottom-left, E3 top-right, E4
+  bottom-right) and the sticker; the buttons (D-013); every step size, range and guard; the B3
+  notch helper's rules and D-014's IN/OUT; SETUP and its knobs (E1 item, E2 value, E3 group); the
+  phone pages (v1 and v2) and the protocols; state.json.
+- **Why**: the gain and the width of a notch are the two knobs worked together; GAIN on E4 puts
+  the cut under the right hand at the bottom, with FREQ at the bottom left, the pair Thomas's
+  hands sweep. On ALIGN the two settings that must not be touched by accident sit together at the
+  bottom, under one badge, and the two live ones (master, balance) on top. Values flush to their
+  corner read next to their knob and leave the middle to the graph. The input meter tells "nothing
+  comes in" from "K1000 is not sending it" at a glance.
+- **Supersedes**: D-009's SHOW "E2/E3/E4 = frequency/gain/Q" and "inaudible until E3 cuts"; D-011's
+  "ALIGN E3 = DELAY". Everything else in D-009, D-011, D-013 and D-014 stands.
+- **Pictures** (`docs/ui/`, regenerated): `show.png`, `show_tags_off.png` (Thomas's box),
+  `align.png`, `align_tags_off.png`, `align_unlocked.png`, `show_notch.png` (`E4 TO CUT`),
+  `input_clip.png` and `align_input_clip.png` (the IN pair clipping), and the longest values,
+  nothing cut: `show_long_values.png` (at rest), `show_long_q.png` (FINE held on all four knobs),
+  `show_long_slope.png` (a shelf's SLOPE, FINE held on E3 and E4: the band's name gives way to its
+  short name, `HS`, rather than being cut), `align_long_values.png` (unlocked, DELAY edited, FINE
+  held on all four knobs).
+- **Gate**: on the box after the next deploy, then the printed operator card and quick start
+  (both still one A4 page). The phone v2 page and the APK name no box knob; `docs/14` §4's "ALIGN
+  E3/E4 keep B2's hold" and a comment in `web/server.py` still say E3/E4 for the locked pair: they
+  go with the phone work.
+
