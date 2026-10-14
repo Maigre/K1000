@@ -26,7 +26,7 @@ the phone v2 (APK, one merged page, SETUP and RTA on the phone); the knobs are t
 | 1 — v0 for the gig | A trustworthy, bypassable head for Sunday | **in progress**: code done and deployed, Lite done, power-cut drill done; M4, button map, gig soak still to do | Fri 16 rig test |
 | 2 — Live UI v1 | Every live control on one page, EQ curve over a spectrum; phone PWA | **pulled forward in part** (Thomas, 12/10): UI v1 accepted on the box 13/10; phone wired, AP up, real phone still to prove | Wed 14 freeze, Fri go/no-go |
 | 3 — Field trial | The gig is the first outing; debrief | Sun 18 | debrief Mon 19 |
-| 4 — Assist & measurement | Spectrum tools, suggest-notch, phone mic as a measurement input | after the gig | — |
+| 4 — Assist & measurement | Spectrum tools, suggest-notch, phone mic as a measurement input | steps 1-2 pulled in for the tests (Thomas, 14/10): on the box `6a537bb`; the rest after the gig | Fri 16 rig test |
 | 5 — Road-proofing | Read-only root, enclosure, power, spare surface | after the gig | — |
 
 ## The week to the gig
@@ -191,7 +191,7 @@ parametric bands + the spectrum serve live notching better on 4 knobs).
   - Thomas's bench asks, Wed 14 (D-015): SHOW Q on E3 and GAIN on E4 (`E4 TO CUT`); ALIGN DELAY on
     E2 and BALANCE on E3 (the locked pair at the bottom, one badge between them); every value flush
     to its corner's outer border; smaller legends and values (SHOW's graph 130 → 152 px); IN L R
-    input meters beside SUB/TOP on both pages. Built, not on the box yet.
+    input meters beside SUB/TOP on both pages. On the box since `6a537bb` (Wed 14, 12:26).
   - Knob fast-turn fix.
   - Design: `docs/07-live-ui-v1.md` + `docs/ui/v1/`. Knob analysis: `docs/08-knob-precision.md`.
 - **Phone PWA on the box's own AP** (D-007): live EQ curve with draggable bands, "notch here",
@@ -240,6 +240,10 @@ parametric bands + the spectrum serve live notching better on 4 knobs).
      live PEQ, applied only on a tap.
   5. Later, a time-aligned transfer function with coherence, the way Smaart and Open Sound Meter do it
      (OSM is GPL-3, so its approach and code are compatible with K1000's licence).
+- **Steps 1 and 2 pulled in for the rig test** (Thomas, Wed 14): the phone mic line (PGM ▾ PHONE
+  MIC · BOTH, its own PEAK) and ≋ MEASURE › RESPONSE on the v2 page, the box's `pgm` windows
+  (docs/14 §3.6), app 0.2.2. On the box since `6a537bb` (Wed 14, 12:26); first real-music run at
+  Thursday's soak. Use and limits: `docs/11-phone-mic.md`. Steps 3-5 stay after the gig.
 
 ## Phase 5 — Road-proofing
 
