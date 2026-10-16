@@ -22,6 +22,7 @@ import shutil
 import signal
 import socket
 import statistics
+import struct
 import subprocess
 import time
 from pathlib import Path
@@ -104,6 +105,9 @@ class FakeEngine:
         self.active: dict[str, Any] = {}
         self.pending: list[Any] | None = None  # [new_active, reads_left]
         self.lag_reads = 0
+        # Pointers the engine keeps as f32 (5.0.0-beta.1: the Loudness filter's reference_level,
+        # low_boost, high_boost): GetConfigValue returns them widened, 6.1 -> 6.099999904632568.
+        self.f32_pointers: set[str] = set()
         self.config: dict[str, Any] | None = {
             "filters": {"sub_delay": {"parameters": {"delay": 0.0}}}}
         self.state = "Running"
@@ -191,7 +195,10 @@ class FakeEngine:
                 return [ok(self.active.get(msg["value"], {"echo": msg["value"]}))]
             case "SetConfigValue":
                 new = dict(self.active)  # stale base while a write is pending: the bug
-                new[msg["pointer"]] = msg["value"]
+                value = msg["value"]
+                if msg["pointer"] in self.f32_pointers and isinstance(value, float):
+                    value = struct.unpack("<f", struct.pack("<f", value))[0]
+                new[msg["pointer"]] = value
                 if self.lag_reads:
                     self.pending = [new, self.lag_reads]
                 else:
@@ -608,6 +615,29 @@ def test_write_never_visible_raises_not_applied() -> None:
     run(body())
 
 
+def test_a_write_the_engine_keeps_as_f32_is_confirmed() -> None:
+    """The engine stores the Loudness reference_level/low_boost/high_boost as f32 and reads
+    them back widened (6.1 -> 6.099999904632568): that is the value written, confirmed at once
+    (D-016 review: compared exactly, every loudness boost detent failed as NotApplied after the
+    window, holding the lock). A read-back that really differs still is not."""
+    async def body() -> None:
+        async with rig(confirm_timeout=0.1) as (eng, c):
+            ptr = "/filters/sub_loudness/parameters/low_boost"
+            eng.f32_pointers.add(ptr)
+            for v in (6.1, 6.2, 0.1, 11.9):
+                t0 = time.perf_counter()
+                assert await c.set_value(ptr, v) == v
+                assert time.perf_counter() - t0 < 0.09
+                assert await c.get_value(ptr) != v           # widened: not the same float
+            assert not _matches(6.2, 6.1) and not _matches(-10.25, -10.3)
+            assert _matches(-10.300000190734863, -10.3) and _matches(1e-9, 0.0)
+            eng.lag_reads = 10**6                            # the stale read: 11.9, not 6.0
+            with pytest.raises(CdspNotApplied):
+                await c.set_value(ptr, 6.0)
+
+    run(body())
+
+
 def test_adjust_fader_never_lifts_a_fader_below_its_floor() -> None:
     """The engine clamps AdjustFaderVolume's result into [min, max]: sent as-is, a +0.5 dB
     detent on a -150 dB fader with min=-6 lands at -6 dB (+144 dB, seen on the box). Whatever
@@ -845,6 +875,19 @@ def test_hook_failure_is_contained_and_close_is_clean() -> None:
 CDSP_BIN = shutil.which("camilladsp") or "/usr/local/bin/camilladsp"
 ENGINE_PORT = int(os.environ.get("K1000_CDSP_TEST_PORT", "12342"))
 
+
+def _is_wrapper(path: str) -> bool:
+    """CDSP_BIN is a script (not the ELF binary): e.g. the Pi's binary run under qemu in docker.
+    Signals then reach the docker client, not the engine (see Engine.kill)."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) != b"\x7fELF"
+    except OSError:
+        return False
+
+
+CDSP_WRAPPED = _is_wrapper(CDSP_BIN)
+
 # Small v5 config in the shape of the v0 pipeline: generator -> 2->4 split -> sub/top chains.
 ENGINE_YAML = """\
 title: k1000 cdsp engine test
@@ -952,7 +995,16 @@ class Engine:
     def kill(self) -> None:
         if self.proc is not None and self.proc.poll() is None:
             self.proc.send_signal(signal.SIGCONT)
-            self.proc.kill()
+            if CDSP_WRAPPED:
+                # docker run: SIGKILL would kill the client and leave the engine running in its
+                # container (port busy for every later test); SIGTERM is proxied to the engine
+                self.proc.terminate()
+                try:
+                    self.proc.wait(10)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+            else:
+                self.proc.kill()
             self.proc.wait(5)
         self.proc = None
 
@@ -1259,6 +1311,7 @@ def test_engine_kill_restart_reconnects_and_reapplies(engine: Engine) -> None:
 
 @pytest.mark.engine
 @pytest.mark.skipif(not os.access(CDSP_BIN, os.X_OK), reason="no camilladsp binary")
+@pytest.mark.skipif(CDSP_WRAPPED, reason="SIGSTOP would freeze the docker client, not the engine")
 def test_engine_frozen_is_detected_then_recovers(engine: Engine) -> None:
     async def body() -> None:
         busy = CamillaClient(engine.url, timeout=0.5, backoff_min=0.05, backoff_max=0.5)

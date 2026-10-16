@@ -56,6 +56,11 @@ SETUP_TIMEOUT_S = 10.0  # whole-config uploads (setup actions), see set_config_y
 # Config writes are confirmed by read-back (see CamillaClient._write_confirmed).
 CONFIRM_TIMEOUT_S = 0.5
 CONFIRM_POLL_S = 0.002
+# A read-back number equals the written one within these (`_matches`): the engine keeps some
+# parameters as f32 (Loudness) and GetConfigValue widens them (6.1 -> 6.099999904632568). The
+# same tolerance as dspconfig's drift check (`_close`).
+MATCH_REL_TOL = 1e-6
+MATCH_ABS_TOL = 1e-6
 # After a device change, the engine must report Running/Paused for this long in a row before
 # set_config_yaml returns. Measured on the box: a playback device that cannot be opened reads
 # "Running" ~1 ms after SetConfig and kills the engine ~4 ms later; 0.5 s is a wide margin for
@@ -778,8 +783,15 @@ def _matches(got: Any, want: Any) -> bool:
     """Does the engine's read-back ``got`` show what we wrote (``want``)?
 
     Subset semantics for objects (the engine fills every optional field), numbers compared as
-    floats (we send 8834, it stores 8834.0), and ``None`` in ``want`` means "engine default",
-    so it is not checked.
+    floats (we send 8834, it stores 8834.0) within MATCH_REL_TOL/MATCH_ABS_TOL, and ``None`` in
+    ``want`` means "engine default", so it is not checked.
+
+    Why a tolerance: 5.0.0-beta.1 stores the Loudness filter's reference_level, low_boost and
+    high_boost as f32 (schema `FiniteF32`), and GetConfigValue returns them widened: a write of
+    6.1 reads back 6.099999904632568 (GetConfigJson prints 6.1). Compared exactly, every such
+    SetConfigValue failed as NotApplied after the confirm window, holding the lock (D-016
+    review: each loudness boost detent, and a B4 mute queued behind it). f32 keeps ~7
+    significant digits; 1e-6 accepts its rounding and nothing a knob or a fix could ask for.
     """
     if want is None:
         return True
@@ -787,7 +799,8 @@ def _matches(got: Any, want: Any) -> bool:
         return got is want
     if isinstance(want, (int, float)):
         return (isinstance(got, (int, float)) and not isinstance(got, bool)
-                and float(got) == float(want))
+                and math.isclose(float(got), float(want),
+                                 rel_tol=MATCH_REL_TOL, abs_tol=MATCH_ABS_TOL))
     if isinstance(want, dict):
         return isinstance(got, dict) and all(
             v is None or (k in got and _matches(got[k], v)) for k, v in want.items())
