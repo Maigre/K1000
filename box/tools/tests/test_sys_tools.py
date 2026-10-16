@@ -381,6 +381,175 @@ def test_console_guard_without_a_panel_touches_nothing(tmp_path):
     assert "no ZynScreen framebuffer" in err and out == ""
 
 
+# --------------------------------------------------------------------------- k1000-usbwatch.service
+USBWATCH_UNIT = BOX / "systemd" / "k1000-usbwatch.service"
+
+
+class UsbGuard:
+    """k1000-usbwatch.service's script against a fake /proc/asound, /sys/class/sound and USB tree,
+    laid out as on the box (M4 day): /proc/asound/M4 -> card1, /sys/class/sound/card1/device ->
+    .../usb1/1-1/1-1.2/1-1.2:1.0, the hub's `authorized` at .../usb1/1-1. One loop tick = 20 ms."""
+
+    def __init__(self, tmp: Path, grace: int = 5, back0: int = 10, backmax: int = 20,
+                 fallback: bool = False) -> None:
+        self.asnd, self.cls = tmp / "asound", tmp / "class"
+        self.hub = tmp / "devices" / "usb1" / "1-1"
+        self.fallback = tmp / "fallback"
+        self.cfg = tmp / "active.yml"
+        self.asnd.mkdir()
+        self.cls.mkdir()
+        self.hub.mkdir(parents=True)
+        (self.hub / "authorized").write_text("1\n")
+        if fallback:
+            self.fallback.mkdir()
+            (self.fallback / "authorized").write_text("1\n")
+        self.cfg.write_text("devices:\n  capture:\n    device: hw:M4\n  playback:\n    device: hw:M4\n")
+        s = exec_start(USBWATCH_UNIT.read_text())
+        for a, b in (("asnd=/proc/asound", f"asnd={self.asnd}"), ("cls=/sys/class/sound", f"cls={self.cls}"),
+                     ("cfg=/var/lib/k1000/active.yml", f"cfg={self.cfg}"),
+                     ("fallback=/sys/bus/usb/devices/1-1", f"fallback={self.fallback}"),
+                     ("grace=10", f"grace={grace}"), ("back0=30", f"back0={back0}"),
+                     ("backmax=300", f"backmax={backmax}"), ("tick=1", "tick=0.02"), ("pause=1", "pause=0.01")):
+            assert s.count(a) == 1, a
+            s = s.replace(a, b)
+        self.script = s
+        self.lines: list[tuple[float, str]] = []
+        self.proc: subprocess.Popen | None = None
+
+    def card(self, usb: bool = True) -> None:
+        """The card appears: asound/M4 -> card1, class/card1/device -> its USB interface (or the
+        HiFiBerry's platform device)."""
+        dev = self.hub / "1-1.2" / "1-1.2:1.0" if usb else self.asnd.parent / "devices" / "platform" / "soc:sound"
+        dev.mkdir(parents=True, exist_ok=True)
+        (self.cls / "card1").mkdir(exist_ok=True)
+        if not (self.cls / "card1" / "device").is_symlink():
+            (self.cls / "card1" / "device").symlink_to(dev)
+        (self.asnd / "card1").mkdir(exist_ok=True)
+        if not (self.asnd / "M4").is_symlink():
+            (self.asnd / "M4").symlink_to("card1")
+
+    def unplug(self) -> None:
+        (self.asnd / "M4").unlink()
+
+    def start(self) -> None:
+        self.proc = subprocess.Popen(["sh", "-c", self.script], stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, text=True)
+        t0 = time.monotonic()
+
+        def read() -> None:
+            assert self.proc is not None and self.proc.stdout is not None
+            for line in self.proc.stdout:
+                self.lines.append((time.monotonic() - t0, line.strip()))
+        threading.Thread(target=read, daemon=True).start()
+
+    def wait_for(self, text: str, n: int = 1, timeout: float = 5.0) -> list[float]:
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            hits = [t for t, line in self.lines if text in line]
+            if len(hits) >= n:
+                return hits
+            time.sleep(0.01)
+        raise AssertionError(f"{text!r} x{n} not seen in {self.lines}")
+
+    def resets(self) -> list[str]:
+        return [line for _t, line in self.lines if "resetting USB hub" in line]
+
+    def stop(self) -> str:
+        assert self.proc is not None
+        self.proc.terminate()
+        _out, err = self.proc.communicate(timeout=5)
+        return err
+
+
+def test_usbwatch_unit_script_is_valid_sh():
+    r = subprocess.run(["sh", "-n", "-c", exec_start(USBWATCH_UNIT.read_text())], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+
+@pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="no systemd-analyze")
+def test_usbwatch_unit_verifies_with_systemd():
+    r = subprocess.run(["systemd-analyze", "verify", str(USBWATCH_UNIT)], capture_output=True, text=True)
+    assert "escape" not in (r.stdout + r.stderr).lower(), r.stdout + r.stderr
+
+
+def test_usbwatch_is_installed_enabled_and_runs_as_root():
+    u = USBWATCH_UNIT.read_text()
+    assert "WantedBy=multi-user.target" in u and "Restart=always" in u
+    assert not re.search(r"^User=", u, re.M)               # sysfs `authorized` is root's
+    assert re.search(r"^UNITS=\(.*\bk1000-usbwatch\b.*\)", INSTALL.read_text(), re.M)
+
+
+def test_usbwatch_resets_the_hub_of_a_card_that_stays_missing(tmp_path):
+    """The 11:46 case: the M4 was there, the kernel gave up on its port. After `grace` ticks the
+    guard resets the hub it saw above the card, then backs off (10, 20, 20 ticks), and says when
+    the card is back; a later loss starts over at `grace`."""
+    g = UsbGuard(tmp_path)
+    g.card()
+    g.start()
+    try:
+        g.wait_for("watching the audio devices")
+        time.sleep(0.15)
+        assert g.resets() == []                              # present: nothing happens
+        g.unplug()
+        t_gone = time.monotonic()
+        g.wait_for("resetting USB hub 1-1 (reset 3)", timeout=6)
+        r = g.resets()
+        assert [line.split("(reset ")[1] for line in r[:3]] == ["1)", "2)", "3)"]
+        assert "hw:M4 missing for 5 s" in r[0] and "missing for 15 s" in r[1] and "missing for 35 s" in r[2]
+        assert time.monotonic() - t_gone >= 35 * 0.02
+        time.sleep(0.1)                                      # the line comes before the 0, pause, 1
+        assert (g.hub / "authorized").read_text().strip() == "1"   # re-authorized after each reset
+        g.card()
+        g.wait_for("back after")
+        assert any("3 USB reset(s)" in line or "4 USB reset(s)" in line for _t, line in g.lines)
+        n = len(g.resets())
+        g.unplug()
+        g.wait_for("(reset 1)", n=2, timeout=4)
+        assert "missing for 5 s" in g.resets()[n]
+    finally:
+        g.stop()
+
+
+def test_usbwatch_leaves_a_card_on_no_usb_alone(tmp_path):
+    """The HiFiBerry (dev profile) has no USB hub above it: missing, it is never acted on (and no
+    fallback hub exists here)."""
+    g = UsbGuard(tmp_path)
+    g.card(usb=False)
+    g.start()
+    try:
+        g.wait_for("watching the audio devices")
+        time.sleep(0.1)
+        g.unplug()
+        time.sleep(30 * 0.02)
+        assert g.resets() == []
+    finally:
+        g.stop()
+
+
+def test_usbwatch_falls_back_to_the_pi_hub_for_a_card_never_seen(tmp_path):
+    """Booted with the M4 plugged but never enumerated: no hub learnt, so the Pi 4's 1-1."""
+    g = UsbGuard(tmp_path, fallback=True)
+    g.start()
+    try:
+        g.wait_for("resetting USB hub fallback (reset 1)", timeout=4)
+        time.sleep(0.1)
+        assert (g.fallback / "authorized").read_text().strip() == "1"
+    finally:
+        g.stop()
+
+
+def test_usbwatch_never_resets_while_the_card_is_present(tmp_path):
+    g = UsbGuard(tmp_path, fallback=True)
+    g.card()
+    g.start()
+    try:
+        g.wait_for("watching the audio devices")
+        time.sleep(25 * 0.02)
+        assert g.resets() == []
+    finally:
+        g.stop()
+
+
 # --------------------------------------------------------------------------- install.sh
 def test_install_sh_syntax():
     assert subprocess.run(["bash", "-n", str(INSTALL)]).returncode == 0

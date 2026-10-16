@@ -1,0 +1,73 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# K1000 USB guard: brings a USB audio interface back when the kernel gave up on it. Installed by
+# box/install.sh.
+#
+# Why it exists (M4 day, 2026-10-16): a flaky moment on the M4's USB link (a cable nudged, a power
+# dip) made it reconnect and drop nine times in 16 s, then the kernel stopped trying that port
+# ("usb 1-1-port2: unable to enumerate USB device"). The M4 was fine again a second later, but
+# Linux only looks at a port again after a new plug event: NO DEVICE stayed on the screen until a
+# hub reset by hand brought it back at once. A box on a PA must not wait for someone to re-plug it.
+#
+# Why it looks like this:
+# - It watches the ALSA cards that /var/lib/k1000/active.yml names (`device: hw:<id>`, what the
+#   engine waits for; camilladsp.service checks the same /proc/asound/<id>). It never touches the
+#   engine or k1000; audio comes back the usual way (camilladsp.service starts within ~1 s of the
+#   card appearing, k1000 ramps Main in).
+# - While a card is present it remembers the USB hub above it (sysfs: the card's USB interface,
+#   two levels up). A card on no USB (the HiFiBerry) has no hub and is never acted on. A card not
+#   seen since boot falls back to 1-1, the Raspberry Pi 4's internal hub (every USB 2 device of
+#   the box sits on it).
+# - Missing for `grace` s (10: a normal re-plug or power switch is back sooner, the M4's first
+#   revision takes ~4 s): it resets that hub (authorized 0, 1 s, 1), which re-enumerates every port
+#   under it. Then again after 30 s, 60 s ... at most every 300 s while the card stays away (the
+#   M4 switched off between sets costs one journal line per reset, nothing else).
+# - A reset re-enumerates everything on that hub: anything else plugged there (a USB stick, a
+#   keyboard) disconnects for a second. Only while the audio interface is already missing.
+# - Root (sysfs `authorized` is root's); no network, no files written but that one.
+# - The script has no backslash, no single quote and no `%` (systemd escapes); `$$` is a literal
+#   `$` for the shell (see camilladsp.service).
+
+[Unit]
+Description=K1000 USB guard (resets the USB hub when the audio interface stays missing)
+Documentation=file:///opt/k1000/README.md
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+ExecStart=/bin/sh -c '\
+  asnd=/proc/asound; cls=/sys/class/sound; cfg=/var/lib/k1000/active.yml; \
+  fallback=/sys/bus/usb/devices/1-1; grace=10; back0=30; backmax=300; tick=1; pause=1; \
+  hub=; miss=0; next=0; back=$$back0; kicks=0; \
+  echo "k1000-usbwatch: watching the audio devices named in $$cfg"; \
+  while :; do \
+    ids=$$(grep -o "hw:[A-Za-z0-9_]*" "$$cfg" 2>/dev/null | cut -d: -f2 | sort -u); \
+    gone=; \
+    for id in $$ids; do \
+      if [ -e "$$asnd/$$id" ]; then \
+        dev=$$(readlink -f "$$cls/$$(readlink "$$asnd/$$id")/device" 2>/dev/null); \
+        case "$$dev" in */usb[0-9]*/*) hub=$$(dirname "$$(dirname "$$dev")");; esac; \
+      else \
+        gone="$$gone hw:$$id"; \
+      fi; \
+    done; \
+    if [ -z "$$gone" ]; then \
+      if [ "$$kicks" -gt 0 ]; then echo "k1000-usbwatch: back after $$miss s and $$kicks USB reset(s)"; fi; \
+      miss=0; next=0; back=$$back0; kicks=0; \
+    else \
+      miss=$$((miss + 1)); \
+      h=$$hub; \
+      if [ -z "$$h" ]; then h=$$fallback; fi; \
+      if [ "$$miss" -ge "$$grace" ] && [ "$$miss" -ge "$$next" ] && [ -w "$$h/authorized" ]; then \
+        kicks=$$((kicks + 1)); \
+        echo "k1000-usbwatch:$$gone missing for $$miss s: resetting USB hub $$(basename "$$h") (reset $$kicks)"; \
+        echo 0 > "$$h/authorized"; sleep "$$pause"; echo 1 > "$$h/authorized"; \
+        next=$$((miss + back)); back=$$((back * 2)); \
+        if [ "$$back" -gt "$$backmax" ]; then back=$$backmax; fi; \
+      fi; \
+    fi; \
+    sleep "$$tick"; \
+  done'
+
+[Install]
+WantedBy=multi-user.target

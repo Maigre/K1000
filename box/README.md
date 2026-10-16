@@ -12,6 +12,7 @@ D-009: pages SHOW · ALIGN · SETUP, the buttons, the screen states) in `docs/04
 | `k1000.service` | `python3 -m k1000` in `/opt/k1000`: knobs, screen, state, persistence, and the phone page (https://10.42.0.1/, `k1000/web/`; ports 80/443/8080 on the AP address only) | wants the engine, copes when it is down |
 | `camillagui.service` | CamillaGUI v5 beta.2 on port 5005 (phone compact view, laptop editor) | nothing; lowest CPU priority, sandboxed |
 | `k1000-console.service` | at boot, waits for the ZynScreen's framebuffer, then keeps the Linux text console off it; done ~3 s later | nothing; k1000 wants it but never waits for it |
+| `k1000-usbwatch.service` | root: when the audio interface named in `active.yml` (the M4) stays missing 10 s, resets the USB hub above it (then after 30 s, 60 s … every 300 s at most): the kernel stops retrying a port after a flaky reconnect burst (M4 day, 2026-10-16) | nothing; never touches the engine or k1000 |
 | `k1000-ap-fence.service` | the phone AP's firewall (its own nftables table): from the K1000 Wi-Fi only DHCP, DNS, 80, 443, 8080 reach the box (16 connections per phone, 64 in all); 10.42.0.1 unreachable from `eth0` | nothing; loaded before any network |
 | `k1000-ap-hostapd.service` | the phone's Wi-Fi access point "K1000" on `wlan0` (hostapd, WPA2, PMF off, 5 GHz ch 36) | requires the fence (refuses to start without its table); bound to `wlan0`; refuses while another interface is in 10.42.0.0/24; NetworkManager leaves `wlan0` alone |
 | `k1000-ap-dnsmasq.service` | DHCP + DNS for the phones on the AP (10.42.0.0/24; only `k1000.home.arpa` resolves) | bound to `k1000-ap-hostapd` |
@@ -51,7 +52,7 @@ The order at power-on:
 | `/var/lib/k1000/state.json`, `active.yml` | live state and the generated engine config (written by k1000, atomically) |
 | `/var/log/k1000/` | `camilladsp_rCURRENT.log` + up to 50 rotated ones (every engine start rotates, and every 256 kB), the soak logs (`soak*.log`, one per run) |
 | `/opt/camillagui/` | the GUI binary; `config/` comes from `box/camillagui/`; `files/` is the GUI's empty, read-only config folder |
-| `/etc/systemd/system/{camilladsp,k1000,camillagui,k1000-console}.service` | from `box/systemd/` |
+| `/etc/systemd/system/{camilladsp,k1000,camillagui,k1000-console,k1000-usbwatch}.service` | from `box/systemd/` |
 | `/etc/systemd/system/k1000-laptop.{path,service}` | from `box/systemd/`, installed, never enabled: SETUP › PHONE › Laptop access (k1000.service `Wants=` the watcher; the root unit runs `/opt/k1000/net/k1000-laptop-access.sh`) |
 | `/run/k1000/laptop-open`, `/run/k1000-laptop/status` | SETUP › PHONE › Laptop access: k1000's request (its runtime directory, gone when k1000 stops) and root's answer (open until, or closed and why) |
 | `/var/lib/k1000/tune-undo.json` | the `/tune` page's undo: the system EQ the last Apply replaced |

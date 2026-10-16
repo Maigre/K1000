@@ -48,7 +48,7 @@ BOOT_DIR=${K1000_BOOT_DIR:-/boot/firmware}
 APP=/opt/k1000
 PREV=/opt/k1000.prev
 GUI=/opt/camillagui
-UNITS=(camilladsp k1000 camillagui k1000-console)
+UNITS=(camilladsp k1000 camillagui k1000-console k1000-usbwatch)
 # Laptop access (docs/06-phone.md §11): the watcher, which k1000.service Wants=, and the root unit
 # it starts on the box's request. Installed here, never enabled (nothing starts them at boot).
 LAPTOP_UNITS=(k1000-laptop.path k1000-laptop.service)
