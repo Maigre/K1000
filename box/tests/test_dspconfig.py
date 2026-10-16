@@ -362,6 +362,45 @@ def test_m4_output_and_input_mixers():
     assert "format" not in cfg["devices"]["capture"]          # unprobed: let CamillaDSP choose
 
 
+def _used_capture_channels(cfg):
+    """CamillaDSP 5.0.0-beta.1 used_capture_channels + mixer::used_input_channels: the first
+    mixer's non-muted sources in non-muted mappings."""
+    im = cfg["mixers"][next(st["name"] for st in cfg["pipeline"] if st["type"] == "Mixer")]
+    used = [False] * im["channels"]["in"]
+    for m in im["mapping"]:
+        if not m.get("mute"):
+            for s in m["sources"]:
+                if not s.get("mute"):
+                    used[s["channel"]] = True
+    return used
+
+
+@pytest.mark.parametrize("settings", [
+    {},
+    {"profiles": {"m4": {"input_map": [0, 1]}}},
+    {"profiles": {"m4": {"capture_channels": 6}}},
+])
+def test_every_capture_channel_is_used_and_adds_nothing(settings):
+    """The engine must fill every capture channel: its spectrum ring buffer panics on an unused
+    (empty) one (2026-10-16, M4: LINE IN 3/4 used, mic inputs 1-2 not, restart every 2 s). The
+    extra sources add exactly nothing (linear gain 0) and leave R alone."""
+    prof = pf.load_profile("m4", settings, probe=False)
+    l, r = prof.input_map
+    cfg = d.generate(prof, State(profile="m4"))
+    assert _used_capture_channels(cfg) == [True] * prof.capture_channels
+    im = cfg["mixers"]["input"]
+    left, right = im["mapping"][0]["sources"], im["mapping"][1]["sources"]
+    assert (left[0]["channel"], left[0]["gain"], left[0]["scale"]) == (l, 0.0, "dB")
+    assert len(left) == prof.capture_channels - 1
+    assert all(s["gain"] == 0.0 and s["scale"] == "linear" for s in left[1:])
+    assert right == [{"channel": r, "gain": 0.0, "inverted": False, "scale": "dB"}]
+
+
+def test_dev_input_mixer_unchanged():
+    im = d.generate(dev(), State())["mixers"]["input"]
+    assert [[s["channel"] for s in m["sources"]] for m in im["mapping"]] == [[0], [1]]
+
+
 def test_generate_clamps_unvalidated_state():
     s = State()
     s.master_db, s.input_trim_db, s.sub_delay_ms = 30.0, 99.0, -4.0

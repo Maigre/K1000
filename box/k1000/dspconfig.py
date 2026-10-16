@@ -290,12 +290,18 @@ def _alsa(device: str, channels: int, fmt: str | None) -> dict[str, Any]:
 
 
 def _input_mixer(profile: Profile) -> dict[str, Any]:
+    """Program L/R from `input_map`. Every other capture channel joins L at linear gain 0
+    (adds exactly nothing): CamillaDSP leaves a channel no mixer source uses empty, and
+    5.0.0-beta.1's spectrum ring buffer then indexes that empty channel and panics the capture
+    thread (the M4's mic inputs 1-2, 2026-10-16: the engine restarted every 2 s)."""
     l, r = profile.input_map
+    pad = [{"channel": c, "gain": 0.0, "inverted": False, "scale": "linear"}
+           for c in range(profile.capture_channels) if c not in (l, r)]
     return {
         "description": f"program L/R from capture channels {l}, {r}",
         "labels": ["L", "R"],
         "channels": {"in": profile.capture_channels, "out": 2},
-        "mapping": [{"dest": 0, "sources": [_src(l)]}, {"dest": 1, "sources": [_src(r)]}],
+        "mapping": [{"dest": 0, "sources": [_src(l)] + pad}, {"dest": 1, "sources": [_src(r)]}],
     }
 
 
