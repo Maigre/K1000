@@ -300,9 +300,9 @@ minute:
 1. **Source down.** Hold B4 if K1000 still answers.
 2. Unplug OUT1 TOP L, OUT2 TOP R and OUT3 SUBS (OUT4 too if it is patched) at the speakers.
 3. Patch the bypass kit, as cabled before K1000 (write your own patch on the operator card).
-4. **Source up slowly.** The bypass is louder than K1000 at a low master: about (2 − master) dB, so
-   +12 dB at master −10, with input trim and output trims at 0 (research, from the level figures
-   in [chapter 5](05-tuning.md#3-gain-structure)).
+4. **Source up slowly.** The bypass is louder than K1000 at a low master: about
+   (10 − master − input trim) dB, so +20 dB at master −10 with input trim and output trims at 0
+   (measured on the M4, 2026-10-16: [chapter 5](05-tuning.md#3-gain-structure)).
 
 Lost in bypass: the Lo-Cut, the delays, the EQ, the mute.
 

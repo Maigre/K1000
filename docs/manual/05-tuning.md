@@ -48,15 +48,18 @@ and the Meyer limiters stay idle at that level.
 
 | Stage | Set | Check |
 |---|---|---|
-| Source → M4 LINE IN 3/4 | A pro +4 dBu source (DJ mixer XLR master, console): input trim 0 dB. A consumer −10 dBV source: about +10 to +12 dB (SETUP › INPUT › Trim) | A loud track peaks around −12 to −6 dBFS on the capture side, never `IN CLIP`, the M4 input meters never red |
+| Source → M4 LINE IN 3/4 | A pro +4 dBu source (DJ mixer XLR master, console): input trim 0 dB to start; about +10 dB gives the old direct-cable level. A consumer −10 dBV source: +12 dB (SETUP › INPUT › Trim) | A loud track peaks around −12 to −6 dBFS on the capture side, never `IN CLIP`, the M4 input meters never red |
 | Too hot | `IN CLIP` lights, or the M4 input meters go red | The trim cannot help (it acts after the converter): inline −10 dB XLR pads, or the source turns down |
 | K1000 → speakers | Master (E1) | The M4 output meters, the box meter (green below −18 dBFS, yellow to −6, red above) |
 | The speakers | — | The Meyer limit LEDs stay dark at show level |
 
-Level figures **(research)**: LINE IN 3/4 clip at about +18 dBu; the M4 outputs reach about
-+16 dBu; Meyer UPA-1P/USW-1P limiting starts at about 0 dBV (+2.2 dBu), so roughly −14 dBFS at the
-M4 outputs. That makes K1000 at master 0 dB, flat trims, about 2 dB below the old direct cable, and
-the M4 cannot overdrive a Meyer input. Check it with your rig.
+Level figures **(measured 2026-10-16, loop test)**: the M4's outputs sit 9.9 dB below its line
+inputs (an output at 0 dBFS reads −9.9 dBFS on LINE IN 3/4, all four outputs alike). So K1000 at
+master 0 dB with flat trims plays about **10 dB under the old direct cable**; master stops at 0 dB,
+and the input trim (up to +12 dB) makes up the rest. Estimated in dBu (from the HiFiBerry's full
+scale, not a meter): LINE IN 3/4 clip at about +20.7 dBu, the outputs reach about +10.8 dBu, and
+Meyer UPA-1P/USW-1P limiting (about 0 dBV, +2.2 dBu) sits near −8.6 dBFS at the M4 outputs: the
+limiters act well before the M4 clips, and the M4 cannot overdrive a Meyer input.
 
 **Finding the show level:**
 

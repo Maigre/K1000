@@ -1011,6 +1011,21 @@ def test_bringup_flags_settings_the_m4_cannot_honour(tmp_path):
         assert needle in out, (needle, out)
 
 
+@pytest.mark.parametrize("flag,expect", [
+    ("", "WARN  controls: still the defaults"),
+    ("  buttons_confirmed: true\n", "PASS  controls: the defaults, confirmed by the Knob test"),
+    ('  buttons_confirmed: "true"\n', "WARN  controls: still the defaults"),   # a string: k1000 refuses it too
+])
+def test_bringup_reads_the_knob_test_confirmation(tmp_path, flag, expect):
+    """M4 day: the Knob test proved the default map; `buttons_confirmed: true` (what k1000 reads,
+    ControlMap.from_cfg) must end the WARN here too."""
+    base = (BOX / "etc" / "k1000.yaml").read_text()
+    assert "\ncontrols:\n" in base
+    settings = base.replace("\ncontrols:\n", "\ncontrols:\n" + flag, 1)
+    r = M4Box(tmp_path, settings=settings).run()
+    assert expect in r.stdout, r.stdout
+
+
 def test_tone_refuses_without_the_speakers_flag(tmp_path):
     box = M4Box(tmp_path)
     r = box.run("--tone", answers="STOP\n\n\n\n\n")

@@ -45,4 +45,4 @@ UI v1 (D-009, D-013, D-015), ops `box/README.md`. **New:** SHOW E3 Q · E4 GAIN 
 
 **Power on:** Meyers OFF, source quiet → M4 on the Pi's USB, rear switch on → K1000 on; ~15 s: ● RUNNING, M4 · MOTU M4, **MUTED · READY** → Meyers ON → hold B4 → E1 up. No MUTED band (`RAMPS IN BY ITSELF`): live at its saved level → Meyers ON with the source down, **no B4** (it mutes). **Off:** hold B4 (saved at once) → Meyers OFF → unplug K1000, M4. **M4 taped:** MONITOR, INPUT MONITOR MIX full right · MONs unlit · 48V off · GAIN 1/2 min.
 
-**Bypass (~1 min):** (1) source **down**, hold B4 if K1000 answers (2) unplug OUT1 TOP L · OUT2 TOP R · OUT3 SUBS at the Meyers (3) bypass kit: Source L → ______ · Source R → ______ (4) source up slowly: ≈ (2 − master) dB louder, +12 dB at master −10 (check Friday). Lost: Lo-Cut, delay, EQ, mute.
+**Bypass (~1 min):** (1) source **down**, hold B4 if K1000 answers (2) unplug OUT1 TOP L · OUT2 TOP R · OUT3 SUBS at the Meyers (3) bypass kit: Source L → ______ · Source R → ______ (4) source up slowly: ≈ (10 − master − input trim) dB louder, +20 dB at master −10, trim 0 (measured 16/10). Lost: Lo-Cut, delay, EQ, mute.

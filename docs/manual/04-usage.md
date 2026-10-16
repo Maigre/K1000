@@ -575,8 +575,8 @@ the normal way to switch K1000 off ([chapter 7](07-maintenance.md#power-cuts)).
 1. **Source down.** Hold B4 if K1000 still answers.
 2. Unplug OUT1 TOP L, OUT2 TOP R and OUT3 SUBS (OUT4 too if it is patched) at the speakers.
 3. Patch the bypass kit as written on the operator card.
-4. **Source up slowly.** The bypass is about (2 − master) dB louder: +12 dB at master −10, with
-   the trims at 0.
+4. **Source up slowly.** The bypass is about (10 − master − input trim) dB louder: +20 dB at
+   master −10 with the trims at 0 (measured on the M4, 2026-10-16).
 
 Lost in bypass: the Lo-Cut, the delays, the EQ, the mute. Details:
 [chapter 6 §4](06-troubleshooting.md#4-the-bypass).

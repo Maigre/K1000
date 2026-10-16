@@ -1,4 +1,7 @@
-# 05 — M4 day: Tuesday 2026-10-13
+# 05 — M4 day: Tuesday 2026-10-13 (done Friday 2026-10-16)
+
+The M4 arrived on the 16th; what was measured that day is in §13 (results), and §7's levels are
+corrected by it.
 
 The MOTU M4 becomes the gig interface (profile `m4`). By the end of the day every output is
 identified and labelled, the front panel is proven and taped, levels are checked, and the facts
@@ -163,15 +166,19 @@ End of the step: SETUP › SUBS › Mono L+R back ON (choose `ON`, push): the Su
 
 ## 7. Levels
 
-Research figures (UNVERIFIED until measured): LINE IN 3/4 clip at +18 dBu with no gain knob; the TRS
-outs reach +16 dBu; Meyer UPA-1P/USW-1P limiting starts at 0 dBV (+2.2 dBu), i.e. about −14 dBFS at
-the M4 outputs. So K1000 at master 0 dB with flat trims is the old direct-cable level −2 dB, and the
-M4 cannot overdrive a Meyer input.
+**Measured 2026-10-16 (§13): the M4's outputs sit 9.9 dB below its line inputs** (an output at
+0 dBFS reads −9.9 dBFS on LINE IN 3/4, the same on all four outputs, MONITOR fully clockwise). So
+K1000 at master 0 dB with flat trims plays **about 10 dB under the old direct cable**, not −2 dB as
+the research figures (LINE IN clip +18 dBu, TRS outs +16 dBu) predicted. Master stops at 0 dB: the
+missing level comes from SETUP › INPUT › Trim. Estimate (from the HiFiBerry's 2.1 Vrms full scale,
+not a meter): LINE IN 3/4 full scale about +20.7 dBu, outputs about +10.8 dBu, so the Meyer limiting
+point (0 dBV, +2.2 dBu) is about −8.6 dBFS at the M4 outputs: the limiters act well before the M4
+clips, and the M4 still cannot overdrive a Meyer input.
 
 | Source on Sunday | SETUP › INPUT › Trim | Check |
 |---|---|---|
-| Pro, +4 dBu (DJ mixer master XLR, console) | 0 dB | loud track at the source's normal level: capture index 2/3 peaks around −12…−6 dBFS, never IN CLIP, M4 LCD In 3/4 never red |
-| Consumer, −10 dBV (RCA) | about +10…+12 dB | same |
+| Pro, +4 dBu (DJ mixer master XLR, console) | start at 0 dB; about +10 dB gives the old direct-cable level | loud track at the source's normal level: capture index 2/3 peaks around −12…−6 dBFS, never IN CLIP, M4 LCD In 3/4 never red |
+| Consumer, −10 dBV (RCA) | +12 dB (the most; master then does the rest) | same |
 | Too hot (IN CLIP, LCD red) | trim cannot help: it acts after the converter | two −10 dB XLR inline pads, or the DJ keeps the master out of the red |
 
 Friday, with the Meyers on: noise at −20 dBFS, find the show master with the Meyer limit LEDs dark,
@@ -238,6 +245,30 @@ wrong screen corners = `KNOB_CORNERS` in `box/k1000/ui/input_map.py` (a code cha
 | Knob test map (physical position → `sw`/`enc`), or "not done" | step 10 |
 | The decisions below | Thomas |
 
+## 13. Results — Friday 2026-10-16
+
+| Fact | Result |
+|---|---|
+| Unit | MOTU M4, new (Thomann), USB `07fd:000b` (second revision), `bcdDevice` 2.07, serial M4MA0C5D43; enumerates ~1.9 s into a boot |
+| `stream0` | playback and capture: S32_LE, 4 channels, 24 bits, 44.1–192 kHz, async, implicit feedback (one clock both ways) |
+| Mixer | no volume control at all (only channel maps and "Internal Validity"): nothing can sit between K1000 and the outputs |
+| Check tool | 0 FAIL; the controls WARN ended with the Knob test |
+| Engine on the M4 | profile `m4`, 4/4 channels pinned in `/etc/k1000/k1000.yaml`, 48 kHz, chunk 256, `target_level` 512 (buffer level 536), processing load ~1.3 %, `throttled=0x0` |
+| First start | **crash loop**: CamillaDSP 5.0.0-beta.1 leaves capture channels no mixer uses empty, its spectrum ring buffer then panics (`spectrum.rs:71`). Fixed in K1000@87fe783: the input mixer adds the unused mic inputs 1-2 at linear gain 0 |
+| Power | two USB drop bursts (11:46, 11:57) with nobody touching the box, the second followed by a hard reset: the PSU. **Replaced by an official 3 A supply**: clean since (0 USB drops, 0 underruns, `throttled=0x0`) |
+| USB stuck port | after a drop burst the kernel stopped retrying the port (NO DEVICE until a hub reset by hand). K1000@5518f26: `k1000-usbwatch.service` resets the hub after 10 s missing |
+| Loop test (box's HiFiBerry → LINE IN 3/4, each output looped into the other line input, Mono L+R off, master −8.5) | OUT1 Top L, OUT2 Top R, OUT3 Sub L, OUT4 Sub R (proved with BALANCE +6: subs +3 dB, tops −3 dB). Analog offset output → line in −9.88, −9.88, −9.87, −9.87 dB: **MONITOR fully clockwise is exact unity** |
+| Response (stepped sines, OUT3) | M4 path flat ±0.1 dB 20 Hz–10 kHz, flat at 20 kHz; K1000 adds only the tops' Lo-Cut (20 Hz: −3 dB there) and the subs' 20 kHz "off" low-pass (−0.3 dB at 16 kHz, −3 dB at 20 kHz) |
+| Latency | **20.28 ms** analog LINE IN → OUT on every output (comb measurement, ±0.005 ms): engine 16.5 ms (chunk 256 + buffer 536) + M4 converters and USB ~3.8 ms. Polarity correct on all four |
+| After an underrun | the playback buffer settles at ~1000 frames (seen after the 11:57 drop): +10 ms latency until the next engine start |
+| MUTE | all four outputs at digital silence, returns at the floor (−116 dBFS): nothing passes the M4's direct monitoring |
+| Knob test | default map right: each button is itself, each knob +1 per click the right way round → `buttons_confirmed: true`; B4 hold mutes/unmutes |
+| Boot (power-on → sound) | firmware 10.4 s before Linux (bootloader 4.5 s, HDMI/camera probing, 11.9 MB initramfs), kernel 3.2 s, engine at +3.8 s, ramp from +5.8 s, screen at +7.5 s: ~22 s to sound, ~25 s to full level |
+| Not done yet | USB pull and M4 power-switch drills (§8), the 1 h soak with program (§9) |
+
+Tools used (session scratchpad, to land in `box/tools/` after the gig): the loop measurement
+(levels, routing, response, latency from the comb of source + return in the engine's spectrum).
+
 ## Decisions for Thomas
 
 Answered 2026-10-13 (D-010, D-012): out1/2 tops, out3 both subs (Loop or XLR Y; out4 spare), `target_level` 512, the
@@ -252,9 +283,11 @@ source and cables are Thomas's, Mono L+R ON (SETUP › SUBS). Firmware and power
 | Firmware update | Not before Sunday unless Linux problems show up (it needs a Mac or Windows machine) |
 | Power: which PSU feeds the Zynthian shell? | If `throttled` is not 0x0 with the M4 and the screen on: powered USB hub or a stronger PSU before Friday |
 
-## Still UNVERIFIED after research (settle today)
+## Still UNVERIFIED after research
 
-MON MIX fully clockwise mutes the monitored inputs completely · MONITOR fully clockwise is exactly
-unity · direct monitoring works while the host is not streaming · MON button states survive a power
-cycle · the M4 exposes an ALSA mixer volume or not · pops on the DC-coupled outs at USB power loss ·
-the exact `stream0` text (formats, channels) · the underrun margin at `target_level` 256 over USB.
+Settled 2026-10-16 (§13): MONITOR fully clockwise is exact unity · the M4 has no ALSA mixer volume ·
+the `stream0` text · nothing leaks through direct monitoring with the MON buttons unlit.
+
+Still open: MON MIX fully clockwise mutes the monitored inputs completely (with a MON button lit) ·
+direct monitoring works while the host is not streaming · MON button states survive a power cycle ·
+pops on the DC-coupled outs at USB power loss · the underrun margin at `target_level` 256 over USB.

@@ -376,7 +376,9 @@ if isinstance(omap, list):
 else:
     say("FAIL", f"output_map {omap!r} is not a list")
 ctl = cfg.get("controls") if isinstance(cfg.get("controls"), dict) else {}
-if all(ctl.get(k, v) == v for k, v in DEFAULT_CONTROLS.items()):
+if ctl.get("buttons_confirmed") is True and all(ctl.get(k, v) == v for k, v in DEFAULT_CONTROLS.items()):
+    say("PASS", "controls: the defaults, confirmed by the Knob test (buttons_confirmed: true)")
+elif all(ctl.get(k, v) == v for k, v in DEFAULT_CONTROLS.items()):
     say("WARN", "controls: still the defaults (encoders [0,1,2,3], buttons [4,5,6,7]): UNCONFIRMED "
                 "unless SETUP > Knob test proved them. Hold-B4 = MUTE depends on it (README: Knobs and buttons)")
 else:

@@ -23,7 +23,7 @@ the phone v2 (APK, one merged page, SETUP and RTA on the phone); the knobs are t
 | Phase | Goal | State | Gate |
 |---|---|---|---|
 | 0 — Frame | Questions answered, lead picked | **done** 12/10 | — |
-| 1 — v0 for the gig | A trustworthy, bypassable head for Sunday | **in progress**: code done and deployed, Lite done, power-cut drill done; M4, button map, gig soak still to do | Fri 16 rig test |
+| 1 — v0 for the gig | A trustworthy, bypassable head for Sunday | **in progress**: code done and deployed, Lite done, power-cut drill done; M4 live 16/10 (loop-tested: routing, levels, 20.3 ms), buttons confirmed, 3 A PSU; USB drills and gig soak still to do | Fri 16 rig test |
 | 2 — Live UI v1 | Every live control on one page, EQ curve over a spectrum; phone PWA | **pulled forward in part** (Thomas, 12/10): UI v1 accepted on the box 13/10; phone wired, AP up, real phone still to prove | Wed 14 freeze, Fri go/no-go |
 | 3 — Field trial | The gig is the first outing; debrief | Sun 18 | debrief Mon 19 |
 | 4 — Assist & measurement | Spectrum tools, suggest-notch, phone mic as a measurement input | steps 1-2 pulled in for the tests (Thomas, 14/10): on the box `6a537bb`; the rest after the gig | Fri 16 rig test |
@@ -88,7 +88,7 @@ gantt
 | Knobs | corners confirmed; a click counts exactly one step (10 clicks = +10); fast-turn fix in UI v1 | the buttons: Knob test → `controls:` (the box still holds the defaults), which also confirms where B1–B4 sit for D-013's labels |
 | Licence (D-008) | GPL-3.0-or-later, `LICENSE` in the repo; smbus2 and SPDX headers done | — |
 | User documentation (Thomas, 12/10) | written: `docs/manual` 00–09, quick start, operator card; claim-checked against the code | Thomas fills in the card's Where line and the bypass patch, then prints |
-| Interface (D-003) | MOTU M4 chosen, picked up Tue 13 | M4 day; pin 4/4 channels; choose `target_level` |
+| Interface (D-003) | MOTU M4 live on the box since 2026-10-16: 4/4 pinned, `target_level` 512, loop-tested (`docs/05-m4-day.md` §13) | USB drills, overnight soak at 512 |
 
 ## Phase 0 — Frame · *done 2026-10-12*
 

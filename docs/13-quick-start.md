@@ -59,7 +59,7 @@ During the show leave ALIGN and SETUP alone; they go back to SHOW by themselves 
 1. Source **down**. Hold B4 if K1000 still answers.
 2. At the speakers, unplug the cables coming from the M4.
 3. Plug in the bypass cables, as before K1000: source L → ____________ · source R → ____________
-4. Source up **slowly**: the bypass is louder (about 12 dB at master −10).
+4. Source up **slowly**: the bypass is louder (about 20 dB at master −10 with input trim 0).
 
 Lost in bypass: the Lo-Cut, the delays, the EQ, the mute. More: the operator card, and the manual
 (`docs/manual` 4, 6).
