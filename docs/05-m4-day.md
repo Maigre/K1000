@@ -32,7 +32,7 @@ Set the front panel **before plugging**, then tape it at the end of the day:
 | INPUT MONITOR MIX | fully clockwise | USB playback only. It is a balance knob, not a switch: counter-clockwise = inputs only, i.e. the tops silent or fed the raw program. UNVERIFIED that fully clockwise blocks the inputs: leak test, step 6 |
 | MON 1, MON 2, 3-4 | all unlit (no blue box around the input numbers on the LCD) | Lit = that input goes straight to outs 1-2, past K1000 and past its MUTE |
 | 48V | off | |
-| GAIN 1 / GAIN 2 | fully counter-clockwise | Inputs 1-2 are not in the program |
+| GAIN 1 / GAIN 2 | fully counter-clockwise | Inputs 1-2 are not in the program (while SETUP › INPUT › AUX IN 1/2 is off, the default; D-016) |
 | Phones | down | Phones mirror outs 1-2 |
 | Rear power switch | on | |
 | Program | rear LINE IN 3 (L) and 4 (R), balanced TRS | Never into the XLR combos 1-2 (mic preamps; the manual warns against +4 line there) |
@@ -153,7 +153,7 @@ for n in ("GetCaptureSignalPeakSince","GetPlaybackSignalPeakSince"):
 | Tops vs subs | ALIGN (B1 tap), E3 BALANCE up to +12 (fully to subs; E2 until D-015) | out3/4 +6 dB, out1/2 −6 dB (against balance 0) |
 | Lo-Cut | 60 Hz tone; ALIGN, hold B2 (`EDIT 0:30`), E4 LO-CUT up to 300 Hz (2 Hz a click, 8 Hz on fast spins: spin it). E4 reads `OFF`: SETUP › TOPS › Lo-Cut ON first (choose, push) | out1/2 far below out3/4 |
 | Mute | hold B4 (Knob test not done: Main mute in CamillaGUI instead) | all four outputs at the floor. Then restore balance (0), the Lo-Cut frequency, unmute |
-| Loop (MONITOR = unity) | TRS cable from out N into front INPUT 1 (GAIN 1 fully counter-clockwise, 48V off, MON 1 unlit) | Capture index 0 within about ±0.5 dB of playback index N−1, for N = 1…4; out1 equal to out3 (Mono L+R off) |
+| Loop (MONITOR = unity) | SETUP › INPUT › AUX IN 1/2 off first (with AUX on, input 1 is in the program and the loop feeds back). TRS cable from out N into front INPUT 1 (GAIN 1 fully counter-clockwise, 48V off, MON 1 unlit) | Capture index 0 within about ±0.5 dB of playback index N−1, for N = 1…4; out1 equal to out3 (Mono L+R off) |
 | MONITOR knob | loop on out1, turn MONITOR down | only outs 1-2 fall. Back fully clockwise |
 | Leak (MON MIX blocks inputs) | K1000 muted, tone in LINE IN 3, loop on out1, press 3-4 | capture index 0 stays at the floor. Turning MON MIX counter-clockwise makes it rise: the raw program past K1000 and its mute. Back fully clockwise, 3-4 off, unmute |
 | Optional: emergency feed | `sudo systemctl stop camilladsp`, press 3-4, MON MIX fully counter-clockwise | Is the raw program on outs 1-2 with the engine stopped? If yes, that is a two-gesture emergency feed to the tops. Restore the panel, `sudo systemctl start camilladsp` |

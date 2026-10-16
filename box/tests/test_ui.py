@@ -1279,13 +1279,19 @@ def test_field_names_exist_in_state():
 
 
 # D-013: SETUP grouped by speaker floor, then the rest by what it serves (Thomas, 2026-10-13).
+# D-016 (2026-10-16): De-harsh in TOPS, Loudness in SUBS, AUX IN in INPUT, each switch first.
 D013_SETUP = (
     ("TOPS", (("Trim L", "out_trim_db.2", "num"), ("Trim R", "out_trim_db.3", "num"),
-              ("Polarity", "top_inverted", "bool"), ("Lo-Cut", "lowcut_on", "bool"))),
+              ("Polarity", "top_inverted", "bool"), ("Lo-Cut", "lowcut_on", "bool"),
+              ("De-harsh", "deharsh_on", "bool"), ("De-harsh freq", "deharsh_hz", "num"),
+              ("De-harsh thresh", "deharsh_thresh_db", "num"))),
     ("SUBS", (("Trim L", "out_trim_db.0", "num"), ("Trim R", "out_trim_db.1", "num"),
               ("Polarity", "sub_inverted", "bool"), ("Mono L+R", "mono_subs", "bool"),
-              ("Low-pass", "sub_lowpass_on", "bool"), ("Low-pass freq", "sub_lowpass_hz", "num"))),
-    ("INPUT", (("Trim", "input_trim_db", "num"),)),
+              ("Low-pass", "sub_lowpass_on", "bool"), ("Low-pass freq", "sub_lowpass_hz", "num"),
+              ("Loudness", "loud_on", "bool"), ("Loudness boost", "loud_boost_db", "num"),
+              ("Loudness ref", "loud_ref_db", "num"))),
+    ("INPUT", (("Trim", "input_trim_db", "num"), ("AUX IN 1/2", "aux_mode", "choice"),
+               ("AUX level", "aux_gain_db", "num"))),
     ("LIVE EQ", (("Reset live EQ", "reset_live", "action"), ("Undo reset", "undo_reset", "action"),
                  ("Spectrum", "spectrum_on", "bool"))),
     ("PHONE", (("Phone", "PHONE", "page"), ("Laptop access", "laptop_access", "action"))),
@@ -1295,16 +1301,16 @@ D013_SETUP = (
 
 
 def test_setup_groups_are_d013s():
-    """The 19 items under TOPS / SUBS / INPUT / LIVE EQ / PHONE / BOX, in that order; every
+    """The 27 items under TOPS / SUBS / INPUT / LIVE EQ / PHONE / BOX, in that order; every
     item knows its group. No Top delay since D-011: ALIGN's signed E3 is the one place to set
-    the alignment (and the Lo-Cut frequency stays on ALIGN E4)."""
+    the alignment (and the Lo-Cut frequency stays on ALIGN E4). D-016 added 8 rows."""
     assert tuple((g, tuple((it.label, it.field, it.kind) for it in items))
                  for g, items in im.SETUP_GROUPS) == D013_SETUP
     assert im.SETUP_GROUP_NAMES == ("TOPS", "SUBS", "INPUT", "LIVE EQ", "PHONE", "BOX")
-    assert len(im.SETUP_ITEMS) == 19
+    assert len(im.SETUP_ITEMS) == 27
     assert [(it.group, it.label, it.field, it.kind) for it in im.SETUP_ITEMS] == \
         [(g, *row) for g, rows in D013_SETUP for row in rows]
-    assert len({it.field for it in im.SETUP_ITEMS}) == 19                  # one row per field
+    assert len({it.field for it in im.SETUP_ITEMS}) == 27                  # one row per field
     assert not any(i.field.endswith("_delay_ms") or i.field == im.F_LOWCUT_FREQ
                    for i in im.SETUP_ITEMS)
     assert "Top delay" not in [i.label for i in im.SETUP_ITEMS]
@@ -1319,7 +1325,7 @@ def test_setup_item_kinds_say_how_each_row_is_set():
     assert {f for f, i in by.items() if i.needs_confirm} == {"reset_live", "laptop_access"}
     assert {f for f, i in by.items() if i.picks} == \
         {"top_inverted", "lowcut_on", "sub_inverted", "mono_subs", "sub_lowpass_on", "spectrum_on",
-         "profile", "dev_audition"}
+         "profile", "dev_audition", "deharsh_on", "loud_on", "aux_mode"}
     assert {f for f, i in by.items() if i.rebuild} == set(st.REBUILD_FIELDS)
     for f in st.REBUILD_FIELDS:                                       # never one gesture
         assert by[f].picks and not by[f].needs_confirm, f
@@ -1333,6 +1339,9 @@ def test_setup_item_kinds_say_how_each_row_is_set():
             assert i.choices == () and not i.picks, f
     assert by["dev_audition"].choices == ("sum", "tops", "subs")
     assert by["profile"].choices == ("dev", "m4")
+    assert by["aux_mode"].choices == ("off", "mic", "line")                # D-016
+    assert [im.choice_name(by["aux_mode"], c) for c in by["aux_mode"].choices] == ["off", "MIC", "LINE"]
+    assert {"deharsh_on", "loud_on", "aux_mode"} <= {f for f, i in by.items() if i.rebuild}
     # the old kinds and hints are gone: no blind double push on anything but the two actions
     assert {i.kind for i in im.SETUP_ITEMS} == {"num", "bool", "choice", "page", "action"}
     for gone in ("HINT_PUSH_TOGGLE", "HINT_CONFIRM_LOWCUT"):
@@ -1342,19 +1351,20 @@ def test_setup_item_kinds_say_how_each_row_is_set():
 def test_setup_group_helpers():
     first = {g: next(i for i, it in enumerate(im.SETUP_ITEMS) if it.group == g)
              for g in im.SETUP_GROUP_NAMES}
-    assert list(first.values()) == [0, 4, 10, 11, 14, 16]
+    assert list(first.values()) == [0, 7, 16, 19, 22, 24]
     mono = _item("mono_subs")
     assert im.setup_group_start(mono) == first["SUBS"]
-    assert im.setup_group_pos(mono) == ("SUBS", 4, 6)
-    assert im.setup_group_pos(0) == ("TOPS", 1, 4)
-    assert im.setup_group_pos(_item("input_trim_db")) == ("INPUT", 1, 1)
-    assert im.setup_group_pos(18) == ("BOX", 3, 3)
-    assert im.setup_group_pos(99) == ("BOX", 3, 3) and im.setup_group_pos(-4) == ("TOPS", 1, 4)
+    assert im.setup_group_pos(mono) == ("SUBS", 4, 9)
+    assert im.setup_group_pos(0) == ("TOPS", 1, 7)
+    assert im.setup_group_pos(_item("input_trim_db")) == ("INPUT", 1, 3)
+    assert im.setup_group_pos(_item("aux_gain_db")) == ("INPUT", 3, 3)
+    assert im.setup_group_pos(26) == ("BOX", 3, 3)
+    assert im.setup_group_pos(99) == ("BOX", 3, 3) and im.setup_group_pos(-4) == ("TOPS", 1, 7)
     assert im.setup_group_step(mono, 1) == first["INPUT"]
     assert im.setup_group_step(mono, -1) == first["SUBS"]             # its own first item first
     assert im.setup_group_step(first["SUBS"], -1) == first["TOPS"]
     assert im.setup_group_step(mono, -2) == first["TOPS"]
-    assert im.setup_group_step(0, 99) == first["BOX"] and im.setup_group_step(18, -99) == 0
+    assert im.setup_group_step(0, 99) == first["BOX"] and im.setup_group_step(26, -99) == 0
     assert im.setup_group_step(0, -1) == 0 and im.setup_group_step(first["BOX"], 1) == first["BOX"]
 
 
@@ -2495,23 +2505,32 @@ def test_setup_readonly_rows_are_drawn_fixed():
                          ids=[f"{it.group}-{it.label}" for it in im.SETUP_ITEMS])
 def test_setup_keeps_the_group_header_of_the_selected_item_on_screen(item):
     """D-013: a header row per group (the selected item's white, the others grey), the items
-    under it indented; the top line names the group and the position in it (no '10/19')."""
+    under it indented; the top line names the group and the position in it (no '10/27'). The
+    header stays on screen while it fits with a row under the selection (positions 1-6 of a
+    group); deeper in a long group (D-016: TOPS 7, SUBS 8 and 9) the list scrolls as usual and
+    the top line still names the group."""
     it = im.SETUP_ITEMS[item]
     img, drawn = _drawn("SETUP", st.State(), pages.ScreenStatus(**RUN), Focus(item=item))
     heads = _setup_heads(drawn)
-    assert [f for n, _y, f in heads if n == it.group] == [pages.FG]
+    grp, pos, size = im.setup_group_pos(item)
     assert all(f == pages.DIM for n, _y, f in heads if n != it.group)
     assert [n for n, _y, _f in heads] == [g for g in im.SETUP_GROUP_NAMES
                                           if g in {n for n, _y, _f in heads}]   # in order
-    (y_head,) = [y for n, y, _f in heads if n == it.group]
     y_sel = _setup_selected(img, drawn, it.label)[0]
-    grp, pos, size = im.setup_group_pos(item)
-    assert y_sel - y_head == pos * 28                     # the group's rows, header first
-    above = [t for t, x, y, _f in drawn if x == SETUP_LABEL_X and y_head < y < y_sel]
-    assert above == [i.label for i in im.SETUP_ITEMS if i.group == grp][:pos - 1]
     top = [t for t, x, y, _f in drawn if y == pages.STATUS_H + 2 and x == pages.W // 2]
     assert top == [f"{grp} {pos}/{size}"]
     assert not any(t.endswith(f"/{len(im.SETUP_ITEMS)}") for t, *_r in drawn)
+    mine = [i.label for i in im.SETUP_ITEMS if i.group == grp]
+    if pos > 6:
+        assert [n for n, _y, _f in heads if n == it.group] == []
+        above = [t for t, x, y, _f in drawn if x == SETUP_LABEL_X and _in_list(y) and y < y_sel]
+        assert above == mine[pos - 1 - len(above):pos - 1] and len(above) >= 3
+        return
+    assert [f for n, _y, f in heads if n == it.group] == [pages.FG]
+    (y_head,) = [y for n, y, _f in heads if n == it.group]
+    assert y_sel - y_head == pos * 28                     # the group's rows, header first
+    above = [t for t, x, y, _f in drawn if x == SETUP_LABEL_X and y_head < y < y_sel]
+    assert above == mine[:pos - 1]
 
 
 def test_setup_scroll_bar_follows_the_selection():
@@ -3011,3 +3030,165 @@ def test_demo_cases_include_the_d015_pictures():
     _n, _p, _s, status, _f = cases["show"]
     assert max(status.in_peak_db) > -60.0                     # the IN meters show something
 
+
+
+# --- D-016: de-harsh, sub loudness, AUX IN (2026-10-16, all off by default) ----------------
+D016_FIELDS = ("deharsh_on", "deharsh_hz", "deharsh_thresh_db", "loud_on", "loud_boost_db",
+               "loud_ref_db", "aux_mode", "aux_gain_db")
+
+
+def test_d016_setup_rows_say_their_values():
+    """Each D-016 row in its unit: Hz for the de-harsh centre, dB for the rest; the switches
+    off / ON, AUX IN off / MIC / LINE (its off reads like every other off). On a profile with
+    no spare input the AUX row says so instead of offering one (Controller.setup_readonly)."""
+    by = {it.field: it for it in im.SETUP_ITEMS}
+    v = pages._setup_value
+    s = st.State()
+    assert [v(s, by[f], None) for f in D016_FIELDS] == [
+        "off", "2.70k Hz", "-24.0 dB", "off", "+6.0 dB", "-10.0 dB", "off", "0.0 dB"]
+    on = st.State(deharsh_on=True, deharsh_hz=1500.0, deharsh_thresh_db=-48.0, loud_on=True,
+                  loud_boost_db=12.0, loud_ref_db=-40.0, aux_mode="line", aux_gain_db=-40.0)
+    assert [v(on, by[f], None) for f in D016_FIELDS] == [
+        "ON", "1.50k Hz", "-48.0 dB", "ON", "+12.0 dB", "-40.0 dB", "LINE", "-40.0 dB"]
+    assert v(st.State(aux_mode="mic"), by["aux_mode"], None) == "MIC"
+    ro = {"aux_mode": "AUX: NO SPARE INPUT ON THIS DEVICE", "aux_gain_db": "AUX: NO SPARE INPUT ON THIS DEVICE"}
+    assert v(st.State(aux_mode="mic"), by["aux_mode"], None, ro) == "NO SPARE INPUT"
+    assert v(s, by["aux_gain_db"], None, ro) == "0.0 dB"            # the level, drawn dimmed
+    assert pages._setup_unavailable(by["aux_gain_db"], None, ro)
+    assert pages._setup_unavailable(by["aux_mode"], None, ro)
+
+
+def _row_fits(item, value: str, selected: bool) -> bool:
+    """The SETUP row's value fits beside its label at the full 20 px (pages._page_setup's
+    geometry: label at x 24, value right-aligned at W - 18, 16 px between them)."""
+    face = pages.FONT_BOLD if selected else pages.FONT_REG
+    lw = 24 + int(pages._textlength(item.label, pages.font(20, face)))
+    return pages._textlength(value, pages.font(20, face)) <= (pages.W - 18) - lw - 16
+
+
+@pytest.mark.parametrize("field", D016_FIELDS)
+def test_d016_setup_rows_fit_the_480_px_row_whole(field):
+    """Every value a D-016 row can show, its extremes and a pending choice `now → chosen`
+    included, fits beside its label at the full 20 px, plain and selected (bold): nothing is
+    shrunk, nothing cut. And on screen: the label and the value are both drawn, never over the
+    scroll bar."""
+    item = next(it for it in im.SETUP_ITEMS if it.field == field)
+    if item.kind == "num":
+        rng = st.range_for(field)
+        values = [pages._fmt_setup(item, x) for x in (rng.min, rng.max, rng.default,
+                                                       (rng.min + rng.max) / 2)]
+    else:
+        names = [pages._fmt_setup(item, c) for c in item.choices]
+        values = names + [f"{a} → {b}" for a in names for b in names if a != b]
+        if field == "aux_mode":
+            values.append("NO SPARE INPUT")
+    for val in values:
+        for sel in (False, True):
+            assert _row_fits(item, val, sel), (field, val, sel)
+    for x in ((st.range_for(field).max,) if item.kind == "num" else item.choices):
+        s = st.State.from_dict({**st.State().to_dict(), field: x})
+        img, drawn = _drawn("SETUP", s, pages.ScreenStatus(**RUN), Focus(item=_item(field)))
+        y, _fill, _bar, val = _setup_selected(img, drawn, item.label)
+        assert val == pages._setup_value(s, item, pages.ScreenStatus(**RUN))
+
+
+def test_d016_rows_sit_with_what_they_act_on_switch_first():
+    """De-harsh in TOPS (the 2.7 kHz attacks are the tops'), Loudness in SUBS, AUX IN in INPUT;
+    each switch right before its numbers, the first of which the phone pairs with it (its label
+    starts with the switch's). The switches rebuild the pipeline (MAY CLICK), the numbers do
+    not, and none needs a double push."""
+    by = {it.field: it for it in im.SETUP_ITEMS}
+    assert [by[f].group for f in D016_FIELDS] == ["TOPS"] * 3 + ["SUBS"] * 3 + ["INPUT"] * 2
+    for sw, first in (("deharsh_on", "deharsh_hz"), ("loud_on", "loud_boost_db"),
+                      ("aux_mode", "aux_gain_db")):
+        assert _item(first) == _item(sw) + 1
+        assert by[sw].rebuild and by[sw].picks and not by[sw].needs_confirm
+        assert not by[first].rebuild and by[first].kind == "num"
+    assert by["deharsh_hz"].label.startswith(by["deharsh_on"].label)
+    assert by["loud_boost_db"].label.startswith(by["loud_on"].label)
+
+
+def test_d016_a_read_only_number_row_only_shows_its_reason():
+    """The AUX level on a profile with no spare input (Focus.readonly, set by the Controller):
+    E2 shows the reason and moves nothing; the bottom line says `fixed here`. A number that is
+    not read-only turns as before."""
+    why = "AUX: NO SPARE INPUT ON THIS DEVICE"
+    s = st.State()
+    f = Focus(item=_item("aux_gain_db"), readonly={"aux_gain_db": why, "aux_mode": why})
+    assert map_event("SETUP", f, Enc(1, 2), state=s) == [ShowHint(why)]
+    assert map_event("SETUP", f, Sw(1, "short"), state=s) == [ShowHint(why)]
+    f.item = _item("aux_mode")
+    assert map_event("SETUP", f, Enc(1, 1, ts=1.0), state=s) == [ShowHint(why)] and f.pick is None
+    f.item = _item("input_trim_db")
+    assert map_event("SETUP", f, Enc(1, 2), state=s) == [Nudge("input_trim_db", 2, False)]
+    _img, drawn = _drawn("SETUP", s, pages.ScreenStatus(**RUN),
+                         Focus(item=_item("aux_gain_db"), readonly={"aux_gain_db": why}))
+    assert _setup_help_text(drawn) == ["fixed here"]
+
+
+@pytest.mark.parametrize("field,chosen,row,prompt", [
+    ("deharsh_on", True, "off → ON", "PUSH TO SET ON · MAY CLICK"),
+    ("loud_on", True, "off → ON", "PUSH TO SET ON · MAY CLICK"),
+    ("aux_mode", "mic", "off → MIC", "PUSH TO SET MIC · MAY CLICK"),
+    ("aux_mode", "line", "off → LINE", "PUSH TO SET LINE · MAY CLICK"),
+])
+def test_d016_switches_are_chosen_then_set_and_say_may_click(field, chosen, row, prompt):
+    i = _item(field)
+    f = Focus(item=i, pick=field, pick_value=chosen, pick_until=10.0)
+    img, drawn = _drawn("SETUP", st.State(), pages.ScreenStatus(**RUN), f, now=5.0)
+    _y, fill, bar, val = _setup_selected(img, drawn, im.SETUP_ITEMS[i].label)
+    assert (bar, fill, val) == (pages.RED, pages.FG, row)
+    assert _setup_footer(drawn) == [prompt]
+    # the knobs: E2 chooses, a push sets (never one gesture)
+    g = Focus(item=i)
+    assert map_event("SETUP", g, Enc(1, 1, ts=1.0), state=st.State()) == []
+    assert g.pick_now(1.0) == (field, True if field != "aux_mode" else "mic")
+    assert map_event("SETUP", g, Sw(1, "short", ts=2.0), state=st.State()) == \
+        [SetChoice(field, True if field != "aux_mode" else "mic")]
+
+
+D016_PILLS = ["LAPTOP OPEN 1:59", "LO-CUT OFF", "OUT P2 LS", "POL INV SUB+TOP", "AUX LINE",
+              "MONO SUB", "LOUDNESS", "DE-HARSH"]
+
+
+@pytest.mark.parametrize("tags", ["dim", "off", "bright"])
+def test_d016_pills_fold_and_are_never_cut_at_any_tag_style(tags):
+    """With every pill up (the controller's order), at each knob-tag style: the row fits between
+    the bottom labels at >= 13 px; the neutral D-016 pills (LOUDNESS, DE-HARSH) fold into '+N'
+    before any orange one, AUX (an input summed into the PA) is orange and folds only after them."""
+    s = st.State()
+    c = pages._Ctx(Focus(slot=1), 0.0, tags)
+    pages._page_show(c, s, pages.ScreenStatus(**RUN))
+    room = (c.bottom_label_end["r"] - 12) - (c.bottom_label_end["l"] + 12)
+    shown, folded, size = pages.pill_layout(D016_PILLS, room)
+    assert size >= pages.PILL_MIN_PX
+    f = pages.font(size)
+    labels = shown + ([f"+{len(folded)}"] if folded else [])
+    assert sum(pages._textlength(p, f) + 12 for p in labels) + 6 * (len(labels) - 1) <= room
+    neutral = [p for p in D016_PILLS if not pages._risky_pill(p)]
+    assert pages._risky_pill("AUX LINE") and pages._risky_pill("AUX MIC")
+    assert not pages._risky_pill("LOUDNESS") and not pages._risky_pill("DE-HARSH")
+    risky_folded = [p for p in folded if pages._risky_pill(p)]
+    if risky_folded:
+        assert set(neutral) <= set(folded)
+    # drawn: the orange '+N' when it hides a risky pill, nothing over the labels
+    img = pages.render("SHOW", s, pages.ScreenStatus(pills=D016_PILLS, knob_tags=tags, **RUN),
+                       Focus(slot=1), now=0.0)
+    _check(img)
+
+
+def test_d016_pills_from_the_state_alone():
+    """An older status (no pills): the state tells AUX (not on dev: no spare input there),
+    LOUDNESS and DE-HARSH, in the controller's order."""
+    s = st.State(aux_mode="mic", mono_subs=True, loud_on=True, deharsh_on=True)
+    assert pages.screen_pills(s, pages.ScreenStatus(profile="m4")) == \
+        ["AUX MIC", "MONO SUB", "LOUDNESS", "DE-HARSH"]
+    assert pages.screen_pills(s, pages.ScreenStatus(profile="dev")) == \
+        ["MONO SUB", "LOUDNESS", "DE-HARSH"]
+    assert pages.screen_pills(st.State(), pages.ScreenStatus(profile="m4")) == []
+
+
+def test_demo_cases_include_the_d016_pictures():
+    names = {c[0] for c in pages.demo_cases()}
+    assert {"show_pills_d016", "setup_deharsh_pick", "setup_loudness", "setup_aux_pick",
+            "setup_aux_dev"} <= names

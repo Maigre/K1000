@@ -26,12 +26,15 @@ and a phone on the box's own Wi-Fi.
   high shelves) on top of it, the sub/top split (optional mono subs), polarity and delay per group
   (whole samples at 48 kHz), a 12 dB/oct Lo-Cut on the tops, an optional sub low-pass, sub/top
   balance, four output trims, master and mute. Every show-time move is a parameter write or a
-  ramped fader, never a pipeline rebuild.
+  ramped fader, never a pipeline rebuild. Three optional blocks, all off by default (D-016,
+  proposed after the first rig run): **de-harsh** (a dynamic cut around 2.7 kHz that acts only on
+  hard attacks), **sub loudness** (more sub as the master goes down, never more than at a
+  reference level) and **AUX IN** (the M4's front inputs as a mic or a line pair, into the program).
 - **Knobs and screen** on a Zynthian V4 case (live UI v1, D-009): **SHOW**, the front page, with
   the master and the live EQ drawn over the program spectrum, and a 3-gesture notch helper on the
   spectrum's peak; **ALIGN** (balance, and one signed sub/top delay and the Lo-Cut behind a
-  lock); **SETUP** (the rest, live-EQ reset with undo, Lo-Cut on/off, the spectrum switch, laptop
-  access for the tune).
+  lock); **SETUP** (the rest, live-EQ reset with undo, Lo-Cut on/off, de-harsh, loudness and AUX
+  IN, the spectrum switch, laptop access for the tune).
   Meters with clip warnings, alerts in the status bar, a master-up guard (+6 dB per 2 s at most).
 - **Audio safety**: boots muted, ramps in only once audio flows, comes back muted if it was switched
   off muted, saves a mute at once, never raises a cut or releases a mute made elsewhere, recovers a

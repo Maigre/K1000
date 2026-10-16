@@ -24,8 +24,8 @@ Design rules (why it looks like this):
   SHOW, the middle strip on ALIGN, the footer on SETUP. "The system has a problem" and "this is
   what your press did" never share a place or a colour.
 - SHOW has persistent pills for every non-default system state (LO-CUT OFF, OUT P2, POL INV,
-  MONO SUB, AUDITION, LAPTOP OPEN…), on the bottom row between the E2 and E4 labels, where
-  neither a hint nor the MUTED band ever covers them.
+  AUX MIC, MONO SUB, LOUDNESS, DE-HARSH, AUDITION, LAPTOP OPEN…), on the bottom row between the
+  E2 and E4 labels, where neither a hint nor the MUTED band ever covers them.
 - A live band switched OUT (D-014: a B3 hold, or a chip hold on the phone) keeps its settings:
   its chip is drawn dark with a dashed outline and a small OUT, its marker hollow and dashed at
   its stored gain, the curve without it, and the pill row says OUT P2.
@@ -60,8 +60,9 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from . import eqgraph as eg
-from .input_map import (A_LAPTOP, A_RESET_LIVE, A_UNDO_RESET, BAND_CYCLE, F_ALIGN_DELAY, F_BALANCE,
-                        F_LOWCUT_FREQ, F_LOWCUT_ON, F_MASTER, F_SLOT, F_SPECTRUM_ON, HINT_LOCKED,
+from .input_map import (A_LAPTOP, A_RESET_LIVE, A_UNDO_RESET, BAND_CYCLE, F_ALIGN_DELAY, F_AUX_MODE,
+                        F_BALANCE, F_LOWCUT_FREQ, F_LOWCUT_ON, F_MASTER, F_SLOT, F_SPECTRUM_ON,
+                        HINT_LOCKED,
                         KNOB_CORNERS, KNOB_TAGS_DEFAULT, LIVE_SLOT_LABELS, LIVE_SLOT_SHORT,
                         LIVE_SLOTS, SETUP_GROUPS, SETUP_ITEMS, Focus, knob_labels, page_name,
                         parse_knob_tags, setup_group_pos)
@@ -110,8 +111,9 @@ ALERT_MIN_PX = 12                      # status-bar alert text: below this it is
 PAGE_SHORT: dict[str, str] = {"SHOW": "SHW", "ALIGN": "ALN", "SETUP": "SET", "PHONE": "PHN",
                               "TEST": "TST"}
 # Persistent SHOW pills that change the sound or open the box: orange, and folded into '+N'
-# only after every neutral one (MONO SUB, AUDITION).
-RISKY_PILLS: tuple[str, ...] = ("LAPTOP OPEN", "LO-CUT OFF", "OUT ", "POL INV")
+# only after every neutral one (MONO SUB, LOUDNESS, DE-HARSH, AUDITION). D-016: an AUX input
+# summed into the PA (AUX MIC: an open mic can feed back) is one of them.
+RISKY_PILLS: tuple[str, ...] = ("LAPTOP OPEN", "LO-CUT OFF", "OUT ", "POL INV", "AUX ")
 PILL_MIN_PX = 13
 
 STATUS_H = 30
@@ -364,8 +366,9 @@ def screen_alerts(status: Any) -> list[tuple[str, str]]:
 
 def screen_pills(state: Any, status: Any) -> list[str]:
     """SHOW's persistent pills: `status.pills` (the controller's list, in its order), or, for
-    an older status, the ones the state alone tells (LO-CUT OFF, OUT <bands>, POL INV, MONO SUB,
-    AUDITION)."""
+    an older status, the ones the state alone tells (LO-CUT OFF, OUT <bands>, POL INV, AUX MIC
+    or LINE, MONO SUB, LOUDNESS, DE-HARSH, AUDITION). The state cannot tell which inputs a
+    profile has spare: AUX is said off the dev profile only (its two inputs are the program)."""
     raw = _get(status, "pills", None)
     if isinstance(raw, str):
         return [raw] if raw else []
@@ -381,10 +384,17 @@ def screen_pills(state: Any, status: Any) -> list[str]:
            if _truth(_get(state, f, False))]
     if inv:
         out.append("POL INV " + "+".join(inv))
+    prof = str(_get(status, "profile", "") or _get(state, "profile", "") or "")
+    aux = _get(state, "aux_mode", "off")
+    if aux in ("mic", "line") and prof != "dev":
+        out.append(f"AUX {aux.upper()}")
     if _truth(_get(state, "mono_subs", False)):
         out.append("MONO SUB")
+    if _truth(_get(state, "loud_on", False)):
+        out.append("LOUDNESS")
+    if _truth(_get(state, "deharsh_on", False)):
+        out.append("DE-HARSH")
     aud = _get(state, "dev_audition", "sum")
-    prof = str(_get(status, "profile", "") or _get(state, "profile", "") or "")
     if isinstance(aud, str) and aud and aud.lower() != "sum" and prof == "dev":
         out.append(f"AUDITION {aud.upper()}")
     return out
@@ -1335,7 +1345,9 @@ def _page_align(c: _Ctx, state: Any, status: Any) -> None:
 # SETUP
 # ------------------------------------------------------------------------------------------
 def _fmt_setup(item, v: Any) -> str:
-    """One SETUP value as the row shows it (also the chosen value of a pending choice)."""
+    """One SETUP value as the row shows it (also the chosen value of a pending choice): the
+    words of input_map.choice_name for the ON/off and choice rows (AUX IN: off, MIC, LINE), a
+    number in its unit (`_hz` Hz, `_ms` ms, else dB)."""
     if v is None:
         return "--"
     if item.field.endswith("_inverted"):
@@ -1343,7 +1355,7 @@ def _fmt_setup(item, v: Any) -> str:
     if isinstance(v, bool) or item.kind == "bool":
         return "ON" if v else "off"
     if isinstance(v, str):
-        return v.upper()
+        return "off" if v == "off" else v.upper()
     try:
         fv = float(v)
     except (TypeError, ValueError):
@@ -1370,6 +1382,8 @@ def _setup_value(state: Any, item, status: Any = None, readonly: Any = None) -> 
         return "DISABLED"
     if item.field == "dev_audition" and item.field in (readonly or {}):
         return "—"                                     # not the dev profile: nothing to audition
+    if item.field == F_AUX_MODE and item.field in (readonly or {}):
+        return "NO SPARE INPUT"                        # D-016: dev's two inputs are the program
     v = _get(state, item.field, None)
     out = _fmt_setup(item, v)
     if item.field == F_LOWCUT_ON and v is not None:
@@ -1925,7 +1939,11 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
                      pills=["MONO SUB", "LAPTOP OPEN 1:59"])
     mono_i = _setup_index("mono_subs")
     aud_i, prof_i, tpol_i = _setup_index("dev_audition"), _setup_index("profile"), _setup_index("top_inverted")
-    ro = {"profile": "PROFILE PINNED IN k1000.yaml"}     # k1000.yaml names the profile (the box)
+    # k1000.yaml names the profile (the box); dev (the HiFiBerry) has no spare input for AUX IN
+    # (D-016), the M4 no audition: what Controller.setup_readonly says on each
+    aux_ro = "AUX: NO SPARE INPUT ON THIS DEVICE"
+    ro = {"profile": "PROFILE PINNED IN k1000.yaml", "aux_mode": aux_ro, "aux_gain_db": aux_ro}
+    ro_m4 = {"profile": "PROFILE PINNED IN k1000.yaml", "dev_audition": "AUDITION: DEV PROFILE ONLY"}
     mono_pick = dict(pick="mono_subs", pick_value=not bool(s.mono_subs), pick_until=inf, readonly=ro)
     tops_later = State.from_dict({**s.to_dict(), "sub_delay_ms": 0.0, "top_delay_ms": 1.25})
     aligned = State.from_dict({**s.to_dict(), "sub_delay_ms": 0.0, "top_delay_ms": 0.0})
@@ -1940,6 +1958,13 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
     p3.freq, p3.gain, p3.q = 10500.0, -12.5, 16.0
     longest.live_highshelf.freq, longest.live_highshelf.gain = 16000.0, -12.0
     longest.live_highshelf.q = 1.5
+    # D-016 (all off by default): de-harsh chosen ON on the M4 (a rebuild: MAY CLICK), loudness
+    # on with its boost being turned, AUX IN chosen MIC, and the AUX row on dev (no spare input:
+    # it says so); the SHOW pills with all three on (AUX MIC orange, the others neutral)
+    dyn = State.from_dict({**s.to_dict(), "loud_on": True, "deharsh_on": True, "aux_mode": "mic",
+                           "mono_subs": True})
+    dh_i, boost_i = _setup_index("deharsh_on"), _setup_index("loud_boost_db")
+    aux_i = _setup_index("aux_mode")
     return [
         # SHOW: the front page
         ("show", "SHOW", s, run, Focus(slot=1)),
@@ -1967,6 +1992,9 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
                                                          "POL INV SUB", "MONO SUB"]), Focus(slot=1)),
         ("show_pills_two", "SHOW", lc_off, with_(run, pills=["LO-CUT OFF", "MONO SUB"]),
          Focus(slot=1)),
+        # D-016: AUX MIC (orange: an open mic into the PA) first; the neutral ones fold first
+        ("show_pills_d016", "SHOW", dyn, with_(run, pills=["AUX MIC", "MONO SUB", "LOUDNESS",
+                                                          "DE-HARSH"]), Focus(slot=1)),
         ("hint", "SHOW", s, run, Focus(slot=1, editing=F_MASTER, edit_until=inf,
                                        hint="MASTER: SLOW DOWN", hint_until=inf)),
         ("input_clip", "SHOW", s, in_clip, Focus(slot=1)),
@@ -2045,6 +2073,15 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
          Focus(item=laptop_i, confirm=A_LAPTOP, confirm_until=inf,
                hint="PUSH AGAIN: LAPTOP ACCESS FOR 2 H", hint_until=inf, readonly=ro)),
         ("setup_laptop_open", "SETUP", s, dev_open, Focus(item=laptop_i - 1, readonly=ro)),
+        # D-016: the three switches are chosen then set like Mono (a rebuild: MAY CLICK)
+        ("setup_deharsh_pick", "SETUP", s, run,
+         Focus(item=dh_i, pick="deharsh_on", pick_value=True, pick_until=inf, readonly=ro_m4)),
+        ("setup_loudness", "SETUP", dyn, run,
+         Focus(item=boost_i, editing="loud_boost_db", edit_until=inf, readonly=ro_m4)),
+        ("setup_aux_pick", "SETUP", s, run,
+         Focus(item=aux_i, pick="aux_mode", pick_value="mic", pick_until=inf, readonly=ro_m4)),
+        ("setup_aux_dev", "SETUP", s, dev,
+         Focus(item=aux_i, readonly=ro, hint=aux_ro, hint_until=inf)),
         # Knob test
         ("hwtest", "HWTEST", s, run, hwf),
         ("hwtest_muted", "HWTEST", muted, run_muted, hwf),

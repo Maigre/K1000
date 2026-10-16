@@ -269,6 +269,8 @@ def test_fields_are_the_box_rules() -> None:
     f = fields_v2()
     assert set(f) == {"master_db", "balance_db", "lowcut_hz", "align_delay_ms", "out_trim_db",
                       "input_trim_db", "sub_lowpass_hz",
+                      "deharsh_hz", "deharsh_thresh_db", "loud_boost_db", "loud_ref_db",
+                      "aux_gain_db",                                           # D-016
                       *(f"{b}.{p}" for b in ("live_peq", "live_lowshelf", "live_highshelf")
                         for p in ("freq", "gain", "q"))}
     paths = [p for e in f.values() for p in e["paths"]]
@@ -296,6 +298,18 @@ def test_fields_are_the_box_rules() -> None:
     assert f["out_trim_db"]["up_limit"] == f["input_trim_db"]["up_limit"] == m["up_limit"]
     assert "up_limit" not in f["balance_db"] and "up_limit" not in f["live_peq.gain"]
     assert input_map.knob_accel("live_peq.2.freq") == (4, 4) and input_map.knob_accel("out_trim_db.1") is None
+    # D-016: the AUX level and the loudness boost and reference raise the PA: master's bucket;
+    # the de-harsh threshold only gives back what it cut (like an EQ cut): no bucket
+    for key in ("aux_gain_db", "loud_boost_db", "loud_ref_db"):
+        assert f[key]["up_limit"] == m["up_limit"], key
+        assert f[key]["unit"] == "dB" and f[key]["accel"] == {"up": 1, "down": 1}, key
+    assert "up_limit" not in f["deharsh_thresh_db"] and "up_limit" not in f["deharsh_hz"]
+    dh = f["deharsh_hz"]
+    assert (dh["min"], dh["max"], dh["default"], dh["log"]) == (1500.0, 6000.0, 2700.0, True)
+    assert dh["landmarks"] == [2700.0] and dh["caps"] == [-24, 24] and dh["accel"] == {"up": 4, "down": 4}
+    assert [f[k]["label"] for k in ("deharsh_hz", "deharsh_thresh_db", "loud_boost_db", "loud_ref_db",
+                                    "aux_gain_db")] == ["DE-HARSH", "THRESH", "BOOST", "REF", "AUX"]
+    assert f["aux_gain_db"]["sticky"] == [0.0] and f["aux_gain_db"]["min"] == -40.0
 
 
 def test_setup_schema_is_setup_groups() -> None:
@@ -312,6 +326,14 @@ def test_setup_schema_is_setup_groups() -> None:
     assert rows["PHONE"]["phone"] == "readonly" and rows["HWTEST"]["phone"] == "hidden"
     assert rows["out_trim_db.2"]["field"] == "out_trim_db" and rows["out_trim_db.2"]["phone"] == "edit"
     assert all(r["phone"] == "edit" for f, r in rows.items() if r["kind"] in ("bool", "choice"))
+    # D-016: every new row editable from the phone (the box holds AUX read-only where no input
+    # is spare: state.readonly, live); the switches rebuild
+    for f in ("deharsh_hz", "deharsh_thresh_db", "loud_boost_db", "loud_ref_db", "aux_gain_db"):
+        assert rows[f]["phone"] == "edit" and rows[f]["field"] == f, f
+    for f in ("deharsh_on", "loud_on"):
+        assert rows[f]["rebuild"] is True and rows[f]["names"] == ["off", "ON"]
+    assert rows["aux_mode"]["choices"] == ["off", "mic", "line"]
+    assert rows["aux_mode"]["names"] == ["off", "MIC", "LINE"] and rows["aux_mode"]["rebuild"] is True
 
 
 def test_state2_is_strict_json_and_complete(tmp_path: Path) -> None:
@@ -1429,5 +1451,80 @@ def test_several_v2_phones_share_values_not_locks(tmp_path: Path) -> None:
             await send(a, t="nudge", f="align_delay_ms", d=1, id=5)
             assert (await reply(a, 5))["v"] == 0.1
         await srv.stop()
+        await ctl.stop()
+    run(go())
+
+
+# ============================================================================ D-016
+def test_d016_rises_spend_the_pa_bucket_and_say_what(tmp_path: Path) -> None:
+    """The AUX level and the loudness boost / reference raise the PA: they rise through master's
+    one bucket (`err SLOW` names them); the de-harsh threshold and frequency do not."""
+    async def go() -> None:
+        ctl, _ = make_ctl(tmp_path)
+        await boot(ctl)
+        clk = Clock()
+        b = PhoneBridge(ctl, clock=clk)
+        p = sess(1)
+        for _ in range(3):                                             # the 3 dB burst
+            assert b.apply2({"t": "nudge", "f": "master_db", "d": 2}, p)[0] is True
+        b0, r0 = ctl.state.loud_boost_db, ctl.state.loud_ref_db
+        assert b.apply2({"t": "nudge", "f": "loud_boost_db", "d": 1}, p) == \
+            (False, b0, "LOUDNESS: SLOW DOWN", "SLOW")
+        assert b.apply2({"t": "nudge", "f": "loud_ref_db", "d": 1}, p)[2:] == ("LOUDNESS: SLOW DOWN", "SLOW")
+        assert ctl.state.loud_boost_db == b0 and ctl.state.loud_ref_db == r0
+        # never a bucket for the de-harsh numbers, down never waits
+        assert b.apply2({"t": "nudge", "f": "deharsh_thresh_db", "d": 4}, p)[:2] == (True, -22.0)
+        assert b.apply2({"t": "nudge", "f": "deharsh_hz", "d": 12}, p)[0] is True
+        assert ctl.state.deharsh_hz == pytest.approx(5400.0)
+        assert b.apply2({"t": "nudge", "f": "loud_boost_db", "d": -4}, p)[:2] == (True, 4.0)
+        clk.t += 1.0                                                   # tokens back
+        assert b.apply2({"t": "nudge", "f": "loud_boost_db", "d": 4}, p)[:2] == (True, 6.0)
+        assert b.apply2({"t": "nudge", "f": "loud_ref_db", "d": 4}, p)[3] == "SLOW"   # 2 + 2 > 3 dB
+        clk.t += 1.0
+        assert b.apply2({"t": "nudge", "f": "loud_ref_db", "d": 4}, p)[:2] == (True, -8.0)
+        assert b.apply2({"t": "nudge", "f": "loud_ref_db", "d": 5}, p)[3] == "BAD"   # caps ±4
+        await ctl.stop()
+    run(go())
+
+
+def test_d016_aux_level_is_read_only_where_no_input_is_spare(tmp_path: Path) -> None:
+    """dev (the HiFiBerry: both inputs are the program): the AUX rows are read-only, said in
+    state.readonly; a nudge is refused with the box's reason (`err READONLY`) before it spends
+    any of the PA bucket; a choose of AUX IN too. The m4 profile routes IN1/IN2: both edit."""
+    async def go() -> None:
+        ctl, _ = make_ctl(tmp_path)
+        await boot(ctl)
+        clk = Clock()
+        b = PhoneBridge(ctl, clock=clk)
+        p = sess(1)
+        why = "AUX: NO SPARE INPUT ON THIS DEVICE"
+        assert b.apply2({"t": "nudge", "f": "aux_gain_db", "d": 2}, p) == (False, 0.0, why, "READONLY")
+        assert b.apply2({"t": "choose", "f": "aux_mode", "v": "mic", "seen": "off"}, p) == \
+            (False, "off", why, "READONLY")
+        assert ctl.state.aux_gain_db == 0.0 and ctl.state.aux_mode == "off"
+        for _ in range(3):                                             # the bucket was not spent
+            assert b.apply2({"t": "nudge", "f": "master_db", "d": 2}, p)[0] is True
+        msg = PhoneBridge.state_message2(ctl.snapshot(), phone_on=True, phones=1)
+        assert msg["readonly"]["aux_mode"] == msg["readonly"]["aux_gain_db"] == why
+        assert msg["setup"]["aux_mode"] == "off" and msg["setup"]["aux_gain_db"] == 0.0
+        assert msg["setup"]["deharsh_hz"] == 2700.0 and msg["setup"]["loud_on"] is False
+        await ctl.stop()
+    run(go())
+
+
+def test_d016_switches_choose_and_rebuild_from_the_phone(tmp_path: Path) -> None:
+    """De-harsh and Loudness through `choose` (the box's set_choice: chosen + SET = confirmed):
+    the worker rebuilds the pipeline, the pills say it."""
+    async def go() -> None:
+        ctl, eng = make_ctl(tmp_path)
+        await boot(ctl)
+        b, p = PhoneBridge(ctl), sess(1)
+        assert b.apply2({"t": "choose", "f": "deharsh_on", "v": True, "seen": False}, p)[:2] == (True, True)
+        assert b.apply2({"t": "choose", "f": "loud_on", "v": True, "seen": False}, p)[:2] == (True, True)
+        assert await ctl.settle(timeout=3.0)
+        assert "dh_comp" in (eng.cfg.get("processors") or {}) and "sub_loudness" in eng.cfg["filters"]
+        msg = PhoneBridge.state_message2(ctl.snapshot(), phone_on=True, phones=1)
+        assert msg["pills"] == ["LOUDNESS", "DE-HARSH"]
+        assert msg["setup"]["deharsh_on"] is True and msg["setup"]["loud_on"] is True
         await ctl.stop()
     run(go())

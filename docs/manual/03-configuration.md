@@ -354,6 +354,17 @@ Logical outputs, wherever four values appear: 0 Sub L, 1 Sub R, 2 Top L, 3 Top R
 | `profile` | `dev`, `m4` | `dev` | SETUP › BOX › Profile (read-only while pinned) |
 | `dev_audition` | `sum`, `tops`, `subs` | `sum` | SETUP › BOX › Audition (dev) (profile `dev` only) |
 | `spectrum_on` | bool | true | SETUP › LIVE EQ › Spectrum. The screen only: it never touches the engine config |
+| `deharsh_on` | bool | false | SETUP › TOPS › De-harsh (D-016; rebuilds the pipeline) |
+| `deharsh_hz` | 1.5 … 6 kHz, 1/12 oct | 2700 | SETUP › TOPS › De-harsh freq, phone |
+| `deharsh_thresh_db` | −48 … 0 dB | −24 | SETUP › TOPS › De-harsh thresh, phone. The L+R band sum, after the master |
+| `loud_on` | bool | false | SETUP › SUBS › Loudness (D-016; rebuilds the pipeline) |
+| `loud_boost_db` | 0 … +12 dB | 6 | SETUP › SUBS › Loudness boost, phone: the subs' 70 Hz shelf 20 dB under the reference |
+| `loud_ref_db` | −40 … 0 dB (a master level) | −10 | SETUP › SUBS › Loudness ref, phone: at and above it loudness adds nothing |
+| `aux_mode` | `off`, `mic`, `line` | `off` | SETUP › INPUT › AUX IN 1/2 (D-016; rebuilds the pipeline). The m4 profile's IN1 (mic) or IN1 + IN2 (line); read-only where no input is spare (dev) |
+| `aux_gain_db` | −40 … +12 dB | 0 | SETUP › INPUT › AUX level, phone |
+
+A `state.json` saved before D-016 loads with the three features off and their defaults; an older
+build ignores the keys.
 
 "Off" for the Lo-Cut and the sub low-pass is a frequency move (10 Hz and 20 kHz), never a pipeline
 change. Delays are applied in whole samples at 48 kHz.

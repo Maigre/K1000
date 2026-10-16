@@ -3,7 +3,7 @@
   "t": "hello",
   "v": 2,
   "server": "k1000 0.1.0",
-  "build": "6428504b6077",
+  "build": "8650128bda4b",
   "phone_on": true,
   "you": 1,
   "min_app": 0,
@@ -626,6 +626,185 @@
     "paths": [
      "sub_lowpass_hz"
     ]
+   },
+   "deharsh_hz": {
+    "label": "DE-HARSH",
+    "unit": "Hz",
+    "min": 1500.0,
+    "max": 6000.0,
+    "default": 2700.0,
+    "log": true,
+    "step": 0.08333333333333333,
+    "fine": 0.020833333333333332,
+    "digits": 2,
+    "snap": false,
+    "caps": [
+     -24,
+     24
+    ],
+    "stepper": [
+     -4,
+     -1,
+     1,
+     4
+    ],
+    "accel": {
+     "up": 4,
+     "down": 4
+    },
+    "lock": null,
+    "sticky": [],
+    "landmarks": [
+     2700.0
+    ],
+    "paths": [
+     "deharsh_hz"
+    ]
+   },
+   "deharsh_thresh_db": {
+    "label": "THRESH",
+    "unit": "dB",
+    "min": -48.0,
+    "max": 0.0,
+    "default": -24.0,
+    "log": false,
+    "step": 0.5,
+    "fine": 0.5,
+    "digits": 2,
+    "snap": false,
+    "caps": [
+     -4,
+     4
+    ],
+    "stepper": [
+     -4,
+     -1,
+     1,
+     4
+    ],
+    "accel": {
+     "up": 1,
+     "down": 1
+    },
+    "lock": null,
+    "sticky": [],
+    "landmarks": [],
+    "paths": [
+     "deharsh_thresh_db"
+    ]
+   },
+   "loud_boost_db": {
+    "label": "BOOST",
+    "unit": "dB",
+    "min": 0.0,
+    "max": 12.0,
+    "default": 6.0,
+    "log": false,
+    "step": 0.5,
+    "fine": 0.5,
+    "digits": 2,
+    "snap": false,
+    "caps": [
+     -4,
+     4
+    ],
+    "stepper": [
+     -2,
+     -1,
+     1,
+     2
+    ],
+    "accel": {
+     "up": 1,
+     "down": 1
+    },
+    "lock": null,
+    "sticky": [],
+    "landmarks": [],
+    "paths": [
+     "loud_boost_db"
+    ],
+    "up_limit": {
+     "db_per_s": 6.0,
+     "burst_db": 3.0,
+     "bucket": "pa"
+    }
+   },
+   "loud_ref_db": {
+    "label": "REF",
+    "unit": "dB",
+    "min": -40.0,
+    "max": 0.0,
+    "default": -10.0,
+    "log": false,
+    "step": 0.5,
+    "fine": 0.5,
+    "digits": 2,
+    "snap": false,
+    "caps": [
+     -4,
+     4
+    ],
+    "stepper": [
+     -4,
+     -1,
+     1,
+     4
+    ],
+    "accel": {
+     "up": 1,
+     "down": 1
+    },
+    "lock": null,
+    "sticky": [],
+    "landmarks": [],
+    "paths": [
+     "loud_ref_db"
+    ],
+    "up_limit": {
+     "db_per_s": 6.0,
+     "burst_db": 3.0,
+     "bucket": "pa"
+    }
+   },
+   "aux_gain_db": {
+    "label": "AUX",
+    "unit": "dB",
+    "min": -40.0,
+    "max": 12.0,
+    "default": 0.0,
+    "log": false,
+    "step": 0.5,
+    "fine": 0.5,
+    "digits": 2,
+    "snap": false,
+    "caps": [
+     -4,
+     4
+    ],
+    "stepper": [
+     -4,
+     -1,
+     1,
+     4
+    ],
+    "accel": {
+     "up": 1,
+     "down": 1
+    },
+    "lock": null,
+    "sticky": [
+     0.0
+    ],
+    "landmarks": [],
+    "paths": [
+     "aux_gain_db"
+    ],
+    "up_limit": {
+     "db_per_s": 6.0,
+     "burst_db": 3.0,
+     "bucket": "pa"
+    }
    }
   },
   "slide": {
@@ -695,6 +874,35 @@
        "ON"
       ],
       "rebuild": false,
+      "phone": "edit"
+     },
+     {
+      "label": "De-harsh",
+      "f": "deharsh_on",
+      "kind": "bool",
+      "choices": [
+       false,
+       true
+      ],
+      "names": [
+       "off",
+       "ON"
+      ],
+      "rebuild": true,
+      "phone": "edit"
+     },
+     {
+      "label": "De-harsh freq",
+      "f": "deharsh_hz",
+      "kind": "num",
+      "field": "deharsh_hz",
+      "phone": "edit"
+     },
+     {
+      "label": "De-harsh thresh",
+      "f": "deharsh_thresh_db",
+      "kind": "num",
+      "field": "deharsh_thresh_db",
       "phone": "edit"
      }
     ]
@@ -767,6 +975,35 @@
       "kind": "num",
       "field": "sub_lowpass_hz",
       "phone": "edit"
+     },
+     {
+      "label": "Loudness",
+      "f": "loud_on",
+      "kind": "bool",
+      "choices": [
+       false,
+       true
+      ],
+      "names": [
+       "off",
+       "ON"
+      ],
+      "rebuild": true,
+      "phone": "edit"
+     },
+     {
+      "label": "Loudness boost",
+      "f": "loud_boost_db",
+      "kind": "num",
+      "field": "loud_boost_db",
+      "phone": "edit"
+     },
+     {
+      "label": "Loudness ref",
+      "f": "loud_ref_db",
+      "kind": "num",
+      "field": "loud_ref_db",
+      "phone": "edit"
      }
     ]
    },
@@ -778,6 +1015,30 @@
       "f": "input_trim_db",
       "kind": "num",
       "field": "input_trim_db",
+      "phone": "edit"
+     },
+     {
+      "label": "AUX IN 1/2",
+      "f": "aux_mode",
+      "kind": "choice",
+      "choices": [
+       "off",
+       "mic",
+       "line"
+      ],
+      "names": [
+       "off",
+       "MIC",
+       "LINE"
+      ],
+      "rebuild": true,
+      "phone": "edit"
+     },
+     {
+      "label": "AUX level",
+      "f": "aux_gain_db",
+      "kind": "num",
+      "field": "aux_gain_db",
       "phone": "edit"
      }
     ]
@@ -1034,6 +1295,26 @@
    "sub_lowpass_hz": [
     -24,
     24
+   ],
+   "deharsh_hz": [
+    -24,
+    24
+   ],
+   "deharsh_thresh_db": [
+    -4,
+    4
+   ],
+   "loud_boost_db": [
+    -4,
+    4
+   ],
+   "loud_ref_db": [
+    -4,
+    4
+   ],
+   "aux_gain_db": [
+    -4,
+    4
    ]
   }
  },
@@ -1116,13 +1397,21 @@
    "out_trim_db.3": 0.0,
    "top_inverted": false,
    "lowcut_on": true,
+   "deharsh_on": false,
+   "deharsh_hz": 2700.0,
+   "deharsh_thresh_db": -24.0,
    "out_trim_db.0": 0.0,
    "out_trim_db.1": 0.0,
    "sub_inverted": false,
    "mono_subs": false,
    "sub_lowpass_on": false,
    "sub_lowpass_hz": 120.0,
+   "loud_on": false,
+   "loud_boost_db": 6.0,
+   "loud_ref_db": -10.0,
    "input_trim_db": 0.0,
+   "aux_mode": "off",
+   "aux_gain_db": 0.0,
    "spectrum_on": true,
    "profile": "dev",
    "dev_audition": "sum"
@@ -1136,7 +1425,10 @@
    "state": "off",
    "s": 0
   },
-  "readonly": {},
+  "readonly": {
+   "aux_mode": "AUX: NO SPARE INPUT ON THIS DEVICE",
+   "aux_gain_db": "AUX: NO SPARE INPUT ON THIS DEVICE"
+  },
   "box_band": 0,
   "box_page": "SHOW",
   "knobs_ok": null

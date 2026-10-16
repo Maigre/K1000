@@ -5,6 +5,8 @@
 
    SETUP rows (DESIGN §6.3, docs/14 §3.1.3, §4.6, §4.7):
    - num: a value tile (tap = steps under the row, slide = like the knob); Trim L / R side by side;
+     a number the box holds read-only now (state.readonly: D-016's AUX level where no input is
+     spare) is dimmed with the box's reason, and the box refuses its steps (`err READONLY`);
    - bool / choice: CHOOSE, THEN SET. A tap on another choice marks it (the row turns red,
      NOW → CHOSEN) and a red SET key appears on its own line below, never where the chosen key
      is; SET refuses a tap within 400 ms of the choice (a double-tap never commits), the choice
@@ -145,7 +147,19 @@ function rowNum(label, items, extra) {
   if (box !== r) r.append(box);
   r.append(ist);
   const n = note(r);
-  upd.push(() => { setText(rv, ""); setText(n, extra ? extra() : ""); });
+  upd.push(() => {
+    const ro = roWhy(items);
+    r.classList.toggle("ro", !!ro);
+    setText(rv, ro ? "READ-ONLY" : "");
+    setText(n, ro || (extra ? extra() : ""));
+  });
+}
+// the box's reason one of these fields cannot change now (state.readonly), or ""
+function roWhy(items) {
+  const R = K.state && K.state.readonly;
+  if (!R) return "";
+  for (const it of items) if (R[it.f]) return String(R[it.f]);
+  return "";
 }
 function rowInfo(label, value, nt) {
   const r = srow();
@@ -205,6 +219,7 @@ function rowChoice(group, row, tileRow, tileLabel) {
     r.classList.toggle("pick", !!p);
     let nowTxt = choiceName(row, cur);
     if (f === "lowcut_on" && cur === true && S && num(S.lowcut_hz)) nowTxt += " · " + Math.round(S.lowcut_hz) + " Hz";
+    if (f === "aux_mode" && ro) nowTxt = AUX_NONE;     // nothing routed, whatever is stored (the box says the same)
     if (ro) nowTxt += " · READ-ONLY";
     setText(rv, p ? choiceName(row, cur) + " → " + choiceName(row, p.v) : nowTxt);
     for (const [v, b] of btns) {
@@ -217,11 +232,22 @@ function rowChoice(group, row, tileRow, tileLabel) {
       if (setB._early == null) setText(setB.querySelector("span"), row.rebuild ? "HOLD 1 s · SET" : "SET " + choiceName(row, p.v));
       setB.setAttribute("aria-label", "Set " + row.label + " to " + choiceName(row, p.v) + (row.rebuild ? ": hold 1 second, it may click" : ""));
     }
-    setText(n, ro ? String(ro) : f === "lowcut_on" && !p ? "Its frequency is the LO-CUT tile on LIVE (locked)." : f === "mono_subs" && !p ? "Keep ON: out 3 feeds both subs (D-012)." : "");
+    setText(n, ro ? String(ro) : p ? "" : CHOICE_NOTE[f] || "");
     const pw = (K.hello && num(K.hello.pick_window_s) ? K.hello.pick_window_s : 8) * 1000;
     bar.firstChild.style.width = p ? (clamp((p.until - now()) / pw, 0, 1) * 100).toFixed(1) + "%" : "0";
   });
 }
+// what a choice row does, under it while nothing is chosen (D-016's switches: docs/manual/05-tuning.md §9)
+const CHOICE_NOTE = {
+  lowcut_on: "Its frequency is the LO-CUT tile on LIVE (locked).",
+  mono_subs: "Keep ON: out 3 feeds both subs (D-012).",
+  deharsh_on: "Cuts around its frequency only while the band is louder than the threshold: hard attacks, not the tone.",
+  loud_on: "More sub as the master goes down; nothing at or above the reference.",
+  aux_mode: "MIC: IN1 to both sides, 100 Hz high-pass. LINE: IN1 left, IN2 right. Level on the M4's knob first: the meter above shows the program only, watch the M4's IN1/IN2 meters.",
+};
+// AUX IN where the profile has no spare input (state.readonly.aux_mode): the box's row says this
+// (pages.py _setup_value), not the stored MIC/LINE that routes nothing there
+const AUX_NONE = "NO SPARE INPUT";
 function setReady(row) {
   const p = UI.pick;
   if (!p || p.f !== row.f) return false;
@@ -320,16 +346,18 @@ function rowSeg(label, get, choices, set, nt) {
   setText(n, nt || "");
   upd.push(() => { const c = get(); for (const [v, b] of btns) b.setAttribute("aria-pressed", String(v === c)); });
 }
-// the capture peak per input channel, before the trim (m.i), and the box's clip latch
+// the capture peak per PROGRAM input channel (input_map: LINE IN 3/4 on the M4), before the trim
+// (m.i), and the box's clip latch. Not the AUX (IN1/IN2): its rows sit right under this meter,
+// and a mic brought up there would leave it still (D-016 review), so the label says which.
 function rowInMeter() {
   const r = srow();
-  const rv = head(r, "Input level");
+  const rv = head(r, "Program input");
   const m = h("div", "inm", '<div class="inbars"><div class="inb"><span>L</span><div class="bar"><i></i></div></div>' +
     '<div class="inb"><span>R</span><div class="bar"><i></i></div></div><div class="inscale"><span class="s50">−24</span>' +
     '<span class="s75">−12</span><span class="s875">−6</span><span class="s100">0</span></div></div><div class="inclip">CLIP</div>');
   r.append(m);
   const n = note(r);
-  setText(n, "Capture peak, before the trim. Keep the source under −6 dBFS: the trim cannot undo a clip at the input.");
+  setText(n, "Capture peak of the program, before the trim (not the AUX IN). Keep the source under −6 dBFS: the trim cannot undo a clip at the input.");
   inMeter = { bars: $$(".bar i", m), rv, clip: m.querySelector(".inclip") };
   upd.push(() => inMeter && inMeter.clip.classList.toggle("on", !!(K.state && K.state.in_clip)));
 }
@@ -343,7 +371,7 @@ export function drawInMeter() {
 // ------------------------------------------------------------------ SETUP › a box group
 // what a tile says in its group: the side's own words (the prototype's TOP L / SUB R, SUB LP)
 const SIDE = { TOPS: "TOP", SUBS: "SUB" };
-const TILE_LABEL = { sub_lowpass_hz: "SUB LP" };
+const TILE_LABEL = { sub_lowpass_hz: "SUB LP", deharsh_thresh_db: "THRESHOLD", loud_ref_db: "REFERENCE" };
 function tileWord(group, it) {
   if (TILE_LABEL[it.f]) return TILE_LABEL[it.f];
   const lr = /\b(L|R)$/.exec(String(it.label));
@@ -594,6 +622,11 @@ function buildStatus() {
     const u = S().setup || {};
     return (u.mono_subs === true ? "ON" : u.mono_subs === false ? "OFF" : "--") + " · " +
       (u.sub_lowpass_on === false ? "OFF" : num(u.sub_lowpass_hz) ? fmtHz(u.sub_lowpass_hz) + " Hz" : "--");
+  });
+  kv("De-harsh · loudness · AUX", () => {            // D-016, all off by default
+    const u = S().setup || {}, oo = (v) => (v === true ? "ON" : v === false ? "OFF" : "--");
+    const aux = S().readonly && S().readonly.aux_mode ? AUX_NONE : typeof u.aux_mode === "string" ? u.aux_mode.toUpperCase() : "--";
+    return oo(u.deharsh_on) + " · " + oo(u.loud_on) + " · " + aux;
   });
   kv("Phone mic", () => (!micAllowed() ? (MIC.perm === "denied" ? "blocked" : "not allowed (SETUP › THIS PHONE)") : UI.prefs.mic === "off" ? "off"
     : micRunning() ? "listening · " + (MIC.rate / 1000).toFixed(1) + " kHz" : "on, not shown now") + (MIC.err ? " · " + MIC.err : ""));

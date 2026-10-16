@@ -486,3 +486,97 @@ def test_live_reset_puts_every_band_back_in():
     r = s.live_reset()
     assert all(b.on for b in (*r.live_peq, r.live_lowshelf, r.live_highshelf))
     assert all(b.on is False for b in s.live_peq)                     # a copy: the original stays
+
+
+# ----------------------------------------------------------------------------- 2026-10-16 features
+FEATURE_SWITCHES = ("aux_mode", "loud_on", "deharsh_on")
+FEATURE_VALUES = ("aux_gain_db", "loud_boost_db", "loud_ref_db", "deharsh_hz", "deharsh_thresh_db")
+
+
+def test_features_are_off_by_default():
+    s = State()
+    assert (s.aux_mode, s.loud_on, s.deharsh_on) == ("off", False, False)
+    assert (s.aux_gain_db, s.loud_boost_db, s.loud_ref_db) == (0.0, 6.0, -10.0)
+    assert (s.deharsh_hz, s.deharsh_thresh_db) == (2700.0, -24.0)
+    for name in FEATURE_VALUES:
+        assert RANGES[name].default == getattr(s, name), name
+
+
+@pytest.mark.parametrize("name,spec", [
+    ("aux_gain_db", (-40.0, 12.0, 0.5, False, None, 0.0, "dB")),
+    ("loud_boost_db", (0.0, 12.0, 0.5, False, None, 6.0, "dB")),
+    ("loud_ref_db", (-40.0, 0.0, 0.5, False, None, -10.0, "dB")),
+    ("deharsh_hz", (1500.0, 6000.0, 1 / 12, True, 1 / 48, 2700.0, "Hz")),
+    ("deharsh_thresh_db", (-48.0, 0.0, 0.5, False, None, -24.0, "dB")),
+])
+def test_feature_ranges(name, spec):
+    r = RANGES[name]
+    assert (r.min, r.max, r.step, r.log, r.fine, r.default, r.unit) == spec
+    assert range_for(name) is r
+    # the frequency moves like every other log frequency (semitones, quarter-tones fine)
+    if r.log:
+        assert (r.step, r.fine) == (RANGES["live_peq.freq"].step, RANGES["live_peq.freq"].fine)
+
+
+def test_feature_constants():
+    """Fixed by the 2026-10-16 spec (one place: state.py, read by dspconfig)."""
+    assert st.AUX_MODES == ("off", "mic", "line") and st.CHOICES["aux_mode"] == st.AUX_MODES
+    assert (st.AUX_MIC_HP_HZ, st.AUX_MIC_HP_Q, st.AUX_MIC_PAN_DB) == (100.0, 0.707, -3.0)
+    assert (st.LOUD_LOW_FREQ_HZ, st.LOUD_HIGH_BOOST_DB) == (70.0, 0.0)
+    assert (st.DEHARSH_Q, st.DEHARSH_RATIO, st.DEHARSH_ATTACK_MS, st.DEHARSH_RELEASE_MS) == (1.4, 3.0, 1.0, 80.0)
+
+
+def test_feature_switches_rebuild_and_their_values_do_not():
+    assert set(FEATURE_SWITCHES) <= st.REBUILD_FIELDS
+    assert not set(FEATURE_VALUES) & st.REBUILD_FIELDS
+    assert {"loud_on", "deharsh_on"} <= set(st.BOOL_FIELDS)
+
+
+def test_feature_fields_set_nudge_and_clamp():
+    s = State()
+    assert s.set("aux_mode", "mic") == "mic" and s.set("aux_mode", "line") == "line"
+    with pytest.raises(ValueError):
+        s.set("aux_mode", "usb")
+    assert s.set("loud_on", True) is True and s.set("deharsh_on", "yes") is False   # bools only
+    assert s.set("aux_gain_db", 50) == 12.0 and s.set("aux_gain_db", -99) == -40.0
+    assert s.set("loud_boost_db", -3) == 0.0 and s.set("loud_ref_db", 6) == 0.0
+    assert s.set("deharsh_thresh_db", -99) == -48.0 and s.set("deharsh_thresh_db", 3) == 0.0
+    assert s.set("deharsh_hz", 100) == 1500.0 and s.set("deharsh_hz", 1e6) == 6000.0
+    s.deharsh_hz = 2700.0
+    assert math.isclose(s.nudge("deharsh_hz", 12), 5400.0, rel_tol=1e-3)            # one octave
+    assert s.nudge("deharsh_hz", 12) == 6000.0                                       # the end clamps
+    s.deharsh_hz = 2700.0
+    assert math.isclose(s.nudge("deharsh_hz", 1, fine=True), 2700.0 * 2 ** (1 / 48), rel_tol=1e-4)
+    assert s.nudge("loud_boost_db", 1) == 0.5                   # from 0.0 (clamped above)
+    assert s.nudge("aux_gain_db", -2) == -40.0 and s.nudge("aux_gain_db", 3) == -38.5
+
+
+def test_feature_fields_round_trip(tmp_path):
+    s = State(aux_mode="line", aux_gain_db=-6.5, loud_on=True, loud_boost_db=9.0, loud_ref_db=-14.0,
+              deharsh_on=True, deharsh_hz=3150.0, deharsh_thresh_db=-30.5, profile="m4")
+    d = s.to_dict()
+    assert {k: d[k] for k in FEATURE_SWITCHES + FEATURE_VALUES} == {
+        "aux_mode": "line", "loud_on": True, "deharsh_on": True, "aux_gain_db": -6.5,
+        "loud_boost_db": 9.0, "loud_ref_db": -14.0, "deharsh_hz": 3150.0, "deharsh_thresh_db": -30.5}
+    p = tmp_path / "state.json"
+    save_state_atomic(p, s)
+    assert load_state(p) == s
+    bad = {**d, "aux_mode": "MIC", "loud_on": 1, "deharsh_on": "true", "aux_gain_db": "x",
+           "deharsh_hz": None, "loud_ref_db": float("nan"), "deharsh_thresh_db": 10 ** 400}
+    b = State.from_dict(bad)
+    assert (b.aux_mode, b.loud_on, b.deharsh_on) == ("off", False, False)
+    assert (b.aux_gain_db, b.deharsh_hz, b.loud_ref_db, b.deharsh_thresh_db) == (0.0, 2700.0, -10.0, -24.0)
+
+
+def test_a_state_saved_before_the_features_loads_with_them_off(tmp_path):
+    """A state.json written by f2671b0 (no feature keys) boots exactly as before: all off."""
+    old = State(master_db=-14.5, mono_subs=True, profile="m4")
+    old.live_peq[2].gain = -6.0
+    raw = old.to_dict()
+    for k in FEATURE_SWITCHES + FEATURE_VALUES:
+        del raw[k]
+    p = tmp_path / "state.json"
+    p.write_text(json.dumps(raw))
+    s = load_state(p)
+    assert s == old and (s.aux_mode, s.loud_on, s.deharsh_on) == ("off", False, False)
+    assert not (tmp_path / "state.json.bad").exists()

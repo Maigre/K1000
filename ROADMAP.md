@@ -192,12 +192,21 @@ parametric bands + the spectrum serve live notching better on 4 knobs).
     E2 and BALANCE on E3 (the locked pair at the bottom, one badge between them); every value flush
     to its corner's outer border; smaller legends and values (SHOW's graph 130 → 152 px); IN L R
     input meters beside SUB/TOP on both pages. On the box since `6a537bb` (Wed 14, 12:26).
+  - Thomas's rig feedback, Fri 16 (D-016, **proposed**, all off by default): SETUP › TOPS
+    De-harsh (a dynamic cut at 2.7 kHz on hard attacks only), SUBS Loudness (more sub as the master
+    goes under a reference, never louder than at it), INPUT AUX IN 1/2 (the M4's IN1 as a mic, or
+    IN1 + IN2 as a line pair, into the program; until now they played nothing), on the knobs, the
+    screen and the phone. Built and tested off the box (the engine config byte for byte f2671b0's
+    with all three off); not deployed yet. Thomas tries each at the rig and decides; how to set them
+    by ear: `docs/manual/05-tuning.md` §9. His USB-stick player ask goes after the gig (below).
   - Knob fast-turn fix.
   - Design: `docs/07-live-ui-v1.md` + `docs/ui/v1/`. Knob analysis: `docs/08-knob-precision.md`.
 - **Phone PWA on the box's own AP** (D-007): live EQ curve with draggable bands, "notch here",
   hold-to-mute; HTTPS from the name-constrained local CA. Phone setup: `docs/06-phone.md`.
 - **After the gig:** presets per place type, EQ A/B, the curve and spectrum on the phone, and a GEQ
-  view only if the field trial asks for it.
+  view only if the field trial asks for it. An **internal player for a USB stick** (Thomas, 16/10:
+  ambient and test playback without the phone): a player process feeding the program beside LINE
+  IN 3/4, the stick's mount rules, play/stop from SETUP and the phone (D-016 §Not done).
 - **Phone orientation** (Thomas, 12/10): portrait stays the default and stays locked for Sunday
   (one thumb, hold-to-mute under it). After the gig, a landscape "EQ focus" layout when the phone is
   turned (wide curve and spectrum, band controls at the side), the way console remote apps adapt

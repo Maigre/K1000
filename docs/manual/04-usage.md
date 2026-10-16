@@ -176,12 +176,15 @@ hint nor the MUTED band covers them:
 | `LO-CUT OFF` | orange | The tops' Lo-Cut is off |
 | `OUT P2`, `OUT P2 LS` | orange | These live bands are OUT ([§3.6](#36-a-band-in-or-out)) |
 | `POL INV SUB`, `POL INV TOP`, `POL INV SUB+TOP` | orange | A polarity is inverted |
+| `AUX MIC`, `AUX LINE` | orange | SETUP › INPUT › AUX IN 1/2 is on: the M4's IN1 (and IN2) play through the PA (D-016). Never on the bench profile: it has no spare input |
 | `MONO SUB` | grey | SETUP › SUBS › Mono L+R is on |
+| `LOUDNESS` | grey | SETUP › SUBS › Loudness is on (D-016) |
+| `DE-HARSH` | grey | SETUP › TOPS › De-harsh is on (D-016) |
 | `AUDITION TOPS`, `AUDITION SUBS` | grey | The bench profile plays one group only |
 
 When they do not fit, they fold into a `+N` pill, grey ones first. Spectrum OFF has no pill.
 
-![Four pills: two shown, +2](../ui/show_pills.png)
+![Four pills: two shown, +2](../ui/show_pills.png) ![D-016: AUX MIC, then the grey ones folded](../ui/show_pills_d016.png)
 
 ### 3.4 Hints on SHOW
 
@@ -282,8 +285,9 @@ it; a B1 tap (or hold) goes back to SHOW.
 ![SETUP](../ui/setup.png)
 
 **The list.** Six groups, each under a header row: **TOPS**, **SUBS**, **INPUT**, **LIVE EQ**,
-**PHONE**, **BOX**. The top line says where you are (`TOPS 3/4`), a scroll bar at the right edge
-shows where in the list, and the bottom line says what the knobs do on the selected row
+**PHONE**, **BOX**. The top line says where you are (`TOPS 3/7`), a scroll bar at the right edge
+shows where in the list (deep in a long group the header scrolls away; the top line still names
+it), and the bottom line says what the knobs do on the selected row
 (`turn = change`, `turn = choose · push = set`, `push = open`, `push = run`, `push ×2 = run`,
 `fixed here`).
 
@@ -294,13 +298,14 @@ shows where in the list, and the bottom line says what the knobs do on the selec
 | E2 turn | A number: changes it. An ON/off or a choice: **chooses** it (below) |
 | E1 or E2 push | Sets what E2 chose, opens a page, or runs an action |
 
-**Choose, then set.** Every ON/off and every choice (both polarities, Lo-Cut, Mono L+R, Low-pass,
-Spectrum, Profile, Audition) takes two gestures, and the value is always on screen:
+**Choose, then set.** Every ON/off and every choice (both polarities, Lo-Cut, De-harsh, Mono L+R,
+Low-pass, Loudness, AUX IN, Spectrum, Profile, Audition) takes two gestures, and the value is
+always on screen:
 
 1. **Turn E2 to choose.** One choice per turn, wrapping round. The row turns red and shows
-   **now → chosen** (`off → ON`, `SUM → TOPS`); the footer says what the push will do
-   (`PUSH TO SET ON`), plus `· MAY CLICK` when it rebuilds the pipeline (Mono L+R, Profile,
-   Audition). Turning back to the current value chooses nothing.
+   **now → chosen** (`off → ON`, `SUM → TOPS`, `off → MIC`); the footer says what the push will do
+   (`PUSH TO SET ON`), plus `· MAY CLICK` when it rebuilds the pipeline (De-harsh, Mono L+R,
+   Loudness, AUX IN, Profile, Audition). Turning back to the current value chooses nothing.
 2. **Push E1 or E2 to set it.** Nothing changes before this push.
 
 A push with nothing chosen proposes the next value (the row shows it) and a second push sets it,
@@ -322,20 +327,29 @@ why:
 | BOX › Profile | `DEV · PINNED` | `k1000.yaml` names the profile: `PROFILE PINNED IN k1000.yaml` |
 | BOX › Audition (dev) | `—` | Not the bench profile: `AUDITION: DEV PROFILE ONLY` |
 | LIVE EQ › Spectrum | `DISABLED` | `spectrum: enabled: false` in `k1000.yaml`: `SPECTRUM OFF IN k1000.yaml` |
+| INPUT › AUX IN 1/2, AUX level | `NO SPARE INPUT`, the level greyed | The profile has no input left over for AUX (the bench HiFiBerry: its two inputs are the program): `AUX: NO SPARE INPUT ON THIS DEVICE`. The phone shows both rows read-only and the box refuses their edits |
 
-![BOX › Profile pinned](../ui/setup_profile_pinned.png)
+![BOX › Profile pinned](../ui/setup_profile_pinned.png) ![INPUT › AUX IN on the bench profile](../ui/setup_aux_dev.png)
 
 | Group › item | How | Does |
 |---|---|---|
 | TOPS › Trim L, Trim R | E2 | −24 … +6 dB: to match boxes or sides, not to set the level |
 | TOPS › Polarity | choose, push | `normal` / `INVERTED`. The tops dip briefly. Pill `POL INV TOP` |
 | TOPS › **Lo-Cut** | choose, push | The tops' high-pass on or off (`ON · 100 Hz` / `off · 100 Hz`; the frequency is ALIGN E4): `LO-CUT ON · 100 Hz` or `LO-CUT OFF`. Off parks the filter at 10 Hz (no pipeline change). Pill `LO-CUT OFF` |
+| TOPS › De-harsh | choose, push | `off` / `ON` (D-016, off by default): a cut around **De-harsh freq** that acts only while that band is louder than **De-harsh thresh**, on hard attacks; quieter, it does exactly nothing. Rebuilds the pipeline (`MAY CLICK`): `DE-HARSH ON`. Pill `DE-HARSH`. How to set it: [chapter 5 §9](05-tuning.md#9-de-harsh-and-sub-loudness-by-ear) |
+| TOPS › De-harsh freq | E2 | 1.50k … 6.00k Hz, 1/12 octave (2.70k by default, the harsh band of the first rig run); the band is about an octave wide. No click |
+| TOPS › De-harsh thresh | E2 | −48 … 0 dB, 0.5 dB (−24 by default): the band level where the cut starts (3:1 above it). Lower = it acts more often. It reads the left and right bands summed: a centred source reads 6 dB over one side's level. At 0 dB it never acts |
 | SUBS › Trim L, Trim R | E2 | As the tops' trims |
 | SUBS › Polarity | choose, push | `normal` / `INVERTED`. The subs dip briefly. Pill `POL INV SUB` |
 | SUBS › Mono L+R | choose, push | Both subs get L+R. **Keep it ON with one cable to both subs** (OUT3, D-012): OFF puts the left channel alone on them. Rebuilds the pipeline (`PUSH TO SET ON · MAY CLICK`), then the blue `APPLYING SETUP…` with Main muted around it |
 | SUBS › Low-pass | choose, push | A 12 dB/oct low-pass on the subs, on or off |
 | SUBS › Low-pass freq | E2 | 40 … 250 Hz, 1/12 octave |
+| SUBS › Loudness | choose, push | `off` / `ON` (D-016, off by default): the subs' low shelf (70 Hz) rises as the master goes under **Loudness ref**, so the subs keep filling the room at low level. At or above the reference it adds nothing; the subs are **never louder than at the reference**. Rebuilds the pipeline (`MAY CLICK`): `LOUDNESS ON`. Pill `LOUDNESS`. How to set it: [chapter 5 §9](05-tuning.md#9-de-harsh-and-sub-loudness-by-ear) |
+| SUBS › Loudness boost | E2 | 0 … +12 dB, 0.5 dB (+6 by default): the extra low end reached 20 dB under the reference (half of it 10 dB under). It rises like a trim, step by step, and the phone's raises share master's 6 dB/s |
+| SUBS › Loudness ref | E2 | −40 … 0 dB master, 0.5 dB (−10 by default): the master level where the subs sound right without help |
 | INPUT › Trim | E2 | −24 … +12 dB, 0.5 dB. Acts after the converter: it cannot fix `IN CLIP` |
+| INPUT › AUX IN 1/2 | choose, push | `off` / `MIC` / `LINE` (D-016, off by default): the M4's front inputs into the program. **MIC**: IN1 on both sides at −3 dB each, under a 100 Hz high-pass. **LINE**: IN1 left, IN2 right. AUX joins after the input trim (the trim is the program's only) and before the EQ (it gets the system EQ, the live EQ and de-harsh). Rebuilds the pipeline (`MAY CLICK`): `AUX IN 1: MIC`, `AUX IN 1/2: LINE`. Pill `AUX MIC` / `AUX LINE`. Read-only `NO SPARE INPUT` on the bench profile. **A mic: master down first, M4 GAIN 1/2 up from minimum, MON 1/2 stay unlit, then AUX level** |
+| INPUT › AUX level | E2 | −40 … +12 dB, 0.5 dB (0 by default): the AUX's own level, after the M4's GAIN knob. It rises like a trim; the phone's raises share master's 6 dB/s |
 | LIVE EQ › **Reset live EQ** | push ×2 | `PUSH AGAIN TO RESET ALL LIVE EQ`, then the four bells and both shelves go flat, smoothly: `LIVE EQ RESET · UNDO IN SETUP` (`LIVE EQ ALREADY FLAT` if there was nothing to reset) |
 | LIVE EQ › **Undo reset** | push | Puts back exactly the live EQ the last reset flattened: `LIVE EQ RESTORED`. The row counts down (`UNDO 4:47`); `—` and greyed when there is nothing to undo (`NOTHING TO UNDO`) |
 | LIVE EQ › **Spectrum** | choose, push | `ON` / `off`, saved. Read-only `DISABLED` when `spectrum: enabled: false` in `k1000.yaml` |
@@ -352,8 +366,13 @@ reset is the same reset: the box can undo it.
 
 ![Reset: the confirm](../ui/setup_reset_confirm.png) ![Undo available for 4:47](../ui/setup_undo.png)
 
-During a show, SETUP is for Reset live EQ and Undo reset only. Polarity, trims, Mono L+R and the
-profile belong before the doors.
+![TOPS › De-harsh chosen: a rebuild](../ui/setup_deharsh_pick.png) ![SUBS › Loudness boost](../ui/setup_loudness.png)
+
+![INPUT › AUX IN 1/2: MIC chosen](../ui/setup_aux_pick.png)
+
+During a show, SETUP is for Reset live EQ and Undo reset only, and the D-016 numbers (De-harsh
+freq and thresh, Loudness boost and ref, AUX level) if needed: they move without a click. Polarity,
+trims, Mono L+R, the profile and the three D-016 switches (a rebuild each) belong before the doors.
 
 ### 5.1 Laptop access and the tune page
 
@@ -549,9 +568,11 @@ on/off. It has no spectrum.
 ## 9. During a show
 
 - Stay on **SHOW**. Master on E1; ring control with B3, E4 (gain), E3 (Q).
-- Leave ALIGN locked and SETUP alone, except Reset live EQ / Undo reset.
+- Leave ALIGN locked and SETUP alone, except Reset live EQ / Undo reset and, if needed, the D-016
+  numbers (De-harsh freq and thresh, Loudness boost and ref, AUX level): they move without a click.
 - No CamillaGUI Apply, and Laptop access closed.
-- Never Mono L+R, Profile or Audition: they rebuild the pipeline (a click).
+- Never Mono L+R, Profile, Audition, De-harsh, Loudness or AUX IN: they rebuild the pipeline (a
+  click).
 - `NO SPECTRUM`: SETUP › LIVE EQ › Spectrum off; the sound is not affected.
 
 | Emergency | Do |

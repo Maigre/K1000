@@ -563,6 +563,126 @@ await run("setup", async () => {
   await t.close();
 });
 
+// ================================================================== D-016: de-harsh, loudness, AUX IN
+await run("d016", async () => {
+  const t = await open({ tag: "d016", vp: { width: 393, height: 740 } });
+  const { page, box, f } = t;
+  await tapSel(t, page, "#setupBtn");
+  const text = (sel) => page.textContent(sel);
+  // TOPS: De-harsh OFF/ON with its FREQ tile beside it, the threshold its own row
+  const dh = '#shBody [data-row="deharsh_on"]';
+  check("d016: TOPS has De-harsh off / ON paired with its FREQ tile", (await page.$$eval(dh + " .seg button", (bs) => bs.map((b) => b.textContent))).join("|") === "OFF|ON" &&
+    (await page.$$eval(dh + " .tile .tl b", (bs) => bs.map((b) => b.textContent))).join("|") === "FREQ", await page.$$eval(dh + " .seg button", (bs) => bs.map((b) => b.textContent)));
+  check("d016: the de-harsh row says what it does", /hard attacks/.test(await text(dh + " .rn")), await text(dh + " .rn"));
+  check("d016: the FREQ tile reads 2.70k", /2\.70k/.test(await text(dh + " .tile .tv")), await text(dh + " .tile .tv"));
+  // ON is a rebuild: chosen, then a 1 s hold on SET (MAY CLICK)
+  box.clearSent();
+  await page.locator(dh + " .seg button:nth-child(2)").click(); await sleep(500);
+  check("d016: De-harsh ON's SET says HOLD 1 s and may click", /HOLD 1 s/.test(await text(dh + " .setk")) && /may click/i.test(await text(dh + " .setrow")));
+  const dk = await center(page, dh + " .setk");
+  await f.hold(dk.x, dk.y, 1150); await sleep(250);
+  const c = box.ofType("choose");
+  check("d016: a 1 s hold sends choose deharsh_on true", c.length === 1 && c[0].f === "deharsh_on" && c[0].v === true && c[0].seen === false, c);
+  // the threshold: its own tile, a tap opens its steps, a step is a nudge
+  const th = '#shBody [data-row="deharsh_thresh_db"]';
+  box.clearSent();
+  await page.locator(th + " .tile").scrollIntoViewIfNeeded(); await sleep(150);
+  await tapSel(t, page, th + " .tile");
+  const st = await page.$$eval("#shBody .istep:not([hidden]) button", (bs) => bs.map((b) => b.textContent));
+  check("d016: THRESHOLD steps open under its row", st.length >= 4, st);
+  await page.locator("#shBody .istep:not([hidden]) button").last().click(); await sleep(300);
+  const n = box.ofType("nudge");
+  check("d016: a THRESHOLD step sends nudge deharsh_thresh_db", n.length >= 1 && n.every((m) => m.f === "deharsh_thresh_db" && m.d > 0), n);
+  await fitCheck(page, "d016 TOPS");
+  await shot(page, "d016-tops");
+  // SUBS: Loudness with BOOST, then REFERENCE
+  await page.locator("#shTabs button", { hasText: "SUBS" }).click(); await sleep(150);
+  const ld = '#shBody [data-row="loud_on"]';
+  check("d016: SUBS has Loudness paired with its BOOST tile", (await page.$$eval(ld + " .tile .tl b", (bs) => bs.map((b) => b.textContent))).join("|") === "BOOST" &&
+    /reference/.test(await text(ld + " .rn")), await text(ld + " .rn"));
+  check("d016: the REFERENCE tile reads -10.0", /−?-?10\.0/.test(await text('#shBody [data-row="loud_ref_db"] .tile .tv')), await text('#shBody [data-row="loud_ref_db"] .tile .tv'));
+  await fitCheck(page, "d016 SUBS");
+  await shot(page, "d016-subs");
+  // INPUT on a box with no spare input (the fixture is dev's): both AUX rows read-only, said
+  await page.locator("#shTabs button", { hasText: "INPUT" }).click(); await sleep(150);
+  const ax = '#shBody [data-row="aux_mode"]', al = '#shBody [data-row="aux_gain_db"]';
+  const why = fx.state.readonly.aux_mode;
+  const isRo = (sel) => page.$eval(sel, (e) => e.classList.contains("ro"));
+  check("d016: the fixture (dev) holds AUX read-only", /NO SPARE INPUT/.test(why || ""), fx.state.readonly);
+  check("d016: AUX IN reads NO SPARE INPUT · READ-ONLY with the box's reason", (await isRo(ax)) &&
+    (await text(ax + " .rv")) === "NO SPARE INPUT · READ-ONLY" && (await text(ax + " .rn")) === why, await text(ax));
+  // a MIC stored from an m4 run routes nothing here: the row says NO SPARE INPUT, as the box does
+  box.push({ setup: Object.assign({}, box.state.setup, { aux_mode: "mic" }) }); await sleep(250);
+  check("d016: a stored MIC on a box with no spare input still reads NO SPARE INPUT", (await text(ax + " .rv")) === "NO SPARE INPUT · READ-ONLY", await text(ax + " .rv"));
+  box.push({ setup: Object.assign({}, box.state.setup, { aux_mode: "off" }) }); await sleep(250);
+  const meter = { label: await page.textContent("#shBody .srow:first-child .rl"), note: await page.textContent("#shBody .srow:first-child .rn") };
+  check("d016: the INPUT meter says it is the program's, not the AUX", meter.label === "Program input" && /not the AUX IN/.test(meter.note), meter);
+  check("d016: the AUX level row is dimmed with the reason", (await isRo(al)) && (await text(al + " .rn")) === why, await text(al));
+  box.clearSent();
+  await page.locator(ax + " .seg button:nth-child(2)").click(); await sleep(200);
+  check("d016: a choice on a read-only AUX sends nothing and says why", !box.ofType("choose").length && (await toasts(page)).some((x) => x === why));
+  await page.locator(al + " .tile").scrollIntoViewIfNeeded(); await sleep(150);
+  await tapSel(t, page, al + " .tile");
+  const said0 = (await toasts(page)).filter((x) => x === why).length;
+  const tv0 = await text(al + " .tile .tv");
+  const plus = page.locator("#shBody .istep:not([hidden]) button").last();
+  await plus.click(); await plus.click(); await sleep(150);
+  const back = await toasts(page);
+  // refused on the page with the box's reason, BEFORE its PA-up mirror: nothing sent, nothing
+  // spent (D-016 review: the page took the shared "pa" tokens the box never spent)
+  check("d016: a step on the read-only AUX level sends nothing and says why", !box.ofType("nudge").length &&
+    back.filter((x) => x === why).length >= said0 + 2, back.slice(-4));
+  check("d016: the read-only AUX level does not move on the page", (await text(al + " .tile .tv")) === tv0, [tv0, await text(al + " .tile .tv")]);
+  await fitCheck(page, "d016 INPUT read-only");
+  await shot(page, "d016-input-dev");
+  // STATUS says the same as the box (no AUX routed here), and a master rise right after the
+  // refused AUX steps goes out whole: the page's "pa" mirror was not spent by them
+  await tapSel(t, page, "#shX");
+  await tapSel(t, page, "#stBtn"); await sleep(150);
+  const kvAux = await page.$$eval("#shBody .kv", (rs) => (rs.find((r) => /De-harsh/.test(r.firstChild.textContent)) || { lastChild: { textContent: "" } }).lastChild.textContent);
+  check("d016: STATUS reads NO SPARE INPUT for the AUX", /NO SPARE INPUT$/.test(kvAux), kvAux);
+  await tapSel(t, page, "#shX");
+  await tapSel(t, page, "#setupBtn");
+  await page.locator("#shTabs button", { hasText: "INPUT" }).click(); await sleep(150);
+  await page.locator(al + " .tile").scrollIntoViewIfNeeded(); await sleep(100);
+  await tapSel(t, page, al + " .tile");
+  await plus.click(); await plus.click();
+  await tapSel(t, page, "#shX");
+  await tapSel(t, page, "#foot .tile");
+  box.clearSent();
+  const before = (await toasts(page)).length;
+  await page.locator("#stepper button").last().click(); await sleep(200);
+  const mn = box.ofType("nudge").filter((m) => m.f === "master_db");
+  const tl = (await toasts(page)).slice(before);
+  check("d016: a master rise right after refused AUX steps goes out whole (no SLOW DOWN)", mn.length === 1 && mn[0].d > 0 &&
+    !tl.some((x) => /SLOW DOWN/.test(x)), { mn, tl });
+  await tapSel(t, page, "#stepper .sx");
+  await tapSel(t, page, "#setupBtn");
+  await page.locator("#shTabs button", { hasText: "INPUT" }).click(); await sleep(150);
+  // the same rows on a box with IN1/IN2 spare (m4): editable, MIC is a rebuild
+  box.push({ readonly: {} }); await sleep(250);
+  check("d016: on the m4 the AUX rows edit", !(await isRo(ax)) && !(await isRo(al)) &&
+    /MIC: IN1/.test(await text(ax + " .rn")), await text(ax + " .rn"));
+  check("d016: AUX IN reads off / MIC / LINE", (await page.$$eval(ax + " .seg button", (bs) => bs.map((b) => b.textContent))).join("|") === "OFF|MIC|LINE");
+  box.clearSent();
+  await sleep(500);
+  await page.locator(ax + " .seg button:nth-child(2)").click(); await sleep(500);
+  const ak = await center(page, ax + " .setk");
+  await f.hold(ak.x, ak.y, 1150); await sleep(250);
+  const c2 = box.ofType("choose");
+  check("d016: AUX MIC is chosen then held (a rebuild)", c2.length === 1 && c2[0].f === "aux_mode" && c2[0].v === "mic" && c2[0].seen === "off", c2);
+  await fitCheck(page, "d016 INPUT m4");
+  await shot(page, "d016-input-m4");
+  await tapSel(t, page, "#shX");
+  // the pills: AUX orange (warn) beside POL INV, LOUDNESS and DE-HARSH neutral
+  box.push({ pills: ["AUX MIC", "MONO SUB", "LOUDNESS", "DE-HARSH"] }); await sleep(250);
+  const pills = await page.$$eval("#pills .pill", (ps) => ps.map((p) => [p.className, p.textContent]));
+  check("d016: the AUX pill is a warning, LOUDNESS / DE-HARSH neutral", pills.some(([c, x]) => x === "AUX MIC" && /warn/.test(c)) &&
+    pills.some(([c, x]) => x === "LOUDNESS" && !/warn/.test(c)), pills);
+  await fitCheck(page, "d016 pills");
+  await t.close();
+});
+
 // ================================================================== ALIGN: locked unless the box unlocked this connection
 await run("align", async () => {
   const t = await open({ tag: "align" });
@@ -1077,9 +1197,9 @@ await run("sheets", async () => {
   await tapSel(t, page, "#setupBtn");
   check("sheets: opening a sheet closes the popover", !(await ui(page)).popOpen && (await page.isHidden("#pop")));
   const tileLabels = () => page.$$eval("#shBody .tile .tl b", (bs) => bs.map((b) => b.textContent));
-  check("sheets: TOPS trims read TOP L / TOP R", (await tileLabels()).join("|") === "TOP L|TOP R", await tileLabels());
+  check("sheets: TOPS trims read TOP L / TOP R (then D-016's de-harsh FREQ, THRESHOLD)", (await tileLabels()).join("|") === "TOP L|TOP R|FREQ|THRESHOLD", await tileLabels());
   await page.locator("#shTabs button", { hasText: "SUBS" }).click(); await sleep(150);
-  check("sheets: SUBS trims read SUB L / SUB R, the low-pass tile SUB LP", (await tileLabels()).join("|") === "SUB L|SUB R|SUB LP", await tileLabels());
+  check("sheets: SUBS trims read SUB L / SUB R, the low-pass tile SUB LP (then D-016's loudness BOOST, REFERENCE)", (await tileLabels()).join("|") === "SUB L|SUB R|SUB LP|BOOST|REFERENCE", await tileLabels());
   // the low-pass choice at 600 px: its SET line scrolls into view
   const lp = '#shBody [data-row="sub_lowpass_on"]';
   const want = box.state.setup.sub_lowpass_on ? 1 : 2;

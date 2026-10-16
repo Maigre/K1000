@@ -13,6 +13,13 @@ Field paths (`"master_db"`, `"live_peq.2.gain"`, `"out_trim_db.1"`) address one 
 and controller; `range_for(path)` gives its `Range`. Each live band also has an IN/OUT switch
 (`"live_peq.2.on"`, `"live_lowshelf.on"`, D-014): OUT keeps the band's settings, and the engine
 gets 0 dB for it (`effective_gain`).
+
+Three dynamic/routing features (2026-10-16, after the first rig run; ALL OFF by default, and
+with all three off the engine config is byte for byte the one f2671b0 wrote): AUX IN (`aux_mode`:
+the M4's IN1/IN2 into the program, mic or line), sub loudness (`loud_on`: the subs' low shelf
+grows as the master goes down, so the subs still fill the room at low level) and de-harsh
+(`deharsh_on`: a dynamic cut around 2.7 kHz that only acts on hard attacks). Each switch changes
+the pipeline (a Rebuild, SETUP only); their levels and frequencies are show-time values.
 """
 from __future__ import annotations
 
@@ -43,6 +50,33 @@ LOWCUT_OFF_HZ = 10.0
 SUB_LOWPASS_OFF_HZ = 20000.0
 LOWCUT_Q = 0.707          # 2nd-order Butterworth = 12 dB/oct, the LD-2 Lo-Cut slope
 SUB_LOWPASS_Q = 0.707
+
+# AUX IN (aux_mode): the M4's IN1 (mic: one channel) or IN1+IN2 (line: a stereo pair) summed into
+# the program after its input trim and before the room EQ. A mic gets a fixed 12 dB/oct
+# high-pass (handling noise, stage rumble, proximity boom: a voice needs nothing under 100 Hz)
+# and is panned centre at -3 dB to each side (the equal-power pan law: in the room the pair is
+# about as loud as one side at 0 dB, where 0 dB on both sides would add up to +6 dB on axis).
+AUX_MODES: tuple[str, ...] = ("off", "mic", "line")
+AUX_MIC_HP_HZ = 100.0
+AUX_MIC_HP_Q = 0.707
+AUX_MIC_PAN_DB = -3.0
+
+# Sub loudness (loud_on): CamillaDSP's Loudness filter on the subs only, driven by the Main fader.
+# Its low shelf (70 Hz, Q 0.707 = 12 dB/oct, the engine's default corner) gets
+# loud_boost_db * clamp((loud_ref_db - master) / 20, 0, 1): nothing at and above the reference,
+# the full boost 20 dB under it. No treble boost (the tops are not touched).
+LOUD_LOW_FREQ_HZ = 70.0
+LOUD_HIGH_BOOST_DB = 0.0
+
+# De-harsh (deharsh_on): a band-pass copy of L/R around deharsh_hz (Q 1.4 ~ one octave) drives
+# a 3:1 compressor that acts on that band only, and the compressed band replaces the dry one: a
+# peaking cut whose depth is the compressor's gain reduction, 0 dB (an exact pass-through)
+# while the band stays under deharsh_thresh_db. 1 ms attack catches the attack transient,
+# 80 ms release lets go before the next note without pumping.
+DEHARSH_Q = 1.4
+DEHARSH_RATIO = 3.0
+DEHARSH_ATTACK_MS = 1.0
+DEHARSH_RELEASE_MS = 80.0
 
 # The engine runs one fixed rate (contract §3). A Delay with `subsample: false` is a whole number
 # of samples, rounded to nearest (measured on 5.0.0-beta.1: 0.0104 ms -> 0, 0.0105 ms -> 1), so
@@ -142,6 +176,24 @@ RANGES: dict[str, Range] = {
     "live_highshelf.gain": Range(-12.0, 6.0, 0.5, default=0.0, unit="dB"),
     "live_highshelf.q": Range(0.4, 1.5, _Q_STEP, log=True, fine=_Q_FINE, default=0.707, digits=3),
     "out_trim_db": Range(-24.0, 6.0, 0.5, default=0.0, unit="dB"),
+    # AUX IN level (aux_mode != "off"): the AUX's own gain, before the room EQ; the program's
+    # input trim does not apply to it. -40 dB tucks a source under the program, +12 dB lifts a
+    # quiet one (the M4's front-panel gain stays the first level control).
+    "aux_gain_db": Range(-40.0, 12.0, 0.5, default=0.0, unit="dB"),
+    # Sub loudness (loud_on): the subs' low-shelf boost reached 20 dB under the reference, and
+    # the master level at and above which loudness adds nothing (where the subs sound right).
+    # The boost at a master m is loud_boost_db * (loud_ref_db - m) / 20 at most, i.e. at most
+    # 0.6 dB per dB the master went down: the subs are never louder than at the reference.
+    "loud_boost_db": Range(0.0, 12.0, 0.5, default=6.0, unit="dB"),
+    "loud_ref_db": Range(-40.0, 0.0, 0.5, default=-10.0, unit="dB"),
+    # De-harsh (deharsh_on): the band's centre (Thomas's notch: 2.7 kHz) and the compressor
+    # threshold. The compressor reads the SUM of the L and R band copies: a centred (correlated)
+    # source reads +6 dB over one channel's band level, a one-sided one reads as it is. It reads
+    # them AFTER the Main fader (CamillaDSP applies Main before the first pipeline step,
+    # pipeline.rs): the master moves the level it compares, so the threshold is set at show level
+    # (quieter, it acts less), like the input trim and the source level.
+    "deharsh_hz": Range(1500.0, 6000.0, _FREQ_STEP, log=True, fine=_FREQ_FINE, default=2700.0, unit="Hz"),
+    "deharsh_thresh_db": Range(-48.0, 0.0, 0.5, default=-24.0, unit="dB"),
 }
 
 # ALIGN E2 (D-011; E3 until D-015): ONE signed alignment delay over the two stored ones,
@@ -159,12 +211,14 @@ VIRTUAL_RANGES: dict[str, Range] = {
 
 BOOL_FIELDS: tuple[str, ...] = (
     "muted", "mono_subs", "sub_inverted", "top_inverted", "lowcut_on", "sub_lowpass_on",
-    "spectrum_on",
+    "spectrum_on", "loud_on", "deharsh_on",
 )
-CHOICES: dict[str, tuple[str, ...]] = {"profile": PROFILES, "dev_audition": AUDITIONS}
+CHOICES: dict[str, tuple[str, ...]] = {"profile": PROFILES, "dev_audition": AUDITIONS,
+                                       "aux_mode": AUX_MODES}
 
 # Changing these rebuilds the CamillaDSP pipeline (mixers/devices): SETUP page only, with confirm.
-REBUILD_FIELDS: frozenset[str] = frozenset({"mono_subs", "profile", "dev_audition"})
+REBUILD_FIELDS: frozenset[str] = frozenset({"mono_subs", "profile", "dev_audition",
+                                            "aux_mode", "loud_on", "deharsh_on"})
 
 # The live EQ layer (D-014: each of its bands has an IN/OUT switch, `<band>.on`). The system EQ
 # (sys_peq, set at the tune) has none: its bands are always IN.
@@ -261,6 +315,17 @@ class State:
     # SETUP > Spectrum (D-009): the SHOW page's program spectrum. UI only: the engine config
     # never depends on it (dspconfig ignores it), and a v0 build ignores the key.
     spectrum_on: bool = True
+    # 2026-10-16 features, all off by default (a state.json saved before them loads with these
+    # values, and an older build ignores the keys). The switches rebuild the pipeline
+    # (REBUILD_FIELDS); the values are show-time parameters, kept while their feature is off.
+    aux_mode: str = "off"                 # "off" | "mic" (IN1) | "line" (IN1 L, IN2 R)
+    aux_gain_db: float = 0.0
+    loud_on: bool = False
+    loud_boost_db: float = 6.0
+    loud_ref_db: float = -10.0
+    deharsh_on: bool = False
+    deharsh_hz: float = 2700.0
+    deharsh_thresh_db: float = -24.0
 
     # ----------------------------------------------------------------- copies / clamping
     def copy(self) -> "State":

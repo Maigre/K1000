@@ -30,7 +30,12 @@ HWTEST reached from SETUP.
   E1 selects the item, E3 jumps a group. E2 turns a number; on an ON/off or a choice it CHOOSES
   (the row shows `now -> chosen`) and a push SETS it: two gestures, the value always visible.
   A push with nothing chosen proposes the next value, so push, push still works. Reset live EQ
-  and Laptop access need a second push within CONFIRM_WINDOW_S.
+  and Laptop access need a second push within CONFIRM_WINDOW_S. A row the Controller holds
+  read-only (`Focus.readonly`), a number included, only shows its reason.
+- D-016 (2026-10-16, all OFF by default): TOPS De-harsh (ON/off, a rebuild) + its freq and
+  threshold, SUBS Loudness (ON/off, a rebuild) + its boost and reference, INPUT AUX IN 1/2
+  (off / MIC / LINE, a rebuild) + its level. The switches are chosen then set like Mono; the
+  numbers turn like a trim.
 - B1: tap (on release) = SHOW <-> ALIGN, and back from SETUP to SHOW, from PHONE to SETUP;
   hold = SETUP from SHOW/ALIGN, SHOW from SETUP/PHONE. The Controller brings ALIGN and SETUP
   back to SHOW after HOME_AFTER_S without input.
@@ -237,6 +242,10 @@ F_ALIGN_DELAY = "align_delay_ms"
 F_LOWCUT_FREQ = "lowcut_hz"    # E4 on ALIGN
 F_LOWCUT_ON = "lowcut_on"      # SETUP > Lo-Cut (confirmed)
 F_SPECTRUM_ON = "spectrum_on"  # SETUP > Spectrum
+F_DEHARSH_ON = "deharsh_on"    # SETUP > TOPS > De-harsh (D-016, a rebuild)
+F_LOUD_ON = "loud_on"          # SETUP > SUBS > Loudness (D-016, a rebuild)
+F_AUX_MODE = "aux_mode"        # SETUP > INPUT > AUX IN 1/2: off | mic | line (D-016, a rebuild)
+F_AUX_GAIN = "aux_gain_db"     # SETUP > INPUT > AUX level
 F_SLOT = "slot"                # pseudo-field: highlight when the selected band changes
 
 LIVE_SLOTS: tuple[str, ...] = ("live_peq.0", "live_peq.1", "live_peq.2", "live_peq.3",
@@ -320,15 +329,22 @@ A_LAPTOP = "laptop_access"      # the Friday tune's laptop over the K1000 Wi-Fi 
 # SETUP (D-013): grouped by speaker floor, then the rest by what it serves. The ALIGN page keeps
 # what is set per venue (balance, the signed delay, the Lo-Cut frequency); SETUP holds what is set
 # once per rig. Every ON/off and choice is chosen with E2 and set by a push (the row shows both
-# values), so a pipeline rebuild (Mono, Profile, Audition: a possible click) is never one gesture.
-# Laptop access opens with a double push and closes with one (the Controller waives its confirm
-# while it is open).
+# values), so a pipeline rebuild (Mono, Profile, Audition, and D-016's De-harsh, Loudness and AUX
+# IN: a possible click) is never one gesture. Laptop access opens with a double push and closes
+# with one (the Controller waives its confirm while it is open).
+# D-016 rows sit in the group of what they act on, each switch right before its numbers (the phone
+# pairs a switch with the next number whose label starts with the switch's). Labels fit the 480 px
+# row beside their longest value at 20 px ("De-harsh thresh  -48.0 dB"; tests/test_ui.py checks it).
 SETUP_GROUPS: tuple[tuple[str, tuple[SetupItem, ...]], ...] = (
     ("TOPS", (
         SetupItem("Trim L", "out_trim_db.2", "num"),
         SetupItem("Trim R", "out_trim_db.3", "num"),
         SetupItem("Polarity", "top_inverted", "bool"),
         SetupItem("Lo-Cut", F_LOWCUT_ON, "bool"),          # its frequency: ALIGN E4
+        # D-016: a dynamic cut around the harsh band (2.7 kHz) that acts only on loud attacks
+        SetupItem("De-harsh", F_DEHARSH_ON, "bool"),
+        SetupItem("De-harsh freq", "deharsh_hz", "num"),
+        SetupItem("De-harsh thresh", "deharsh_thresh_db", "num"),
     )),
     ("SUBS", (
         SetupItem("Trim L", "out_trim_db.0", "num"),
@@ -337,9 +353,16 @@ SETUP_GROUPS: tuple[tuple[str, tuple[SetupItem, ...]], ...] = (
         SetupItem("Mono L+R", "mono_subs", "bool"),
         SetupItem("Low-pass", "sub_lowpass_on", "bool"),
         SetupItem("Low-pass freq", "sub_lowpass_hz", "num"),
+        # D-016: the subs' low shelf grows as the master goes under the reference level
+        SetupItem("Loudness", F_LOUD_ON, "bool"),
+        SetupItem("Loudness boost", "loud_boost_db", "num"),
+        SetupItem("Loudness ref", "loud_ref_db", "num"),
     )),
     ("INPUT", (
         SetupItem("Trim", "input_trim_db", "num"),
+        # D-016: the M4's IN1 (a mic) or IN1 + IN2 (a line pair) into the program, after the trim
+        SetupItem("AUX IN 1/2", F_AUX_MODE, "choice"),
+        SetupItem("AUX level", "aux_gain_db", "num"),
     )),
     ("LIVE EQ", (
         SetupItem("Reset live EQ", A_RESET_LIVE, "action", confirm=True),
@@ -393,11 +416,14 @@ def setup_group_step(i: int, delta: int) -> int:
 
 def choice_name(item: SetupItem, value: Any) -> str:
     """How the box screen names one value of an ON/off or choice row (pages._fmt_setup's words):
-    polarity normal / INVERTED, other ON/off rows off / ON, choices upper case."""
+    polarity normal / INVERTED, other ON/off rows off / ON, choices upper case, except a choice's
+    "off" (AUX IN's), which reads like every other off: lower case, the quiet state."""
     if item.field.endswith("_inverted"):
         return "INVERTED" if value else "normal"
     if item.kind == "bool" or isinstance(value, bool):
         return "ON" if value else "off"
+    if value == "off":
+        return "off"
     return str(value).upper()
 
 
@@ -704,7 +730,8 @@ class Focus:
     no_confirm: set[str] = field(default_factory=set)
     # SETUP fields that cannot change right now -> the hint a turn or push shows instead (set by
     # the Controller: Profile pinned in k1000.yaml, Audition off the dev profile, Spectrum
-    # disabled in k1000.yaml). The row draws its value dimmed.
+    # disabled in k1000.yaml, AUX IN and its level on a profile with no spare input). The row
+    # draws its value dimmed.
     readonly: dict[str, str] = field(default_factory=dict)
 
     def editing_now(self, now: float | None = None) -> str | None:
@@ -986,11 +1013,11 @@ def _pick_step(focus: Focus, item: SetupItem, delta: int, now: float, state: Any
 def _setup_turn(focus: Focus, delta: int, fine: bool, now: float = 0.0,
                 state: Any = None) -> list[Action]:
     item = _setup_item(focus)
+    ro = focus.readonly.get(item.field)
+    if ro:              # a number too (D-016: the AUX level where no input is spare)
+        return [ShowHint(ro)]
     if item.kind == "num":
         return [Nudge(item.field, delta, fine)]
-    ro = focus.readonly.get(item.field)
-    if ro:
-        return [ShowHint(ro)]
     if item.picks:
         return _pick_step(focus, item, delta, now, state)
     if item.kind == "page":

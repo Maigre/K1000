@@ -3,10 +3,12 @@
 
 Unit tests need no hardware. Tests marked `engine` run the real camilladsp binary (on the box):
 `camilladsp -c` validity of generated configs, and a private instance on a SignalGenerator ->
-File(/dev/null) config (never the ALSA card) driven over the v5 websocket.
+File(/dev/null) config (never the ALSA card) driven over the v5 websocket, or an offline run
+(RawFile capture -> File playback, no websocket) whose output is measured sample by sample.
 Port: $K1000_DSPCONFIG_PORT (default 12341).
 """
 import contextlib
+import copy
 import json
 import math
 import os
@@ -20,6 +22,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+import dspconfig_golden as golden
 from k1000 import dspconfig as d
 from k1000 import profiles as pf
 from k1000.state import RANGES, State, delay_samples
@@ -1321,3 +1324,971 @@ def test_adoption_keeps_an_out_band_and_its_stored_gain():
     cfg["filters"]["live_peq_2"]["parameters"]["gain"] = 0.0
     s = d.state_from_config(cfg, None, on)
     assert s.live_peq[1].on is True and s.live_peq[1].gain == 0.0
+
+
+# ============================================================================ 2026-10-16 AUX / loudness / de-harsh
+# Thomas after the first rig run: a band compressor for the hard 2.7 kHz attacks (de-harsh), subs
+# that stay full at low level (sub loudness), and IN1/IN2 into the program (AUX IN). All off by
+# default; with all three off the config must be f2671b0's, byte for byte (Sunday safety).
+FEATURE_VALUES = dict(aux_gain_db=-12.5, loud_boost_db=12.0, loud_ref_db=-30.0, deharsh_hz=4100.0,
+                      deharsh_thresh_db=-6.0)
+AUX_GAIN_PTR = "/filters/aux_gain/parameters/gain"
+DH_FREQ_PTR = "/filters/dh_band/parameters/freq"
+DH_THRESH_PTR = "/processors/dh_comp/parameters/threshold"
+LOUD_REF_PTR = "/filters/sub_loudness/parameters/reference_level"
+LOUD_BOOST_PTR = "/filters/sub_loudness/parameters/low_boost"
+FEATURE_PTRS = (AUX_GAIN_PTR, DH_FREQ_PTR, DH_THRESH_PTR, LOUD_REF_PTR, LOUD_BOOST_PTR)
+
+
+def feature_profiles():
+    """dev (no spare input), m4 (IN1/IN2 spare), and the m4 variants that move the spares."""
+    return {
+        "dev": dev(),
+        "m4": m4(),
+        "m4_6ch": m4(capture_channels=6),                 # spares 0, 1, 4, 5
+        "m4_in12": m4(input_map=[0, 1]),                  # program on IN1/2: spares 2, 3
+        "m4_3ch": m4(capture_channels=3, input_map=[1, 2]),   # one spare: line degrades to mono
+    }
+
+
+def feature_states(profile_name="dev"):
+    """Every combination of the three switches x mono subs, with non-default feature values."""
+    out = {}
+    for aux in ("off", "mic", "line"):
+        for loud in (False, True):
+            for dh in (False, True):
+                for mono in (False, True):
+                    s = State(profile=profile_name, aux_mode=aux, loud_on=loud, deharsh_on=dh,
+                              mono_subs=mono, **FEATURE_VALUES)
+                    out[f"aux_{aux}{'_loud' if loud else ''}{'_dh' if dh else ''}{'_mono' if mono else ''}"] = s
+    return out
+
+
+def _channel_flow(cfg):
+    """camilladsp's validate_pipeline channel bookkeeping, plus K1000's own rules: every mixer
+    feeds each of its outputs, every step names something defined, processors match the count."""
+    n = cfg["devices"]["capture"]["channels"]
+    for st in cfg["pipeline"]:
+        if st["type"] == "Mixer":
+            m = cfg["mixers"][st["name"]]
+            assert m["channels"]["in"] == n, st
+            assert sorted(mp["dest"] for mp in m["mapping"]) == list(range(m["channels"]["out"])), st
+            assert all(0 <= src["channel"] < n for mp in m["mapping"] for src in mp["sources"]), st
+            assert len(m["labels"]) == m["channels"]["out"], st
+            n = m["channels"]["out"]
+        elif st["type"] == "Filter":
+            assert st["channels"] and all(0 <= c < n for c in st["channels"]), st
+            assert len(set(st["channels"])) == len(st["channels"]), st
+            assert all(name in cfg["filters"] for name in st["names"]), st
+        else:
+            assert st["type"] == "Processor", st
+            par = cfg["processors"][st["name"]]["parameters"]
+            assert par["channels"] == n, st
+            assert all(0 <= c < n for c in par["monitor_channels"] + par["process_channels"]), st
+    assert n == cfg["devices"]["playback"]["channels"]
+
+
+def _steps(cfg):
+    return [(s["type"], s.get("name"), tuple(s.get("names") or ()), tuple(s.get("channels") or ()))
+            for s in cfg["pipeline"]]
+
+
+def _srcs(mixer, dest):
+    m = next(m for m in mixer["mapping"] if m["dest"] == dest)
+    return [(x["channel"], x["gain"], x["inverted"], x["scale"]) for x in m["sources"]]
+
+
+# ----------------------------------------------------------------- Sunday safety: f2671b0 identity
+@pytest.mark.parametrize("profile_key,state_key", golden.cases())
+def test_features_off_config_is_byte_identical_to_f2671b0(profile_key, state_key):
+    """THE hard rule: all three off -> exactly the YAML f2671b0 wrote (fixtures captured from a
+    `git archive f2671b0` copy before the features existed), whatever the features' own values."""
+    want = golden.golden_path(profile_key, state_key).read_text(encoding="utf-8")
+    assert golden.render(d, pf, State, profile_key, state_key) == want
+    name, ov = golden.PROFILES[profile_key]
+    prof = pf.load_profile(name, ov or None, probe=False)
+    s = golden.STATES[state_key](State)
+    assert (s.aux_mode, s.loud_on, s.deharsh_on) == ("off", False, False)
+    for k, v in FEATURE_VALUES.items():
+        setattr(s, k, v)
+    assert d.to_yaml(d.generate(prof, s)) == want
+    assert d.to_yaml(d.generate(prof, s), yaml.SafeDumper) == want
+
+
+def test_features_off_param_map_is_f2671b0s():
+    """The owned pointers (diff_ops, adoption, drift all derive from them) are f2671b0's too."""
+    assert golden.render_params(d, State) == golden.params_path().read_text(encoding="utf-8")
+    for name, f in golden.STATES.items():
+        s = f(State)
+        base = d.param_map(s)
+        for k, v in FEATURE_VALUES.items():
+            setattr(s, k, v)
+        assert d.param_map(s) == base, name
+        assert d.diff_ops(f(State), s) == [], name           # a hidden feature value sends nothing
+
+
+def test_golden_fixtures_are_complete():
+    files = sorted(p.name for p in golden.GOLDEN_DIR.iterdir())
+    assert files == sorted([golden.golden_path(*c).name for c in golden.cases()] + ["param_map.json"])
+
+
+# ----------------------------------------------------------------- every combination is consistent
+@pytest.mark.parametrize("prof_key", list(feature_profiles()))
+def test_every_feature_combination_is_a_consistent_config(prof_key):
+    prof = feature_profiles()[prof_key]
+    for name, s in feature_states(prof.name).items():
+        cfg = d.generate(prof, s)
+        _channel_flow(cfg)
+        assert _used_capture_channels(cfg) == [True] * prof.capture_channels, (prof_key, name)
+        for ptr, val in d.param_map(s).items():                 # owned pointers always resolve
+            assert resolve(cfg, ptr) == val, (prof_key, name, ptr)
+        assert set(FEATURE_PTRS) & set(d.param_map(s)) == {
+            p for p, on in ((AUX_GAIN_PTR, s.aux_mode != "off"), (DH_FREQ_PTR, s.deharsh_on),
+                            (DH_THRESH_PTR, s.deharsh_on), (LOUD_REF_PTR, s.loud_on),
+                            (LOUD_BOOST_PTR, s.loud_on)) if on}
+        text = d.to_yaml(cfg)
+        assert yaml.safe_load(text) == cfg
+        assert d.to_yaml(cfg, yaml.SafeDumper) == text, (prof_key, name)
+        assert ("processors" in cfg) is s.deharsh_on
+        assert d.config_drift(json.dumps(cfg), cfg).clean, (prof_key, name)
+        assert d.state_from_config(json.dumps(cfg), None, s) == s.clamped(), (prof_key, name)
+
+
+# ----------------------------------------------------------------- AUX IN
+def test_aux_m4_mic_routes_in1_centred_after_the_trim_and_before_the_eq():
+    cfg = d.generate(m4(), State(profile="m4", aux_mode="mic", aux_gain_db=-4.0))
+    im = cfg["mixers"]["input"]
+    assert im["channels"] == {"in": 4, "out": 4} and im["labels"] == ["L", "R", "AUX IN1", "AUX IN2"]
+    assert [_srcs(im, i) for i in range(4)] == [[(2, 0.0, False, "dB")], [(3, 0.0, False, "dB")],
+                                                [(0, 0.0, False, "dB")], [(1, 0.0, False, "dB")]]
+    am = cfg["mixers"]["aux_mix"]
+    assert am["channels"] == {"in": 4, "out": 2}
+    assert _srcs(am, 0) == [(0, 0.0, False, "dB"), (2, -3.0, False, "dB")]
+    assert _srcs(am, 1) == [(1, 0.0, False, "dB"), (2, -3.0, False, "dB")]
+    f = cfg["filters"]
+    assert f["aux_gain"]["parameters"] == {"gain": -4.0, "inverted": False, "mute": False, "scale": "dB"}
+    assert f["aux_hp"]["parameters"] == {"type": "Highpass", "freq": 100.0, "q": 0.707}
+    st = _steps(cfg)
+    assert st[:5] == [("Mixer", "input", (), ()), ("Filter", None, ("in_trim",), (0, 1)),
+                      ("Filter", None, ("aux_gain", "aux_hp"), (2,)), ("Mixer", "aux_mix", (), ()),
+                      ("Filter", None, d.PROGRAM_EQ, (0, 1))]
+    assert st[5] == ("Mixer", "split", (), ())
+
+
+def test_aux_m4_line_routes_in1_left_in2_right():
+    cfg = d.generate(m4(), State(profile="m4", aux_mode="line"))
+    am = cfg["mixers"]["aux_mix"]
+    assert _srcs(am, 0) == [(0, 0.0, False, "dB"), (2, 0.0, False, "dB")]
+    assert _srcs(am, 1) == [(1, 0.0, False, "dB"), (3, 0.0, False, "dB")]
+    assert "aux_hp" not in cfg["filters"]
+    assert _steps(cfg)[2] == ("Filter", None, ("aux_gain",), (2, 3))
+    # mic <-> line keeps the input mixer
+    assert cfg["mixers"]["input"] == d.generate(m4(), State(profile="m4", aux_mode="mic"))["mixers"]["input"]
+
+
+@pytest.mark.parametrize("prof,aux,pads", [
+    (m4(capture_channels=6), (0, 1), [4, 5]),     # the first two spares; the others still pad L
+    (m4(input_map=[0, 1]), (2, 3), []),           # program on IN1/2: the AUX is IN3/4
+])
+def test_aux_takes_the_first_two_spares_and_the_rest_still_pad(prof, aux, pads):
+    assert d.aux_inputs(prof, "line") == aux == d.aux_inputs(prof, "mic")
+    im = d.generate(prof, State(profile="m4", aux_mode="line"))["mixers"]["input"]
+    l, r = prof.input_map
+    assert _srcs(im, 0) == [(l, 0.0, False, "dB")] + [(c, 0.0, False, "linear") for c in pads]
+    assert _srcs(im, 1) == [(r, 0.0, False, "dB")]
+    assert [_srcs(im, 2 + i) for i in range(2)] == [[(c, 0.0, False, "dB")] for c in aux]
+
+
+def test_aux_line_with_a_single_spare_is_a_centred_mono_line():
+    prof = m4(capture_channels=3, input_map=[1, 2])
+    assert d.spare_capture_channels(prof) == (0,) and d.aux_inputs(prof, "line") == (0,)
+    cfg = d.generate(prof, State(profile="m4", aux_mode="line"))
+    assert cfg["mixers"]["input"]["channels"] == {"in": 3, "out": 3}
+    am = cfg["mixers"]["aux_mix"]
+    assert am["channels"] == {"in": 3, "out": 2}
+    assert _srcs(am, 0) == [(0, 0.0, False, "dB"), (2, -3.0, False, "dB")]
+    assert _srcs(am, 1) == [(1, 0.0, False, "dB"), (2, -3.0, False, "dB")]
+    assert "aux_hp" not in cfg["filters"] and _steps(cfg)[2] == ("Filter", None, ("aux_gain",), (2,))
+
+
+@pytest.mark.parametrize("mode", ["mic", "line"])
+def test_aux_on_dev_defines_its_filters_but_routes_nothing(mode):
+    """dev (HiFiBerry, both inputs are the program) has no spare channel: mixers and pipeline are
+    exactly AUX-off's, so it plays the same; the AUX filters exist only so the owned pointer
+    `param_map` names resolves (a knob move is a harmless write, never an engine error)."""
+    assert d.spare_capture_channels(dev()) == () and d.aux_inputs(dev(), mode) == ()
+    on, off = d.generate(dev(), State(aux_mode=mode)), d.generate(dev(), State())
+    assert on["mixers"] == off["mixers"] and on["pipeline"] == off["pipeline"]
+    extra = {"aux_gain", "aux_hp"} if mode == "mic" else {"aux_gain"}
+    assert set(on["filters"]) - set(off["filters"]) == extra
+    assert {k: v for k, v in on["filters"].items() if k not in extra} == off["filters"]
+    assert resolve(on, AUX_GAIN_PTR) == 0.0
+
+
+def test_aux_is_off_for_garbage_modes():
+    assert d.aux_inputs(m4(), "off") == () and d.aux_inputs(m4(), "usb") == ()
+    s = State(profile="m4")
+    s.aux_mode = "usb"                         # unvalidated: clamped to "off"
+    assert d.to_yaml(d.generate(m4(), s)) == golden.golden_path("m4", "default_m4").read_text()
+
+
+# ----------------------------------------------------------------- de-harsh
+def test_deharsh_structure_is_a_dynamic_peaking_cut_after_the_eq():
+    cfg = d.generate(m4(), State(profile="m4", deharsh_on=True, deharsh_hz=3000.0,
+                                 deharsh_thresh_db=-20.0))
+    sp, sm = cfg["mixers"]["dh_split"], cfg["mixers"]["dh_sum"]
+    assert sp["channels"] == {"in": 2, "out": 6}
+    assert [_srcs(sp, i) for i in range(6)] == [[(i % 2, 0.0, False, "dB")] for i in range(6)]
+    assert sm["channels"] == {"in": 6, "out": 2}
+    assert _srcs(sm, 0) == [(0, 0.0, False, "dB"), (2, 0.0, True, "dB"), (4, 0.0, False, "dB")]
+    assert _srcs(sm, 1) == [(1, 0.0, False, "dB"), (3, 0.0, True, "dB"), (5, 0.0, False, "dB")]
+    assert cfg["filters"]["dh_band"]["parameters"] == {"type": "Bandpass", "freq": 3000.0, "q": 1.4}
+    assert cfg["processors"] == {"dh_comp": {
+        "type": "Compressor", "description": cfg["processors"]["dh_comp"]["description"],
+        "parameters": {"channels": 6, "monitor_channels": [4, 5], "process_channels": [4, 5],
+                       "attack": 1.0, "attack_unit": "ms", "release": 80.0, "release_unit": "ms",
+                       "threshold": -20.0, "factor": 3.0, "makeup_gain": 0.0}}}
+    assert list(cfg)[-2:] == ["processors", "pipeline"]
+    st = _steps(cfg)
+    assert st[1] == ("Filter", None, d.INPUT_CHAIN, (0, 1))
+    assert st[2:7] == [("Mixer", "dh_split", (), ()), ("Filter", None, ("dh_band",), (2, 3, 4, 5)),
+                       ("Processor", "dh_comp", (), ()), ("Mixer", "dh_sum", (), ()),
+                       ("Mixer", "split", (), ())]
+
+
+def test_deharsh_follows_the_aux_so_the_aux_is_de_harshed_too():
+    st = _steps(d.generate(m4(), State(profile="m4", deharsh_on=True, aux_mode="mic")))
+    names = [s[1] for s in st if s[0] != "Filter"]
+    assert names[:6] == ["input", "aux_mix", "dh_split", "dh_comp", "dh_sum", "split"]
+
+
+# ----------------------------------------------------------------- sub loudness
+def test_sub_loudness_follows_the_lowpass_on_the_subs_only():
+    cfg = d.generate(m4(), State(profile="m4", loud_on=True, loud_ref_db=-12.0, loud_boost_db=8.0))
+    assert cfg["filters"]["sub_loudness"]["type"] == "Loudness"
+    assert cfg["filters"]["sub_loudness"]["parameters"] == {
+        "fader": "Main", "reference_level": -12.0, "low_boost": 8.0, "high_boost": 0.0,
+        "low_freq": 70.0, "attenuate_mid": False}
+    st = _steps(cfg)
+    assert ("Filter", None, ("sub_trim", "sub_lowpass", "sub_loudness", "sub_delay", "sub_fader"),
+            (0, 1)) in st
+    assert ("Filter", None, d.TOP_CHAIN, (2, 3)) in st
+    assert sum("sub_loudness" in s[2] for s in st) == 1
+
+
+def test_sub_loudness_is_never_louder_than_at_the_reference():
+    """The engine's boost: low_boost * clamp((ref - Main) / 20, 0, 1). At most 0.6 dB per dB of
+    master reduction at the range's 12 dB, so the subs' level only ever goes down with Main."""
+    rb, rr = RANGES["loud_boost_db"], RANGES["loud_ref_db"]
+    for ref in (rr.min, -10.0, rr.max):
+        for main in [ref - k for k in range(0, 41)]:
+            boost = rb.max * min(max((ref - main) / 20.0, 0.0), 1.0)
+            assert main + boost <= ref + 1e-9
+
+
+# ----------------------------------------------------------------- diff / plans
+@pytest.mark.parametrize("field,value", [("aux_mode", "mic"), ("aux_mode", "line"), ("loud_on", True),
+                                         ("deharsh_on", True)])
+def test_feature_switches_are_rebuilds(field, value):
+    for profile in ("dev", "m4"):
+        a = State(profile=profile, **FEATURE_VALUES)
+        b = a.copy()
+        setattr(b, field, value)
+        for x, y in ((a, b), (b, a)):
+            ops = d.diff_ops(x, y)
+            assert isinstance(ops[0], d.Rebuild) and field in ops[0].reason
+            assert not any(isinstance(o, d.SetValue) for o in ops)
+            assert d.smooth_ops(x, y) == [(0.0, ops)]
+    a, b = State(aux_mode="mic"), State(aux_mode="line")
+    assert "aux_mode mic -> line" in d.diff_ops(a, b)[0].reason
+
+
+def test_feature_values_are_owned_setvalues_while_on_and_silent_while_off():
+    on = State(profile="m4", aux_mode="line", loud_on=True, deharsh_on=True)
+    moved = on.copy()
+    for k, v in FEATURE_VALUES.items():
+        setattr(moved, k, v)
+    assert set(d.diff_ops(on, moved)) == {
+        d.SetValue(AUX_GAIN_PTR, -12.5), d.SetValue(DH_FREQ_PTR, 4100.0),
+        d.SetValue(DH_THRESH_PTR, -6.0), d.SetValue(LOUD_REF_PTR, -30.0),
+        d.SetValue(LOUD_BOOST_PTR, 12.0)}
+    off, off_moved = State(profile="m4"), State(profile="m4", **FEATURE_VALUES)
+    assert d.diff_ops(off, off_moved) == [] and d.smooth_ops(off, off_moved) == []
+    patch = d.ops_to_patch(d.diff_ops(on, moved))
+    assert patch["processors"] == {"dh_comp": {"parameters": {"threshold": -6.0}}}
+    assert patch["filters"]["sub_loudness"]["parameters"] == {"reference_level": -30.0, "low_boost": 12.0}
+    # clamped like every other value
+    wild = on.copy()
+    wild.aux_gain_db, wild.deharsh_hz, wild.deharsh_thresh_db = 99.0, 100.0, -99.0
+    wild.loud_boost_db, wild.loud_ref_db = 40.0, 10.0
+    pm = d.param_map(wild)
+    assert (pm[AUX_GAIN_PTR], pm[DH_FREQ_PTR], pm[DH_THRESH_PTR], pm[LOUD_BOOST_PTR], pm[LOUD_REF_PTR]) \
+        == (12.0, 1500.0, -48.0, 12.0, 0.0)
+
+
+def _plan_values(plan, ptr):
+    return [op.value for _w, b in plan for op in b if isinstance(op, d.SetValue) and op.pointer == ptr]
+
+
+def test_feature_values_move_click_safe():
+    """AUX level and loudness boost raise the PA like a trim: 0.1 dB steps. The loudness
+    reference and the de-harsh threshold move like a Biquad gain (0.5 dB), the de-harsh
+    frequency in 1/12 octave. Nothing here is guarded (no delay, no polarity)."""
+    on = State(profile="m4", aux_mode="mic", loud_on=True, deharsh_on=True)
+    for field, ptr, start, end, steps in (
+            ("aux_gain_db", AUX_GAIN_PTR, 0.0, 6.0, 60),
+            ("loud_boost_db", LOUD_BOOST_PTR, 6.0, 12.0, 60),
+            ("loud_ref_db", LOUD_REF_PTR, -10.0, -20.0, 20),
+            ("deharsh_thresh_db", DH_THRESH_PTR, -24.0, -12.0, 24),
+            ("deharsh_hz", DH_FREQ_PTR, 2700.0, 5400.0, 12)):
+        b = on.copy()
+        setattr(b, field, end)
+        plan = d.smooth_ops(on, b)
+        vals = _plan_values(plan, ptr)
+        assert len(vals) == steps and vals[-1] == end, field
+        assert not any(isinstance(o, d.FaderMute) for _w, bt in plan for o in bt), field
+        prev = start
+        for v in vals:
+            if field == "deharsh_hz":
+                assert abs(math.log2(v / prev)) <= 1 / 12 + 1e-3
+            else:
+                assert abs(v - prev) <= (0.1 if steps == 60 else 0.5) + 1e-9, field
+            prev = v
+    assert d._is_trim(AUX_GAIN_PTR) and d._is_trim(LOUD_BOOST_PTR) and d._is_trim("/filters/in_trim/parameters/gain")
+    assert not d._is_trim(LOUD_REF_PTR) and not d._is_trim(DH_THRESH_PTR)
+    assert all(d._guard_group(p) is None for p in FEATURE_PTRS)
+
+
+# ----------------------------------------------------------------- adoption
+def test_feature_values_edited_in_camillagui_are_adopted_clamped():
+    base = State(profile="m4", aux_mode="mic", loud_on=True, deharsh_on=True)
+    cfg = d.generate(m4(), base)
+    cfg["filters"]["aux_gain"]["parameters"].update(gain=0.5, scale="linear")          # -6.02 dB
+    cfg["filters"]["sub_loudness"]["parameters"].update(reference_level=-15.0, low_boost=30.0)
+    cfg["filters"]["dh_band"]["parameters"]["freq"] = 3300.0
+    cfg["processors"]["dh_comp"]["parameters"]["threshold"] = -60.0
+    s = d.state_from_config(json.dumps(cfg), None, base)
+    assert math.isclose(s.aux_gain_db, -6.02, abs_tol=0.01)
+    assert (s.loud_ref_db, s.loud_boost_db, s.deharsh_hz, s.deharsh_thresh_db) == (-15.0, 12.0, 3300.0, -48.0)
+    # the clamped values are pushed back by config_drift (the scale change carries its gain)
+    drift = d.config_drift(json.dumps(cfg), d.generate(m4(), s))
+    assert drift.rebuild == [] and drift.devices == []
+    assert set(drift.fixes) == {d.SetValue(AUX_GAIN_PTR, s.aux_gain_db),
+                                d.SetValue("/filters/aux_gain/parameters/scale", "dB"),
+                                d.SetValue("/filters/aux_gain/parameters/inverted", False),
+                                d.SetValue("/filters/aux_gain/parameters/mute", False),
+                                d.SetValue(LOUD_BOOST_PTR, 12.0), d.SetValue(DH_THRESH_PTR, -48.0)}
+    # a value K1000 wrote itself moments ago is skipped (read-after-write race), processor too
+    s2 = d.state_from_config(cfg, None, base, skip_pointers=[DH_THRESH_PTR, LOUD_REF_PTR])
+    assert (s2.deharsh_thresh_db, s2.loud_ref_db) == (base.deharsh_thresh_db, base.loud_ref_db)
+    assert cfg["processors"]["dh_comp"]["parameters"]["threshold"] == -60.0     # caller's dict kept
+    fixes = d.config_drift(cfg, d.generate(m4(), base), skip_pointers=[DH_THRESH_PTR]).fixes
+    assert fixes and DH_THRESH_PTR not in {f.pointer for f in fixes}
+
+
+def test_feature_switches_are_never_adopted_from_the_structure():
+    """K1000's state owns the switches: blocks found in the engine do not switch a feature on,
+    blocks missing do not switch it off (the drift check restores the structure instead)."""
+    on = State(profile="m4", aux_mode="line", loud_on=True, deharsh_on=True, **FEATURE_VALUES)
+    off = State(profile="m4")
+    s = d.state_from_config(d.generate(m4(), on), None, off)
+    assert (s.aux_mode, s.loud_on, s.deharsh_on) == ("off", False, False)
+    assert (s.aux_gain_db, s.deharsh_hz, s.loud_ref_db) == (-12.5, 4100.0, -30.0)     # values adopted
+    s = d.state_from_config(d.generate(m4(), off), None, on)
+    assert s == on.clamped()
+    drift = d.config_drift(d.generate(m4(), off), d.generate(m4(), on))
+    text = " | ".join(drift.rebuild)
+    for needle in ("mixer input", "mixer aux_mix", "mixer dh_split", "mixer dh_sum", "pipeline",
+                   "filter aux_gain missing", "filter dh_band missing", "filter sub_loudness missing",
+                   "processor dh_comp missing"):
+        assert needle in text, needle
+    assert drift.fixes == []
+
+
+# ----------------------------------------------------------------- drift
+def test_feature_drift_with_the_engines_json_shapes():
+    """GetConfigJson writes every optional key (null when unset) and `processors: null` when
+    there are none; neither is a difference."""
+    for s in (State(profile="m4"), State(profile="m4", aux_mode="mic", loud_on=True, deharsh_on=True)):
+        exp = d.generate(m4(), s)
+        live = json.loads(json.dumps(exp))
+        live.setdefault("processors", None)
+        if s.deharsh_on:
+            live["processors"]["dh_comp"]["parameters"].update(soft_clip=None, clip_limit=None)
+            live["filters"]["sub_loudness"]["parameters"].update(high_freq=None, low_q=None, high_q=None)
+        assert d.config_drift(live, exp).clean
+        assert d.state_from_config(live, None, s) == s.clamped()
+
+
+def test_feature_drift_detects_processor_and_new_mixer_changes():
+    exp = d.generate(m4(), State(profile="m4", aux_mode="line", deharsh_on=True, loud_on=True))
+    live = json.loads(json.dumps(exp))
+    live["processors"]["dh_comp"]["parameters"]["threshold"] = -30.0
+    live["processors"]["dh_comp"]["parameters"]["factor"] = 10.0
+    live["filters"]["sub_loudness"]["parameters"]["high_boost"] = 6.0
+    drift = d.config_drift(live, exp)
+    assert drift.devices == [] and drift.rebuild == []
+    assert set(drift.fixes) == {d.SetValue(DH_THRESH_PTR, -24.0),
+                                d.SetValue("/processors/dh_comp/parameters/factor", 3.0),
+                                d.SetValue("/filters/sub_loudness/parameters/high_boost", 0.0)}
+    # a time-unit change rewrites the whole processor in one patch (value and unit together)
+    live = json.loads(json.dumps(exp))
+    live["processors"]["dh_comp"]["parameters"].update(attack=1000.0, attack_unit="us")
+    drift = d.config_drift(live, exp)
+    assert drift.rebuild == [] and {f.pointer.rsplit("/", 1)[-1] for f in drift.fixes} == set(
+        exp["processors"]["dh_comp"]["parameters"])
+    assert d.ops_to_patch(drift.fixes)["processors"]["dh_comp"]["parameters"]["attack_unit"] == "ms"
+    # structure: a new mixer edited, the processor's type, its channels key gone
+    for mutate, needle in (
+            (lambda c: c["mixers"]["aux_mix"]["mapping"][0]["sources"].pop(), "mixer aux_mix differs"),
+            (lambda c: c["mixers"]["dh_sum"]["mapping"][1]["sources"][1].update(inverted=False),
+             "mixer dh_sum differs"),
+            (lambda c: c["processors"]["dh_comp"].update(type="NoiseGate"), "processor dh_comp type"),
+            (lambda c: c["processors"]["dh_comp"]["parameters"].pop("channels"),
+             "processor dh_comp.channels missing"),
+            (lambda c: c.update(processors=None), "processor dh_comp missing"),
+            (lambda c: c["filters"]["dh_band"]["parameters"].update(type="Peaking"), "dh_band subtype")):
+        live = json.loads(json.dumps(exp))
+        mutate(live)
+        drift = d.config_drift(live, exp)
+        assert any(needle in r for r in drift.rebuild), (needle, drift.rebuild)
+        assert drift.fixes == []
+    # an extra processor the pipeline does not use is not K1000's business
+    live = json.loads(json.dumps(d.generate(m4(), State(profile="m4"))))
+    live["processors"] = {"spare": exp["processors"]["dh_comp"]}
+    assert d.config_drift(live, d.generate(m4(), State(profile="m4"))).clean
+
+
+def test_aux_routing_cuts_are_held_not_rebuilt():
+    """A cut made in CamillaGUI on the AUX routing is the operator's (a ringing mic muted where
+    CamillaGUI shows it going into L/R): `config_drift` holds it instead of a rebuild (which put
+    the mic back up, and, once the restore kept the cut, rebuilt again every interval; D-016
+    review). Only cuts, only on the AUX routing; in the input mixer a lower gain only (a muted
+    source leaves a capture channel unused by the first mixer: the engine panics)."""
+    exp = d.generate(m4(), State(profile="m4", aux_mode="mic"))
+
+    def drift_of(mutate):
+        live = json.loads(json.dumps(exp))
+        for e in live["mixers"]["aux_mix"]["mapping"] + live["mixers"]["input"]["mapping"]:
+            for x in e["sources"]:
+                x.setdefault("mute", False)                       # the engine's JSON shape
+        mutate(live["mixers"])
+        return d.config_drift(live, exp), live
+
+    def src(mixers, name, dest, ch):
+        return next(x for e in mixers[name]["mapping"] if e["dest"] == dest
+                    for x in e["sources"] if x["channel"] == ch)
+
+    dr, _ = drift_of(lambda m: [src(m, "aux_mix", k, 2).update(mute=True) for k in (0, 1)])
+    assert (dr.rebuild, dr.fixes, dr.held) == ([], [], ("aux_mix 2->0 MUTED", "aux_mix 2->1 MUTED"))
+    assert not dr.clean
+    dr, _ = drift_of(lambda m: src(m, "aux_mix", 0, 2).update(gain=-30.0))
+    assert dr.rebuild == [] and dr.held == ("aux_mix 2->0 -30.0 dB",)
+    dr, _ = drift_of(lambda m: m["aux_mix"]["mapping"][1].update(mute=True))   # R muted whole
+    assert dr.rebuild == [] and dr.held == ("aux_mix ->1 MUTED",)
+    dr, _ = drift_of(lambda m: src(m, "input", 2, 0).update(gain=-20.0))       # the M4's IN1
+    assert dr.rebuild == [] and dr.held == ("input 0->2 -20.0 dB",)
+    for mutate in (lambda m: src(m, "aux_mix", 0, 2).update(gain=0.0),        # a raise
+                   lambda m: src(m, "aux_mix", 0, 2).update(inverted=True),
+                   lambda m: src(m, "aux_mix", 0, 2).update(gain=0.5, scale="linear"),
+                   lambda m: src(m, "input", 2, 0).update(mute=True),          # engine panic
+                   lambda m: src(m, "input", 0, 2).update(gain=-6.0),          # the program
+                   lambda m: m["aux_mix"]["mapping"][0]["sources"].pop(),
+                   lambda m: src(m, "split", 0, 0).update(mute=True)):         # not AUX routing
+        dr, _ = drift_of(mutate)
+        assert dr.rebuild and dr.held == (), dr
+    # features off: the input mixer is f2671b0's, any change rebuilds as before
+    off = d.generate(m4(), State(profile="m4"))
+    live = json.loads(json.dumps(off))
+    live["mixers"]["input"]["mapping"][0]["sources"][0]["gain"] = -6.0
+    assert d.config_drift(live, off).rebuild == ["mixer input differs"]
+    # a restore carries the cuts onto K1000's routing, even where the rest of the mixer differs
+    _, live = drift_of(lambda m: (src(m, "aux_mix", 0, 2).update(mute=True),
+                                  src(m, "aux_mix", 1, 2).update(gain=-30.0),
+                                  src(m, "input", 2, 0).update(gain=-20.0, mute=True),
+                                  m["aux_mix"]["mapping"][0]["sources"].append(
+                                      {"channel": 3, "gain": 0.0, "inverted": False})))
+    out = copy.deepcopy(exp["mixers"])
+    for name in out:
+        d.carry_mixer_cuts(name, live["mixers"].get(name), out[name])
+    assert src(out, "aux_mix", 0, 2)["mute"] is True and src(out, "aux_mix", 1, 2)["gain"] == -30.0
+    assert src(out, "input", 2, 0)["gain"] == -20.0 and "mute" not in src(out, "input", 2, 0)
+    assert len(out["aux_mix"]["mapping"][0]["sources"]) == 2           # K1000's routing
+    assert exp["mixers"]["aux_mix"]["mapping"][0]["sources"][1].get("mute") is None  # not mutated
+    restored = copy.deepcopy(exp)
+    restored["mixers"] = out
+    dr = d.config_drift(restored, exp)
+    assert dr.rebuild == [] and set(dr.held) == {
+        "aux_mix 2->0 MUTED", "aux_mix 2->1 -30.0 dB", "input 0->2 -20.0 dB"}
+
+
+def test_signal_generator_variant_keeps_feature_channels():
+    for prof in (m4(), m4(capture_channels=6)):
+        cfg = d.generate(prof, State(profile="m4", aux_mode="line", deharsh_on=True, loud_on=True))
+        v = d.signal_generator_variant(cfg)
+        _channel_flow(v)
+        assert v["devices"]["capture"]["channels"] == prof.capture_channels
+        assert v["processors"] == cfg["processors"] and v["mixers"] == cfg["mixers"]
+
+
+# ============================================================================ 2026-10-16 features (engine)
+def _feature_validity_cases():
+    cases = [(pk, sk) for pk in ("dev", "m4") for sk in feature_states()]
+    cases += [(pk, sk) for pk in ("m4_6ch", "m4_in12", "m4_3ch")
+              for sk in ("aux_mic_loud_dh", "aux_line_loud_dh_mono")]
+    return cases
+
+
+@engine
+@needs_cdsp
+@pytest.mark.parametrize("prof_key,state_key", _feature_validity_cases())
+def test_camilladsp_accepts_every_feature_combination(tmp_path, prof_key, state_key):
+    prof = feature_profiles()[prof_key]
+    s = feature_states(prof.name)[state_key]
+    path = tmp_path / f"{prof_key}_{state_key}.yml"
+    path.write_text(d.to_yaml(d.generate(prof, s)))
+    r = subprocess.run([CDSP, "-c", str(path)], capture_output=True, text=True, timeout=30)
+    assert "Config is valid" in r.stdout + r.stderr, r.stdout + r.stderr
+    assert r.returncode == 0
+
+
+SR = 48000
+
+
+def _offline(tmp_path, cfg, x, main_db=0.0, tag="run"):
+    """Play the capture samples `x` (frames x channels) through `cfg` in camilladsp, offline:
+    RawFile capture -> File playback, both F64 (no ALSA, no websocket), Main at `main_db`.
+    Returns the played frames (frames x playback channels), sample-aligned with `x` (the
+    pipeline is IIR only: no latency)."""
+    np = pytest.importorskip("numpy")
+    if CDSP is None:
+        pytest.skip("camilladsp binary not installed")
+    cfg = copy.deepcopy(cfg)
+    src, out, conf = (tmp_path / f"{tag}.in.raw", tmp_path / f"{tag}.out.raw", tmp_path / f"{tag}.yml")
+    np.ascontiguousarray(x, dtype="<f8").tofile(src)
+    n_out = cfg["devices"]["playback"]["channels"]
+    cfg["devices"]["capture"] = {"type": "RawFile", "channels": int(x.shape[1]), "filename": str(src),
+                                 "format": "F64_LE"}
+    cfg["devices"]["playback"] = {"type": "File", "channels": n_out, "filename": str(out),
+                                  "format": "F64_LE"}
+    conf.write_text(d.to_yaml(cfg))
+    r = subprocess.run([CDSP, f"-g{main_db:g}", str(conf)], capture_output=True, text=True, timeout=180)
+    assert r.returncode == 0, r.stdout[-1000:] + r.stderr[-2000:]
+    y = np.fromfile(out, dtype="<f8").reshape(-1, n_out)
+    assert y.shape[0] == x.shape[0]
+    return y
+
+
+def _tone_db(y, freq, ref=1.0):
+    """Level of the `freq` component over the last second (dB re a `ref` peak amplitude): one
+    exact DFT bin (whole cycles per second at 48 kHz), so the other test tones do not leak."""
+    import numpy as np
+    seg = np.asarray(y)[-SR:]
+    k = np.arange(len(seg))
+    m = 2.0 / len(seg) * abs(np.sum(seg * np.exp(-2j * np.pi * freq * k / SR)))
+    return 20.0 * math.log10(m / ref) if m > 0 else -math.inf
+
+
+def _sine(freq, amp, n=2 * SR):
+    import numpy as np
+    return amp * np.sin(2 * np.pi * freq * np.arange(n) / SR)
+
+
+def _biquad_db(b, a, freq):
+    import numpy as np
+    z = np.exp(-1j * 2 * math.pi * freq / SR)
+    return 20 * math.log10(abs((b[0] + b[1] * z + b[2] * z * z) / (a[0] + a[1] * z + a[2] * z * z)))
+
+
+def _highpass_db(freq, f0, q):
+    """The engine's Biquad Highpass (RBJ cookbook, camilladsp-schema biquad.rs) at `freq`."""
+    w = 2 * math.pi * f0 / SR
+    sn, cs = math.sin(w), math.cos(w)
+    al = sn / (2 * q)
+    return _biquad_db([(1 + cs) / 2, -(1 + cs), (1 + cs) / 2], [1 + al, -2 * cs, 1 - al], freq)
+
+
+def _lowshelf_db(freq, f0, q, gain):
+    """The engine's Lowshelf with Q (what the Loudness filter builds) at `freq`."""
+    w = 2 * math.pi * f0 / SR
+    sn, cs = math.sin(w), math.cos(w)
+    A = 10 ** (gain / 40)
+    be = sn * math.sqrt(A) / q
+    return _biquad_db([A * ((A + 1) - (A - 1) * cs + be), 2 * A * ((A - 1) - (A + 1) * cs),
+                       A * ((A + 1) - (A - 1) * cs - be)],
+                      [(A + 1) + (A - 1) * cs + be, -2 * ((A - 1) + (A + 1) * cs),
+                       (A + 1) + (A - 1) * cs - be], freq)
+
+
+def _deharsh_model(xl, xr, freq, q, thresh, ratio, attack_ms, release_ms):
+    """De-harsh as the engine computes it: RBJ band-pass (0 dB at centre), the compressor of
+    compressor.rs (level = 20 log10(|band L + band R| + 1e-9) per sample, one-pole attack/release
+    in dB from -100, gain -(level - thresh)(ratio - 1)/ratio above thresh), then x - B + g B."""
+    import numpy as np
+    w = 2 * math.pi * freq / SR
+    al = math.sin(w) / (2 * q)
+    a0 = 1 + al
+    b0, b2, a1, a2 = al / a0, -al / a0, -2 * math.cos(w) / a0, (1 - al) / a0
+
+    def bp(x):
+        y = np.zeros_like(x)
+        s1 = s2 = 0.0
+        for i, v in enumerate(x):
+            o = b0 * v + s1
+            s1 = -a1 * o + s2
+            s2 = b2 * v - a2 * o
+            y[i] = o
+        return y
+
+    bl, br = bp(xl), bp(xr)
+    att, rel = math.exp(-1 / (attack_ms * SR / 1000)), math.exp(-1 / (release_ms * SR / 1000))
+    prev, g = -100.0, np.empty_like(bl)
+    for i, v in enumerate(bl + br):
+        lv = 20 * math.log10(abs(v) + 1e-9)
+        lv = att * prev + (1 - att) * lv if lv >= prev else rel * prev + (1 - rel) * lv
+        prev = lv
+        g[i] = 10 ** ((-(lv - thresh) * (ratio - 1) / ratio if lv > thresh else 0.0) / 20)
+    return xl - bl + g * bl, xr - br + g * br
+
+
+def _program(*cols, n=2 * SR, channels=4):
+    """Capture frames: the given columns {channel: samples}, silence elsewhere."""
+    import numpy as np
+    x = np.zeros((n, channels))
+    for ch, sig in cols:
+        x[:, ch] = sig
+    return x
+
+
+@engine
+@needs_cdsp
+@pytest.mark.parametrize("prof_key", ["m4", "dev"])
+def test_engine_features_off_plays_exactly_like_f2671b0(tmp_path, prof_key):
+    """The HEAD config (golden YAML, tuned show state) and today's features-off config, with the
+    features' values moved, give the same samples on every output, bit for bit."""
+    np = pytest.importorskip("numpy")
+    name, ov = golden.PROFILES[prof_key]
+    prof = pf.load_profile(name, ov or None, probe=False)
+    head = yaml.safe_load(golden.golden_path(prof_key, "tuned").read_text())
+    s = golden.STATES["tuned"](State)
+    for k, v in FEATURE_VALUES.items():
+        setattr(s, k, v)
+    rng = np.random.default_rng(7)
+    n = 2 * SR
+    x = 0.05 * rng.standard_normal((n, prof.capture_channels))
+    for ch, f in zip(range(prof.capture_channels), (55.0, 440.0, 2700.0, 6100.0, 900.0, 1200.0)):
+        x[:, ch] += _sine(f, 0.2, n)
+    y_head = _offline(tmp_path, head, x, -6.0, "head")
+    y_now = _offline(tmp_path, d.generate(prof, s), x, -6.0, "now")
+    assert np.array_equal(y_head, y_now)
+    assert np.max(np.abs(y_head)) > 0.05                       # it played something
+
+
+@engine
+@needs_cdsp
+def test_engine_deharsh_with_the_threshold_parked_is_a_pass_through(tmp_path):
+    """Under the threshold the compressor's gain is exactly 1: L - B + B = L (to rounding)."""
+    np = pytest.importorskip("numpy")
+    rng = np.random.default_rng(3)
+    n = 2 * SR
+    x = _program((2, _sine(2700.0, 0.25) + 0.05 * rng.standard_normal(n)),
+                 (3, _sine(3100.0, 0.25) + 0.05 * rng.standard_normal(n)))
+    off = _offline(tmp_path, d.generate(m4(), State(profile="m4")), x, 0.0, "off")
+    on = _offline(tmp_path, d.generate(m4(), State(profile="m4", deharsh_on=True,
+                                                   deharsh_thresh_db=RANGES["deharsh_thresh_db"].max)),
+                  x, 0.0, "parked")
+    for ch in range(4):
+        rms = math.sqrt(float(np.mean(off[:, ch] ** 2)))
+        err = float(np.max(np.abs(on[:, ch] - off[:, ch])))
+        assert rms > 0.05 and (err == 0.0 or 20 * math.log10(err / rms) < -120.0), (ch, err, rms)
+
+
+@engine
+@needs_cdsp
+def test_engine_deharsh_cuts_a_loud_band_by_its_gain_reduction_and_leaves_500_hz(tmp_path):
+    """L = R = a 2.7 kHz and a 500 Hz tone, both at -12 dBFS peak. The band copies sum to a
+    -6 dBFS peak at the compressor (correlated L/R: +6 dB), well over the -24 dB threshold: the
+    2.7 kHz tone is cut by the compressor's gain reduction (here ~12 dB, the 3:1 slope of the
+    smoothed level's excess), the 500 Hz tone keeps its level (within 0.5 dB). The cut matches a
+    model of the engine's band-pass + compressor to 0.25 dB."""
+    pytest.importorskip("numpy")
+    tone = _sine(2700.0, 0.25) + _sine(500.0, 0.25)
+    x = _program((2, tone), (3, tone))
+    s = State(profile="m4", deharsh_on=True)
+    off = _offline(tmp_path, d.generate(m4(), State(profile="m4")), x, 0.0, "off")
+    on = _offline(tmp_path, d.generate(m4(), s), x, 0.0, "on")
+    ml, _mr = _deharsh_model(tone, tone, s.deharsh_hz, d.DEHARSH_Q, s.deharsh_thresh_db,
+                             d.DEHARSH_RATIO, d.DEHARSH_ATTACK_MS, d.DEHARSH_RELEASE_MS)
+    model_cut = _tone_db(ml, 2700.0) - _tone_db(tone, 2700.0)
+    assert -16.0 < model_cut < -8.0, model_cut              # a real gain reduction, not a rounding
+    for ch in range(4):                                      # Top L/R, Sub L/R
+        cut = _tone_db(on[:, ch], 2700.0) - _tone_db(off[:, ch], 2700.0)
+        assert abs(cut - model_cut) < 0.25, (ch, cut, model_cut)
+        assert abs(_tone_db(on[:, ch], 500.0) - _tone_db(off[:, ch], 500.0)) < 0.5, ch
+    # the 500 Hz tone alone, same level: untouched
+    x5 = _program((2, _sine(500.0, 0.25)), (3, _sine(500.0, 0.25)))
+    off5 = _offline(tmp_path, d.generate(m4(), State(profile="m4")), x5, 0.0, "off5")
+    on5 = _offline(tmp_path, d.generate(m4(), s), x5, 0.0, "on5")
+    for ch in range(4):
+        assert abs(_tone_db(on5[:, ch], 500.0) - _tone_db(off5[:, ch], 500.0)) < 0.5, ch
+
+
+@engine
+@needs_cdsp
+def test_engine_sub_loudness_follows_main_under_the_reference(tmp_path):
+    """reference -10 dB, boost 6 dB. Main at (or above) the reference: the subs are bit for bit
+    loudness-off's. Main 10 dB under it: the subs' 70 Hz shelf gets low_boost/2 = 3 dB, i.e. the
+    engine's Lowshelf(70 Hz, Q 0.7071, +3 dB) at 40 Hz (2.71 dB), nothing at 1 kHz, the tops
+    untouched; and the subs are still quieter than at the reference."""
+    np = pytest.importorskip("numpy")
+    tone = _sine(40.0, 0.1) + _sine(1000.0, 0.1)
+    x = _program((2, tone), (3, tone))
+    loud = State(profile="m4", loud_on=True, loud_ref_db=-10.0, loud_boost_db=6.0)
+    plain = State(profile="m4")
+    sub40 = {}
+    for main in (-10.0, -5.0, -20.0):
+        on = _offline(tmp_path, d.generate(m4(), loud), x, main, f"on{main:g}")
+        off = _offline(tmp_path, d.generate(m4(), plain), x, main, f"off{main:g}")
+        assert np.array_equal(on[:, :2], off[:, :2]), main            # physical 1-2: the tops
+        sub40[main] = _tone_db(on[:, 2], 40.0)
+        if main >= loud.loud_ref_db:
+            assert np.array_equal(on, off), main
+            continue
+        boost = loud.loud_boost_db * min((loud.loud_ref_db - main) / 20.0, 1.0)
+        want = _lowshelf_db(40.0, d.LOUD_LOW_FREQ_HZ, 1 / math.sqrt(2), boost)
+        for ch in (2, 3):                                              # physical 3-4: the subs
+            got = _tone_db(on[:, ch], 40.0) - _tone_db(off[:, ch], 40.0)
+            assert abs(got - want) < 0.05, (main, ch, got, want)
+            assert 0.8 * boost <= got <= boost
+            assert abs(_tone_db(on[:, ch], 1000.0) - _tone_db(off[:, ch], 1000.0)) < 0.01
+    assert sub40[-20.0] < sub40[-10.0] - 6.0                            # 10 dB down, at most 3 back
+
+
+@engine
+@needs_cdsp
+def test_engine_aux_routes_in1_in2_after_the_trim(tmp_path):
+    """Per-channel capture (the SignalGenerator puts one signal on every channel): IN1 = 300 Hz +
+    30 Hz, IN2 = 700 Hz, LINE IN 3/4 (program) = 1 kHz / 1.5 kHz, all at -20 dBFS peak. Input
+    trim -6 dB (program only), AUX -4 dB. Mic: IN1 to both sides at -4 - 3 dB through the 100 Hz
+    high-pass (30 Hz ~21 dB further down), IN2 nowhere. Line: IN1 to L, IN2 to R at -4 dB, no
+    high-pass. Off: no AUX at all. Measured on the subs (no Lo-Cut, low-pass parked)."""
+    pytest.importorskip("numpy")
+    amp = 0.1
+    x = _program((0, _sine(300.0, amp) + _sine(30.0, amp)), (1, _sine(700.0, amp)),
+                 (2, _sine(1000.0, amp)), (3, _sine(1500.0, amp)))
+    silent = -120.0
+    for mode in ("off", "mic", "line"):
+        s = State(profile="m4", aux_mode=mode, aux_gain_db=-4.0, input_trim_db=-6.0, lowcut_on=False)
+        y = _offline(tmp_path, d.generate(m4(), s), x, 0.0, mode)
+        sub_l, sub_r = y[:, 2], y[:, 3]
+
+        def lvl(sig, f):
+            return _tone_db(sig, f, amp)
+
+        assert abs(lvl(sub_l, 1000.0) + 6.0) < 0.02 and abs(lvl(sub_r, 1500.0) + 6.0) < 0.02, mode
+        assert lvl(sub_l, 1500.0) < silent and lvl(sub_r, 1000.0) < silent, mode
+        if mode == "off":
+            for f in (30.0, 300.0, 700.0):
+                assert lvl(sub_l, f) < silent and lvl(sub_r, f) < silent, (mode, f)
+        elif mode == "mic":
+            for sig in (sub_l, sub_r):
+                for f in (300.0, 30.0):
+                    want = -4.0 - 3.0 + _highpass_db(f, d.AUX_MIC_HP_HZ, d.AUX_MIC_HP_Q)
+                    assert abs(lvl(sig, f) - want) < 0.02, (mode, f, lvl(sig, f), want)
+                assert lvl(sig, 700.0) < silent
+            assert lvl(sub_l, 300.0) - lvl(sub_l, 30.0) > 20.0              # the high-pass works
+        else:
+            assert abs(lvl(sub_l, 300.0) + 4.0) < 0.02 and abs(lvl(sub_l, 30.0) + 4.0) < 0.02
+            assert abs(lvl(sub_r, 700.0) + 4.0) < 0.02
+            assert lvl(sub_l, 700.0) < silent and lvl(sub_r, 300.0) < silent and lvl(sub_r, 30.0) < silent
+
+
+@engine
+@needs_cdsp
+def test_engine_aux_on_dev_plays_like_aux_off(tmp_path):
+    np = pytest.importorskip("numpy")
+    x = _program((0, _sine(440.0, 0.2)), (1, _sine(880.0, 0.2)), channels=2)
+    off = _offline(tmp_path, d.generate(dev(), State()), x, 0.0, "off")
+    for mode in ("mic", "line"):
+        assert np.array_equal(_offline(tmp_path, d.generate(dev(), State(aux_mode=mode)), x, 0.0, mode), off)
+
+
+def _rms_since(cmd, seconds=0.3):
+    return cmd("GetPlaybackSignalRmsSince", value=seconds)["value"]
+
+
+def _settled_rms(cmd, ch, wait=0.6):
+    time.sleep(wait)
+    return _rms_since(cmd)[ch]
+
+
+@engine
+def test_engine_feature_values_apply_live_without_a_rebuild(tmp_path):
+    """Each owned pointer of the three blocks, written by SetConfigValue on a running engine
+    (SignalGenerator -> /dev/null): accepted, read back, audible on the playback RMS, and only
+    "Updating parameters" in the log (no pipeline rebuild, no device restart)."""
+    def check_log(log):
+        text = log.read_text()
+        assert "Rebuilding pipeline" not in text and "Devices changed" not in text
+        assert "Updating parameters" in text
+
+    def write(cmd, ptr, value):
+        assert cmd("SetConfigValue", pointer=ptr, value=value)["result"] == "Ok", ptr
+        assert _eventually(cmd, ptr, value) == value, ptr
+
+    # AUX: the generator's sine is on every capture channel, so line AUX doubles Top L (+6 dB);
+    # at -40 dB it adds ~0.09 dB
+    s = State(profile="m4", aux_mode="line", loud_on=True, deharsh_on=True, deharsh_thresh_db=0.0)
+    cfg = d.signal_generator_variant(d.generate(m4(), s), level_db=-30.0, freq=1000.0)
+    with _engine(tmp_path, cfg, "-g0") as (cmd, log):
+        r0 = _settled_rms(cmd, 0, 1.0)
+        write(cmd, AUX_GAIN_PTR, -40.0)
+        r1 = _settled_rms(cmd, 0)
+        want = 20 * math.log10(2.0) - 20 * math.log10(1.0 + 10 ** (-40 / 20))
+        assert abs((r0 - r1) - want) < 0.3, (r0, r1, want)
+        # a whole state move as one PatchConfig, then adoption and drift on the live JSON
+        s2 = s.copy()
+        for k, v in FEATURE_VALUES.items():
+            setattr(s2, k, v)
+        s1 = s.copy()
+        s1.aux_gain_db = -40.0
+        ops = d.diff_ops(s1, s2)
+        assert ops and all(isinstance(o, d.SetValue) for o in ops)
+        assert cmd("PatchConfig", value=d.ops_to_patch(ops))["result"] == "Ok"
+        for op in ops:
+            assert _eventually(cmd, op.pointer, op.value) == op.value, op
+        live = cmd("GetConfigJson")["value"]
+        assert json.loads(live).get("processors", {}).get("dh_comp")
+        assert d.state_from_config(live, None, s) == s2.clamped()
+        assert d.config_drift(live, d.signal_generator_variant(d.generate(m4(), s2))).clean
+        assert cmd("GetState")["value"] == "Running"
+        check_log(log)
+
+    # de-harsh: a loud 2.7 kHz tone; threshold down -> cut; band moved off the tone -> cut gone
+    s = State(profile="m4", deharsh_on=True, deharsh_thresh_db=0.0, loud_on=True)
+    cfg = d.signal_generator_variant(d.generate(m4(), s), level_db=-12.0, freq=2700.0)
+    with _engine(tmp_path, cfg, "-g0") as (cmd, log):
+        r0 = _settled_rms(cmd, 0, 1.0)
+        write(cmd, DH_THRESH_PTR, -40.0)
+        r1 = _settled_rms(cmd, 0)
+        assert r1 < r0 - 10.0, (r0, r1)
+        write(cmd, DH_FREQ_PTR, 6000.0)
+        r2 = _settled_rms(cmd, 0)
+        assert r2 > r1 + 6.0, (r1, r2)
+        assert cmd("PatchConfig", value=d.ops_to_patch([d.SetValue(DH_THRESH_PTR, 0.0),
+                                                        d.SetValue(DH_FREQ_PTR, 2700.0)]))["result"] == "Ok"
+        assert abs(_settled_rms(cmd, 0) - r0) < 0.1
+        assert cmd("GetState")["value"] == "Running"
+        check_log(log)
+
+    # loudness: 40 Hz, Main at -30 = 20 dB under the -10 reference -> the full shelf on the subs
+    s = State(profile="m4", loud_on=True, loud_ref_db=-10.0, loud_boost_db=6.0, deharsh_on=True,
+              deharsh_thresh_db=0.0)
+    cfg = d.signal_generator_variant(d.generate(m4(), s), level_db=-20.0, freq=40.0)
+    full = _lowshelf_db(40.0, d.LOUD_LOW_FREQ_HZ, 1 / math.sqrt(2), 6.0)
+    with _engine(tmp_path, cfg, "-g-30") as (cmd, log):
+        r0 = _settled_rms(cmd, 2, 1.0)                                    # physical 3 = Sub L
+        write(cmd, LOUD_BOOST_PTR, 0.0)
+        r1 = _settled_rms(cmd, 2)
+        assert abs((r0 - r1) - full) < 0.3, (r0, r1, full)
+        write(cmd, LOUD_BOOST_PTR, 6.0)
+        assert abs(_settled_rms(cmd, 2) - r0) < 0.1
+        write(cmd, LOUD_REF_PTR, -30.0)                                   # Main = reference: nothing
+        assert abs(_settled_rms(cmd, 2) - r1) < 0.1
+        assert cmd("GetState")["value"] == "Running"
+        check_log(log)
+
+
+@engine
+def test_engine_feature_switches_rebuild_live(tmp_path):
+    """Switching the blocks is a whole-config upload: accepted on a running engine, a pipeline
+    rebuild only (no device restart), and the running config then matches K1000's exactly."""
+    off = State(profile="m4")
+    on = State(profile="m4", aux_mode="line", loud_on=True, deharsh_on=True)
+    with _engine(tmp_path, d.signal_generator_variant(d.generate(m4(), off)), "-g-40") as (cmd, log):
+        for s in (on, State(profile="m4", aux_mode="mic", deharsh_on=True), off):
+            text0 = log.read_text()
+            exp = d.signal_generator_variant(d.generate(m4(), s))
+            assert cmd("SetConfigJson", value=json.dumps(exp))["result"] == "Ok"
+            time.sleep(0.5)
+            new = log.read_text()[len(text0):]
+            assert "Rebuilding pipeline" in new and "Devices changed" not in new
+            assert cmd("GetState")["value"] == "Running"
+            live = cmd("GetConfigJson")["value"]
+            assert d.config_drift(live, exp).clean
+            assert d.state_from_config(live, None, s) == s.clamped()
+
+
+@engine
+@needs_cdsp
+def test_engine_client_confirms_writes_that_f32_cannot_hold(tmp_path):
+    """CamillaDSP 5 keeps the Loudness filter's reference_level, low_boost and high_boost as f32
+    (camilladsp-schema LoudnessParameters: FiniteF32), and GetConfigValue returns them widened to
+    f64: a write of 6.1 reads back 6.099999904632568. `CamillaClient.set_value` confirms every
+    write with that read-back, so it must take the f32 value as the one written. Before it did
+    (review 2026-10-16), every loudness boost detent (0.1 dB steps: 6.1, 6.2...) and every drift
+    push-back of the treble boost failed as NotApplied after the 0.5 s window, behind the client
+    lock (a B4 mute waited). Every owned D-016 pointer, at a value off the f32 grid, through the
+    real client: confirmed at once, and read back as written (within f32)."""
+    pytest.importorskip("websockets")
+    import asyncio
+    from k1000.cdsp import CamillaClient
+    s = State(profile="m4", aux_mode="mic", loud_on=True, deharsh_on=True)
+    cfg = d.signal_generator_variant(d.generate(m4(), s), level_db=-30.0)
+    writes = [(LOUD_BOOST_PTR, 6.1), (LOUD_BOOST_PTR, 6.2), (LOUD_REF_PTR, -10.3),
+              ("/filters/sub_loudness/parameters/high_boost", 0.7), (AUX_GAIN_PTR, -3.1),
+              (DH_THRESH_PTR, -24.3), (DH_FREQ_PTR, 2716.77)]
+
+    async def body():
+        c = CamillaClient(f"ws://127.0.0.1:{PORT}", backoff_min=0.05, backoff_max=0.2)
+        assert await c.connect(timeout=5)
+        try:
+            for ptr, v in writes:
+                t = time.monotonic()
+                assert await c.set_value(ptr, v) == v, ptr          # no CdspNotApplied
+                assert time.monotonic() - t < c.confirm_timeout, ptr
+                assert math.isclose(await c.get_value(ptr), v, rel_tol=1e-6), ptr
+            # the PatchConfig path (GetConfigJson read-back) still confirms too
+            await c.patch_config(d.ops_to_patch([d.SetValue(LOUD_BOOST_PTR, 6.3),
+                                                 d.SetValue(LOUD_REF_PTR, -10.7)]))
+        finally:
+            await c.close()
+
+    with _engine(tmp_path, cfg, "-g-20") as (cmd, log):
+        asyncio.run(asyncio.wait_for(body(), 30))
+        assert cmd("GetState")["value"] == "Running"
+        live = json.loads(cmd("GetConfigJson")["value"])
+        assert live["filters"]["sub_loudness"]["parameters"]["low_boost"] == 6.3
+
+
+@engine
+@needs_cdsp
+def test_engine_aux_mix_cut_from_the_gui_is_held_and_a_restore_keeps_it(tmp_path):
+    """On the Pi's engine: CamillaGUI mutes the mic on `aux_mix` and turns IN1 down in the input
+    mixer (SetConfigValue on the mixer sources). The running config's JSON then reads as held
+    cuts (no rebuild), and a restore carrying them (`carry_mixer_cuts`) is accepted and plays
+    the mic muted. D-016 review: the restore used to bring it back at -3 dB."""
+    s = State(profile="m4", aux_mode="mic")
+    exp = d.signal_generator_variant(d.generate(m4(), s), level_db=-30.0)
+    a1 = next(i for i, x in enumerate(exp["mixers"]["aux_mix"]["mapping"][0]["sources"])
+              if x["channel"] == 2)
+    with _engine(tmp_path, exp, "-g-20") as (cmd, log):
+        # one write at a time, each confirmed (the engine's stale-write window, `_read_back`)
+        writes = [(f"/mixers/aux_mix/mapping/{dest}/sources/{a1}/mute", True) for dest in (0, 1)]
+        for ptr, v in writes + [("/mixers/input/mapping/2/sources/0/gain", -30.0)]:
+            assert cmd("SetConfigValue", pointer=ptr, value=v)["result"] == "Ok"
+            assert _eventually(cmd, ptr, v) == v, ptr
+        live = json.loads(cmd("GetConfigJson")["value"])
+        drift = d.config_drift(live, exp)
+        assert drift.rebuild == [] and set(drift.held) == {
+            "aux_mix 2->0 MUTED", "aux_mix 2->1 MUTED", "input 0->2 -30.0 dB"}, drift
+        restored = copy.deepcopy(exp)
+        restored["pipeline"] = list(exp["pipeline"])
+        for name, m in restored["mixers"].items():
+            d.carry_mixer_cuts(name, live["mixers"].get(name), m)
+        assert cmd("SetConfigJson", value=json.dumps(restored))["result"] == "Ok"
+        time.sleep(0.5)
+        assert cmd("GetState")["value"] == "Running"
+        live = json.loads(cmd("GetConfigJson")["value"])
+        assert live["mixers"]["aux_mix"]["mapping"][0]["sources"][a1]["mute"] is True
+        assert d.config_drift(live, exp).rebuild == []

@@ -37,7 +37,7 @@ style-src 'self'`); the box stamps its v2 build into every `.js`.
 | `js/measure.js` | MEASURE (≋): the MEASURE row; RESPONSE: `sub {pgm}`, the paired windows, pauses, restarts, the line and the graph's note |
 | `js/mute.js` | MUTE, v1's protocol |
 | `js/hold.js` | Every hold key (one rule: 12 px of travel or leaving the key cancels; MUTE takes over from any other hold; a second finger, or the key leaving the page, cancels) |
-| `js/sheets.js` | SETUP (from `hello.setup`), THIS PHONE (with Phone mic: ALLOW, then OFF / ON and what the browser kept of the processing), STATUS |
+| `js/sheets.js` | SETUP (from `hello.setup`; a switch paired with the next number whose label starts with its own, a note under each switch, a number the box holds read-only dimmed with its reason), THIS PHONE (with Phone mic: ALLOW, then OFF / ON and what the browser kept of the processing), STATUS |
 | `js/native.js`, `js/haptics.js` | The APK bridge (android/BRIDGE.md) and the haptics, `navigator.vibrate` in Chrome |
 | `js/touch.js`, `js/util.js`, `js/view.js` | Fingers, helpers, the strip / alerts / pills / meters / toasts / layout |
 
@@ -86,9 +86,10 @@ style-src 'self'`); the box stamps its v2 build into every `.js`.
   waiting detents are dropped, a hold in progress is cancelled and said (`LINK LOST · nothing
   sent`), and nothing is replayed after the reconnect (a new connection starts locked).
 - **Master up** is 0.5 dB per 20 px whatever the sensitivity, never accelerated; the page mirrors
-  the box's `pa` bucket (master and the trims share it) and the Controller's 6 dB / 2 s guard,
-  drops the excess and says `SLOW DOWN · master up is limited`; the box's guards stay
-  authoritative.
+  the box's `pa` bucket (master, the trims and D-016's AUX level and loudness boost / reference
+  share it: every field whose `up_limit.bucket` is `pa`) and the Controller's 6 dB / 2 s guard,
+  drops the excess and says `SLOW DOWN · master up is limited` (`· trim …`, `· aux …`,
+  `· boost …`, `· ref …` for the others); the box's guards stay authoritative.
 - **DELAY and LO-CUT** move only inside the window the box granted this connection; the tiles
   show the box's countdown (`unlock_s` in the acks, `locked` from the box, `err LOCKED`).
 - **Choose, then set**, with `seen`; SET on its own line, refused within 400 ms of the choice;
@@ -208,8 +209,14 @@ lists the fingers that lift).
   mic stops while the notice covers the graph).
 - Pairing SETUP rows is by label: two `num` rows ending `L` / `R` with the same
   `field` sit side by side (their tiles read `TOP L` / `TOP R`, `SUB L` / `SUB R`); a `num` row
-  whose label starts with the previous choice row's label (`Low-pass freq` after `Low-pass`) sits
-  beside it (`SUB LP`). A new box row simply gets its own line.
+  whose label starts with the previous choice row's label (`Low-pass freq` after `Low-pass`,
+  D-016's `De-harsh freq` after `De-harsh`, `Loudness boost` after `Loudness`) sits beside it
+  (`SUB LP`, `FREQ`, `BOOST`). A new box row simply gets its own line (D-016's `De-harsh thresh`,
+  `Loudness ref`, `AUX level`: tiles `THRESHOLD`, `REFERENCE`, `AUX LEVEL`). Under each D-016
+  switch a one-line note says what it does; STATUS has a `De-harsh · loudness · AUX` row; the
+  `AUX …` pill ranks with the safety pills (orange). Lab part `d016` checks the rows, their
+  pairing, a rebuild's 1 s hold, a number's steps, the read-only AUX (the fixtures are the dev
+  profile's: no spare input) and the same rows editable once the box lifts it.
 
 **The box (exact; the page's own work changed nothing in `server.py`; closed items say so):**
 1. **`Vary: *` and ETag / 304 together keep the v2 worker from installing** (docs/14 §1 says

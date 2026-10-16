@@ -271,7 +271,102 @@ Good practice:
 - Reset the live EQ when the system moves to a new place, then start again from the tune.
 - A boost on the live layer is limited to +6 dB on purpose: it is for taming, not pushing.
 
-## 9. After the tune
+## 9. De-harsh and sub loudness by ear
+
+Two SETUP switches from the first rig run (D-016), both **off by default**. Neither replaces the
+tune: do the system EQ first (§7), then try them at the rig with the music of the show, at show
+level, listening from where the audience will be. Each switch rebuilds the pipeline (a possible
+click): switch it **muted, or before the doors**. Their numbers move without a click, any time.
+Both are saved like everything else; off, the sound is exactly what it was without them.
+
+### De-harsh: hard attacks around 2.7 kHz
+
+**What it does.** A notch in the live EQ cuts 2.7 kHz all the time, also in the quiet passages
+where nothing is harsh, and the program loses some presence. De-harsh watches one band, about an
+octave wide around **De-harsh freq**, and cuts it **only while that band is louder than De-harsh
+thresh**: a hard attack (a snare crack, a hard consonant, a synth stab) is pulled down within a
+millisecond, then let go within 80 ms; everything quieter passes exactly as it is. Above the
+threshold it cuts 3:1: 9 dB over the threshold becomes 3 dB over, a 6 dB cut. It acts on the tops
+and the subs alike (in practice only the tops play 2.7 kHz), and on the AUX too.
+
+**The threshold follows the master.** The engine applies the master before anything else, so
+de-harsh reads the program at the level you play it: turn the master down and it acts less (the
+attacks are less harsh then too); turn it up and it acts more. **Set it at show level.** The input
+trim and the source level move it the same way. It reads the left and right bands added together,
+so a centred source reads 6 dB over one side's level: a number, not a dBFS meter reading.
+
+**Step by step:**
+
+1. Before the doors, muted: SETUP › TOPS › **De-harsh**, turn E2 to `ON`, push (`MAY CLICK`).
+2. SETUP › TOPS › **De-harsh thresh** to **0 dB** (turn E2 up): at 0 dB it never acts. Unmute and
+   play the track whose attacks hurt, at show level.
+3. If a live bell already cuts there (the notch from the first run), switch it OUT (B3 hold on
+   SHOW, or its chip held on the phone) so you hear de-harsh alone.
+4. **De-harsh freq**: leave `2.70k` if that is where the harshness was (the notch's frequency
+   tells you). If it is elsewhere, move it with E2 (1/12 octave a click) while the threshold is
+   low (step 5), to where the attacks soften most.
+5. **Lower De-harsh thresh** a few clicks at a time (0.5 dB a click), listening to the attacks
+   only: they get softer, the rest stays. Stop when they no longer bite.
+6. **Check what you gave up**: listen to a quiet passage, a voice, cymbals. Dull, lisping, or the
+   sound "breathes" between hits? Two to four clicks back up. Normal: somewhere between −30 and
+   −15 dB with a loud program; the default is −24.
+7. Compare: De-harsh `off` / `ON` (two pushes each, between tracks), or the threshold back to 0 dB
+   and down again (no click). Keep it only if the difference is clearly better.
+
+If it never seems to act: the threshold is too high for this program level (lower it), or the
+harshness is elsewhere (move the frequency). If everything sounds duller even between attacks:
+the threshold is far too low; come back up. The live EQ notch is still there if de-harsh does not
+convince you: it is the static fix, de-harsh the dynamic one.
+
+### Sub loudness: the subs at low level
+
+**What it does.** Ears hear less low end at low volume (equal-loudness curves), and subs need
+some level to fill a room: at background level the cabinets sound flat. Loudness raises the subs'
+low end (a shelf below 70 Hz) **as the master goes down under Loudness ref**, by **Loudness boost**
+when the master is 20 dB under it, half of that 10 dB under. At or above the reference it adds
+nothing, so the show level is untouched. It never makes the subs louder than they are at the
+reference: the master always takes away more than loudness gives back (0.6 dB per dB at most).
+The tops are not touched.
+
+**Step by step:**
+
+1. Before the doors, muted: SETUP › SUBS › **Loudness**, choose `ON`, push (`MAY CLICK`).
+2. Play the show music and set the master where the subs **sound right**: full, filling the room
+   (usually the show level, or a little under). Read the master on SHOW or ALIGN.
+3. SETUP › SUBS › **Loudness ref** to that master value (E2, 0.5 dB a click; default −10).
+4. Turn the master down to the quietest level you will use (background, between sets) and listen
+   to the subs. Too thin: **Loudness boost** up (+0.5 dB a click; default +6); boomy or the subs
+   stand out: down. Typical: +4 to +8 dB.
+5. Sweep the master slowly between the two levels: the balance between subs and tops should stay
+   about the same. The boost changes smoothly with the master, no step.
+6. Then leave the reference alone: moving it later changes how much low end every quieter level
+   gets.
+
+Above the reference nothing changes, so a show at full level sounds exactly as without loudness.
+On the phone, raising the boost or the reference shares master's 6 dB/s limit (they raise the
+subs).
+
+### AUX IN: a mic or a second source on the M4's front inputs
+
+SETUP › INPUT › **AUX IN 1/2** puts the M4's IN1 (`MIC`, both sides at −3 dB, a 100 Hz high-pass
+against handling noise and boom) or IN1 + IN2 (`LINE`, IN1 left, IN2 right) into the program,
+after the input trim and before the EQ, so it gets the room EQ, the live EQ and de-harsh. Off by
+default. **A live mic can feed back**: the orange `AUX MIC` pill says it is open.
+
+1. Master down. On the M4 front: **GAIN 1/2 at minimum**, **MON 1 and MON 2 stay unlit** (a lit
+   MON sends the input straight to the outputs, past K1000 and its mute), 48V only for a
+   condenser mic.
+2. Muted: AUX IN 1/2 → `MIC` or `LINE`, push (`MAY CLICK`); unmute.
+3. Raise the **M4 GAIN** while someone talks or the source plays, until the M4's own IN1 / IN2
+   meter is healthy without red; then **AUX level** (SETUP › INPUT, 0.5 dB a click, default 0 dB)
+   to sit it in the mix, then the master. K1000's IN meters, `IN CLIP` and the spectrum read the
+   program inputs (LINE IN 3/4) only, never the AUX: watch the M4's front meters for it.
+4. Mic in front of the speakers: listen for a ring as you go. The notch (§8) cuts it like any
+   other ring, but the spectrum does not see the mic, so there is no cyan PEAK for it: B3, then
+   **cut first and sweep** (the `NO PEAK` way).
+5. Done: AUX IN back to `off` (muted), M4 GAIN 1/2 back to minimum.
+
+## 10. After the tune
 
 - Everything is saved automatically. Note the key values on paper anyway (master show level,
   delays, Lo-Cut, the eight system bands).

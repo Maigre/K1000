@@ -69,13 +69,13 @@ export function alerts() {
 }
 
 // ------------------------------------------------------------------ pills
-// safety first (POL INV, LO-CUT OFF), then an open laptop access, the bands OUT, the rest; what
-// does not fit folds into "+n" from the end (STATUS lists them all)
+// safety first (POL INV, LO-CUT OFF, an AUX input in the PA: D-016), then an open laptop access,
+// the bands OUT, the rest; what does not fit folds into "+n" from the end (STATUS lists them all)
 export function pillList() {
   const S = K.state;
   const box = S && Array.isArray(S.pills) ? S.pills.map(String) : [];
-  const rank = (p) => (/^POL INV/.test(p) ? 0 : /^LO-CUT OFF/.test(p) ? 1 : /^LAPTOP/.test(p) ? 2 : /^OUT /.test(p) ? 3 : 4);
-  const cls = (p) => (rank(p) <= 1 ? "warn" : rank(p) === 3 ? "out" : "");
+  const rank = (p) => (/^POL INV/.test(p) ? 0 : /^LO-CUT OFF/.test(p) ? 1 : /^AUX /.test(p) ? 1.5 : /^LAPTOP/.test(p) ? 2 : /^OUT /.test(p) ? 3 : 4);
+  const cls = (p) => (rank(p) <= 1.5 ? "warn" : rank(p) === 3 ? "out" : "");
   const out = box.map((p, i) => [rank(p), i, p]).sort((a, b) => a[0] - b[0] || a[1] - b[1]).map((x) => [cls(x[2]), x[2]]);
   if (UI.freeze) out.push(["cy", "FROZEN"]);
   return out;

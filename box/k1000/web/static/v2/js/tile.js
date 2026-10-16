@@ -13,7 +13,7 @@
    Every number above comes from hello.slide. */
 
 import { K, UI, band, bandKind, canEdit, fieldOf, linked, pathOf, render, shortName, shown, slide } from "./store.js";
-import { endSlide, lockedHint, onRefused, alignOpen, requestUnlock, slideDetent, stepCmd } from "./nudge.js";
+import { endSlide, lockedHint, onRefused, alignOpen, readonlyHint, requestUnlock, slideDetent, stepCmd } from "./nudge.js";
 import { speedMult } from "./fields.js";
 import { hap } from "./haptics.js";
 import { editOk, toast } from "./view.js";
@@ -261,6 +261,7 @@ function detent(g, s, fd, master) {
   const ev = slideDetent(g.path, s, mult, fine, g);
   if (ev === "off") { stopGesture(); if (linked()) editOk(); return; }   // a stalled link: said
   if (ev === "locked") { stopGesture(); lockedHint(g.path); return; }
+  if (ev === "readonly") { stopGesture(); readonlyHint(g.path); flashTile(g.el, "clamp", 300); return; }
   if (ev === "swallow") { hap("click"); flashTile(g.el, "det"); return; }
   if (ev === "reject") { hap("reject"); flashTile(g.el, "clamp", 300); return; }
   if (ev === "slow") { flashTile(g.el, "clamp", 300); return; }

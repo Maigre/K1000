@@ -333,7 +333,9 @@ sudo /opt/k1000/tools/k1000-m4-bringup.sh --tone --i-have-turned-the-speakers-of
   - **Loop test** (MONITOR fully clockwise = unity): a TRS cable from out N into front INPUT 1
     (GAIN 1 fully counter-clockwise, 48V off, MON 1 unlit), a tone in LINE IN 3, K1000 Main at
     −20 dB. Capture index 0 should read within about 0.5 dB of playback index N−1, and out 1 the
-    same as out 3. Input 1 is not in the program, so nothing feeds back.
+    same as out 3. Input 1 is not in the program while SETUP › INPUT › AUX IN 1/2 is `off` (the
+    default), so nothing feeds back. **With AUX IN on (D-016) input 1 IS in the program: the loop
+    feeds back. Set AUX IN off first.**
   - **Leak test** (MON MIX fully clockwise blocks direct monitoring): K1000 muted (hold B4), the
     tone in LINE IN 3, the loop on out 1, then press 3-4. Capture index 0 must stay at the floor.
     Turning MON MIX counter-clockwise makes it rise: that is the raw program going past K1000
@@ -576,7 +578,9 @@ The tool writes one line every 10 s:
   - Live EQ: SETUP › LIVE EQ › Reset live EQ, push twice within 5 s. Undo reset (one push) puts it
     back exactly, once, until the next audible live-EQ edit or 5 min.
   - A torn `state.json` is rebuilt from `active.yml` (the bad copy is kept as `state.json.bad`) and
-    comes back MUTED ("STATE REBUILT · CHECK MASTER").
+    comes back MUTED ("STATE REBUILT · CHECK MASTER"), with SETUP's De-harsh, Loudness and AUX IN
+    off (D-016: their values kept, the switches never read back from the engine): switch them on
+    again in SETUP if they were.
   - If the state file itself is bad, stop k1000, move `state.json` away and start k1000. Next to a
     K1000 `active.yml` it comes up on defaults and stays MUTED ("NO SAVED STATE · CHECK MASTER").
     Check the master, then hold B4. An engine that is already playing is adopted unchanged.

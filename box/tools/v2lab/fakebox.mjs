@@ -169,6 +169,8 @@ export class FakeBox {
         const caps = this.hello.nudge[m.f];
         if (!caps || !Number.isInteger(m.d) || !m.d || m.d < caps[0] || m.d > caps[1]) { this.err(ws, id, "BAD", "lab: bad nudge"); break; }
         if (LOCKED.has(m.f) && !this.unlocked) { this.err(ws, id, "LOCKED", "LOCKED · HOLD 0.8 s TO EDIT", this.value(m.f)); break; }
+        // a SETUP number the box holds read-only (D-016: the AUX level with no spare input)
+        if (this.state.readonly && this.state.readonly[m.f]) { this.err(ws, id, "READONLY", this.state.readonly[m.f], this.value(m.f)); break; }
         const key = m.f.replace(/\.\d+(?=\.|$)/, "");
         const v = this.stepValue ? this.stepValue(this.hello.fields[key], this.value(m.f), m.d, m.fine === true, m.f) : this.value(m.f);
         this.setValue(m.f, v);

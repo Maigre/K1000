@@ -512,3 +512,79 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   E3/E4 keep B2's hold" and a comment in `web/server.py` still say E3/E4 for the locked pair: they
   go with the phone work.
 
+
+## D-016 — De-harsh, sub loudness and AUX IN, all off by default · proposed 2026-10-16
+
+- **Ask** (Thomas, after the first run with the box on the rig, 2026-10-16: "it sound great"):
+  (1) "a band compressor would be interessting: some attack are a bit hard, especially around
+  2.7kHz, i setted a peq notch here but i feel that a compressor would be more efficient on those
+  high end frequency attack range"; "on the subs: currently it needs to reach a certain level to
+  actually have a space filling effect. at lower volume the subs cabinets feels very flat and less
+  dynamic … i'll let you suggest approach"; (2) an internal player for a USB stick; (3) "what
+  happens to IN1/2 ? are they mixed with IN3/4 so i can play from both sources an use either mic or
+  line on IN1/2 ?"
+- **Answer to (3)**: until now IN1/IN2 played **nothing**. The `input` mixer names them only at
+  linear gain 0 (they must be named there, or 5.0.0-beta.1's spectrum crashes the capture thread:
+  the 2026-10-16 fix), so the program was LINE IN 3/4 alone. AUX IN below makes them playable.
+- **Proposed and built** (the approach is Claude's, as Thomas asked; **every feature off by
+  default**: with the three switches off the engine config is byte for byte f2671b0's, pinned by
+  `box/tests/fixtures/dspconfig-f2671b0/` and checked on the engine). Each switch is a SETUP
+  ON/off or choice, chosen then set like Mono (a pipeline rebuild under a Main mute, `MAY CLICK`);
+  its numbers are show-time values (one click-free parameter write each, smoothed like a knob).
+  - **De-harsh** (SETUP › TOPS: `De-harsh`, `De-harsh freq` 1.5–6 kHz, default 2.70k,
+    `De-harsh thresh` −48–0 dB, default −24): a **dynamic EQ**. The program L/R is split into
+    itself, a band-pass copy to subtract and a band-pass copy to compress (Q 1.4, about an octave;
+    a band-pass has 0 dB and 0° at its centre); a compressor (3:1, 1 ms attack, 80 ms release, no
+    makeup) acts on the second copy only; the sum `x − band + compressed band` is a peaking cut at
+    the frequency, **as deep as the gain reduction**, and **exactly the dry program** while the band
+    stays under the threshold (measured −253 dB of difference). It sits after the input trim and EQ,
+    before the sub/top split. The compressor reads the L+R band sum (a centred source reads 6 dB
+    over one side) **after the master** (CamillaDSP applies Main before the first step): it is set
+    at show level and acts less when the master goes down. Why not a static notch: it cuts the
+    band all the time; why not a multiband compressor: more CPU and pumping for one problem band.
+  - **Sub loudness** (SETUP › SUBS: `Loudness`, `Loudness boost` 0–12 dB, default +6,
+    `Loudness ref` −40–0 dB, default −10): CamillaDSP's Loudness filter on the Main fader, in the
+    subs chain after the low-pass, low shelf only (70 Hz, Q 0.707), no treble, no mid attenuation.
+    The boost is `boost × clamp((ref − master) / 20, 0, 1)`: nothing at or above the reference, the
+    full boost 20 dB under it. **Never louder than at the reference**: the boost grows at most
+    0.6 dB per dB the master goes down. Why: equal-loudness curves; the subs need level to fill a
+    room, and a fixed sub boost would also raise them at show level.
+  - **AUX IN** (SETUP › INPUT: `AUX IN 1/2` off / MIC / LINE, `AUX level` −40–+12 dB, default 0):
+    the capture channels not in `input_map` (M4: IN1, IN2) join the program **after the input trim
+    (the program's only) and before the EQ** (so the AUX gets the system EQ, the live EQ, de-harsh,
+    the master). MIC: IN1 to both sides at −3 dB each (equal-power centre), a fixed 100 Hz 12 dB/oct
+    high-pass. LINE: IN1 left, IN2 right. A profile with no spare input (dev, the HiFiBerry) shows
+    both rows read-only (`NO SPARE INPUT`, `AUX: NO SPARE INPUT ON THIS DEVICE`) and routes nothing.
+  - **On screen and phone**: the SETUP rows above (`TOPS 7`, `SUBS 9`, `INPUT 3` items; the knobs'
+    rules unchanged, a read-only number now refused like a read-only choice); SHOW pills `AUX MIC` /
+    `AUX LINE` (orange: an open input into the PA), `LOUDNESS`, `DE-HARSH` (grey); the phone's v2
+    SETUP builds the rows from the box's schema (the switch paired with its first number, `READ-ONLY`
+    with the box's reason), protocol 2 gains the five numbers (`hello.fields`), `err READONLY` on a
+    nudge, and the STATUS sheet a `De-harsh · loudness · AUX` row. v1 and its protocol unchanged.
+- **Safety**: all off; a switch never in one gesture and always under a Main mute; the AUX level,
+  the loudness boost and its reference raise the PA, so a phone's raise of them spends master's one
+  6 dB/s bucket (`AUX: SLOW DOWN`, `LOUDNESS: SLOW DOWN`) and the engine gets them in 0.1 dB steps
+  (boost, AUX level) like a trim; a cut made on them in CamillaGUI (a boost or reference lowered,
+  the mid attenuation on, a threshold lowered or a ratio raised) is kept and shown, never pushed
+  back up, like a trim. **A mic can feed back**: master down first, **M4 GAIN 1/2 up from minimum**,
+  **MON 1 / MON 2 stay unlit** (a lit MON sends the input to the outputs past K1000 and its mute),
+  AUX level last, `AUX MIC` orange while open.
+- **Not done**: (2) the USB stick player: a new audio source in the box (a player process, a second
+  capture path or a mixer on the ALSA side, the stick's mount rules), not a Sunday change: on the
+  roadmap. Until then the phone or a player into LINE IN 3/4 (or, now, into IN1/IN2 as AUX LINE).
+- **Limits known now**: the spectrum, the IN meters and `IN CLIP` read the program inputs only,
+  never the AUX (a ring through the mic has no cyan PEAK: B3 then cut and sweep); the switches are
+  never read back from a RUNNING engine (a missing block is a drift K1000 restores), so a setup
+  rebuild is saved at once (not debounced) and a torn state.json gets them back from active.yml
+  (`dspconfig.feature_switches`); AUX switched on the dev profile still rebuilds (its unused
+  filters), the sound unchanged; only the rig can tell how each sounds and the Pi's load with all
+  three on.
+- **What did not change**: the engine config with the three off; every knob, button, step, guard
+  and page but the SETUP rows and pills above; state.json stays compatible both ways (an older file
+  loads with the three off, an older build ignores the keys).
+- **Pictures** (`docs/ui/`): `setup_deharsh_pick.png`, `setup_loudness.png`, `setup_aux_pick.png`,
+  `setup_aux_dev.png`, `show_pills_d016.png`; the other SETUP pictures regenerated (the longer
+  groups). How to set them by ear: [`docs/manual/05-tuning.md`](docs/manual/05-tuning.md) §9.
+- **Gate**: Thomas tries each at the rig (de-harsh against his 2.7 kHz notch, loudness at
+  background level, a mic on IN1) and decides to keep, change the defaults, or drop; until then
+  they stay off. Deploy, then the printed operator card (still one A4 page).

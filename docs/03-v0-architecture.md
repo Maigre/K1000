@@ -104,7 +104,7 @@ pushed back **only in the safe direction**:
 
 | Outside K1000 (CamillaGUI) | K1000 does | Screen (status bar, orange) |
 |---|---|---|
-| A cut or a mute: Gain `mute` flag, a Gain/Biquad gain or Volume limit below K1000's, an Aux group lowered or muted | **keeps it**, never raises or unmutes it; an Aux group lowered keeps that offset under later balance moves | `<WHAT> (GUI)` / `N CUTS/MUTES (GUI)` |
+| A cut or a mute: Gain `mute` flag, a Gain/Biquad gain or Volume limit below K1000's, an Aux group lowered or muted; D-016's blocks played quieter (a Loudness boost or reference lower, a compressor threshold lower or ratio higher) and the AUX routing cut (an `aux_mix` source or destination muted or lowered, an AUX source of the `input` mixer lowered: `dspconfig.mixer_cuts`; never a mute in `input`, which panics the engine) | **keeps it**, never raises or unmutes it, also through a restore; an Aux group lowered keeps that offset under later balance moves | `<WHAT> (GUI)` / `N CUTS/MUTES (GUI)` |
 | A raise above K1000's value (incl. an Aux group raised) | pulls it down in click-safe steps (0.1 dB per Gain step, 0.5 dB Biquad, 1/12 oct freq/Q) | — (`CONFIG DRIFT (SEE LOG)` if the engine still differs after 3 identical re-sends) |
 | Structure changed (mixers, pipeline, a filter's type) | restores it: a whole upload keeping the live devices and the outside cuts, Main muted around it; second look, at most once per 30 s | `PIPELINE CHANGED (GUI)` |
 | Devices on another type, another ALSA card (resolved via `/proc/asound/<id>` → `cardN`) or another channel count, the profile's card present (e.g. a GUI page loaded while the engine was down Applies its default `hw:0` config) | uploads the profile's whole config (cuts kept), Main muted, then the boot ramp; second look, at most once per 30 s | `RESTORING ENGINE DEVICES` |
@@ -117,13 +117,16 @@ pushed back **only in the safe direction**:
   before. An operator unmute while a setup guard holds Main waits until the engine runs (dropped,
   never sent, during `stop()`). While K1000 itself holds Main and the operator has not muted, B4 long
   means MUTE (`Controller.b2_muted`, named when mute was B2).
-- **Setup actions** (Mono L+R, audition, profile) need the SETUP confirm (D-013: chosen with E2, set
-  by a push, `Controller.set_choice`) or a muted box; the profile is refused while k1000.yaml pins
+- **Setup actions** (Mono L+R, audition, profile, D-016's De-harsh, Loudness, AUX IN) need the SETUP
+  confirm (D-013: chosen with E2, set by a push, `Controller.set_choice`) or a muted box; the profile is refused while k1000.yaml pins
   it. Whole upload with Main muted around it (alert `APPLYING SETUP…`); the unmute waits for
   Running; a profile change ends with the boot ramp.
 - **Persistence**: `state.json` + `active.yml`, atomic (tmp + fsync + rename), only when the content
   changed; 1 s after the last edit, at most 5 s after the first. **Edits toward silence** (operator
-  mute, master lowered) are saved at once, at most every 0.25 s (measured: on disk after 0.05 s).
+  mute, master lowered) are saved at once, at most every 0.25 s (measured: on disk after 0.05 s), and
+  so is a setup rebuild (D-016's switches are not read back from a running engine; a torn
+  `state.json` gets them back from `active.yml`, `dspconfig.feature_switches`). `stop()` lets a
+  debounced write still in its thread land first, so its own save is the last one written.
   `active.yml` is dumped with libyaml (`dspconfig.YAML_DUMPER`, the same text as PyYAML's
   pure-Python dumper) and only when the config changed: MASTER, balance and mute are faders, so
   their saves write `state.json` alone (the 34 ms pure-Python dump in the event loop starved the
@@ -184,6 +187,16 @@ Logical channels after the split: **0 = Sub L, 1 = Sub R, 2 = Top L, 3 = Top R.*
 | 6 | Filter | 0…3 each | `out_trim_0`…`out_trim_3` (Gain, per physical output calibration) |
 | 7 | Mixer `output` | 4→P | profile mapping to physical outputs |
 
+D-016's optional blocks are in the config **only while switched on** (with all three off it is byte
+for byte the pre-D-016 config); switching one is a setup action (below), their numbers are owned
+parameters (click-free writes):
+
+| Block (switch) | Where | Contents |
+|---|---|---|
+| AUX IN (`aux_mode` mic / line), only where the profile has spare capture channels (M4: IN1, IN2; dev: none, the filters exist unrouted) | `input` becomes N→4 (A1, A2 = the spares); step 2 splits: `in_trim` on 0,1, then the AUX step, then Mixer `aux_mix` 4→2, then the EQ on 0,1 | `aux_gain` (Gain, owned) · `aux_hp` (Biquad Highpass 100 Hz, mic only) · `aux_mix`: mic A1 → L and R at −3 dB; line A1 → L, A2 → R |
+| De-harsh (`deharsh_on`) | after step 2, before `split` | Mixer `dh_split` 2→6 · `dh_band` (Biquad Bandpass, freq owned, Q 1.4) on 2…5 · Processor `dh_comp` (Compressor on 4,5 monitoring their sum, threshold owned, 3:1, 1/80 ms) · Mixer `dh_sum` 6→2 (x − band + compressed band: exactly x under the threshold) |
+| Sub loudness (`loud_on`) | step 4, right after `sub_lowpass` | `sub_loudness` (Loudness on Main, low shelf 70 Hz; reference_level and low_boost owned; nothing at or above the reference) |
+
 - **Main fader** = master volume + mute (CamillaDSP's built-in control, ramped 100 ms since UI v1, 300 ms in v0;
   `dspconfig.VOLUME_RAMP_MS`, also the Aux1/Aux2 Volume filters' `ramp_time_ms`), capped at
   0 dB by `devices.volume_limit`.
@@ -195,9 +208,10 @@ Logical channels after the split: **0 = Sub L, 1 = Sub R, 2 = Top L, 3 = Top R.*
   0.6 s), so a fast turn is one dip, not one per detent.
 - Every other show-time write is click-safe: gains in 0.5 dB steps (0.1 dB on Gain filters, which the
   engine applies as a step), frequency and Q in 1/12-octave steps, steps 12 ms apart.
-- Mixer-changing settings (`mono_subs`, profile, `dev` audition) are **setup actions**: they rebuild
-  the pipeline (possible click), so the UI only allows them from the SETUP page, with a confirm
-  (D-013: E2 chooses, a push sets; the prompt says `· MAY CLICK`).
+- Mixer-changing settings (`mono_subs`, profile, `dev` audition, D-016's `deharsh_on`, `loud_on`,
+  `aux_mode`) are **setup actions**: they rebuild the pipeline (possible click), so the UI only
+  allows them from the SETUP page, with a confirm (D-013: E2 chooses, a push sets; the prompt says
+  `· MAY CLICK`).
 - "Off" for Lo-Cut / sub low-pass is a frequency move, never a pipeline change.
 
 ### Profiles
@@ -269,8 +283,9 @@ Screen: system alerts take the status bar in their level's colour (critical red,
 full width; warning orange; info blue; the page pill shrinks to three letters and the text is
 ellipsized below 12 px, never cut); a critical alert is repeated over SHOW's chip row when no
 hint is up. Hints are amber and brief. SHOW's persistent pills (`Controller.pills`, LAPTOP OPEN
-first) are orange when they change the sound or open the box (LAPTOP OPEN, LO-CUT OFF, POL INV)
-and grey otherwise (MONO SUB, AUDITION); below 13 px the neutral ones fold into `+N` first.
+first) are orange when they change the sound or open the box (LAPTOP OPEN, LO-CUT OFF, POL INV,
+D-016's AUX MIC / AUX LINE: a live input in the PA) and grey otherwise (MONO SUB, LOUDNESS,
+DE-HARSH, AUDITION); below 13 px the neutral ones fold into `+N` first.
 Every master change is logged at INFO with its source (`master -19.0 -> -20.0 dB (knob)`;
 knob, phone, console, adoption).
 

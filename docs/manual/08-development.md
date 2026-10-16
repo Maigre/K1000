@@ -66,8 +66,11 @@ SHOW is on screen and Spectrum is ON, so a spectrum poll never queues in front o
 - **Audio never depends on the UI.** If k1000 dies, the engine keeps playing as it was. If the
   engine restarts, it comes up muted and k1000 ramps it in once audio flows.
 - **A fixed-slot pipeline.** Every filter exists from boot; every show-time action is a parameter
-  write or a ramped fader, never a pipeline rebuild. Mono L+R, the profile and the dev audition
-  are the only rebuilds, and they are SETUP actions with a confirm (chosen with E2, set by a push).
+  write or a ramped fader, never a pipeline rebuild. Mono L+R, the profile, the dev audition and
+  D-016's De-harsh, Loudness and AUX IN are the only rebuilds, and they are SETUP actions with a
+  confirm (chosen with E2, set by a push). D-016's three optional blocks exist only while switched
+  on (with all three off the config is byte for byte the pre-D-016 one); their numbers are
+  parameters like any other, moved without a rebuild (`dspconfig` module docstring).
 - **One state, every surface.** Knobs, phone and CamillaGUI edit the same engine. K1000 adopts what
   it owns, keeps any cut or mute made outside it, and pulls raises back down. It never releases a
   mute it did not make (the Aux4 marker records what it holds).

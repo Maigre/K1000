@@ -8,9 +8,10 @@ Why it is shaped like this:
   kick the worker. The worker diffs what the engine holds (`_applied`) against the state and sends
   click-safe plans (`dspconfig.smooth_ops`). Fast knob turns therefore coalesce: while a plan
   runs, further detents pile up in the state and the next plan goes straight to the latest value.
-  Setup actions (mono subs, audition, profile) come out of the diff as a `Rebuild`: they
-  regenerate and upload the whole config with Main muted around it, and are refused unless the
-  operator confirmed them (SETUP: chosen, then set by a push, D-013) or the box is muted.
+  Setup actions (mono subs, audition, profile; D-016's de-harsh, sub loudness and AUX IN) come
+  out of the diff as a `Rebuild`: they regenerate and upload the whole config with Main muted
+  around it, and are refused unless the operator confirmed them (SETUP: chosen, then set by a
+  push, D-013) or the box is muted.
 - **Mute never waits.** B4 is the emergency gesture: `set_mute` sends the Main mute at once,
   outside the worker and its lock. Nothing else ever UNMUTES Main except the operator, a boot ramp,
   or a setup guard, and the last two re-check the operator's mute right before unmuting.
@@ -45,7 +46,8 @@ Why it is shaped like this:
   the edits pause for `persist_debounce_s` (at most `persist_max_delay_s` after the first unsaved
   edit), and only when the content changed (SD card wear). An edit toward silence (the
   operator's mute, master turned down) is saved at once (at most every URGENT_SAVE_GAP_S): a
-  power cut right after it must not boot the PA back louder or unmuted. A failed write is
+  power cut right after it must not boot the PA back louder or unmuted. So is a setup rebuild
+  (D-016's switches are not read back from a running engine). A failed write is
   retried with a backoff (`SAVE_RETRY_S`). A torn state.json is rebuilt from active.yml
   (`recover_state`), the file the engine boots from, instead of overwriting the tune with
   defaults; the faders it cannot know come back MUTED.
@@ -77,7 +79,8 @@ from .profiles import (PROC_ASOUND, PROFILE_NAMES, Profile, ProfileChoice, card_
 from .state import (BOOL_FIELDS, CHOICES, N_SYS_PEQ, RANGES, REBUILD_FIELDS, State, atomic_write,
                     effective_gain, is_band_on_path, load_state)
 from .ui.input_map import (
-    A_LAPTOP, ALL_PAGES, AUTO_HOME_PAGES, BELL_SLOTS, EDIT_HIGHLIGHT_S, F_LOWCUT_ON, F_SPECTRUM_ON,
+    A_LAPTOP, ALL_PAGES, AUTO_HOME_PAGES, BELL_SLOTS, EDIT_HIGHLIGHT_S, F_AUX_GAIN, F_AUX_MODE,
+    F_LOWCUT_ON, F_SPECTRUM_ON,
     HINT_S, HOME_AFTER_S, HOME_PAGE, LIVE_SLOT_LABELS, LIVE_SLOT_SHORT, LIVE_SLOTS, MUTE_TOGGLE,
     PAGES, ControlMap, Focus, GotoPage, Mute, NextPage, NotchHelper, Nudge, PhoneQr, PhoneToggle,
     B1_TAP, SETUP_ITEMS, ResetLive, SetChoice, SetupAction, Toggle, ToggleBand, UndoReset,
@@ -169,7 +172,21 @@ HINT_EDIT_OUT_PHONE = "{band} OUT · IN FROM THE PHONE"  # the same, B3's hold g
 PILL_OUT = "OUT"                                     # SHOW pill: "OUT P2", "OUT P2 LS"
 HINT_SPECTRUM_DISABLED = "SPECTRUM OFF IN k1000.yaml"
 HINT_AUDITION_DEV_ONLY = "AUDITION: DEV PROFILE ONLY"
+# D-016: AUX IN takes the capture channels the program does not use (M4: IN1, IN2); a profile with
+# none (dev: the HiFiBerry's two channels are the program) holds the AUX rows read-only.
+HINT_AUX_NO_INPUT = "AUX: NO SPARE INPUT ON THIS DEVICE"
 SETUP_PICK_FIELDS: frozenset[str] = frozenset(it.field for it in SETUP_ITEMS if it.picks)
+# The rebuild fields that are the pipeline's structure (all of REBUILD_FIELDS but the profile,
+# which is `self.profile`): what the engine runs is `_applied`'s, and until a setup edit is
+# applied the state's value wins over anything read back (`_adopt`), while state.json gets what
+# runs (`persist_state`). D-016 added aux_mode, loud_on, deharsh_on.
+STRUCTURE_FIELDS: tuple[str, ...] = tuple(sorted(REBUILD_FIELDS - {"profile"}))
+# SETUP's D-016 switches: what the screen says once one is set (the knobs, the phone).
+FEATURE_SAID: dict[str, dict[Any, str]] = {
+    "deharsh_on": {True: "DE-HARSH ON", False: "DE-HARSH OFF"},
+    "loud_on": {True: "LOUDNESS ON", False: "LOUDNESS OFF"},
+    "aux_mode": {"off": "AUX IN OFF", "mic": "AUX IN 1: MIC", "line": "AUX IN 1/2: LINE"},
+}
 HINT_NO_CHANGE = "NO CHANGE: ALREADY SET"
 HINT_LAPTOP_NA = "LAPTOP ACCESS: NOT AVAILABLE"
 HINT_LAPTOP_OPENING = "LAPTOP ACCESS: OPENING…"
@@ -565,15 +582,41 @@ def _num(v: Any) -> float | None:
     return f if math.isfinite(f) else None
 
 
+# D-016's blocks, in K1000's safe direction: the parameters whose LOWER live value plays quieter
+# (a Loudness boost or reference, a compressor's threshold or makeup) and the one whose HIGHER value
+# does (a compressor's ratio). Pushing K1000's value back over a quieter live one would raise the
+# PA: kept and shown, like a Gain trim turned down. (The engine refuses a negative boost, probed:
+# the treble boost K1000 holds at 0 dB can only be raised outside K1000, and is pulled back.)
+_LOWER_IS_QUIETER: dict[str, tuple[tuple[str, str], ...]] = {
+    "Loudness": (("low_boost", "BOOST"), ("high_boost", "TREBLE"), ("reference_level", "REF")),
+    "Compressor": (("threshold", "THRESH"), ("makeup_gain", "MAKEUP")),
+}
+_HIGHER_IS_QUIETER: dict[str, tuple[tuple[str, str], ...]] = {"Compressor": (("factor", "RATIO"),)}
+
+
 def _keep_cuts(cfg: dict[str, Any], live: Any) -> dict[str, Any]:
     """`cfg` (a whole config about to replace `live`) with the cuts and mutes made outside K1000
     carried over: a Gain filter muted or turned down, a Biquad gain or Volume limit below
-    K1000's. A pipeline restore puts the STRUCTURE back; it must not unmute an output or raise
-    a trim nobody at the box asked for (the same rule as the 1 Hz fixes)."""
-    lf = live.get("filters") if isinstance(live, dict) else None
-    if not isinstance(lf, dict):
+    K1000's, and D-016's: a Loudness boost or reference below K1000's (or its mid attenuation
+    switched on), a compressor threshold or makeup below K1000's or a ratio above it, and a cut
+    on the AUX routing (`dspconfig.carry_mixer_cuts`: an `aux_mix` source muted or turned down,
+    an AUX source of the input mixer turned down: a mic muted from CamillaGUI stays muted). A
+    pipeline restore puts the STRUCTURE back; it must not unmute an output or raise a trim
+    nobody at the box asked for (the same rule as the 1 Hz fixes)."""
+    if not isinstance(live, dict):
         return cfg
     out = copy.deepcopy(cfg)
+    lm_sec = live.get("mixers")
+    for name, m in ((out.get("mixers") or {}).items() if isinstance(lm_sec, dict) else ()):
+        dc.carry_mixer_cuts(name, lm_sec.get(name), m)
+    lp_sec = live.get("processors")
+    for name, f in ((out.get("processors") or {}).items() if isinstance(lp_sec, dict) else ()):
+        lv = lp_sec.get(name)
+        if isinstance(lv, dict) and lv.get("type") == f.get("type"):
+            _carry_quieter(f.get("type"), lv.get("parameters"), f.get("parameters"))
+    lf = live.get("filters")
+    if not isinstance(lf, dict):
+        return out
     for name, f in (out.get("filters") or {}).items():
         lv = lf.get(name)
         if not isinstance(lv, dict) or lv.get("type") != f.get("type"):
@@ -596,7 +639,27 @@ def _keep_cuts(cfg: dict[str, Any], live: Any) -> dict[str, Any]:
             g, w = _num(lp.get("limit")), _num(p.get("limit"))
             if g is not None and w is not None and g < w:
                 p["limit"] = g
+        elif f["type"] == "Loudness":
+            _carry_quieter("Loudness", lp, p)
     return out
+
+
+def _carry_quieter(ftype: Any, lp: Any, p: Any) -> None:
+    """D-016's blocks in `_keep_cuts`: copy into `p` (K1000's parameters) each live value of
+    `lp` that plays quieter than K1000's (_LOWER_IS_QUIETER / _HIGHER_IS_QUIETER, a Loudness
+    `attenuate_mid` switched on)."""
+    if not isinstance(lp, dict) or not isinstance(p, dict):
+        return
+    for key, _w in _LOWER_IS_QUIETER.get(ftype, ()):
+        g, w = _num(lp.get(key)), _num(p.get(key))
+        if g is not None and w is not None and g < w:
+            p[key] = g
+    for key, _w in _HIGHER_IS_QUIETER.get(ftype, ()):
+        g, w = _num(lp.get(key)), _num(p.get(key))
+        if g is not None and w is not None and g > w:
+            p[key] = g
+    if ftype == "Loudness" and lp.get("attenuate_mid") is True and p.get("attenuate_mid") is False:
+        p["attenuate_mid"] = True
 
 
 def recover_state(paths: Paths) -> tuple[State, str]:
@@ -604,7 +667,8 @@ def recover_state(paths: Paths) -> tuple[State, str]:
     cannot be read while active.yml holds a K1000 config, the state rebuilt from active.yml.
 
     Why: camilladsp boots from active.yml, so after a torn state.json that file IS the tune
-    (system PEQ, trims, delays, polarity). Starting from defaults would overwrite active.yml at
+    (system PEQ, trims, delays, polarity, mono, D-016's de-harsh / loudness / AUX switches and
+    values). Starting from defaults would overwrite active.yml at
     once and patch the defaults over the engine: the tune gone from both. Faders live only in
     state.json, so master/balance come back as defaults, and the calibrated master may be well
     below the default: the state starts MUTED (a fresh engine parks Main at the master and stays
@@ -642,6 +706,10 @@ def recover_state(paths: Paths) -> tuple[State, str]:
     base = State()
     base.profile = name                  # dev_audition is read from the mixers only for dev
     rebuilt = dc.state_from_config(cfg, None, base)
+    # D-016's switches are not read from a running config, but this file is K1000's own: its
+    # blocks are what ran (a rebuilt state without them would strip them from the engine).
+    for f, v in dc.feature_switches(cfg).items():
+        setattr(rebuilt, f, v)
     rebuilt.muted = True
     log.warning("state.json %s: state rebuilt from %s (the tune the engine boots from); "
                 "master/balance are defaults, MUTED until the operator checks the master", why,
@@ -783,6 +851,9 @@ class Controller:
         self._saved_cfg_text: str | None = None
         self._yaml_cache: tuple[str, str] | None = None   # (the config as JSON, its YAML)
         self._write_lock = threading.Lock()
+        # A debounced save's (items, write future) while its thread writes (`_save_async`).
+        self._write_inflight: tuple[list[tuple[Path, str, str, bool]],
+                                    asyncio.Future[list[OSError | None]]] | None = None
         self._clip_until = [0.0] * 4
         self._peak_hold = [METER_FLOOR_DB] * 4
         self._last_clipped: int | None = None
@@ -903,6 +974,7 @@ class Controller:
         finally:
             if locked:
                 self._engine_lock.release()
+        await self._finish_inflight_save()   # the newest content must be the last one written
         self.save_now()
 
     async def settle(self, timeout: float | None = None) -> bool:
@@ -939,7 +1011,7 @@ class Controller:
         - pills: persistent non-default states: `pill_sources` first (the laptop-access
           countdown: the only sign that SSH and CamillaGUI are open on the K1000 Wi-Fi), then
           LO-CUT OFF, OUT <bands> (D-014: live bands switched OUT), POL INV SUB|TOP|SUB+TOP,
-          MONO SUB, AUDITION TOPS|SUBS;
+          AUX MIC|LINE, MONO SUB, LOUDNESS, DE-HARSH (D-016), AUDITION TOPS|SUBS;
         - alerts / sys_alert / sys_alert_level: system alerts for the status bar, most urgent
           first (critical red, warning orange, info); hints stay in Focus (amber, brief);
         - undo_reset_s: SETUP > Undo reset availability;
@@ -975,7 +1047,12 @@ class Controller:
     def pills(self) -> list[str]:
         """Persistent pills for any non-default system state (D-009). Spectrum OFF has none.
         The extra sources (LAPTOP OPEN) come FIRST: the screen folds the last ones into '+N'
-        when they do not fit, and an open laptop access must never be the one hidden."""
+        when they do not fit, and an open laptop access must never be the one hidden.
+
+        D-016: AUX MIC / AUX LINE after POL INV (a live input summed into the PA: an open mic can
+        feed back; the screen draws it orange), and only where the profile routes it (dev has
+        no spare input: AUX on plays exactly as off there, so no pill claims it); LOUDNESS and
+        DE-HARSH after MONO SUB, neutral (they shape the sound on purpose, like Mono)."""
         s = self.state
         out: list[str] = []
         for src in list(self.pill_sources):
@@ -996,8 +1073,14 @@ class Controller:
         inv = [n for n, on in (("SUB", s.sub_inverted), ("TOP", s.top_inverted)) if on]
         if inv:
             out.append("POL INV " + "+".join(inv))
+        if s.aux_mode in ("mic", "line") and self.aux_available:
+            out.append(f"AUX {s.aux_mode.upper()}")
         if s.mono_subs:
             out.append("MONO SUB")
+        if s.loud_on:
+            out.append("LOUDNESS")
+        if s.deharsh_on:
+            out.append("DE-HARSH")
         if self.profile.audition and s.dev_audition != "sum":
             out.append(f"AUDITION {str(s.dev_audition).upper()}")
         return out
@@ -1158,7 +1241,9 @@ class Controller:
     def setup_readonly(self) -> dict[str, str]:
         """SETUP fields that cannot change now -> the hint the knobs show (Focus.readonly):
         Profile while k1000.yaml pins it, Audition off the dev profile, Spectrum while k1000.yaml
-        disables it. The screen draws their values dimmed."""
+        disables it, AUX IN and the AUX level on a profile with no spare capture channel (D-016:
+        dev; the rows say so instead of offering an input that does not exist). The screen draws
+        their values dimmed; the phone shows them read-only and the box refuses their edits."""
         out: dict[str, str] = {}
         if self.profile_pinned:
             out["profile"] = HINT_PINNED
@@ -1166,7 +1251,18 @@ class Controller:
             out["dev_audition"] = HINT_AUDITION_DEV_ONLY
         if not self.spectrum_enabled:
             out[F_SPECTRUM_ON] = HINT_SPECTRUM_DISABLED
+        if not self.aux_available:
+            out[F_AUX_MODE] = out[F_AUX_GAIN] = HINT_AUX_NO_INPUT
         return out
+
+    @property
+    def aux_available(self) -> bool:
+        """The running profile has a capture channel the program does not use (D-016: AUX IN
+        can route something). An odd profile object reads as no."""
+        try:
+            return bool(dc.spare_capture_channels(self.profile))
+        except Exception:   # noqa: BLE001 - a profile without input_map/capture_channels
+            return False
 
     def set_choice(self, field: str, value: Any) -> bool:
         """SETUP (D-013): set `field` to the value the row showed, chosen with E2 and set by a
@@ -1201,6 +1297,8 @@ class Controller:
         self._local_edit()
         if field == F_SPECTRUM_ON:
             self.show_hint("SPECTRUM ON" if value else "SPECTRUM OFF")
+        elif field in FEATURE_SAID:
+            self.show_hint(FEATURE_SAID[field].get(value, f"{field} {value}"))
         return True
 
     def reset_live(self) -> None:
@@ -2165,7 +2263,10 @@ class Controller:
         if profile_change:
             self.save_now()      # an engine restart must come back on the new profile
         else:
-            self._mark_dirty()
+            # Without the debounce: D-016's switches are never read back from a running engine
+            # (`dspconfig.state_from_config`), so a k1000 that died before this save would find
+            # them off in state.json and strip them from the playing engine (a Main-muted upload).
+            self._mark_dirty(urgent=True)
         self._kick.set()         # fader changes made meanwhile
 
     def _revert_setup(self, base: State, hint: str) -> None:
@@ -2506,7 +2607,7 @@ class Controller:
             if resume_main:
                 await self._boot_ramp(self.state, epoch)
             self._applied.profile = self.profile.name
-            for f in ("mono_subs", "dev_audition"):
+            for f in STRUCTURE_FIELDS:
                 setattr(self._applied, f, getattr(self.state, f))
             return
         await self._reconcile(live, faders, connect=True, adopt_skip=adopt_skip,
@@ -2538,7 +2639,7 @@ class Controller:
                                            skip_faders=recent_f | main_skip)
         new = dc.state_from_config(live, faders, self.state, skip_pointers=recent_p | pend_p,
                                    skip_faders=recent_f | pend_f | main_skip)
-        for f in ("mono_subs", "dev_audition"):     # a setup edit not applied yet also wins
+        for f in STRUCTURE_FIELDS:                  # a setup edit not applied yet also wins
             if getattr(self.state, f) != getattr(self._applied, f):
                 setattr(new, f, getattr(self.state, f))
         _vol, engine_muted = _fader(faders, FADER_MAIN)
@@ -2593,7 +2694,7 @@ class Controller:
         elif not connect and await self._maybe_repair_devices(live, expected, wrong):
             return    # devices + pipeline back from the profile; the next poll re-reconciles
         drift = dc.config_drift(live, expected, skip_pointers=recent_p)
-        held: list[str] = []
+        held: list[str] = list(drift.held)      # AUX routing cuts made outside K1000 (D-016)
         if drift.rebuild and wrong:
             # A pipeline restore keeps the live devices: useless there (and refused when the
             # channel counts differ). The device repair puts both back.
@@ -2701,20 +2802,27 @@ class Controller:
         step on a Gain filter, which the engine applies as an instant step; 0.5 dB on a Biquad),
         frequencies and Q in 1/12-octave steps, everything else in one write, under the group
         guard when it belongs to the subs/tops chain (a delay or unit change clicks).
+        D-016: a Loudness filter and the de-harsh compressor (`/processors/...` fixes, grouped
+        per processor like a filter's) follow the same rule: a boost, reference, threshold or
+        makeup below K1000's, a ratio above it, the mid attenuation on, are kept; pushed, the
+        boost steps 0.1 dB (it is a gain written straight into the shelf: an instant step), the
+        reference, threshold and makeup 0.5 dB, the Loudness corners like frequencies.
         Returns (plan, pushed fixes, held descriptions)."""
-        filters = live.get("filters") if isinstance(live, dict) else None
-        filters = filters if isinstance(filters, dict) else {}
-        by_filter: dict[str, list[SetValue]] = {}
+        sections = {sec: (live.get(sec) if isinstance(live, dict) else None)
+                    for sec in ("filters", "processors")}
+        by_block: dict[tuple[str, str], list[SetValue]] = {}
         for f in fixes:
             parts = f.pointer.strip("/").split("/")
-            name = parts[1] if len(parts) == 4 and parts[0] == "filters" else ""
-            by_filter.setdefault(name, []).append(f)
+            key = ((parts[0], parts[1]) if len(parts) == 4 and parts[0] in sections
+                   else ("filters", ""))
+            by_block.setdefault(key, []).append(f)
         held: list[str] = []
         pushed: list[SetValue] = []
         tracks: list[tuple[str, float, float, bool, float]] = []   # ptr, from, to, log, step
         direct: list[SetValue] = []
-        for name, fx in by_filter.items():
-            lf = filters.get(name) if isinstance(filters.get(name), dict) else {}
+        for (sec, name), fx in by_block.items():
+            blocks = sections[sec] if isinstance(sections[sec], dict) else {}
+            lf = blocks.get(name) if isinstance(blocks.get(name), dict) else {}
             ftype = lf.get("type")
             lpar = lf.get("parameters") if isinstance(lf.get("parameters"), dict) else {}
             want = {f.pointer.rsplit("/", 1)[-1]: f.value for f in fx}
@@ -2723,15 +2831,21 @@ class Controller:
                 held.append(why)
                 continue
             pushed += fx
-            unit_change = any(k in want for k in ("scale", "delay_unit"))
+            unit_change = any(k in want for k in ("scale", "delay_unit", "attack_unit",
+                                                  "release_unit"))
             for f in fx:
                 key = f.pointer.rsplit("/", 1)[-1]
                 a, b = _num(lpar.get(key)), _num(f.value)
                 if not unit_change and a is not None and b is not None:
-                    if key in ("gain", "limit"):
-                        tracks.append((f.pointer, a, b, False, 0.1 if ftype == "Gain" else 0.5))
+                    if key in ("gain", "limit", "low_boost", "high_boost"):
+                        trim = ftype == "Gain" or key.endswith("_boost")
+                        tracks.append((f.pointer, a, b, False, 0.1 if trim else 0.5))
                         continue
-                    if key in ("freq", "q") and a > 0 and b > 0:
+                    if key in ("reference_level", "threshold", "makeup_gain"):
+                        tracks.append((f.pointer, a, b, False, 0.5))
+                        continue
+                    if key in ("freq", "q", "low_freq", "high_freq", "low_q", "high_q") \
+                            and a > 0 and b > 0:
                         tracks.append((f.pointer, a, b, True, 1.0 / 12.0))
                         continue
                 direct.append(f)
@@ -2778,6 +2892,17 @@ class Controller:
             g, w = _num(lpar.get("limit")), _num(want.get("limit"))
             if g is not None and w is not None and g < w - 0.01:
                 return f"{name} LIMIT {g:+.1f} dB"
+        for key, word in _LOWER_IS_QUIETER.get(ftype, ()):           # D-016's blocks
+            g, w = _num(lpar.get(key)), _num(want.get(key))
+            if g is not None and w is not None and g < w - 0.01:
+                return f"{name} {word} {g:+.1f} dB"
+        for key, word in _HIGHER_IS_QUIETER.get(ftype, ()):
+            g, w = _num(lpar.get(key)), _num(want.get(key))
+            if g is not None and w is not None and g > w + 0.01:
+                return f"{name} {word} {g:g}"
+        if ftype == "Loudness" and want.get("attenuate_mid") is False \
+                and lpar.get("attenuate_mid") is True:
+            return f"{name} MID CUT"
         return ""
 
     async def _apply_fixes(self, live: Any, fixes: list[SetValue]) -> list[str]:
@@ -3098,7 +3223,7 @@ class Controller:
     def persist_state(self) -> State:
         """What goes to disk: the state, with the pipeline structure actually running."""
         st = self.state.copy()
-        for f in ("mono_subs", "dev_audition"):
+        for f in STRUCTURE_FIELDS:
             setattr(st, f, getattr(self._applied, f))
         st.profile = self.profile.name
         return st.clamped()
@@ -3181,7 +3306,31 @@ class Controller:
             return False
         if not items:
             return True
-        return self._saved(items, await asyncio.to_thread(self._write_items, items))
+        # The write runs in a thread, which cancelling this task (stop()) does not stop: kept in
+        # `_write_inflight` so stop() lets it land and records it (`_finish_inflight_save`).
+        fut = asyncio.ensure_future(asyncio.to_thread(self._write_items, items))
+        self._write_inflight = (items, fut)
+        results = await asyncio.shield(fut)
+        self._write_inflight = None
+        return self._saved(items, results)
+
+    async def _finish_inflight_save(self) -> None:
+        """For stop(), before its save_now: a debounced save cancelled mid-write still has its
+        thread writing (or about to). Wait for it and record what it wrote. Unrecorded, save_now
+        compared the newest content with an older record, could find nothing new, and the thread's
+        older content then landed LAST: a D-016 switch turned off came back on in state.json and
+        active.yml after a restart (an AUX mic open again; review 2026-10-16)."""
+        inflight, self._write_inflight = self._write_inflight, None
+        if inflight is None:
+            return
+        items, fut = inflight
+        try:
+            results = await fut
+        except BaseException:   # noqa: BLE001 - _write_items never raises; still, at stop:
+            # nothing known about the disk: let save_now compare with the files themselves
+            self._saved_state_text = self._saved_cfg_text = None
+            return
+        self._saved(items, results)
 
     def save_now(self) -> bool:
         """Write state.json + active.yml now (atomically, only what changed). Never raises.

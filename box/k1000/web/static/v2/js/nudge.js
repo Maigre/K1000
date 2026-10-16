@@ -38,7 +38,8 @@ const isMaster = (path) => path === "master_db";
 
 let slowT = 0;
 function slowDown(fd) {
-  if (now() - slowT > 900) { toast("SLOW DOWN · " + (isMasterField(fd) ? "master" : "trim") + " up is limited", "red"); slowT = now(); }
+  const what = isMasterField(fd) ? "master" : fd && fd.label && fd.label !== "TRIM" ? String(fd.label).toLowerCase() : "trim";
+  if (now() - slowT > 900) { toast("SLOW DOWN · " + what + " up is limited", "red"); slowT = now(); }
   hap("reject");
 }
 const isMasterField = (fd) => !!fd && fd.label === "MASTER";
@@ -54,13 +55,27 @@ function paAllows(path, fd, d, fine, rise) {
   return true;
 }
 
+// The box holds this field read-only now (state.readonly: D-016's AUX level where the profile
+// has no spare input): its reason, or "". Checked BEFORE the PA mirror: the box refuses such a
+// step without spending its "pa" bucket, so the page must not spend its copy either (a master
+// raise right after would be cut short here for nothing).
+export function readonlyWhy(path) {
+  const R = K.state && K.state.readonly;
+  return R && R[path] ? String(R[path]) : "";
+}
+export function readonlyHint(path) {
+  toast(readonlyWhy(path) || "READ-ONLY");
+  hap("reject");
+}
+
 // One detent (or one accelerated detent, `mult`) of a slide. ctx: the slide ({sticky, start}).
 // Returns what the finger should feel: tick | click | reject | swallow | slow | off (no link, or
-// a stalled one: the slide stops).
+// a stalled one: the slide stops) | locked | readonly (the slide stops, said).
 export function slideDetent(path, s, mult, fine, ctx) {
   if (!canEdit()) return "off";
   const fd = fieldOf(path);
   if (!fd) return "off";
+  if (readonlyWhy(path)) return "readonly";       // nothing moves, nothing is spent
   if (fd.lock && !alignOpen()) return "locked";   // the box relocked mid-slide: stop, say it
   if (ctx.sticky) {
     const was = ctx.sticky;
@@ -97,6 +112,7 @@ export function stepCmd(path, d) {
   if (!editOk()) return false;
   const fd = fieldOf(path);
   if (!fd) return false;
+  if (readonlyWhy(path)) { readonlyHint(path); return false; }
   if (fd.lock && !alignOpen()) { lockedHint(path); return false; }
   const cur = shown(path);
   if (!num(cur)) return false;

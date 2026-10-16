@@ -21,7 +21,9 @@ import json
 import math
 import os
 import signal
+import shutil
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -34,7 +36,8 @@ import yaml
 
 from k1000 import control as ctl_mod
 from k1000 import dspconfig as dc
-from k1000.cdsp import CamillaClient, CdspError, CdspNoConfig, CdspUnavailable
+from k1000.cdsp import CamillaClient, CdspError, CdspNoConfig, CdspNotApplied, CdspUnavailable
+from k1000.cdsp import _matches as cdsp_matches
 from k1000.control import (
     MARKER_DB, MARKER_FADER, Controller, EngineSettings, Paths, Status, decode_marker, logical_levels,
     marker_db, recover_state,
@@ -45,8 +48,21 @@ from k1000.profiles import ProfileChoice, load_profile
 from k1000.state import RANGES, State, delay_samples
 
 BOX = Path(__file__).resolve().parents[1]
-CDSP_BIN = "/usr/local/bin/camilladsp"
+# The engine on PATH first (a dev machine: a wrapper running the Pi's binary), like test_dspconfig.
+CDSP_BIN = shutil.which("camilladsp") or "/usr/local/bin/camilladsp"
 ENGINE_PORT = int(os.environ.get("K1000_CONTROL_TEST_PORT", "12346"))
+
+
+def _is_wrapper(path: str) -> bool:
+    """CDSP_BIN is a script (not the ELF binary): e.g. the Pi's binary run under qemu in docker."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) != b"\x7fELF"
+    except OSError:
+        return False
+
+
+_CDSP_WRAPPED = _is_wrapper(CDSP_BIN)
 
 
 def run(coro: Any, limit: float = 30.0) -> Any:
@@ -71,6 +87,10 @@ async def until(pred: Any, timeout: float = 3.0, what: str = "condition", step: 
 
 
 # ======================================================================= fake engine
+# Config keys the engine stores as f32 (camilladsp-schema LoudnessParameters: FiniteF32).
+F32_KEYS = frozenset({"reference_level", "low_boost", "high_boost"})
+
+
 def _set_ptr(cfg: dict[str, Any], pointer: str, value: Any) -> None:
     parts = pointer.strip("/").split("/")
     node = cfg
@@ -200,6 +220,14 @@ class FakeClient:
         self._need()
         if pointer in self.refuse:
             raise CdspError("SetConfigValue", "ConfigValidationError", "fake refusal")
+        # The real client confirms with GetConfigValue, and 5.0.0-beta.1 keeps the Loudness
+        # boosts and reference as f32: it reads them back widened (6.1 -> 6.099999904632568;
+        # GetConfigJson, below, prints the short form). The same confirmation as CamillaClient.
+        if pointer.rsplit("/", 1)[-1] in F32_KEYS and isinstance(value, float):
+            got = struct.unpack("<f", struct.pack("<f", value))[0]
+            if not cdsp_matches(got, value):
+                raise CdspNotApplied("SetConfigValue", "NotApplied",
+                                     f"accepted, but the active config still differs: {got!r}")
         _set_ptr(self.cfg, pointer, value)
         await self._logged(("set", pointer, value))
         return value
@@ -1000,6 +1028,45 @@ def test_stop_persists_and_never_mutes(tmp_path: Path) -> None:
         assert cl.faders[0] == {"volume": -18.0, "mute": False}
         assert json.loads((tmp_path / "state.json").read_text())["master_db"] == -18.0
         assert cl.on_connect is None and cl.on_disconnect is None
+
+    run(body())
+
+
+def test_stop_lets_a_debounced_save_in_flight_land_before_its_own(tmp_path: Path,
+                                                                 monkeypatch: pytest.MonkeyPatch) -> None:
+    """A debounced save writes from a thread. stop() cancels the persist task, but not that
+    thread, so its result was never recorded: stop()'s save_now then compared the newest content
+    with a stale record, found nothing new, and the late thread write (older content) landed
+    LAST, in state.json and active.yml alike. Seen as a flaky D-016 test: a switch turned off
+    came back on after a restart (an AUX mic open again). Here the thread is held until stop()
+    runs, and the newest edit equals the last recorded save: stop() must still leave it on disk."""
+    real = ctl_mod.atomic_write
+    armed, gate, held = threading.Event(), threading.Event(), threading.Event()
+
+    def slow(path: Any, data: Any, mode: int = 0o644) -> None:
+        if armed.is_set() and threading.current_thread() is not threading.main_thread():
+            held.set()
+            gate.wait(5.0)
+        real(path, data, mode)
+
+    monkeypatch.setattr(ctl_mod, "atomic_write", slow)
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-20.0), playing=True,
+                       persist_debounce_s=0.05, persist_max_delay_s=0.2)
+        await boot(ctl)
+        await asyncio.sleep(0.3)                    # the boot saves are done
+        armed.set()
+        ctl.nudge("live_peq.0.gain", -6)            # a -3 dB notch: its save is held in the thread
+        await until(held.is_set, what="a debounced save in flight")
+        ctl.nudge("live_peq.0.gain", 6)             # back to 0 dB: the content last recorded
+        asyncio.get_running_loop().call_later(0.2, gate.set)
+        await ctl.stop()
+        gate.set()
+        await asyncio.sleep(0.3)                    # any late write has landed by now
+        assert json.loads((tmp_path / "state.json").read_text())["live_peq"][0]["gain"] == 0.0
+        assert yaml.safe_load((tmp_path / "active.yml").read_text())[
+            "filters"]["live_peq_1"]["parameters"]["gain"] == 0.0
 
     run(body())
 
@@ -2385,7 +2452,16 @@ class Engine:
 
     def kill(self) -> None:
         if self.proc is not None and self.proc.poll() is None:
-            self.proc.kill()
+            if _CDSP_WRAPPED:
+                # A wrapper script (docker run): SIGKILL would kill the docker client and leave
+                # the engine running in its container (port busy); SIGTERM is proxied to it.
+                self.proc.terminate()
+                try:
+                    self.proc.wait(10)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+            else:
+                self.proc.kill()
             self.proc.wait(5)
         self.proc = None
 
@@ -2973,6 +3049,11 @@ def test_edits_toward_silence_are_saved_at_once(tmp_path: Path) -> None:
         ctl.nudge("master_db", 4)                       # up: debounced as before
         await asyncio.sleep(0.6)
         assert saved()["master_db"] == -15.0
+        # a setup rebuild too (the D-016 switches are not read back from a running engine: a
+        # k1000 dying before the save would strip them from the engine on its restart)
+        assert ctl.set_choice("deharsh_on", True)
+        await until(lambda: saved()["deharsh_on"] is True, timeout=1.0, what="rebuild saved")
+        assert dc.DH_COMP in yaml.safe_load((tmp_path / "active.yml").read_text())["processors"]
         await ctl.stop()                                # ...and saved on the way out
         assert saved()["master_db"] == -13.0
 
@@ -3670,13 +3751,16 @@ def test_setup_readonly_names_what_cannot_change_here(tmp_path: Path) -> None:
     """Controller.setup_readonly(): Profile while k1000.yaml pins it, Audition off the dev
     profile, Spectrum while k1000.yaml disables it; refreshed into Focus.readonly by every
     snapshot and every knob event."""
+    # dev (the HiFiBerry: both inputs are the program): no spare input for AUX IN (D-016)
+    aux = {"aux_mode": ctl_mod.HINT_AUX_NO_INPUT, "aux_gain_db": ctl_mod.HINT_AUX_NO_INPUT}
+    assert ctl_mod.HINT_AUX_NO_INPUT == "AUX: NO SPARE INPUT ON THIS DEVICE"
     ctl, _ = make(tmp_path / "a", State())
-    assert ctl.setup_readonly() == {} and ctl.snapshot()[3].readonly == {}
+    assert ctl.setup_readonly() == aux and ctl.snapshot()[3].readonly == aux
     pinned, _ = make(tmp_path / "b", State(), profile_choice=ProfileChoice("dev", "settings"))
-    assert pinned.setup_readonly() == {"profile": ctl_mod.HINT_PINNED}
+    assert pinned.setup_readonly() == {"profile": ctl_mod.HINT_PINNED, **aux}
     assert ctl_mod.HINT_PINNED == "PROFILE PINNED IN k1000.yaml"
     off, _ = make(tmp_path / "c", State(), settings={"spectrum": {"enabled": False}})
-    assert off.setup_readonly() == {"spectrum_on": ctl_mod.HINT_SPECTRUM_DISABLED}
+    assert off.setup_readonly() == {"spectrum_on": ctl_mod.HINT_SPECTRUM_DISABLED, **aux}
     assert _m4_ctl(tmp_path / "d").setup_readonly() == {
         "dev_audition": ctl_mod.HINT_AUDITION_DEV_ONLY}
     assert ctl_mod.HINT_AUDITION_DEV_ONLY == "AUDITION: DEV PROFILE ONLY"
@@ -4201,3 +4285,385 @@ def test_switching_a_band_with_a_cut_ends_the_reset_undo_a_flat_one_does_not(tmp
         await ctl.stop()
 
     run(body())
+
+
+# ======================================================================= D-016
+M4 = load_profile("m4", {}, probe=False)
+
+
+def make_m4(tmp_path: Path, state: State | None = None, **kw: Any) -> tuple[Controller, FakeClient]:
+    """`make` on the m4 profile (IN1/IN2 spare: AUX IN can route them), engine already playing."""
+    st = state.copy() if state is not None else State()
+    st.profile = "m4"
+    client = FakeClient(dc.generate(M4, st))
+    lv = dc.fader_levels(st)
+    client.faders[0] = {"volume": lv[0], "mute": st.muted}
+    client.faders[MARKER_FADER]["volume"] = MARKER_DB
+    opts: dict[str, Any] = dict(sleep=fast_sleep, poll_s=3600, meter_s=3600,
+                                persist_debounce_s=0.05, persist_max_delay_s=0.5,
+                                device_probe=lambda d: True)
+    opts.update(kw)
+    ctl = Controller(client, M4, st, Paths(tmp_path / "state.json", tmp_path / "active.yml"), **opts)
+    return ctl, client
+
+
+def test_structure_fields_are_every_rebuild_field_but_the_profile() -> None:
+    from k1000.state import REBUILD_FIELDS
+    assert set(ctl_mod.STRUCTURE_FIELDS) == set(REBUILD_FIELDS) - {"profile"}
+    assert {"aux_mode", "loud_on", "deharsh_on", "mono_subs", "dev_audition"} == \
+        set(ctl_mod.STRUCTURE_FIELDS)
+
+
+def test_d016_pills_follow_the_state_and_what_the_profile_routes(tmp_path: Path) -> None:
+    """AUX MIC / LINE after POL INV, only where an input is spare (m4); LOUDNESS and DE-HARSH
+    after MONO SUB. All off (the default) = no pill."""
+    st = State(sub_inverted=True, mono_subs=True, aux_mode="mic", loud_on=True, deharsh_on=True)
+    m4, _ = make_m4(tmp_path / "m4", st)
+    assert m4.pills() == ["POL INV SUB", "AUX MIC", "MONO SUB", "LOUDNESS", "DE-HARSH"]
+    m4.state.aux_mode = "line"
+    assert m4.pills()[1] == "AUX LINE"
+    assert m4.setup_readonly() == {"dev_audition": ctl_mod.HINT_AUDITION_DEV_ONLY}
+    assert m4.aux_available is True
+    dev, _ = make(tmp_path / "dev", st)
+    assert dev.pills() == ["POL INV SUB", "MONO SUB", "LOUDNESS", "DE-HARSH"]     # nothing routed
+    assert dev.aux_available is False
+    assert make(tmp_path / "off", State())[0].pills() == []
+
+
+@pytest.mark.parametrize("field,value,said", [
+    ("deharsh_on", True, "DE-HARSH ON"), ("loud_on", True, "LOUDNESS ON"),
+    ("aux_mode", "mic", "AUX IN 1: MIC"), ("aux_mode", "line", "AUX IN 1/2: LINE"),
+])
+def test_d016_switch_is_a_rebuild_under_main_mute_and_said(tmp_path: Path, field: str, value: Any,
+                                                         said: str) -> None:
+    """SETUP's D-016 switches go the way of Mono: refused unconfirmed while playing, then (chosen
+    + push) one whole-config upload with Main muted around it; the engine gets the block, the
+    screen says it, state.json and active.yml keep it. Switched off again: the config is
+    f2671b0's again."""
+    async def body() -> None:
+        ctl, cl = make_m4(tmp_path, State(master_db=-10.0))
+        await boot(ctl)
+        before = copy.deepcopy(cl.cfg)
+        assert not ctl.toggle(field)                                 # unconfirmed, playing
+        assert ctl.focus.hint == ctl_mod.HINT_CONFIRM_SETUP
+        n = len(cl.log)
+        assert ctl.set_choice(field, value) is True
+        assert ctl.focus.hint_now() == said
+        assert await ctl.settle(5.0)
+        ops = nomark(cl.log[n:])
+        assert [e[0] for e in ops] == ["mute", "config", "mute"]
+        cfg = ops[1][1]
+        if field == "deharsh_on":
+            assert set(cfg["processors"]) == {dc.DH_COMP} and dc.DH_SPLIT in cfg["mixers"]
+        elif field == "loud_on":
+            assert dc.SUB_LOUDNESS in cfg["filters"]
+        else:
+            assert dc.AUX_MIX in cfg["mixers"] and cfg["mixers"]["input"]["channels"]["out"] == 4
+        assert getattr(ctl._applied, field) == value
+        assert ctl.persist_state().to_dict()[field] == value
+        await until(lambda: (tmp_path / "state.json").exists(), what="saved")
+        await ctl.settle(2.0)
+        # the 1 Hz poll finds nothing to fix in the new structure
+        n = len(cl.log)
+        await ctl.poll_once()
+        assert nomark(cl.log[n:]) == [] and ctl.status.drift == []
+        # back off: the f2671b0 config again
+        assert ctl.set_choice(field, "off" if field == "aux_mode" else False) is True
+        assert await ctl.settle(5.0)
+        assert cl.cfg == before
+        await ctl.stop()
+        saved = json.loads((tmp_path / "state.json").read_text())
+        assert saved[field] == ("off" if field == "aux_mode" else False)
+
+    run(body())
+
+
+def test_d016_unapplied_switch_wins_over_adoption_and_is_not_persisted(tmp_path: Path) -> None:
+    """A D-016 switch set while the engine is unreachable: adoption keeps it (it is not read
+    from the structure), state.json keeps what RUNS (`persist_state`), the next sync applies it;
+    a failed upload reverts it, said."""
+    async def body() -> None:
+        ctl, cl = make_m4(tmp_path, State(master_db=-10.0))
+        await boot(ctl)
+
+        async def refuse(text: str, timeout: float = 10.0) -> None:
+            raise CdspError("SetConfig", "ConfigValidationError", "fake")
+
+        real = cl.set_config_yaml
+        cl.set_config_yaml = refuse  # type: ignore[method-assign]
+        ctl.set_choice("loud_on", True)
+        assert await ctl.settle(5.0)
+        assert ctl.state.loud_on is False                              # reverted
+        cl.set_config_yaml = real  # type: ignore[method-assign]
+        # unreachable: the edit waits, adoption keeps it, the disk keeps what runs
+        await cl.drop()
+        ctl.set_mute(True)
+        ctl.state.deharsh_on = True
+        ctl._local_edit()
+        assert ctl.persist_state().deharsh_on is False
+        await cl.reconnect()
+        await until(lambda: ctl.engine_ready, what="resync")
+        assert await ctl.settle(5.0)
+        assert ctl.state.deharsh_on is True and dc.DH_COMP in (cl.cfg.get("processors") or {})
+        assert ctl.persist_state().deharsh_on is True
+        await ctl.stop()
+
+    run(body())
+
+
+def test_d016_adopt_keeps_a_switch_not_applied_yet(tmp_path: Path) -> None:
+    """`_adopt` never takes the D-016 switches from the running structure: a switch set locally
+    and not uploaded yet stays set, and the engine view keeps what runs."""
+    async def body() -> None:
+        ctl, cl = make_m4(tmp_path, State(master_db=-10.0))
+        await boot(ctl)
+        ctl.state.aux_mode = "line"                       # as if just set, not applied
+        view = await ctl._adopt(copy.deepcopy(cl.cfg), copy.deepcopy(cl.faders), connect=False)
+        assert ctl.state.aux_mode == "line" and view.aux_mode == "off"
+        assert ctl.persist_state().aux_mode == "off"
+        await ctl.stop()
+
+    run(body())
+
+
+def test_d016_cuts_made_outside_k1000_are_kept_raises_pulled_down(tmp_path: Path) -> None:
+    """CamillaGUI on the D-016 blocks, K1000's safe-direction rule as for a trim: the loudness
+    reference set below its range (less boost), its mid attenuation switched on, the de-harsh
+    ratio raised to 10:1, a threshold below the range: all KEPT and shown, never pushed back up.
+    A raise (a treble boost K1000 holds at 0 dB, a 2:1 ratio) is pulled back, the boost in 0.1 dB
+    steps. Every value here is one the real engine accepts (probed: a negative boost is refused)."""
+    async def body() -> None:
+        ctl, cl = make_m4(tmp_path, State(master_db=-20.0, loud_on=True, deharsh_on=True))
+        await boot(ctl)
+        loud = cl.cfg["filters"][dc.SUB_LOUDNESS]["parameters"]
+        comp = cl.cfg["processors"][dc.DH_COMP]["parameters"]
+        loud["reference_level"], comp["threshold"] = -50.0, -60.0
+        for _ in range(2):
+            n = len(cl.log)
+            await ctl.poll_once()
+            assert nomark(cl.log[n:]) == []
+        assert sorted(ctl.status.drift) == ["dh_comp THRESH -60.0 dB", "sub_loudness REF -50.0 dB"]
+        assert ctl.state.deharsh_thresh_db == -48.0 and ctl.state.loud_ref_db == -40.0  # clamped
+        loud["reference_level"], comp["threshold"] = -10.0, -48.0      # back in range: adopted
+        loud["attenuate_mid"], comp["factor"] = True, 10.0
+        n = len(cl.log)
+        await ctl.poll_once()
+        assert nomark(cl.log[n:]) == []
+        assert sorted(ctl.status.drift) == ["dh_comp RATIO 10", "sub_loudness MID CUT"]
+        assert loud["attenuate_mid"] is True and comp["factor"] == 10.0
+        # raises are pulled back down
+        loud["high_boost"], loud["attenuate_mid"] = 3.0, False
+        comp["factor"] = 2.0
+        n = len(cl.log)
+        await ctl.poll_once()
+        hb = sets_for(cl.log[n:], "/filters/sub_loudness/parameters/high_boost")
+        assert hb[-1] == 0.0 and len(hb) >= 30
+        assert all(abs(b - a) <= 0.1 + 1e-9 for a, b in zip([3.0] + hb, hb))
+        assert sets_for(cl.log[n:], "/processors/dh_comp/parameters/factor")[-1] == 3.0
+        assert ctl.status.drift == []
+        await ctl.stop()
+
+    run(body())
+
+
+@pytest.mark.parametrize("aux", ["mic", "line", "off"])
+def test_d016_torn_state_json_keeps_the_switches_active_yml_runs(tmp_path: Path, aux: str) -> None:
+    """recover_state after a torn state.json: active.yml IS the tune, D-016 switches included
+    (read from its blocks, like mono from the split mixer). Before (D-016 review), the rebuilt
+    state had them off: k1000 then rewrote active.yml without the blocks and restored the playing
+    engine, Main muted around the upload (a dip mid-show), de-harsh, loudness and AUX gone."""
+    tuned = State(profile="m4", master_db=-10.0, mono_subs=True, deharsh_on=True, loud_on=True,
+                  aux_mode=aux, deharsh_thresh_db=-30.0, loud_boost_db=8.0, aux_gain_db=-6.0)
+    active_text = dc.to_yaml(dc.generate(M4, tuned))
+    (tmp_path / "active.yml").write_text(active_text)
+    (tmp_path / "state.json").write_text('{"schema": 1, "deharsh_on": true, "sys_peq": [{"fr')
+    st, note = recover_state(Paths(tmp_path / "state.json", tmp_path / "active.yml"))
+    assert note == ctl_mod.NOTE_REBUILT and st.profile == "m4" and st.muted is True
+    assert (st.mono_subs, st.deharsh_on, st.loud_on, st.aux_mode) == (True, True, True, aux)
+    # the AUX level is in the config only while AUX IN is on (an owned value of its block)
+    assert (st.deharsh_thresh_db, st.loud_boost_db, st.aux_gain_db) == (
+        -30.0, 8.0, -6.0 if aux != "off" else State().aux_gain_db)
+    assert dc.to_yaml(dc.generate(M4, st)) == active_text           # the very same config
+    # dev (no spare input: the AUX filters exist, unrouted) reads the same way
+    dev_text = dc.to_yaml(dc.generate(DEV, State(aux_mode=aux, loud_on=True)))
+    assert dc.feature_switches(yaml.safe_load(dev_text)) == {
+        "aux_mode": aux, "loud_on": True, "deharsh_on": False}
+    assert dc.feature_switches({"filters": {}}) == {}               # not a K1000 config
+
+    async def body() -> None:
+        live = State.from_dict({**st.to_dict(), "muted": False})
+        ctl, cl = make_m4(tmp_path, live)                           # the engine plays it
+        ctl.state.muted = ctl._applied.muted = True                 # what recover_state hands over
+        await boot(ctl)
+        assert not any(e[0] == "config" for e in cl.log), "the playing engine was restored"
+        assert not any(e[0] == "mute" and e[1] == 0 for e in cl.log)
+        assert yaml.safe_load((tmp_path / "active.yml").read_text()) == yaml.safe_load(active_text)
+        await ctl.stop()
+        assert json.loads((tmp_path / "state.json").read_text())["deharsh_on"] is True
+
+    run(body())
+
+
+def test_d016_loudness_boost_detents_reach_an_engine_that_keeps_it_as_f32(tmp_path: Path) -> None:
+    """The engine keeps the Loudness boost as f32 and its read-back is widened (FakeClient.set_value
+    confirms the way CamillaClient does). Each knob detent goes out as single 0.1 dB SetValue
+    steps (a trim, `_TRIM_POINTERS`: 6.1, 6.2...), and every one must be confirmed: before the
+    tolerant `cdsp._matches` (D-016 review), the first step of each detent failed as NotApplied,
+    said ENGINE REFUSED THE CHANGE and resynced, so three detents left the boost at 6.3."""
+    async def body() -> None:
+        ctl, cl = make_m4(tmp_path, State(master_db=-20.0, loud_on=True))
+        await boot(ctl)
+        ptr = "/filters/sub_loudness/parameters/low_boost"
+        n = len(cl.log)
+        for _ in range(3):
+            ctl.nudge("loud_boost_db", 1)
+            assert await ctl.settle(5.0)
+        assert ctl.state.loud_boost_db == 7.5
+        assert cl.cfg["filters"][dc.SUB_LOUDNESS]["parameters"]["low_boost"] == 7.5
+        steps = sets_for(cl.log[n:], ptr)
+        assert 6.1 in steps and steps[-1] == 7.5
+        assert ctl.focus.hint_now() != "ENGINE REFUSED THE CHANGE"
+        await ctl.stop()
+
+    run(body())
+
+
+def test_d016_a_mic_muted_on_aux_mix_from_the_gui_stays_muted(tmp_path: Path) -> None:
+    """CamillaGUI mutes the AUX mic on `aux_mix` (where it shows going into L/R) and cuts IN1 in
+    the input mixer. Before (D-016 review) any mixer difference was a rebuild and the restore put
+    the mic back at -3 dB under a Main mute. Now: held and shown, no upload; a restore for
+    another reason (a pipeline step dropped) keeps them; and the kept cuts never restore again."""
+    async def body() -> None:
+        ctl, cl = make_m4(tmp_path, State(master_db=-20.0, aux_mode="mic"))
+        await boot(ctl)
+        amix = cl.cfg["mixers"][dc.AUX_MIX]["mapping"]
+        for e in amix:
+            for x in e["sources"]:
+                if x["channel"] == 2:
+                    x["mute"] = True                                 # the mic, both sides
+        cl.cfg["mixers"]["input"]["mapping"][2]["sources"][0]["gain"] = -30.0
+        for _ in range(3):
+            n = len(cl.log)
+            await ctl.poll_once()
+            assert nomark(cl.log[n:]) == []                          # no restore, no mute
+        assert sorted(ctl.status.drift) == ["aux_mix 2->0 MUTED", "aux_mix 2->1 MUTED",
+                                            "input 0->2 -30.0 dB"]
+        assert "CUTS/MUTES" in ctl.status.message
+        # the GUI also drops a pipeline step: restored after the second look, the cuts kept
+        cl.cfg["pipeline"] = cl.cfg["pipeline"][:-2] + cl.cfg["pipeline"][-1:]
+        n = len(cl.log)
+        await ctl.poll_once()
+        await ctl.poll_once()
+        ops = nomark(cl.log[n:])
+        assert [e[0] for e in ops][:3] == ["mute", "config", "mute"]
+        assert cl.cfg["pipeline"] == dc.generate(M4, ctl.state)["pipeline"]
+        assert all(x.get("mute") is True for e in cl.cfg["mixers"][dc.AUX_MIX]["mapping"]
+                   for x in e["sources"] if x["channel"] == 2)
+        assert cl.cfg["mixers"]["input"]["mapping"][2]["sources"][0]["gain"] == -30.0
+        ctl._last_restore = -math.inf                                # the interval is no shield
+        for _ in range(2):
+            n = len(cl.log)
+            await ctl.poll_once()
+            assert nomark(cl.log[n:]) == []                          # held, not restored again
+        assert "aux_mix 2->0 MUTED" in ctl.status.drift
+        await ctl.stop()
+
+    run(body())
+
+
+def test_d016_keep_cuts_carries_an_aux_mix_mute_into_a_restore() -> None:
+    """The review's case: `_keep_cuts(with_live_devices(generate(...), live), live)` with the
+    aux_mix mic sources muted, or at -30 dB, uploads them muted / at -30 dB, not at -3 dB."""
+    st = State(profile="m4", aux_mode="mic")
+    want = dc.generate(M4, st)
+    for cut in ({"mute": True}, {"gain": -30.0}):
+        live = copy.deepcopy(want)
+        for e in live["mixers"][dc.AUX_MIX]["mapping"]:
+            for x in e["sources"]:
+                if x["channel"] == 2:
+                    x.update(cut)
+        out = ctl_mod._keep_cuts(dc.with_live_devices(want, live), live)
+        srcs = [x for e in out["mixers"][dc.AUX_MIX]["mapping"] for x in e["sources"]
+                if x["channel"] == 2]
+        assert len(srcs) == 2 and all(x.get("mute", False) is cut.get("mute", False)
+                                      and x["gain"] == cut.get("gain", -3.0) for x in srcs)
+    assert want["mixers"][dc.AUX_MIX]["mapping"][0]["sources"][1] == {
+        "channel": 2, "gain": -3.0, "inverted": False, "scale": "dB"}   # not mutated
+
+
+def test_d016_keep_cuts_carries_quieter_block_values_into_a_restore() -> None:
+    st = State(loud_on=True, deharsh_on=True)
+    want = dc.generate(M4, st)
+    live = copy.deepcopy(want)
+    lp = live["filters"][dc.SUB_LOUDNESS]["parameters"]
+    cp = live["processors"][dc.DH_COMP]["parameters"]
+    lp.update(low_boost=2.0, reference_level=-30.0, attenuate_mid=True, high_boost=1.0)
+    cp.update(threshold=-40.0, factor=6.0, makeup_gain=-2.0)
+    out = ctl_mod._keep_cuts(want, live)
+    olp = out["filters"][dc.SUB_LOUDNESS]["parameters"]
+    ocp = out["processors"][dc.DH_COMP]["parameters"]
+    assert (olp["low_boost"], olp["reference_level"], olp["attenuate_mid"]) == (2.0, -30.0, True)
+    assert olp["high_boost"] == 0.0                                    # a raise: not carried
+    assert (ocp["threshold"], ocp["factor"], ocp["makeup_gain"]) == (-40.0, 6.0, -2.0)
+    assert want["processors"][dc.DH_COMP]["parameters"]["factor"] == 3.0   # not mutated
+    assert ctl_mod._keep_cuts(want, {"filters": None}) == want
+
+
+@pytest.mark.engine
+@needs_engine
+def test_engine_d016_loudness_boost_detents_and_a_mute_right_after_one(tmp_path: Path) -> None:
+    """On the Pi's engine (D-016 review): it keeps the Loudness boost as f32 and reads it back
+    widened (6.1 -> 6.099999904632568). Knob detents of the boost reach the engine (before: each
+    one ENGINE REFUSED, resynced at +0.1 dB), a treble boost raised from CamillaGUI is pulled
+    back to 0 dB with no CONFIG DRIFT left (before: given up at 0.7 dB), and a B4 mute pressed
+    50 ms after a detent reaches the engine at once (before: 0.56 s behind the failing confirm)."""
+    async def body() -> None:
+        paths = Paths(tmp_path / "state.json", tmp_path / "active.yml")
+        st = State(profile="m4", master_db=-20.0, loud_on=True)
+        client = CamillaClient(f"ws://127.0.0.1:{ENGINE_PORT}", backoff_min=0.05, backoff_max=0.3,
+                               fader_max_db=ctl_mod.FADER_CEILING_DB)
+        ctl = Controller(client, M4, st, paths, transform=_test_transform, device_probe=None,
+                         poll_s=0.2, meter_s=0.1, persist_debounce_s=0.2, boot_ramp_s=1.0)
+        ctl.save_now()                                   # the engine unit waits for this file
+        eng = Engine(paths.active_config, tmp_path / "camilladsp.log")
+        await asyncio.to_thread(eng.start)
+        obs = CamillaClient(eng.url, backoff_min=0.05, backoff_max=0.2)
+        ptr = "/filters/sub_loudness/parameters/"
+        try:
+            await obs.connect(timeout=3.0)
+            await ctl.start()
+            await until(lambda: ctl.engine_ready and not ctl.ramping, timeout=10.0, what="boot ramp")
+            for want in (6.5, 7.0, 7.5):
+                ctl.nudge("loud_boost_db", 1)
+                assert await ctl.settle(5.0)
+                assert ctl.state.loud_boost_db == want
+                assert ctl.focus.hint_now() != "ENGINE REFUSED THE CHANGE"
+            assert await obs.get_value(ptr + "low_boost") == pytest.approx(7.5, abs=1e-6)
+
+            await obs.set_value(ptr + "high_boost", 1.0)            # CamillaGUI raises the treble
+
+            async def treble_back() -> bool:
+                return abs(await obs.get_value(ptr + "high_boost")) < 1e-6
+            await until(treble_back, timeout=10.0, what="treble boost pulled back")
+            await asyncio.sleep(0.6)
+            assert ctl.status.drift == [] and "DRIFT" not in (ctl.status.message or "")
+
+            ctl.nudge("loud_boost_db", 1)
+            await asyncio.sleep(0.05)
+            t0 = time.monotonic()
+            ctl.set_mute(True)
+
+            async def muted() -> bool:
+                return (await obs.get_faders())[0]["mute"] is True
+            await until(muted, timeout=3.0, what="B4 mute on the engine")
+            assert time.monotonic() - t0 < 0.3
+            assert await ctl.settle(5.0)
+            assert ctl.state.loud_boost_db == 8.0
+            assert await obs.get_value(ptr + "low_boost") == pytest.approx(8.0, abs=1e-6)
+        finally:
+            await ctl.stop()
+            await client.close()
+            await obs.close()
+            await asyncio.to_thread(eng.kill)
+
+    run(body(), limit=90.0)

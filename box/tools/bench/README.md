@@ -23,7 +23,9 @@ Copies also sit in `/home/k1000/m4-day/` on the box. After the next deploy they 
 
 Loop wiring rule: the return always goes into the **other** side's line input (source on LINE IN 3 →
 return into LINE IN 4 from OUT1 or OUT3, and the mirror for OUT2/OUT4), with Mono L+R off: a return
-into the same side feeds the output back into itself through the DSP.
+into the same side feeds the output back into itself through the DSP. A return into the front
+INPUT 1 or 2 is silent only while SETUP › INPUT › AUX IN 1/2 is `off` (the default, D-016): with AUX
+on, those inputs are in the program and the loop feeds back.
 
 ## From a laptop at the rig
 

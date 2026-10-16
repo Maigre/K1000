@@ -144,7 +144,7 @@ page                                     box
 | `fs` | Engine sample rate: one sample = 1000/fs ms (the DELAY fine step and its "samples" readout) |
 | `rta` | `enabled` false = k1000.yaml `spectrum.enabled: false` (no box spectrum at all); `src` the only source on Sunday; `hz` frame rate ceiling; `step_db` the byte step of §3.4; `idle_s` how long a subscription lasts without a message from the page (§4.8), the RESPONSE one included |
 | `pgm` | RESPONSE (§3.6): how the box computes the program side, so the page computes its mic side the same way. `v` 1; `n`, `f0`, `f1` the grid (the `rta` bins); `rate` the engine's sample rate in Hz (= `fs`); `fft` the engine's FFT length at that rate (the next power of two ≥ `rate / f0`: 8192 at 48 kHz); `est` `peak` (Hann window; each bin is the loudest FFT bin of its band); `win_s` the window (0.5 s). **`null`: the box cannot serve RESPONSE** (`spectrum.enabled: false`, or no spectrum task): hide it |
-| `limits` | The box's limits, for display and for the page's own mirror of the PA-up bucket (master and the trims): §6 |
+| `limits` | The box's limits, for display and for the page's own mirror of the PA-up bucket (master, the trims, D-016's AUX level and loudness): §6 |
 | `nudge` | The `nudge` allowlist: path → `[most negative, most positive]` detents in one message. Anything else is `err BAD` |
 
 #### 3.1.1 `fields{}`: one entry per editable number
@@ -152,7 +152,8 @@ page                                     box
 Keyed by the **generic** name: the path with its index removed (`live_peq.2.gain` → `live_peq.gain`,
 `out_trim_db.1` → `out_trim_db`). Keys: `master_db`, `balance_db`, `align_delay_ms`, `lowcut_hz`,
 `live_peq.freq|gain|q`, `live_lowshelf.freq|gain|q`, `live_highshelf.freq|gain|q`,
-`out_trim_db`, `input_trim_db`, `sub_lowpass_hz`.
+`out_trim_db`, `input_trim_db`, `sub_lowpass_hz`, and D-016's `deharsh_hz`, `deharsh_thresh_db`,
+`loud_boost_db`, `loud_ref_db`, `aux_gain_db`.
 
 ```json
 "live_peq.gain": {"label": "GAIN", "unit": "dB", "min": -20.0, "max": 6.0, "default": 0.0,
@@ -179,10 +180,13 @@ Keyed by the **generic** name: the path with its index removed (`live_peq.2.gain
 
 `master_db` adds `"up_px_per_detent": 20` (a master-up slide uses 20 px per detent whatever the
 sensitivity, never accelerated) and `"up_limit": {"db_per_s": 6.0, "burst_db": 3.0, "bucket": "pa"}`;
-`input_trim_db` and `out_trim_db` carry the same `up_limit`. **`bucket` names one bucket shared by
-every field that carries it:** raising a trim raises the PA like master, so a master rise and a
-trim rise spend the same tokens (§6). The page mirrors one bucket per `bucket` name, never one
-per field.
+`input_trim_db`, `out_trim_db` and D-016's `aux_gain_db`, `loud_boost_db` and `loud_ref_db` carry
+the same `up_limit`. **`bucket` names one bucket shared by every field that carries it:** raising a
+trim raises the PA like master, so a master rise and a trim rise spend the same tokens (§6). So do
+the AUX level (a gain like a trim), the loudness boost (a gain the shelf applies at once) and its
+reference (a higher reference gives the subs more boost under it). The de-harsh threshold does not:
+raising it only gives back what the cut took, never above the dry program (like an EQ cut). The
+page mirrors one bucket per `bucket` name, never one per field.
 
 The table as built (normal step / fine / caps / stepper / accel up,down / lock / sticky):
 
@@ -198,6 +202,13 @@ The table as built (normal step / fine / caps / stepper / accel up,down / lock /
 | `out_trim_db` | 0.5 dB | 0.5 | ±4 | −2 −1 +1 +2 | 1, 1 | — | 0 |
 | `input_trim_db` | 0.5 dB | 0.5 | ±4 | −2 −1 +1 +2 | 1, 1 | — | 0 |
 | `sub_lowpass_hz` | 1/12 oct | 1/48 | ±24 | −4 −1 +1 +4 | 4, 4 | — | 100 Hz |
+| `deharsh_hz` (D-016) | 1/12 oct | 1/48 | ±24 | −4 −1 +1 +4 | 4, 4 | — | 2700 Hz |
+| `deharsh_thresh_db` | 0.5 dB | 0.5 | ±4 | −4 −1 +1 +4 | 1, 1 | — | — |
+| `loud_boost_db` | 0.5 dB | 0.5 | ±4 | −2 −1 +1 +2 | 1, 1 | — | — |
+| `loud_ref_db` | 0.5 dB | 0.5 | ±4 | −4 −1 +1 +4 | 1, 1 | — | — |
+| `aux_gain_db` | 0.5 dB | 0.5 | ±4 | −4 −1 +1 +4 | 1, 1 | — | 0 |
+
+Labels (`label`) of the D-016 fields: `DE-HARSH`, `THRESH`, `BOOST`, `REF`, `AUX`.
 
 Q: a positive detent is a **higher Q = narrower** (a shelf: steeper). The stepper's `WIDER ×2`
 is −2.
@@ -231,9 +242,17 @@ them (it enforces `caps`, the locks and the buckets).
    {"label": "Polarity", "f": "top_inverted", "kind": "bool", "choices": [false, true],
     "names": ["normal", "INVERTED"], "rebuild": false, "phone": "edit"},
    {"label": "Lo-Cut", "f": "lowcut_on", "kind": "bool", "choices": [false, true],
-    "names": ["off", "ON"], "rebuild": false, "phone": "edit"}]},
- {"group": "SUBS", "items": ["… Trim L/R, Polarity, Mono L+R (rebuild: true), Low-pass, Low-pass freq …"]},
- {"group": "INPUT", "items": [{"label": "Trim", "f": "input_trim_db", "kind": "num", "field": "input_trim_db", "phone": "edit"}]},
+    "names": ["off", "ON"], "rebuild": false, "phone": "edit"},
+   {"label": "De-harsh", "f": "deharsh_on", "kind": "bool", "choices": [false, true],
+    "names": ["off", "ON"], "rebuild": true, "phone": "edit"},
+   {"label": "De-harsh freq", "f": "deharsh_hz", "kind": "num", "field": "deharsh_hz", "phone": "edit"},
+   {"label": "De-harsh thresh", "f": "deharsh_thresh_db", "kind": "num", "field": "deharsh_thresh_db", "phone": "edit"}]},
+ {"group": "SUBS", "items": ["… Trim L/R, Polarity, Mono L+R (rebuild: true), Low-pass, Low-pass freq, Loudness (rebuild: true), Loudness boost, Loudness ref …"]},
+ {"group": "INPUT", "items": [
+   {"label": "Trim", "f": "input_trim_db", "kind": "num", "field": "input_trim_db", "phone": "edit"},
+   {"label": "AUX IN 1/2", "f": "aux_mode", "kind": "choice", "choices": ["off", "mic", "line"],
+    "names": ["off", "MIC", "LINE"], "rebuild": true, "phone": "edit"},
+   {"label": "AUX level", "f": "aux_gain_db", "kind": "num", "field": "aux_gain_db", "phone": "edit"}]},
  {"group": "LIVE EQ", "items": [
    {"label": "Reset live EQ", "f": "reset_live", "kind": "action", "confirm": true, "act": ["reset_live"], "phone": "edit"},
    {"label": "Undo reset", "f": "undo_reset", "kind": "action", "confirm": false, "act": ["undo_reset"], "phone": "edit"},
@@ -260,8 +279,14 @@ them (it enforces `caps`, the locks and the buckets).
 | `phone` | `edit`, `readonly` (shown dimmed with `why`: the Phone row `ON · SWITCHED AT THE BOX`; a future number row outside the phone allowlist `SET ON THE BOX`), or `hidden` (`why` `ON THE BOX ONLY`: the Knob test) |
 
 Read-only **now** (a pinned profile, Audition off the dev profile, Spectrum disabled in
-k1000.yaml) is live: `state.readonly{}` (§3.2). New SETUP rows on the box appear here with no page
-change; the page must ignore a `kind` it does not know.
+k1000.yaml, D-016's AUX IN and AUX level on a profile with no spare input) is live:
+`state.readonly{}` (§3.2), for a `num` row too (the page dims it with the reason and refuses its
+slides and steps itself, before its PA-up mirror, so nothing is spent there either; the box refuses
+its `nudge`, `err READONLY`). AUX IN read-only reads `NO SPARE INPUT`, on the page as on the box,
+never the stored mode it cannot route. New SETUP rows on the box appear here with no page change; the page
+must ignore a `kind` it does not know. The page pairs an ON/off or choice with the `num` row right
+after it when that row's label starts with the switch's (`Low-pass` + `Low-pass freq`, `De-harsh`
++ `De-harsh freq`, `Loudness` + `Loudness boost`).
 
 ### 3.2 `state` (every change; latest only)
 
@@ -284,6 +309,9 @@ rest. Numbers are rounded, never NaN or infinite (`null` instead).
  "setup": {"out_trim_db.2": 0.0, "out_trim_db.3": 0.0, "top_inverted": false, "lowcut_on": true,
            "out_trim_db.0": 0.0, "out_trim_db.1": 0.0, "sub_inverted": true, "mono_subs": true,
            "sub_lowpass_on": false, "sub_lowpass_hz": 120.0, "input_trim_db": 0.0,
+           "deharsh_on": false, "deharsh_hz": 2700.0, "deharsh_thresh_db": -24.0,
+           "loud_on": false, "loud_boost_db": 6.0, "loud_ref_db": -10.0,
+           "aux_mode": "off", "aux_gain_db": 0.0,
            "spectrum_on": true, "profile": "m4", "dev_audition": "sum"},
  "spectrum": {"on": true, "src": "PGM", "state": "live"},
  "laptop": {"state": "open", "s": 7140},
@@ -299,7 +327,7 @@ rest. Numbers are rounded, never NaN or infinite (`null` instead).
 | `engine`, `linked`, `device_present`, `device`, `profile`, `message`, `drift`, `ramping`, `load` | As v1 (`engine` `null` = link down) |
 | `phone_on`, `phones` | As v1; `phones` counts v1 and v2 connections |
 | `alerts` | **Every** alert, most urgent first: `[level, text]`, level `critical` (red) · `warning` (orange) · `info` (`Controller.alerts()`) |
-| `pills` | Every pill, the box's order (`Controller.pills()`): `LAPTOP OPEN m:ss`, `LO-CUT OFF`, `OUT P2 LS`, `POL INV SUB+TOP`, `MONO SUB`, `AUDITION TOPS` |
+| `pills` | Every pill, the box's order (`Controller.pills()`): `LAPTOP OPEN m:ss`, `LO-CUT OFF`, `OUT P2 LS`, `POL INV SUB+TOP`, `AUX MIC` / `AUX LINE` (D-016; only where the profile routes it), `MONO SUB`, `LOUDNESS`, `DE-HARSH`, `AUDITION TOPS`. The page ranks `AUX …` with the safety pills (orange) |
 | `hint`, `hint_s` | The box's current hint and its seconds left (whole, rounded up); `""` / 0 = none. Count down locally: the box does not resend when it expires |
 | `ready` | The box finished its engine sync: edits reach the engine |
 | `in_clip` | An input (ADC) clip, latched 3 s |
@@ -328,7 +356,8 @@ so the page counts down from the last one it got.
 
 `l`: output peaks of Sub L, Sub R, Top L, Top R (dBFS, 0.5 dB steps, floor −60, top 0); `c`:
 their clip latches; **`i`** (v2 only): the program inputs' capture peaks before any K1000 gain
-(profile `input_map` order: L, R), same scale: the SETUP › INPUT meter. An input clip is
+(profile `input_map` order: L, R), same scale: the SETUP › INPUT meter, labelled `Program input`
+(D-016's AUX IN 1/2 is not on it: the M4's own meters show it). An input clip is
 `state.in_clip`.
 
 ### 3.4 `rta`: the box spectrum (subscribers only)
@@ -399,10 +428,10 @@ Without a picture (`st` not `live`) the frame is `{"t":"rta","seq":…,"src":"PG
 | `UNKNOWN` | Unknown `t` (includes v1-only `set` and `notch`) |
 | `OFF` | Phone control is off at the box |
 | `RATE` | Over this phone's message bucket (§6). A MUTE is never refused for this |
-| `SLOW` | Master or a trim rising faster than the box allows (`MASTER: SLOW DOWN`); `v` = the value now |
+| `SLOW` | Master, a trim, the AUX level or the loudness boost / reference rising faster than the box allows (`MASTER: SLOW DOWN`, `TRIM: SLOW DOWN`, `AUX: SLOW DOWN`, `LOUDNESS: SLOW DOWN`); `v` = the value now |
 | `LOCKED` | `align_delay_ms` / `lowcut_hz` without this connection's unlock; `v` = the value now |
 | `STALE` | `choose` with a `seen` that is no longer the value (`CHANGED MEANWHILE`, `v` = the value now); an unmute whose `seq` is old (§5) |
-| `READONLY` | `choose` on a row that is read-only now (`why` = the box's reason) |
+| `READONLY` | `choose` on a row that is read-only now, or `nudge` on a SETUP number that is (D-016: the AUX level with no spare input); `why` = the box's reason, `v` = the value now |
 | `NOCHANGE` | `choose` of the value already set; `undo_reset` with nothing to undo |
 | `NOFREE` | `grab`: all four bells in use (`NO FREE BAND`) |
 | `UNAVAILABLE` | Laptop access on a box without it |
@@ -488,7 +517,11 @@ Types are strict: a number is a JSON number (not a string, not a boolean), deten
 - Box rules: `master_db` up through the shared PA-up bucket, then the controller's guard
   (6 dB per 2 s), never accelerated by the box (`err SLOW` with `v` when nothing could be
   raised; a partial rise acks the value reached). `input_trim_db` and `out_trim_db.N` up through
-  **the same bucket** (`TRIM: SLOW DOWN`): a trim rise and a master rise spend the same 6 dB/s. `align_delay_ms` and `lowcut_hz` need the unlock (§4.4). A DELAY move stops
+  **the same bucket** (`TRIM: SLOW DOWN`): a trim rise and a master rise spend the same 6 dB/s;
+  so do D-016's `aux_gain_db` (`AUX: SLOW DOWN`), `loud_boost_db` and `loud_ref_db`
+  (`LOUDNESS: SLOW DOWN`). `align_delay_ms` and `lowcut_hz` need the unlock (§4.4). A SETUP number
+  the box holds read-only now (`state.readonly`) is refused before any bucket (`err READONLY`).
+  Refusals in this order: `BAD`, `LOCKED`, `READONLY`, `SLOW`, `REFUSED`. A DELAY move stops
   at 0 (ALIGNED) and goes to the other side on the next detent (D-011).
 - An OUT band moves too (it stays OUT, kept for its way back IN).
 
@@ -570,7 +603,8 @@ apply unchanged.
 - Refusals, in this order: `BAD` (types); `STALE` when `seen` is not the value now (`why`
   `CHANGED MEANWHILE`, `v` = the value now: nothing is written); `NOCHANGE` when `v` is the value
   now; `READONLY` with the box's reason (`PROFILE PINNED IN k1000.yaml`, `AUDITION: DEV PROFILE
-  ONLY`, `SPECTRUM OFF IN k1000.yaml`); `REFUSED` when `set_choice` refuses otherwise.
+  ONLY`, `SPECTRUM OFF IN k1000.yaml`, `AUX: NO SPARE INPUT ON THIS DEVICE`); `REFUSED` when
+  `set_choice` refuses otherwise.
 - `ack.v` = the value now. A `rebuild` row rebuilds the pipeline with Main muted around it (the
   box's own guard): the page's 1 s hold *is* the confirm.
 - The page's own rules (DESIGN §6.3): SET sits apart from the chosen key, a SET within 400 ms of
@@ -711,12 +745,12 @@ and B4.
 | Errors sent | 5/s, burst 5 | per connection | silence (a refused unmute is always answered) |
 | Master up | `phone.master_up_db_per_s` 6 dB/s, burst 3 dB (`limits.master_up_*`) | **all phones, v1 and v2** | `err SLOW` |
 | Master up, controller | +6 dB within any 2 s (`controls.master_up_guard_db`; `limits.guard_*`) | phones and knobs | the excess detents refused (`MASTER: SLOW DOWN` on the box) |
-| Trims up (`input_trim_db`, `out_trim_db.N`) | **master's bucket**: one 6 dB/s, burst 3 dB for master and the trims together (`up_limit.bucket` `pa`) | all phones, v1 and v2, with master | `err SLOW` (`TRIM: SLOW DOWN`) |
+| Trims up (`input_trim_db`, `out_trim_db.N`), D-016's AUX level and loudness boost / reference up | **master's bucket**: one 6 dB/s, burst 3 dB for master and all of these together (`up_limit.bucket` `pa`) | all phones, v1 and v2, with master | `err SLOW` (`TRIM:`, `AUX:`, `LOUDNESS: SLOW DOWN`) |
 | Detents per nudge | `hello.nudge` caps | — | `err BAD` |
 | RTA frames | 10 Hz; dropped beyond 4 kB in flight; the subscription lapses after 10 s without a message | per subscriber | dropped (§3.4), `unsub` (§4.8) |
 | RESPONSE windows (`pgm`) | 2 Hz; dropped beyond 4 kB in flight (latest only, never queued, after replies, state and meters); the subscription lapses after 10 s without a message | per subscriber | dropped: a `seq` gap (§3.6), `unsub` `pgm` (§4.8) |
 
-The page mirrors the PA-up bucket (master and the trims: one bucket) to say `SLOW DOWN` at once
+The page mirrors the PA-up bucket (master, the trims, the AUX level, the loudness: one bucket) to say `SLOW DOWN` at once
 and **drops** the excess detents (it never queues them); the box's bucket and guard stay
 authoritative.
 
@@ -734,8 +768,10 @@ authoritative.
 ## 8. Changes against DESIGN §10, and why
 
 - **The SETUP values are one `state.setup{}` object** keyed by the row's `f` (trims,
-  polarities, Mono, the sub low-pass, input trim, Spectrum, profile, audition), not separate
-  top-level keys: the sheet is built from `hello.setup`, so a new box row needs no page change.
+  polarities, Mono, the sub low-pass, input trim, Spectrum, profile, audition, D-016's de-harsh,
+  loudness and AUX), not separate top-level keys: the sheet is built from `hello.setup`, so a new
+  box row needs no page change (D-016's eight rows came that way; the page added only their notes,
+  their tile words and a read-only number row).
 - **`in_peak_db` is in `m.i`, not in `state`:** it moves at the meter rate; in the state it
   would resend the whole state ~10 times a second.
 - **`mute_band` is an object** (`kind`, `text`), and `mute_fallback` is added: the box screen's

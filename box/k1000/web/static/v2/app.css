@@ -260,7 +260,7 @@ body.nolink .ctl, body.nolink .foot .ftile, body.nolink #cv, body.nolink .ostrip
 /* a pending choice: the same content box as an idle row (an inset outline), so nothing moves */
 .srow.pick { background: var(--red-deep); box-shadow: inset 0 0 0 1px var(--red); border-radius: 10px; padding: 10px 4px; margin: 0 -4px; }
 .srow.pick .rv { color: var(--fg); }
-.srow.ro .rl, .srow.ro .rv, .srow.ro .seg { opacity: .45; }
+.srow.ro .rl, .srow.ro .rv, .srow.ro .seg, .srow.ro .tile { opacity: .45; }
 .srow.ro .rn { color: var(--amber); }
 .srow .seg button { height: 44px; font-size: 13px; touch-action: pan-y; overflow: hidden; }
 .srow .seg button.chosen { background: #000; border: 2px solid var(--red); color: var(--fg); }

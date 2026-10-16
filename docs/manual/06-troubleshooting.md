@@ -60,7 +60,7 @@ takes the footer over the MUTED strip.
 | `hold B4 to unmute` | Muted, but the engine is not running yet, or K1000 is not in sync | Wait for `READY` |
 | `RAMPS IN BY ITSELF · hold B4 to keep muted` | The engine (re)started. K1000 holds Main muted and will fade it in over about 3 s **by itself**; the status bar shows the blue `RAMPING IN` ([picture](../ui/muted_ramp_hold.png)) | Nothing, or hold B4 to keep it muted |
 | `NO AUDIO FLOWING · HELD MUTED` | K1000 waits for the engine to process before ramping in. No timeout | Check the M4's USB and power, and the source |
-| `APPLYING SETUP…` | A setup action (Mono L+R, Audition, Profile) is rebuilding the pipeline with Main muted | Wait a second |
+| `APPLYING SETUP…` | A setup action (Mono L+R, Audition, Profile, De-harsh, Loudness, AUX IN) is rebuilding the pipeline with Main muted | Wait a second |
 | `KNOBS OFFLINE · …` | See the alerts below | — |
 | any other alert | See the alerts below | — |
 
@@ -111,7 +111,7 @@ On SHOW the strip covers the band chips, on ALIGN the middle, on SETUP the foote
 | `DELAY + LO-CUT UNLOCKED` / `DELAY + LO-CUT LOCKED` | ALIGN: a B2 hold unlocked them for 30 s of idle; a B2 tap locked them |
 | `DELAY · TURN AGAIN TO CHANGE` | ALIGN's DELAY was at rest for 2.5 s: the first click only wakes it |
 | `PUSH TO SET ON`, `PUSH TO SET INVERTED`… (footer, while it waits) | SETUP: E2 chose a value (the row, red, shows `now → chosen`); a push of E1 or E2 sets it. Nothing changes until then; it lapses after 8 s or when E1/E3 moves |
-| `PUSH TO SET … · MAY CLICK` | The same on a pipeline rebuild (Mono L+R, Profile, Audition) |
+| `PUSH TO SET … · MAY CLICK` | The same on a pipeline rebuild (Mono L+R, Profile, Audition, De-harsh, Loudness, AUX IN) |
 | `NO CHANGE: ALREADY SET` | SETUP: the chosen value was already set (a phone changed it meanwhile) |
 | `TURN THE VALUE KNOB` | SETUP: a push on a number row; E2 changes it |
 | `PUSH TO OPEN`, `PUSH TO RUN`, `PUSH TWICE TO RUN` | SETUP: E2 turned on a page or an action row |
@@ -121,6 +121,8 @@ On SHOW the strip covers the band chips, on ALIGN the middle, on SETUP the foote
 | `RESET UNDO LOST` | An audible live-EQ edit (a gain moved off 0 dB) ended the reset's undo |
 | `LO-CUT ON · 112 Hz` / `LO-CUT OFF` | SETUP › TOPS › Lo-Cut, or the phone's switch |
 | `SPECTRUM ON` / `SPECTRUM OFF` / `SPECTRUM OFF IN k1000.yaml` | SETUP › LIVE EQ › Spectrum; the last one when `spectrum: enabled: false` (the row is read-only then) |
+| `DE-HARSH ON` / `OFF`, `LOUDNESS ON` / `OFF`, `AUX IN 1: MIC`, `AUX IN 1/2: LINE`, `AUX IN OFF` | SETUP › TOPS › De-harsh, SUBS › Loudness, INPUT › AUX IN 1/2 set (D-016) |
+| `AUX: NO SPARE INPUT ON THIS DEVICE` | SETUP › INPUT › AUX IN 1/2 or AUX level on a profile with no spare input (the bench HiFiBerry): read-only |
 | `LAPTOP ACCESS: OPENING…`, `LAPTOP OPEN 2 H · GUI :5005 · SSH`, `LAPTOP ACCESS CLOSED`, `LAPTOP ACCESS CLOSED (2 H)` (4 s) | SETUP › PHONE › Laptop access ([chapter 4 §5.1](04-usage.md#51-laptop-access-and-the-tune-page)) |
 | `LAPTOP ACCESS: NOT AVAILABLE`, `LAPTOP ACCESS: NO ANSWER (SEE LOG)`, `LAPTOP ACCESS NO WI-FI FENCE (AP NOT SET UP)` (4 s) | It could not open: no laptop-access service, the root helper did not answer (`journalctl -t k1000-laptop`), or there is no K1000 Wi-Fi ([`docs/06-phone.md`](../06-phone.md) §7) |
 | `MUTE OR CONFIRM ON SETUP (MAY CLICK)` | A setup action asked for (console) without the confirm and while unmuted |
@@ -136,8 +138,9 @@ On SHOW the strip covers the band chips, on ALIGN the middle, on SETUP the foote
 
 ### Pills (SHOW's bottom row)
 
-`LAPTOP OPEN 1:59`, `LO-CUT OFF`, `POL INV SUB` / `TOP` / `SUB+TOP` (orange) and `MONO SUB`,
-`AUDITION TOPS` / `SUBS` (grey): a non-default state, for as long as it lasts. Too many fold into
+`LAPTOP OPEN 1:59`, `LO-CUT OFF`, `POL INV SUB` / `TOP` / `SUB+TOP`, `AUX MIC` / `AUX LINE`
+(orange) and `MONO SUB`, `LOUDNESS`, `DE-HARSH`, `AUDITION TOPS` / `SUBS` (grey): a non-default
+state, for as long as it lasts. Too many fold into
 `+N`. Not a fault: check each one is meant ([chapter 4 §3.3](04-usage.md#33-pills)).
 
 ### The spectrum (SHOW)
@@ -223,7 +226,7 @@ Not something K1000 creates. Usual causes:
 | What | Cause | Do |
 |---|---|---|
 | A short dip when changing a delay or a polarity | Expected: the group is muted around the write | Do alignment before the show |
-| A click on SETUP › SUBS › Mono L+R, BOX › Profile or Audition | Expected: those rebuild the pipeline (hence `· MAY CLICK` and the choose-then-push) | Never during a show |
+| A click on SETUP › SUBS › Mono L+R, BOX › Profile or Audition, or D-016's TOPS › De-harsh, SUBS › Loudness, INPUT › AUX IN 1/2 | Expected: those rebuild the pipeline (hence `· MAY CLICK` and the choose-then-push) | Never during a show |
 | Regular crackles or dropouts | Audio buffer underruns (xruns) | The engine log (below), `vcgencmd get_throttled`, a soak test. A larger `target_level` (512 or 768) gives the USB more margin ([chapter 3](03-configuration.md#4-profiles)) |
 | Knob moves | Should never click: gains move in 0.5 dB steps (0.1 dB on fixed gains), frequency and Q in small steps | If they do, note what and when |
 

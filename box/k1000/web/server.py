@@ -49,7 +49,9 @@ Why it is shaped like this:
   the silent notch helper, the box spectrum, the RESPONSE program windows), and every rule
   stays here: DELAY and LO-CUT move only inside the connection's own 30 s unlock (`err
   LOCKED`), every ON/off and choice is `Controller.set_choice` with the value the phone saw
-  (`err STALE`), master and trims rise through shared buckets, and the spectrum frames and
+  (`err STALE`), master and trims (and D-016's AUX level and sub loudness boost and reference)
+  rise through ONE shared bucket, a SETUP number the box holds read-only is refused (`err
+  READONLY`: the AUX level on a profile with no spare input), and the spectrum frames and
   RESPONSE windows are dropped first, never ahead of a reply.
 """
 from __future__ import annotations
@@ -187,11 +189,26 @@ for _i in range(N_OUT):
     NUDGE_CAPS_V2[f"out_trim_db.{_i}"] = (-4, 4)
 NUDGE_CAPS_V2["input_trim_db"] = (-4, 4)
 NUDGE_CAPS_V2["sub_lowpass_hz"] = (-24, 24)
+# D-016's SETUP numbers (2026-10-16): the dB ones like a trim (0.5 dB a detent: 2 dB a message),
+# the de-harsh centre like the sub low-pass (1/12 oct a detent: 2 octaves a message).
+NUDGE_CAPS_V2["deharsh_hz"] = (-24, 24)
+NUDGE_CAPS_V2["deharsh_thresh_db"] = (-4, 4)
+NUDGE_CAPS_V2["loud_boost_db"] = (-4, 4)
+NUDGE_CAPS_V2["loud_ref_db"] = (-4, 4)
+NUDGE_CAPS_V2["aux_gain_db"] = (-4, 4)
 # ALIGN E2/E4 on the box (D-015): locked unless THIS connection holds the unlock (UNLOCK_S of idle).
 LOCKED_V2: frozenset[str] = frozenset({"align_delay_ms", "lowcut_hz"})
 # Raising one of these raises the PA like master: it rises through master's own bucket (one
-# bucket for everything that raises the PA, every phone, v1 and v2: docs/14 §6).
-TRIM_FIELDS_V2: frozenset[str] = frozenset({"input_trim_db", *(f"out_trim_db.{i}" for i in range(N_OUT))})
+# bucket for everything that raises the PA, every phone, v1 and v2: docs/14 §6). D-016: the AUX
+# level (a Gain like a trim), the sub loudness boost (a gain the shelf applies at once) and its
+# reference (a higher reference = more boost under it: up to 0.6 dB per dB raised). The
+# de-harsh threshold is not one: raising it only gives back what the cut took (never above the
+# dry program), like a live EQ cut coming back up.
+TRIM_FIELDS_V2: frozenset[str] = frozenset({"input_trim_db", *(f"out_trim_db.{i}" for i in range(N_OUT)),
+                                            "aux_gain_db", "loud_boost_db", "loud_ref_db"})
+# What a refused rise names (`err SLOW`): the field's own word, TRIM for the trims.
+SLOW_WORD_V2: dict[str, str] = {"master_db": "MASTER", "aux_gain_db": "AUX",
+                                "loud_boost_db": "LOUDNESS", "loud_ref_db": "LOUDNESS"}
 ACTS_V2 = ("reset_live", "undo_reset", "laptop_open", "laptop_close")
 SETUP_PICKS_V2 = {it.field: it for it in SETUP_ITEMS if it.picks}
 HINT_LOCKED_V2 = "LOCKED · HOLD 0.8 s TO EDIT"
@@ -211,16 +228,24 @@ HI_MAX_CAPS, HI_CAP_LEN = 16, 24
 _V2_LABEL = {"master_db": "MASTER", "balance_db": "BAL", "align_delay_ms": "DELAY",
              "lowcut_hz": "LO-CUT", "out_trim_db": "TRIM", "input_trim_db": "TRIM",
              "sub_lowpass_hz": "LOW-PASS", "live_peq.q": "Q", "live_lowshelf.q": "SLOPE",
-             "live_highshelf.q": "SLOPE"}
+             "live_highshelf.q": "SLOPE",
+             "deharsh_hz": "DE-HARSH", "deharsh_thresh_db": "THRESH", "loud_boost_db": "BOOST",
+             "loud_ref_db": "REF", "aux_gain_db": "AUX"}
 _V2_STEPPER = {"master_db": (-12, -2, -1, 1, 2), "balance_db": (-2, -1, 1, 2),
                "align_delay_ms": (-10, -1, 1, 10), "lowcut_hz": (-5, -1, 1, 5),
                "out_trim_db": (-2, -1, 1, 2), "input_trim_db": (-2, -1, 1, 2),
                "sub_lowpass_hz": (-4, -1, 1, 4), ".freq": (-4, -1, 1, 4), ".gain": (-6, -1, 1, 6),
-               ".q": (-6, -1, 1, 6)}   # Q / SLOPE: ×½ · − · + · ×2 (6 detents of 1/6 oct = an octave)
-_V2_ACCEL = {"out_trim_db": (1, 1), "input_trim_db": (1, 1), "sub_lowpass_hz": (4, 4)}
+               ".q": (-6, -1, 1, 6),   # Q / SLOPE: ×½ · − · + · ×2 (6 detents of 1/6 oct = an octave)
+               "deharsh_hz": (-4, -1, 1, 4), "deharsh_thresh_db": (-4, -1, 1, 4),
+               "loud_boost_db": (-2, -1, 1, 2), "loud_ref_db": (-4, -1, 1, 4),
+               "aux_gain_db": (-4, -1, 1, 4)}
+_V2_ACCEL = {"out_trim_db": (1, 1), "input_trim_db": (1, 1), "sub_lowpass_hz": (4, 4),
+             "deharsh_hz": (4, 4), "deharsh_thresh_db": (1, 1), "loud_boost_db": (1, 1),
+             "loud_ref_db": (1, 1), "aux_gain_db": (1, 1)}
 _V2_STICKY = {"balance_db": (0.0,), "align_delay_ms": (0.0,), "out_trim_db": (0.0,),
-              "input_trim_db": (0.0,), ".gain": (0.0,)}
-_V2_LANDMARKS = {".freq": (100.0, 1000.0, 10000.0), "sub_lowpass_hz": (100.0,)}
+              "input_trim_db": (0.0,), ".gain": (0.0,), "aux_gain_db": (0.0,)}
+_V2_LANDMARKS = {".freq": (100.0, 1000.0, 10000.0), "sub_lowpass_hz": (100.0,),
+                 "deharsh_hz": (2700.0,)}
 SLIDE_V2: dict[str, Any] = {
     "px_per_detent": 14, "hysteresis_px": 4, "lockin_px": 10, "axis_ratio": 2, "vertical_px": 14,
     "tap_px": 10, "tap_ms": 450, "edge_px": 24, "speed_window_ms": 100, "fine_below_px_s": 100,
@@ -1335,11 +1360,14 @@ class PhoneBridge:
         if f in LOCKED_V2 and not (sess.unlock_until and now < sess.unlock_until):
             sess.unlock_until = 0.0
             return False, self._value(f), HINT_LOCKED_V2, "LOCKED"
+        ro = self._readonly(f)
+        if ro:                  # D-016: the AUX level where the profile has no spare input
+            return False, self._value(f), ro, "READONLY"
         if d > 0 and (f == "master_db" or f in TRIM_FIELDS_V2):
             rng = range_for(f)
             step = rng.fine if (fine and rng is not None and rng.fine) else (rng.step if rng else 0.5)
             if not self._master_up.take(d * step):
-                what = "MASTER" if f == "master_db" else "TRIM"
+                what = SLOW_WORD_V2.get(f, "TRIM")
                 return False, self._value(f), f"{what}: SLOW DOWN", "SLOW"
         v = self.ctl.nudge(f, d, fine, source=sess.name)
         if v is None:
@@ -1349,6 +1377,19 @@ class PhoneBridge:
         if f in LOCKED_V2:
             sess.unlock_until = now + self.unlock_s
         return True, (v if isinstance(v, bool) else _f(v, 6)), "", ""
+
+    def _readonly(self, f: str) -> str:
+        """The box's reason a SETUP field cannot change now (Controller.setup_readonly), or ""."""
+        fn = getattr(self.ctl, "setup_readonly", None)
+        if not callable(fn):
+            return ""
+        try:
+            ro = fn() or {}
+        except Exception as e:   # noqa: BLE001 - a controller bug must not cost the phone a knob
+            log.debug("setup_readonly: %s", e)
+            return ""
+        v = ro.get(f) if isinstance(ro, dict) else None
+        return str(v) if v else ""
 
     def _grab(self, msg: dict[str, Any], sess: PhoneSession) -> tuple[bool, Any, str, str]:
         """The notch helper, silent, without moving the box's selection (docs/14 §4.3). `s` is
