@@ -3,7 +3,7 @@
 How to run a show with K1000: the panel, the three pages, the mute, the phone, the end of the
 night and the bypass. This chapter follows the code as built (UI v1, decision D-009 in
 [`DECISIONS.md`](../../DECISIONS.md); the buttons and SETUP, D-013; the knob layout and the input
-meters, D-015). The pictures are drawn by that code (`docs/ui/`).
+meters, D-015; SETUP's knobs, D-017). The pictures are drawn by that code (`docs/ui/`).
 
 Two printed pages go in the case: the [quick start](../13-quick-start.md) for someone who has
 never seen the box, and the [operator card](../04-operator-card.md) for the operator. Print them
@@ -51,7 +51,7 @@ warning. Blue = a passing state (`RAMPING IN`). Cyan = the spectrum PEAK (and th
 
 **Pages.** A B1 tap flips **SHOW ↔ ALIGN**. **A B1 hold opens SETUP** (from SHOW or ALIGN);
 from SETUP, a B1 tap or hold goes back to SHOW. ALIGN and SETUP go back to SHOW by themselves
-after 60 s without a knob or button event (not while a SETUP choice or confirm is pending). PHONE
+after 60 s without a knob or button event (not while a SETUP popup waits for its push). PHONE
 and the Knob test open from SETUP and stay until you leave them: on PHONE a B1 tap goes back to
 SETUP and a hold to SHOW; on the Knob test any hold but B4 goes back to SETUP.
 
@@ -279,45 +279,57 @@ than no turn at all. The lock makes it a deliberate act. How to set these: [chap
 
 ## 5. SETUP
 
-What is set once per rig, grouped by speaker floor (D-013). **Hold B1** on SHOW or ALIGN to open
-it; a B1 tap (or hold) goes back to SHOW.
+What is set once per rig, grouped by speaker floor (D-013); its knobs are D-017's. **Hold B1** on
+SHOW or ALIGN to open it; a B1 tap (or hold) goes back to SHOW.
 
 ![SETUP](../ui/setup.png)
 
 **The list.** Six groups, each under a header row: **TOPS**, **SUBS**, **INPUT**, **LIVE EQ**,
-**PHONE**, **BOX**. The top line says where you are (`TOPS 3/7`), a scroll bar at the right edge
-shows where in the list (deep in a long group the header scrolls away; the top line still names
-it), and the bottom line says what the knobs do on the selected row
-(`turn = change`, `turn = choose · push = set`, `push = open`, `push = run`, `push ×2 = run`,
-`fixed here`).
+**PHONE**, **BOX**. **The selected row is always on the same screen row** (the 4th of 8): the list
+scrolls under it, at the ends too (blank rows above the first item and below the last). The top
+line says where you are (`TOPS 3/7`), a scroll bar at the right edge shows which part of the list
+is in sight, and the bottom line says what E3 does on the selected row (`turn E3 = change`,
+`turn E3 · push E3 = apply`, `push E3 = open`, `push E3 = run`, `push E3 ×2 = run`, `fixed here`).
+Amber values ask for an E3 push (the risky rows, below).
 
 | Knob | On SETUP |
 |---|---|
 | E1 turn | The item, one per click (headers are skipped; it stops at both ends) |
-| E3 turn | The group: forward = the next group's first item; back = this group's first item, then the group before |
-| E2 turn | A number: changes it. An ON/off or a choice: **chooses** it (below) |
-| E1 or E2 push | Sets what E2 chose, opens a page, or runs an action |
+| E2 turn | The group: forward = the next group's first item; back = this group's first item, then the group before |
+| E3 turn | **Changes the value**: a number moves; an ON/off goes ON to the right, off to the left. On a risky row it only proposes, in a popup (below) |
+| E3 push | Applies the popup's proposal, opens a page, runs an action. Held while turning: fine steps |
+| E1, E2 push | Nothing: a hint says what E3 does on the row (`TURN E3 TO CHANGE`, `PUSH E3 TO OPEN`…) |
 
-**Choose, then set.** Every ON/off and every choice (both polarities, Lo-Cut, De-harsh, Mono L+R,
-Low-pass, Loudness, AUX IN, Spectrum, Profile, Audition) takes two gestures, and the value is
-always on screen:
+**Everyday rows change as you turn E3**: the trims and every number, SUBS › Low-pass and LIVE EQ ›
+Spectrum. An ON/off goes ON on a right turn and off on a left one, never back and forth on a fast
+turn (`ALREADY ON` when it already is).
 
-1. **Turn E2 to choose.** One choice per turn, wrapping round. The row turns red and shows
-   **now → chosen** (`off → ON`, `SUM → TOPS`, `off → MIC`); the footer says what the push will do
-   (`PUSH TO SET ON`), plus `· MAY CLICK` when it rebuilds the pipeline (De-harsh, Mono L+R,
-   Loudness, AUX IN, Profile, Audition). Turning back to the current value chooses nothing.
-2. **Push E1 or E2 to set it.** Nothing changes before this push.
+**Risky rows ask for an E3 push**: every pipeline rebuild (De-harsh, Mono L+R, Loudness, AUX IN,
+Profile, Audition), both polarities and Lo-Cut. Turning E3 there opens a popup over the middle of
+the list instead of changing anything:
 
-A push with nothing chosen proposes the next value (the row shows it) and a second push sets it,
-so push, push works too, with the target in sight in between. A choice waits 8 s (each turn renews
-it); E1, E3 or leaving the page drops it, and the page does not go home while one waits. If a phone
-set that value meanwhile, the push says `NO CHANGE: ALREADY SET`.
+![SUBS › Mono L+R: off → ON proposed](../ui/setup_popup.png)
 
-![SUBS › Mono L+R chosen, waiting for the push](../ui/setup_confirm.png) ![BOX › Audition: SUM → TOPS chosen](../ui/setup_pick_audition.png)
+1. **Turn E3**: the popup shows the row, **now → proposed** (`off → ON`, `SUM → TOPS`,
+   `off → MIC`), what it does (`MAY CLICK` on a rebuild, `FULL RANGE TO THE TOPS` for Lo-Cut off,
+   `THE SUBS DIP A MOMENT` for a polarity flip) and `push E3 = apply · turn E1 = cancel`. More E3
+   turns move the proposal (an ON/off: right ON / INVERTED, left off / normal; a choice: the next
+   or previous one, stopping at both ends). Back on the current value, the popup closes.
+2. **Push E3 to apply it.** Nothing changes before this push. A push let go after turning E3 (the
+   fine-step habit) does not count, nor does a push pressed within 0.25 s of the popup opening or
+   moving (a detent clicked by the pressing finger): it says `PUSH E3 TO APPLY`, push again.
 
-**Actions marked ×2** (Reset live EQ, opening Laptop access) need a second push within 5 s; the
-first push puts `PUSH AGAIN` on the row and a hint in the footer
-(`PUSH AGAIN TO RESET ALL LIVE EQ`). Moving to another item, or leaving the page, drops it.
+An E1 or E2 turn cancels the popup (`CANCELLED`, the row stays selected), so does leaving the page,
+or 8 s without an E3 turn; the page does not go home while it waits. If a phone set that value
+meanwhile, the push says `NO CHANGE: ALREADY SET`.
+
+![TOPS › Lo-Cut: ON → off proposed](../ui/setup_popup_lowcut.png) ![BOX › Audition: SUM → TOPS proposed](../ui/setup_pick_audition.png)
+
+**Actions marked ×2** (Reset live EQ, opening Laptop access): the first E3 push opens the same
+popup (`Reset live EQ?`, `Open laptop access?`, with what it does), a second E3 push within 5 s
+runs it. An E1 or E2 turn, or leaving the page, cancels.
+
+![Reset live EQ: the first E3 push](../ui/setup_popup_reset.png)
 
 **Read-only rows** are dimmed, and the bottom line says `fixed here`. A turn or a push only says
 why:
@@ -333,42 +345,40 @@ why:
 
 | Group › item | How | Does |
 |---|---|---|
-| TOPS › Trim L, Trim R | E2 | −24 … +6 dB: to match boxes or sides, not to set the level |
-| TOPS › Polarity | choose, push | `normal` / `INVERTED`. The tops dip briefly. Pill `POL INV TOP` |
-| TOPS › **Lo-Cut** | choose, push | The tops' high-pass on or off (`ON · 100 Hz` / `off · 100 Hz`; the frequency is ALIGN E4): `LO-CUT ON · 100 Hz` or `LO-CUT OFF`. Off parks the filter at 10 Hz (no pipeline change). Pill `LO-CUT OFF` |
-| TOPS › De-harsh | choose, push | `off` / `ON` (D-016, off by default): a cut around **De-harsh freq** that acts only while that band is louder than **De-harsh thresh**, on hard attacks; quieter, it does exactly nothing. Rebuilds the pipeline (`MAY CLICK`): `DE-HARSH ON`. Pill `DE-HARSH`. How to set it: [chapter 5 §9](05-tuning.md#9-de-harsh-and-sub-loudness-by-ear) |
-| TOPS › De-harsh freq | E2 | 1.50k … 6.00k Hz, 1/12 octave (2.70k by default, the harsh band of the first rig run); the band is about an octave wide. No click |
-| TOPS › De-harsh thresh | E2 | −48 … 0 dB, 0.5 dB (−24 by default): the band level where the cut starts (3:1 above it). Lower = it acts more often. It reads the left and right bands summed: a centred source reads 6 dB over one side's level. At 0 dB it never acts |
-| SUBS › Trim L, Trim R | E2 | As the tops' trims |
-| SUBS › Polarity | choose, push | `normal` / `INVERTED`. The subs dip briefly. Pill `POL INV SUB` |
-| SUBS › Mono L+R | choose, push | Both subs get L+R. **Keep it ON with one cable to both subs** (OUT3, D-012): OFF puts the left channel alone on them. Rebuilds the pipeline (`PUSH TO SET ON · MAY CLICK`), then the blue `APPLYING SETUP…` with Main muted around it |
-| SUBS › Low-pass | choose, push | A 12 dB/oct low-pass on the subs, on or off |
-| SUBS › Low-pass freq | E2 | 40 … 250 Hz, 1/12 octave |
-| SUBS › Loudness | choose, push | `off` / `ON` (D-016, off by default): the subs' low shelf (70 Hz) rises as the master goes under **Loudness ref**, so the subs keep filling the room at low level. At or above the reference it adds nothing; the subs are **never louder than at the reference**. Rebuilds the pipeline (`MAY CLICK`): `LOUDNESS ON`. Pill `LOUDNESS`. How to set it: [chapter 5 §9](05-tuning.md#9-de-harsh-and-sub-loudness-by-ear) |
-| SUBS › Loudness boost | E2 | 0 … +12 dB, 0.5 dB (+6 by default): the extra low end reached 20 dB under the reference (half of it 10 dB under). It rises like a trim, step by step, and the phone's raises share master's 6 dB/s |
-| SUBS › Loudness ref | E2 | −40 … 0 dB master, 0.5 dB (−10 by default): the master level where the subs sound right without help |
-| INPUT › Trim | E2 | −24 … +12 dB, 0.5 dB. Acts after the converter: it cannot fix `IN CLIP` |
-| INPUT › AUX IN 1/2 | choose, push | `off` / `MIC` / `LINE` (D-016, off by default): the M4's front inputs into the program. **MIC**: IN1 on both sides at −3 dB each, under a 100 Hz high-pass. **LINE**: IN1 left, IN2 right. AUX joins after the input trim (the trim is the program's only) and before the EQ (it gets the system EQ, the live EQ and de-harsh). Rebuilds the pipeline (`MAY CLICK`): `AUX IN 1: MIC`, `AUX IN 1/2: LINE`. Pill `AUX MIC` / `AUX LINE`. Read-only `NO SPARE INPUT` on the bench profile. **A mic: master down first, M4 GAIN 1/2 up from minimum, MON 1/2 stay unlit, then AUX level** |
-| INPUT › AUX level | E2 | −40 … +12 dB, 0.5 dB (0 by default): the AUX's own level, after the M4's GAIN knob. It rises like a trim; the phone's raises share master's 6 dB/s |
-| LIVE EQ › **Reset live EQ** | push ×2 | `PUSH AGAIN TO RESET ALL LIVE EQ`, then the four bells and both shelves go flat, smoothly: `LIVE EQ RESET · UNDO IN SETUP` (`LIVE EQ ALREADY FLAT` if there was nothing to reset) |
-| LIVE EQ › **Undo reset** | push | Puts back exactly the live EQ the last reset flattened: `LIVE EQ RESTORED`. The row counts down (`UNDO 4:47`); `—` and greyed when there is nothing to undo (`NOTHING TO UNDO`) |
-| LIVE EQ › **Spectrum** | choose, push | `ON` / `off`, saved. Read-only `DISABLED` when `spectrum: enabled: false` in `k1000.yaml` |
-| PHONE › Phone | push | Opens the PHONE page ([§5.3](#53-the-phone-page)) |
-| PHONE › **Laptop access** | push ×2 to open, push to close | CamillaGUI, SSH and the `/tune` page from a laptop on the K1000 Wi-Fi, for 2 h ([§5.1](#51-laptop-access-and-the-tune-page)) |
-| BOX › Profile | choose, push | `DEV` / `M4`. Read-only while `k1000.yaml` pins it. About 1 s of silence, then the ramp |
-| BOX › Audition (dev) | choose, push | Bench profile only: `SUM`, `TOPS`, `SUBS` on the two bench outputs. Rebuilds the pipeline |
-| BOX › Knob test | push | Opens the Knob test ([§5.4](#54-knob-test)) |
+| TOPS › Trim L, Trim R | E3 | −24 … +6 dB: to match boxes or sides, not to set the level |
+| TOPS › Polarity | E3, push E3 | `normal` / `INVERTED`. The tops dip briefly. Pill `POL INV TOP` |
+| TOPS › **Lo-Cut** | E3, push E3 | The tops' high-pass on or off (`ON · 100 Hz` / `off · 100 Hz`; the frequency is ALIGN E4): `LO-CUT ON · 100 Hz` or `LO-CUT OFF`. Off parks the filter at 10 Hz (no pipeline change). Pill `LO-CUT OFF` |
+| TOPS › De-harsh | E3, push E3 | `off` / `ON` (D-016, off by default): a cut around **De-harsh freq** that acts only while that band is louder than **De-harsh thresh**, on hard attacks; quieter, it does exactly nothing. Rebuilds the pipeline (`MAY CLICK`): `DE-HARSH ON`. Pill `DE-HARSH`. How to set it: [chapter 5 §9](05-tuning.md#9-de-harsh-and-sub-loudness-by-ear) |
+| TOPS › De-harsh freq | E3 | 1.50k … 6.00k Hz, 1/12 octave (2.70k by default, the harsh band of the first rig run); the band is about an octave wide. No click |
+| TOPS › De-harsh thresh | E3 | −48 … 0 dB, 0.5 dB (−24 by default): the band level where the cut starts (3:1 above it). Lower = it acts more often. It reads the left and right bands summed: a centred source reads 6 dB over one side's level. At 0 dB it never acts |
+| SUBS › Trim L, Trim R | E3 | As the tops' trims |
+| SUBS › Polarity | E3, push E3 | `normal` / `INVERTED`. The subs dip briefly. Pill `POL INV SUB` |
+| SUBS › Mono L+R | E3, push E3 | Both subs get L+R. **Keep it ON with one cable to both subs** (OUT3, D-012): OFF puts the left channel alone on them. Rebuilds the pipeline (the popup says `MAY CLICK`), then the blue `APPLYING SETUP…` with Main muted around it |
+| SUBS › Low-pass | E3 | A 12 dB/oct low-pass on the subs, on (E3 right) or off (left), at once |
+| SUBS › Low-pass freq | E3 | 40 … 250 Hz, 1/12 octave |
+| SUBS › Loudness | E3, push E3 | `off` / `ON` (D-016, off by default): the subs' low shelf (70 Hz) rises as the master goes under **Loudness ref**, so the subs keep filling the room at low level. At or above the reference it adds nothing; the subs are **never louder than at the reference**. Rebuilds the pipeline (`MAY CLICK`): `LOUDNESS ON`. Pill `LOUDNESS`. How to set it: [chapter 5 §9](05-tuning.md#9-de-harsh-and-sub-loudness-by-ear) |
+| SUBS › Loudness boost | E3 | 0 … +12 dB, 0.5 dB (+6 by default): the extra low end reached 20 dB under the reference (half of it 10 dB under). It rises like a trim, step by step, and the phone's raises share master's 6 dB/s |
+| SUBS › Loudness ref | E3 | −40 … 0 dB master, 0.5 dB (−10 by default): the master level where the subs sound right without help |
+| INPUT › Trim | E3 | −24 … +12 dB, 0.5 dB. Acts after the converter: it cannot fix `IN CLIP` |
+| INPUT › AUX IN 1/2 | E3, push E3 | `off` / `MIC` / `LINE` (D-016, off by default): the M4's front inputs into the program. **MIC**: IN1 on both sides at −3 dB each, under a 100 Hz high-pass. **LINE**: IN1 left, IN2 right. AUX joins after the input trim (the trim is the program's only) and before the EQ (it gets the system EQ, the live EQ and de-harsh). Rebuilds the pipeline (`MAY CLICK`): `AUX IN 1: MIC`, `AUX IN 1/2: LINE`. Pill `AUX MIC` / `AUX LINE`. Read-only `NO SPARE INPUT` on the bench profile. **A mic: master down first, M4 GAIN 1/2 up from minimum, MON 1/2 stay unlit, then AUX level** |
+| INPUT › AUX level | E3 | −40 … +12 dB, 0.5 dB (0 by default): the AUX's own level, after the M4's GAIN knob. It rises like a trim; the phone's raises share master's 6 dB/s |
+| LIVE EQ › **Reset live EQ** | push E3 ×2 | The popup `Reset live EQ?`, then the four bells and both shelves go flat, smoothly: `LIVE EQ RESET · UNDO IN SETUP` (`LIVE EQ ALREADY FLAT` if there was nothing to reset) |
+| LIVE EQ › **Undo reset** | push E3 | Puts back exactly the live EQ the last reset flattened: `LIVE EQ RESTORED`. The row counts down (`UNDO 4:47`); `—` and greyed when there is nothing to undo (`NOTHING TO UNDO`) |
+| LIVE EQ › **Spectrum** | E3 | `ON` (E3 right) / `off` (left), at once, saved. Read-only `DISABLED` when `spectrum: enabled: false` in `k1000.yaml` |
+| PHONE › Phone | push E3 | Opens the PHONE page ([§5.3](#53-the-phone-page)) |
+| PHONE › **Laptop access** | push E3 ×2 to open, once to close | CamillaGUI, SSH and the `/tune` page from a laptop on the K1000 Wi-Fi, for 2 h ([§5.1](#51-laptop-access-and-the-tune-page)) |
+| BOX › Profile | E3, push E3 | `DEV` / `M4`. Read-only while `k1000.yaml` pins it. About 1 s of silence, then the ramp |
+| BOX › Audition (dev) | E3, push E3 | Bench profile only: `SUM`, `TOPS`, `SUBS` on the two bench outputs. Rebuilds the pipeline |
+| BOX › Knob test | push E3 | Opens the Knob test ([§5.4](#54-knob-test)) |
 
 **The undo** keeps one level, for **5 minutes, or until the next audible live-EQ edit**: a gain
 moved off 0 dB on any band, from the knobs, the phone or CamillaGUI. That edit ends it and says
 `RESET UNDO LOST`. Inaudible moves (B3, a frequency or Q turned on a flat band) keep it. The phone's
 reset is the same reset: the box can undo it.
 
-![Reset: the confirm](../ui/setup_reset_confirm.png) ![Undo available for 4:47](../ui/setup_undo.png)
+![Undo available for 4:47](../ui/setup_undo.png) ![SUBS › Loudness boost](../ui/setup_loudness.png)
 
-![TOPS › De-harsh chosen: a rebuild](../ui/setup_deharsh_pick.png) ![SUBS › Loudness boost](../ui/setup_loudness.png)
-
-![INPUT › AUX IN 1/2: MIC chosen](../ui/setup_aux_pick.png)
+![TOPS › De-harsh proposed: a rebuild](../ui/setup_deharsh_pick.png) ![INPUT › AUX IN 1/2: MIC proposed](../ui/setup_aux_pick.png)
 
 During a show, SETUP is for Reset live EQ and Undo reset only, and the D-016 numbers (De-harsh
 freq and thresh, Loudness boost and ref, AUX level) if needed: they move without a click. Polarity,
@@ -379,9 +389,10 @@ trims, Mono L+R, the profile and the three D-016 switches (a rebuild each) belon
 At the rig the laptop reaches the box over the **K1000 Wi-Fi**. A fence normally keeps CamillaGUI
 and SSH away from that Wi-Fi; Laptop access opens exactly those two, for a while.
 
-1. SETUP › PHONE › Laptop access, **push twice** (`PUSH AGAIN: LAPTOP ACCESS FOR 2 H`). The row
-   reads `OPENING…`, then `OPEN 2:00` counting down (hours:minutes); SHOW shows the pill
-   `LAPTOP OPEN 1:59`; the hint says `LAPTOP OPEN 2 H · GUI :5005 · SSH`.
+1. SETUP › PHONE › Laptop access, **push E3 twice** (the first opens the popup
+   `Open laptop access?`). The row reads `OPENING…`, then `OPEN 2:00` counting down
+   (hours:minutes); SHOW shows the pill `LAPTOP OPEN 1:59`; the hint says
+   `LAPTOP OPEN 2 H · GUI :5005 · SSH`.
 2. SETUP › PHONE › Phone: while access is open, the PHONE page prints the Wi-Fi password on every
    step (a laptop cannot scan the QR). Join **K1000** with it.
 3. On the laptop:
@@ -389,7 +400,7 @@ and SSH away from that Wi-Fi; Laptop access opens exactly those two, for a while
      browser's warning once);
    - CamillaGUI: `http://10.42.0.1:5005/gui/index.html` (press *Fetch from DSP* before editing);
    - SSH: `ssh k1000@10.42.0.1`.
-4. Done: **one push** on SETUP › PHONE › Laptop access (`LAPTOP ACCESS CLOSED`).
+4. Done: **one E3 push** on SETUP › PHONE › Laptop access (`LAPTOP ACCESS CLOSED`).
 
 It also closes by itself after **2 hours** (`LAPTOP ACCESS CLOSED (2 H)`), when the k1000
 service stops or starts again, and at every boot. Closing refuses new connections at once; an open
@@ -414,14 +425,14 @@ eight system bands, **Apply** (with a confirm; click-safe, saved at once), and *
 
 ### 5.2 Hints on SETUP
 
-The footer shows a hint (2.5 s) first, else the prompt of a choice waiting for its push
-(`PUSH TO SET ON`, `PUSH TO SET TOPS · MAY CLICK`), else, when muted, the MUTED strip. The confirm
-hints: `PUSH AGAIN TO RESET ALL LIVE EQ`, `PUSH AGAIN: LAPTOP ACCESS FOR 2 H`. The others:
-`TURN THE VALUE KNOB` (a push on a number), `PUSH TO OPEN`, `PUSH TO RUN`, `PUSH TWICE TO RUN`
-(E2 turned on a page or an action), `NO CHANGE: ALREADY SET`, and the read-only reasons
-([§5](#5-setup)).
+The footer shows a hint (2.5 s), else, when muted, the MUTED strip; a popup never covers it. The
+hints: `TURN E3 TO CHANGE` (a push on a number or an ON/off), `PUSH E3 TO OPEN`, `PUSH E3 TO RUN`,
+`PUSH E3 TWICE TO RUN` (E3 turned on a page or an action, or E1/E2 pushed), `PUSH E3 TO APPLY`
+(E1/E2 pushed with a popup open), `CANCELLED` (E1 or E2 turned with a popup open),
+`ALREADY ON`, `ALREADY OFF`… (E3 turned toward the value the row holds), `NO CHANGE: ALREADY SET`,
+and the read-only reasons ([§5](#5-setup)).
 
-![Muted, a choice waiting: the prompt takes the footer](../ui/setup_muted.png)
+![Muted, a popup open: MUTED keeps the footer](../ui/setup_muted.png)
 
 ### 5.3 The PHONE page
 
@@ -450,8 +461,8 @@ which one the code calls B1, B2, B3, B4: label the shell from that.
 
 ## 6. Mute
 
-**Hold B4 for 0.8 s, on every page**: SHOW, ALIGN (locked or not), SETUP (a pending choice or
-confirm survives), PHONE and the Knob test. A tap only shows `HOLD B4 TO MUTE / UNMUTE`.
+**Hold B4 for 0.8 s, on every page**: SHOW, ALIGN (locked or not), SETUP (an open popup
+survives), PHONE and the Knob test. A tap only shows `HOLD B4 TO MUTE / UNMUTE`.
 
 - The mute and the unmute fade over 0.1 s. A mute is saved **at once**: switched off muted, the box
   comes back muted.
@@ -463,8 +474,8 @@ confirm survives), PHONE and the Knob test. A tap only shows `HOLD B4 TO MUTE / 
 - K1000 never releases a mute it did not make (a mute from CamillaGUI stays).
 
 **What MUTED looks like:** the red `MUTED` pill and a red frame on every page; on SHOW and ALIGN a
-red band with the next step next to it; on SETUP and PHONE a red footer (a band would hide the row
-or the QR); on the Knob test a red tag.
+red band with the next step next to it; on SETUP and PHONE a red footer (a band would hide the row,
+the popup or the QR); on the Knob test a red tag.
 
 | Band text | Means |
 |---|---|
@@ -554,7 +565,7 @@ on/off. It has no spectrum.
 
 ### 8.4 Switching it off
 
-- **For now:** SETUP › PHONE › Phone, push E1: `PHONE OFF · KNOBS ONLY`. The page still opens
+- **For now:** SETUP › PHONE › Phone (push E3), then push E1 on the PHONE page: `PHONE OFF · KNOBS ONLY`. The page still opens
   but controls nothing. It stays off across restarts.
 - **For a show (no-go):** `phone: enabled: false` in `/etc/k1000/k1000.yaml` (then
   `sudo systemctl restart k1000`, between shows) **and** the Wi-Fi off the air:

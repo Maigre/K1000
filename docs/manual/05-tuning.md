@@ -110,7 +110,7 @@ Delays are whole samples at 48 kHz.
 3. Look at the response from about 60 to 150 Hz, around the overlap (60–120 Hz per Meyer,
    [`docs/01`](../01-approaches-review.md) §0). You want the **fullest sum** around
    80–100 Hz.
-4. Flip SETUP › SUBS › Polarity (turn E2 to choose, push to set) and compare. Keep the setting with
+4. Flip SETUP › SUBS › Polarity (turn E3, push E3 in the popup) and compare. Keep the setting with
    the fuller sum. A deep, narrow dip in the overlap with one setting usually means the other one is
    right.
 5. Fine-tune the delay with the push held, in single samples, for the fullest sum.
@@ -133,8 +133,8 @@ UPA-1P's 12″ so the tops limit later, and leaves the low end to the subs.
 | **160 Hz, 12 dB/oct** | Meyer's LD-2 line driver had a Mid-Hi Lo-Cut at exactly this: the historical practice for this pair |
 | **100 Hz** | K1000's default (on); the Sunday choice (D-010) |
 
-A/B it on program with the subs running: SETUP › TOPS › Lo-Cut switches it on and off (turn E2 to
-choose, push to set; the phone's Lo-Cut switch, with a confirm, is handier while walking the room).
+A/B it on program with the subs running: SETUP › TOPS › Lo-Cut switches it on and off (turn E3,
+then push E3 in the popup; the phone's Lo-Cut switch, with a confirm, is handier while walking the room).
 ALIGN E4, unlocked with a B2 hold, moves the frequency (20–300 Hz, 2 Hz per click, push held = 1 Hz;
 a fast spin goes 8 Hz a click: 100 → 160 Hz is 30 clicks, or a few fast turns). "Off" parks it at
 10 Hz, and SHOW shows the pill `LO-CUT OFF` until it is back on.
@@ -160,7 +160,7 @@ The live EQ sits on top of it and never changes it.
 
 ### Measure
 
-1. The laptop and the box: SETUP › PHONE › Laptop access, two pushes, then the laptop joins the
+1. The laptop and the box: SETUP › PHONE › Laptop access, two E3 pushes, then the laptop joins the
    **K1000** Wi-Fi (the PHONE page prints the password while access is open). The box is `10.42.0.1`. On a
    wired network instead (CamillaGUI only, no `/tune`): `k1000.local`, your router's list, or
    `ssh k1000 'hostname -I'`.
@@ -169,7 +169,7 @@ The live EQ sits on top of it and never changes it.
 3. The measurement mic into the laptop. Load its calibration file in REW or Open Sound Meter.
 4. Pink noise (Open Sound Meter, REW's RTA) or log sweeps (REW). Measure a few positions across the
    listening area and average them.
-5. Live EQ flat while you measure: SETUP › LIVE EQ › Reset live EQ, two pushes. (Undo reset, just
+5. Live EQ flat while you measure: SETUP › LIVE EQ › Reset live EQ, two E3 pushes. (Undo reset, just
    below it, brings it back within 5 minutes, unless a live-EQ gain has moved since.)
 
 ### Decide
@@ -205,7 +205,7 @@ like a phone, or accept the browser's warning once). It answers `403` while acce
    eight bands like a knob would: clamped, click-safe steps (about a second), saved at once.
 4. **Undo** puts back the system EQ the last Apply replaced (one level; it survives a k1000
    restart).
-5. Close Laptop access: one push on SETUP › PHONE › Laptop access.
+5. Close Laptop access: one E3 push on SETUP › PHONE › Laptop access.
 
 More: [`docs/06-phone.md`](../06-phone.md) §11.
 
@@ -261,7 +261,7 @@ when you cut. Details and pictures: [chapter 4 §3.2](04-usage.md#32-notching-a-
 B3, the phone's notch cuts at once (−6 dB, Q 8: `phone.notch_gain_db`, `phone.notch_q`)
 ([`docs/06-phone.md`](../06-phone.md) §2).
 
-**Reset all live EQ:** SETUP › LIVE EQ › Reset live EQ, two pushes. **Undo reset**, the next row,
+**Reset all live EQ:** SETUP › LIVE EQ › Reset live EQ, two E3 pushes. **Undo reset**, the next row,
 puts it back exactly, for 5 minutes or until the next audible live-EQ edit. The phone's reset (with a confirm)
 is the same reset: the box can undo it.
 
@@ -297,20 +297,20 @@ so a centred source reads 6 dB over one side's level: a number, not a dBFS meter
 
 **Step by step:**
 
-1. Before the doors, muted: SETUP › TOPS › **De-harsh**, turn E2 to `ON`, push (`MAY CLICK`).
-2. SETUP › TOPS › **De-harsh thresh** to **0 dB** (turn E2 up): at 0 dB it never acts. Unmute and
+1. Before the doors, muted: SETUP › TOPS › **De-harsh**, turn E3 to `ON`, push E3 (`MAY CLICK`).
+2. SETUP › TOPS › **De-harsh thresh** to **0 dB** (turn E3 up): at 0 dB it never acts. Unmute and
    play the track whose attacks hurt, at show level.
 3. If a live bell already cuts there (the notch from the first run), switch it OUT (B3 hold on
    SHOW, or its chip held on the phone) so you hear de-harsh alone.
 4. **De-harsh freq**: leave `2.70k` if that is where the harshness was (the notch's frequency
-   tells you). If it is elsewhere, move it with E2 (1/12 octave a click) while the threshold is
+   tells you). If it is elsewhere, move it with E3 (1/12 octave a click) while the threshold is
    low (step 5), to where the attacks soften most.
 5. **Lower De-harsh thresh** a few clicks at a time (0.5 dB a click), listening to the attacks
    only: they get softer, the rest stays. Stop when they no longer bite.
 6. **Check what you gave up**: listen to a quiet passage, a voice, cymbals. Dull, lisping, or the
    sound "breathes" between hits? Two to four clicks back up. Normal: somewhere between −30 and
    −15 dB with a loud program; the default is −24.
-7. Compare: De-harsh `off` / `ON` (two pushes each, between tracks), or the threshold back to 0 dB
+7. Compare: De-harsh `off` / `ON` (an E3 turn and an E3 push each, between tracks), or the threshold back to 0 dB
    and down again (no click). Keep it only if the difference is clearly better.
 
 If it never seems to act: the threshold is too high for this program level (lower it), or the
@@ -330,10 +330,10 @@ The tops are not touched.
 
 **Step by step:**
 
-1. Before the doors, muted: SETUP › SUBS › **Loudness**, choose `ON`, push (`MAY CLICK`).
+1. Before the doors, muted: SETUP › SUBS › **Loudness**, turn E3 to `ON`, push E3 (`MAY CLICK`).
 2. Play the show music and set the master where the subs **sound right**: full, filling the room
    (usually the show level, or a little under). Read the master on SHOW or ALIGN.
-3. SETUP › SUBS › **Loudness ref** to that master value (E2, 0.5 dB a click; default −10).
+3. SETUP › SUBS › **Loudness ref** to that master value (E3, 0.5 dB a click; default −10).
 4. Turn the master down to the quietest level you will use (background, between sets) and listen
    to the subs. Too thin: **Loudness boost** up (+0.5 dB a click; default +6); boomy or the subs
    stand out: down. Typical: +4 to +8 dB.

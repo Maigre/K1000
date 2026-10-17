@@ -338,11 +338,11 @@ Logical outputs, wherever four values appear: 0 Sub L, 1 Sub R, 2 Top L, 3 Top R
 | `muted` | bool | false | Hold B4, phone |
 | `balance_db` | −12 … +12 dB, + = subs up | 0 | ALIGN E3, phone. Subs get +b/2, tops −b/2 |
 | `input_trim_db` | −24 … +12 dB | 0 | SETUP › INPUT › Trim |
-| `mono_subs` | bool | false | SETUP › SUBS › Mono L+R (rebuilds the pipeline: chosen with E2, set by a push). Both subs get (L+R) at −6 dB each |
+| `mono_subs` | bool | false | SETUP › SUBS › Mono L+R (rebuilds the pipeline: proposed by an E3 turn, applied by an E3 push). Both subs get (L+R) at −6 dB each |
 | `sub_inverted`, `top_inverted` | bool | false | SETUP › SUBS › Polarity, TOPS › Polarity |
 | `sub_delay_ms` | 0 … 50 ms | 0 | ALIGN E2 (unlocked): DELAY clockwise of 0, `SUBS LATER` |
 | `top_delay_ms` | 0 … 50 ms | 0 | ALIGN E2 (unlocked): DELAY anticlockwise of 0, `TOPS LATER` |
-| `lowcut_on` | bool | **true** | SETUP › TOPS › Lo-Cut (chosen with E2, set by a push), phone (with a confirm) |
+| `lowcut_on` | bool | **true** | SETUP › TOPS › Lo-Cut (proposed by an E3 turn, applied by an E3 push), phone (with a confirm) |
 | `lowcut_hz` | 20 … 300 Hz, 2 Hz steps (push: 1 Hz) | 100 | ALIGN E4 (unlocked), phone. Tops only, 12 dB/oct |
 | `sub_lowpass_on` | bool | false | SETUP › SUBS › Low-pass |
 | `sub_lowpass_hz` | 40 … 250 Hz | 120 | SETUP › SUBS › Low-pass freq. Subs only, 12 dB/oct |

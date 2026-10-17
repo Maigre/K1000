@@ -64,6 +64,13 @@
 > left of SUB L R and TOP L R on both pages, the same scale and colours, `IN CLIP` lighting their
 > clip boxes. §2.1's diagram and §2.2's table below are the D-009 layout. Details: `DECISIONS.md`
 > D-015, `docs/manual/04-usage.md`.
+>
+> **Changed by D-017** (2026-10-17, Thomas at the rig): SETUP's knobs. **E1 ITEM · E2 GROUP · E3
+> VALUE**: an E3 turn changes the value (an everyday ON/off right = ON, left = off); a risky row
+> (every rebuild, both polarities, Lo-Cut) opens a popup `now → proposed` on the turn and only an
+> E3 push applies it; pages open and actions run on an E3 push; E1 and E2 pushes act on nothing.
+> The selected row stays on the 4th screen row, the list scrolling under it. Details:
+> `DECISIONS.md` D-017, `docs/manual/04-usage.md` §5.
 
 2026-10-12 evening, answering Thomas's notes on the v0 panel. Status: **design and prototype,
 nothing wired** (superseded by the note above). The engine and panel figures were measured on the

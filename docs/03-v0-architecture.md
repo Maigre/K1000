@@ -20,6 +20,10 @@ in §2–§4; §7 keeps the v0 comparison, and §8 says where D-013 changed D-00
 hint says `E4 TO CUT`; ALIGN E2 = DELAY, E3 = BALANCE, and the locked pair (DELAY, Lo-Cut) is
 E2/E4. The screen puts each value flush to its corner and adds the IN L/R input meters. Fixed in
 place in §4's knob table and buttons; §8 keeps the D-009 history.
+**D-017 (2026-10-17) moves SETUP's knobs**: E1 item, **E2 group, E3 value** (turn = change, the
+push = set / open / run; E1 and E2 pushes act on nothing there); a risky row (every rebuild, both
+polarities, Lo-Cut) is proposed by an E3 turn in a popup and applied by an E3 push; the selected
+row stays on one screen row. Fixed in place in §2 and §4; §8 keeps the history.
 
 ## 1. Proven hardware facts (on the box, 2026-10-12)
 
@@ -118,7 +122,7 @@ pushed back **only in the safe direction**:
   never sent, during `stop()`). While K1000 itself holds Main and the operator has not muted, B4 long
   means MUTE (`Controller.b2_muted`, named when mute was B2).
 - **Setup actions** (Mono L+R, audition, profile, D-016's De-harsh, Loudness, AUX IN) need the SETUP
-  confirm (D-013: chosen with E2, set by a push, `Controller.set_choice`) or a muted box; the profile is refused while k1000.yaml pins
+  confirm (D-017: proposed by an E3 turn, applied by an E3 push, `Controller.set_choice`) or a muted box; the profile is refused while k1000.yaml pins
   it. Whole upload with Main muted around it (alert `APPLYING SETUP…`); the unmute waits for
   Running; a profile change ends with the boot ramp.
 - **Persistence**: `state.json` + `active.yml`, atomic (tmp + fsync + rename), only when the content
@@ -210,8 +214,8 @@ parameters (click-free writes):
   engine applies as a step), frequency and Q in 1/12-octave steps, steps 12 ms apart.
 - Mixer-changing settings (`mono_subs`, profile, `dev` audition, D-016's `deharsh_on`, `loud_on`,
   `aux_mode`) are **setup actions**: they rebuild the pipeline (possible click), so the UI only
-  allows them from the SETUP page, with a confirm (D-013: E2 chooses, a push sets; the prompt says
-  `· MAY CLICK`).
+  allows them from the SETUP page, with a confirm (D-017: an E3 turn proposes in a popup that says
+  `MAY CLICK`, an E3 push applies).
 - "Off" for Lo-Cut / sub low-pass is a frequency move, never a pipeline change.
 
 ### Profiles
@@ -240,20 +244,20 @@ when it fits (m4: [2, 3]), else (0, 1); any input/output-map warning raises the 
 | `control.py` | the brain | `Controller(client, profile, state, paths, settings=, profile_choice=, boot_gain_db=, boot_ramp_s=, transform=, device_probe=)`: UI actions (`nudge` / `set_value` with a `source`, `toggle`, `reset_live` / `undo_reset` / `undo_left`, `notch_helper`, `set_lowcut`, `set_mute`, `next_page` / `goto_page`, `handle_event`, `b2_muted`, `set_knobs_ok`, `pills`, `alerts`, `set_system_eq`…), apply worker, persistence, boot ramp, adoption and drift policy (§2), device repair (`wrong_devices`), `Status` for the screen (engine, device_present, load, levels, clip, in_clip, muted, ramping, ready, alert, message, drift, knobs_ok); `recover_state(paths)`, `Paths`, `EngineSettings`, `marker_db` / `decode_marker` |
 | `hw/mcp23017.py` | knobs + buttons | `ZynthianControls(bus=1, addr=0x20, int_a=27, int_b=4)`; async event stream of `EncoderEvent(index, delta, ts)` and `SwitchEvent(index, kind)` with kinds `press`, `release`, `short`, `long` (fired while still held, at 800 ms); full-quadrature decoding (a click counts on landing, never on a timer; skips credited only to a knob already turning; a click from stillness faster than 2.5 ms per transition is a glitch: docs/08 §9–10), interrupt-driven via gpiod v2 edge events + periodic resync; an INT re-asserted with new levels is a busy knob, not a storm. `hw/simchip.py`: a time-driven MCP23017 + INT lines for timing tests and the knobtrace bench |
 | `ui/display.py` | framebuffer | `Framebuffer('/dev/fb0')`: `show(PIL.Image)` (only the span of changed rows is packed to RGB565 little-endian and written; skipped when unchanged), `invalidate()` (next frame written whole), `unbind_console()`, `backlight(on)` |
-| `ui/pages.py` | screens | `render(page, state, status, focus) -> PIL.Image` (480×320) for `SHOW`, `ALIGN`, `SETUP`, `HWTEST` (`PHONE` via `ui/qr.py`; v0 `MAIN`/`LIVE` = `ALIGN`/`SHOW`). SETUP (D-013): a header row per group, `<GROUP> <pos>/<size>`, a scroll bar, the selected row red with `now → chosen` while a choice waits, a bottom line saying what the knobs do, read-only rows dimmed. UI v1 (D-009): SHOW draws the live-EQ curve (`ui/eqgraph.py`) over `status.spectrum`; system alerts (`status.alerts`) take the status bar (KNOBS OFFLINE red, full width; warnings orange; states blue), hints the amber strip; `status.pills` on SHOW. NO DEVICE > ENGINE DOWN replace the body; MUTED = red pill + frame + band (SHOW/ALIGN), footer (SETUP) or tag (HWTEST), carrying the alert; CLIP / IN CLIP pills; amber `ENGINE ?` / `DEVICE ?` when unknown; a `UI ERROR` frame instead of a crash; `demo_cases()` → `docs/ui/*.png`; `--bench` = SHOW's cost at 10 fps |
-| `ui/input_map.py` | knob/button semantics per page | `map_event(page, focus, event, cfg, muted=, mute_seq=, state=) -> list[Action]`; `KNOBS` table; buttons B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE, `B1_TAP` / `B1_HOLD` (D-013); `SETUP_GROUPS` → `SETUP_ITEMS` (kinds num / bool / choice / page / action), `SetChoice`, `SelectGroup`, `Focus.pick` and `Focus.readonly` (D-013); `ControlMap.from_cfg` (k1000.yaml `controls:` encoders / pushes / buttons / reverse; anything invalid → defaults); `KNOB_CORNERS` (confirmed on the box); `knob_tag_style` (k1000.yaml `ui.knob_tags`: dim / off / bright, D-011) |
+| `ui/pages.py` | screens | `render(page, state, status, focus) -> PIL.Image` (480×320) for `SHOW`, `ALIGN`, `SETUP`, `HWTEST` (`PHONE` via `ui/qr.py`; v0 `MAIN`/`LIVE` = `ALIGN`/`SHOW`). SETUP (D-013, D-017): a header row per group, `<GROUP> <pos>/<size>`, the selected row always on screen row 4 of 8 (blank rows past the ends), a scroll bar, a red-edged popup over the middle of the list while a risky row's proposal (`now → proposed`, what it does) or an action's confirm waits for its E3 push, a bottom line saying what E3 does, read-only rows dimmed. UI v1 (D-009): SHOW draws the live-EQ curve (`ui/eqgraph.py`) over `status.spectrum`; system alerts (`status.alerts`) take the status bar (KNOBS OFFLINE red, full width; warnings orange; states blue), hints the amber strip; `status.pills` on SHOW. NO DEVICE > ENGINE DOWN replace the body; MUTED = red pill + frame + band (SHOW/ALIGN), footer (SETUP) or tag (HWTEST), carrying the alert; CLIP / IN CLIP pills; amber `ENGINE ?` / `DEVICE ?` when unknown; a `UI ERROR` frame instead of a crash; `demo_cases()` → `docs/ui/*.png`; `--bench` = SHOW's cost at 10 fps |
+| `ui/input_map.py` | knob/button semantics per page | `map_event(page, focus, event, cfg, muted=, mute_seq=, state=) -> list[Action]`; `KNOBS` table; buttons B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE, `B1_TAP` / `B1_HOLD` (D-013); `SETUP_GROUPS` → `SETUP_ITEMS` (kinds num / bool / choice / page / action), `SetChoice`, `SelectGroup`, `Focus.pick` and `Focus.readonly` (D-013); `SETUP_RISKY` / `SetupItem.risky` and `setup_popup` (D-017); `ControlMap.from_cfg` (k1000.yaml `controls:` encoders / pushes / buttons / reverse; anything invalid → defaults); `KNOB_CORNERS` (confirmed on the box); `knob_tag_style` (k1000.yaml `ui.knob_tags`: dim / off / bright, D-011) |
 | `rta.py` | the SHOW spectrum (D-009, §8) | `SpectrumTask(url, wanted=, channels=, publish=, client_factory=)`: its **own** `CamillaClient` (0.5 s command timeout), polls `GetSpectrum` at 10 Hz while `wanted()` (`Controller.spectrum_wanted`), publishes `eqgraph.RtaFrame`s to `Controller.set_spectrum`; `note_input()`; `Ballistics` (fall, slow range tracker, PEAK detector with its level floor and program gate); `peak_floors(settings)`, `spectrum_request`, `parse_spectrum`, `program_level` |
 | `laptop.py` | SETUP › PHONE › Laptop access, k1000's side (docs/06 §11) | `LaptopAccess`: `open()` / `close()` / `toggle()` (a flag in `/run/k1000`; root's `k1000-laptop.service` opens the fence), `poll()` (root's `/run/k1000-laptop/status`), `left_s()`, `pill()`; wired by `Controller.attach_laptop` |
 | `tune.py` | the `/tune` page's import (docs/06 §11) | `parse_filters(text) -> Import` (REW / EqualizerAPO / typed lines: peaking only, ≤ 8, clamped, skipped and notes listed); `plan_bands`, `curve`; `TuneDesk(ctl)`: `preview`, `apply` / `undo` through `Controller.set_system_eq` |
 | `__main__.py` | wiring | asyncio main; GIL switch interval 1 ms before any thread (`configure_gil`: the knob worker needs the GIL 3–4 times per read, PERF-1); systemd-friendly logging; retries (§2); `--stdin` bench console (incl. `ev enc` / `ev sw` real knob events), `--headless`, `--no-hw`, `--test-devices`; never mutes on exit |
 
-### Knob semantics (UI v1, D-009, as built 2026-10-13; buttons and SETUP D-013; knob roles D-015; v0 in git history)
+### Knob semantics (UI v1, D-009, as built 2026-10-13; buttons and SETUP D-013; knob roles D-015; SETUP's knobs D-017; v0 in git history)
 
 | Page | E1 | E2 | E3 | E4 |
 |---|---|---|---|---|
 | SHOW (front) | master (0.5 dB; ×4 down, never accelerated up; master-up guard: at most +6 dB per 2 s, `controls.master_up_guard_db`) | frequency of the selected band (1/12 oct, push = 1/48; ×4) | Q (1/6 oct log steps, push = 1/24; shelves: slope) | gain of the selected band (0.5 dB, never accelerated) |
 | ALIGN | master (as on SHOW) | DELAY (D-011): `align_delay_ms` = `sub_delay_ms − top_delay_ms`, −50 … +50 ms, 0.1 ms, push = 1 sample, never accelerated; a move writes the late side and zeroes the other, and stops on 0 before crossing; **locked**; unlocked, the first detent after 2.5 s at rest only wakes it | balance (0.5 dB) | Lo-Cut freq (D-011: 2 Hz on a 2 Hz grid, push = 1 Hz; an off-grid value snaps on its first move, never at load; ×4): **locked** |
-| SETUP (D-013) | item select (headers skipped, clamps) | value: numbers turn (push = fine); ON/off and choices are chosen, one choice per event, and set by an E1/E2 push | group: the next group's first item; back = this group's first item first (clamps) | — |
+| SETUP (D-013, knobs D-017) | item select (headers skipped, clamps); the selected row stays on screen row 4 of 8 | group: the next group's first item; back = this group's first item first (clamps) | value: numbers turn (push held = fine); an everyday ON/off right = ON, left = off, at once; a risky row (`input_map.SETUP_RISKY`: every rebuild, both polarities, Lo-Cut) proposes in a popup, one step per event, stopping at the ends; the push applies it, opens a page, runs an action | — |
 
 Acceleration (input_map): ×1 below 20 detents/s, the knob's cap from 40, the rate taken from the
 slower of the last two intervals; a direction change or a 0.25 s pause resets it.
@@ -261,7 +265,7 @@ slower of the last two intervals; a direction change or a 0.25 s pause resets it
 Buttons (D-013: B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE): B1 **tap** (on release) = SHOW ↔
 ALIGN, SETUP → SHOW, PHONE → SETUP; **hold** = SETUP from SHOW or ALIGN, SHOW from SETUP or PHONE;
 the press itself does nothing. ALIGN and SETUP return to SHOW after 60 s without input (not while a
-SETUP choice or confirm waits; PHONE and HWTEST never). B2: on SHOW a tap selects the next band, LS
+SETUP popup waits; PHONE and HWTEST never). B2: on SHOW a tap selects the next band, LS
 · 1 · 2 · 3 · 4 · HS (wraps, no previous); on ALIGN a hold unlocks E2/E4 for 30 s (renewed by input
 on ALIGN, so any 30 s idle relocks), a tap relocks, leaving ALIGN relocks; elsewhere a hint. B3: on
 SHOW a tap is the **notch helper** (`Controller.notch_helper`: a free bell at 0 dB, the selected one
@@ -270,9 +274,10 @@ bell in use selects that bell and writes nothing; the gain is never touched; GAI
 highlight and the hint `P3 · 2.44k · E4 TO CUT`, or `NO FREE BAND`); a B3 hold only says the reset
 is in SETUP; elsewhere a hint. B4 **mute** (long press, every page including PHONE and HWTEST; asks
 for the opposite of the mute the screen showed at the press; a short press shows a hint). Encoder
-pushes: fine mode while held; on SETUP an E1/E2 push released **without turning** sets the value E2
-chose (`SetChoice`; with nothing chosen it proposes the next value), opens a page or runs an action;
-Reset live EQ and opening Laptop access need a second push within 5 s. Rows the Controller holds
+pushes: fine mode while held; on SETUP only E3's push acts (D-017): released **without turning** it
+applies the popup's proposal (`SetChoice`), opens a page or runs an action; Reset live EQ and opening
+Laptop access open the popup on the first push and run on a second within 5 s; an E1 or E2 turn
+cancels a popup, an E1 or E2 push only shows a hint. Rows the Controller holds
 read-only (`Controller.setup_readonly`: a pinned profile, Audition off the dev profile, a disabled
 spectrum) only show why. SETUP › LIVE EQ › Undo reset (one push) restores the live EQ from before
 the last reset until the next audible live EQ edit (a gain off 0 dB; inaudible freq/Q moves of a

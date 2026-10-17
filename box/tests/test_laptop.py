@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for SETUP > Laptop access (docs/06-phone.md §11), the k1000 side: laptop.LaptopAccess
-following root's status file, its wiring into the Controller (the SETUP double push, a single
+following root's status file, its wiring into the Controller (the SETUP double E3 push, a single
 push to close, the countdown pill, hints, snapshot fields), the SETUP and PHONE pictures, and
 the /tune page's gate on the phone servers (closed = 403, open = the page and its websocket,
 closing = every tune page dropped with 4004).
@@ -182,9 +182,10 @@ def _push(ctl: Any, n: int = 0) -> int:
 
 
 def _select(ctl: Any) -> None:
-    e1 = _push(ctl)
-    ctl.handle_event(_sw(e1, "press"))
-    ctl.handle_event(_sw(e1, "short"))
+    """A plain E3 push: SETUP's set / open / run (D-017)."""
+    e3 = _push(ctl, 2)
+    ctl.handle_event(_sw(e3, "press"))
+    ctl.handle_event(_sw(e3, "short"))
 
 
 def test_setup_laptop_access_end_to_end_with_the_controller(tmp_path: Path):
@@ -199,8 +200,8 @@ def test_setup_laptop_access_end_to_end_with_the_controller(tmp_path: Path):
         assert ctl.snapshot()[2].laptop_state == "closed"
         ctl.goto_page("SETUP")
         ctl.focus.item = [i.field for i in im.SETUP_ITEMS].index(im.A_LAPTOP)
-        _select(ctl)                                           # first push: the confirm
-        assert ctl.focus.hint_now() == im.HINT_CONFIRM_LAPTOP and not lap.flag.exists()
+        _select(ctl)                                           # first push: the popup
+        assert im.setup_popup(ctl.focus, 0.0) == ("confirm", None) and not lap.flag.exists()   # ts 0
         _select(ctl)                                           # second push: asked
         assert lap.flag.exists() and lap.state == lp.OPENING
         assert ctl.focus.hint_now() == HINT_LAPTOP_OPENING

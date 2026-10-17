@@ -140,8 +140,10 @@ def test_setup_phone_page_and_its_knobs(tmp_path: Path) -> None:
         idx = [i.field for i in im.SETUP_ITEMS].index("PHONE")
         assert im.SETUP_ITEMS[-1].field == "HWTEST"           # Knob test stays last
         ctl.focus.item = idx
-        e1 = _push(ctl, 0)
+        e1, e3 = _push(ctl, 0), _push(ctl, 2)
         ctl.handle_event(_sw(e1, "press")); ctl.handle_event(_sw(e1, "short"))
+        assert ctl.page == "SETUP"                            # D-017: E1's push only says "push E3"
+        ctl.handle_event(_sw(e3, "press")); ctl.handle_event(_sw(e3, "short"))
         assert ctl.page == "PHONE"
         assert ctl.phone_toggle() is None and "PHONE DISABLED" in (ctl.focus.hint or "")   # no surface
         ctl.phone = _FakePhone()
@@ -162,7 +164,7 @@ def test_setup_phone_page_and_its_knobs(tmp_path: Path) -> None:
         assert ctl.page == "PHONE"
         ctl.handle_event(_sw(b1, "short"))
         assert ctl.page == "SETUP" and im.SETUP_ITEMS[ctl.focus.item].field == "PHONE"
-        ctl.handle_event(_sw(e1, "press")); ctl.handle_event(_sw(e1, "short"))
+        ctl.handle_event(_sw(e3, "press")); ctl.handle_event(_sw(e3, "short"))
         assert ctl.page == "PHONE"
         ctl.handle_event(_sw(b1, "press")); ctl.handle_event(_sw(b1, "long"))
         assert ctl.page == "SHOW"

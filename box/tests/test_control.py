@@ -1072,8 +1072,16 @@ def test_stop_lets_a_debounced_save_in_flight_land_before_its_own(tmp_path: Path
 
 
 # ======================================================================= UI plumbing
-def _sw_ev(i: int, kind: str) -> SwitchEvent:
-    return SwitchEvent(i, kind, time.monotonic())
+def _sw_ev(i: int, kind: str, later: float = 0.0) -> SwitchEvent:
+    return SwitchEvent(i, kind, time.monotonic() + later)
+
+
+def _e3_later() -> float:
+    """How far after the last E3 turn a test's E3 push is stamped: a hand leaves the knob and
+    presses it at least PICK_SETTLE_S later (D-017 review: a press sooner is a detent clicked by
+    the pressing finger, refused). The tests run in milliseconds."""
+    from k1000.ui import input_map as im
+    return im.PICK_SETTLE_S + 0.05
 
 
 def _enc_ev(i: int, d: int) -> EncoderEvent:
@@ -1086,9 +1094,10 @@ def _setup_to(ctl: Controller, field: str) -> None:
 
 
 def _push_twice(ctl: Controller) -> None:
+    """Two plain E3 pushes (sw2): SETUP's value knob since D-017."""
     for _ in range(2):
-        ctl.handle_event(_sw_ev(0, "press"))
-        ctl.handle_event(_sw_ev(0, "short"))
+        ctl.handle_event(_sw_ev(2, "press", _e3_later()))
+        ctl.handle_event(_sw_ev(2, "short", _e3_later()))
 
 
 def test_knob_and_button_events_through_input_map(tmp_path: Path) -> None:
@@ -1140,10 +1149,13 @@ def test_knob_and_button_events_through_input_map(tmp_path: Path) -> None:
         assert ctl.page == "SETUP" and ctl.snapshot()[2].align_locked is True
         _setup_to(ctl, "lowcut_on")
         ctl.handle_event(_sw_ev(0, "press"))
-        ctl.handle_event(_sw_ev(0, "short"))                          # first push: chooses OFF only
+        ctl.handle_event(_sw_ev(0, "short"))                          # E1 push (D-017): a hint only
+        assert ctl.state.lowcut_on is True and ctl.focus.pick_now() is None
+        assert ctl.focus.hint_now() == "TURN E3 TO CHANGE"
+        ctl.handle_event(_enc_ev(2, -1))                              # E3 left: proposes OFF
         assert ctl.state.lowcut_on is True and ctl.focus.pick_now() == ("lowcut_on", False)
-        ctl.handle_event(_sw_ev(0, "press"))
-        ctl.handle_event(_sw_ev(0, "short"))                          # second push: Lo-Cut off
+        ctl.handle_event(_sw_ev(2, "press", _e3_later()))
+        ctl.handle_event(_sw_ev(2, "short", _e3_later()))             # E3 push: Lo-Cut off
         assert ctl.state.lowcut_on is False and ctl.focus.pick_now() is None
         assert ctl.focus.hint_now() == "LO-CUT OFF" and ctl.focus.editing_now() == "lowcut_on"
         _setup_to(ctl, "reset_live")
@@ -1152,8 +1164,8 @@ def test_knob_and_button_events_through_input_map(tmp_path: Path) -> None:
         assert ctl.focus.hint_now() == ctl_mod.HINT_LIVE_RESET
         assert ctl.snapshot()[2].undo_reset_s > 290
         _setup_to(ctl, "undo_reset")
-        ctl.handle_event(_sw_ev(0, "press"))
-        ctl.handle_event(_sw_ev(0, "short"))                          # one push: undone
+        ctl.handle_event(_sw_ev(2, "press"))
+        ctl.handle_event(_sw_ev(2, "short"))                          # one E3 push: undone
         assert ctl.state.live_peq[1].gain == -1.0 and ctl.focus.hint_now() == ctl_mod.HINT_LIVE_RESTORED
         ctl.handle_event(_sw_ev(4, "press"))                          # B1 press on SETUP: nothing
         assert ctl.page == "SETUP"
@@ -3734,17 +3746,19 @@ def test_knob_tags_reach_the_screen_status(tmp_path: Path, caplog: Any) -> None:
     assert "knob_tags 'neon'" in caplog.text
 
 
-# ======================================================================= D-013: SETUP choose-then-set
+# ======================================================================= D-013 SETUP, knobs D-017 (E3 turn + push)
 def _m4_ctl(tmp_path: Path, **kw: Any) -> Controller:
     """A Controller on the m4 profile (no audition mixer), not started: enough for SETUP rules."""
     return Controller(FakeClient(None), load_profile("m4", {}, probe=False), State(),
                       Paths(tmp_path / "s.json", tmp_path / "a.yml"), **kw)
 
 
-def _push(ctl: Controller, n: int = 0) -> None:
-    """E1 (n=0) or E2 (n=1) push, released without a turn: a SETUP 'select'."""
-    ctl.handle_event(_sw_ev(n, "press"))
-    ctl.handle_event(_sw_ev(n, "short"))
+def _push(ctl: Controller, n: int = 2) -> None:
+    """A push released without a turn: E3's (n=2) is SETUP's set / open / run (D-017); E1's and
+    E2's only show a hint there."""
+    later = _e3_later() if n == 2 else 0.0
+    ctl.handle_event(_sw_ev(n, "press", later))
+    ctl.handle_event(_sw_ev(n, "short", later))
 
 
 def test_setup_readonly_names_what_cannot_change_here(tmp_path: Path) -> None:
@@ -3827,10 +3841,10 @@ def test_set_choice_profile_refused_while_pinned(tmp_path: Path) -> None:
         ctl.goto_page("SETUP")
         _setup_to(ctl, "profile")
         ctl.focus.hint = None
-        ctl.handle_event(_enc_ev(1, 1))                               # E2: no choice, the reason
+        ctl.handle_event(_enc_ev(2, 1))                               # E3: no proposal, the reason
         assert ctl.focus.hint_now() == ctl_mod.HINT_PINNED and ctl.focus.pick_now() is None
         ctl.focus.hint = None
-        _push(ctl)                                                    # push: the same
+        _push(ctl)                                                    # E3 push: the same
         assert ctl.focus.hint_now() == ctl_mod.HINT_PINNED and ctl.focus.pick_now() is None
         assert ctl.state.profile == "dev" and im.SETUP_ITEMS[ctl.focus.item].field == "profile"
         assert await ctl.settle(3.0)
@@ -3850,10 +3864,10 @@ def test_set_choice_audition_refused_off_the_dev_profile(tmp_path: Path) -> None
     ctl.goto_page("SETUP")
     _setup_to(ctl, "dev_audition")
     ctl.focus.hint = None
-    ctl.handle_event(_enc_ev(1, 1))
+    ctl.handle_event(_enc_ev(2, 1))
     assert ctl.focus.hint_now() == ctl_mod.HINT_AUDITION_DEV_ONLY and ctl.focus.pick_now() is None
     ctl.focus.hint = None
-    _push(ctl, 1)
+    _push(ctl)
     assert ctl.focus.hint_now() == ctl_mod.HINT_AUDITION_DEV_ONLY and ctl.focus.pick_now() is None
     assert ctl.state.dev_audition == "sum"
 
@@ -3869,8 +3883,9 @@ def test_set_choice_spectrum_refused_when_disabled_and_said_when_set(tmp_path: P
         off.goto_page("SETUP")
         _setup_to(off, "spectrum_on")
         off.focus.hint = None
-        off.handle_event(_enc_ev(1, -1))
+        off.handle_event(_enc_ev(2, -1))
         assert off.focus.hint_now() == ctl_mod.HINT_SPECTRUM_DISABLED and off.focus.pick_now() is None
+        assert off.state.spectrum_on is True
         await off.stop()
         ctl, _ = make(tmp_path / "on", State(), playing=True)
         await boot(ctl)
@@ -3914,8 +3929,8 @@ def test_set_choice_lo_cut_goes_through_set_lowcut(tmp_path: Path) -> None:
 
 
 def test_a_choice_the_phone_made_meanwhile_is_no_change(tmp_path: Path) -> None:
-    """E2 chose Lo-Cut OFF, a phone switched it off before the push: the push changes nothing
-    and says so (never a flip back ON, never a second Lo-Cut move)."""
+    """E3 proposed Lo-Cut OFF, a phone switched it off before the E3 push: the push changes
+    nothing and says so (never a flip back ON, never a second Lo-Cut move)."""
     from k1000.web.server import PhoneBridge
 
     async def body() -> None:
@@ -3923,12 +3938,12 @@ def test_a_choice_the_phone_made_meanwhile_is_no_change(tmp_path: Path) -> None:
         await boot(ctl)
         ctl.goto_page("SETUP")
         _setup_to(ctl, "lowcut_on")
-        ctl.handle_event(_enc_ev(1, 1))                               # E2: chooses OFF
+        ctl.handle_event(_enc_ev(2, -1))                              # E3 left: proposes OFF
         assert ctl.focus.pick_now() == ("lowcut_on", False) and ctl.state.lowcut_on is True
         assert PhoneBridge(ctl).apply({"t": "set", "f": "lowcut_on", "v": False})[:2] == (True, False)
         assert await ctl.settle(5.0)
         n = len(cl.log)
-        _push(ctl)                                                    # the push comes late
+        _push(ctl)                                                    # the E3 push comes late
         assert ctl.state.lowcut_on is False and ctl.focus.pick_now() is None
         assert ctl.focus.hint_now() == ctl_mod.HINT_NO_CHANGE
         assert await ctl.settle(3.0)
@@ -3939,33 +3954,42 @@ def test_a_choice_the_phone_made_meanwhile_is_no_change(tmp_path: Path) -> None:
 
 
 def test_knobs_choose_then_push_through_the_controller(tmp_path: Path) -> None:
-    """End to end on SETUP (handle_event hands map_event the State): E2 chooses from the value
-    the state holds, the row waits, a push sets it. Mono L+R: off -> ON; Audition: SUM -> TOPS
-    with one turn event, however many detents it carries."""
+    """End to end on SETUP (D-017; handle_event hands map_event the State): an E3 turn on a risky
+    row proposes from the value the state holds, the popup waits, an E3 push applies it. Mono
+    L+R: off -> ON; Audition: SUM -> TOPS with one turn event, however many detents it carries.
+    A turn alone never rebuilds; E1/E2 pushes never apply."""
     async def body() -> None:
         ctl, cl = make(tmp_path, State(master_db=-10.0), playing=True)
         await boot(ctl)
         ctl.goto_page("SETUP")
         _setup_to(ctl, "mono_subs")
         n = len(cl.log)
-        ctl.handle_event(_enc_ev(1, 1))                               # E2: choose ON
+        ctl.handle_event(_enc_ev(2, 1))                               # E3: proposes ON
         assert ctl.focus.pick_now() == ("mono_subs", True) and ctl.state.mono_subs is False
+        for k in range(4):                                            # more turns, both ways
+            ctl.handle_event(_enc_ev(2, 1 if k % 2 else -1))
+        ctl.handle_event(_enc_ev(2, 1))
+        _push(ctl, 0)                                                 # E1 / E2 pushes: hints
+        _push(ctl, 1)
+        assert ctl.focus.hint_now() == "PUSH E3 TO APPLY" and ctl.state.mono_subs is False
         assert await ctl.settle(3.0)
         assert not any(e[0] == "config" for e in cl.log[n:])         # a turn alone never rebuilds
-        _push(ctl)                                                    # E1 push: set
+        _push(ctl)                                                    # E3 push: set
         assert ctl.state.mono_subs is True and ctl.focus.pick_now() is None
         assert ctl.focus.editing_now() == "mono_subs"
         assert await ctl.settle(5.0)
         assert [e[0] for e in nomark(cl.log[n:])] == ["mute", "config", "mute"]
-        ctl.handle_event(_enc_ev(1, 1))                               # now from ON: chooses off
+        ctl.handle_event(_enc_ev(2, -1))                              # now from ON: proposes off
         assert ctl.focus.pick_now() == ("mono_subs", False)
-        ctl.handle_event(_enc_ev(1, -1))                              # back on the value held
+        ctl.handle_event(_enc_ev(2, 1))                               # back on the value held
         assert ctl.focus.pick_now() is None
+        ctl.handle_event(_enc_ev(2, 1))                               # already ON: said
+        assert ctl.focus.hint_now() == "ALREADY ON" and ctl.focus.pick_now() is None
         _setup_to(ctl, "dev_audition")
-        ctl.handle_event(_enc_ev(1, 3))                               # one event: one choice
+        ctl.handle_event(_enc_ev(2, 3))                               # one event: one choice
         assert ctl.focus.pick_now() == ("dev_audition", "tops") and ctl.state.dev_audition == "sum"
         n = len(cl.log)
-        _push(ctl, 1)                                                 # E2 push: set
+        _push(ctl)                                                    # E3 push: set
         assert ctl.state.dev_audition == "tops" and ctl.focus.pick_now() is None
         assert await ctl.settle(5.0)
         assert [e[0] for e in nomark(cl.log[n:])] == ["mute", "config", "mute"]
@@ -3975,15 +3999,55 @@ def test_knobs_choose_then_push_through_the_controller(tmp_path: Path) -> None:
     run(body())
 
 
+def test_d017_everyday_on_off_and_numbers_change_as_e3_turns(tmp_path: Path) -> None:
+    """D-017 through the Controller: a number moves one step per E3 detent; an everyday ON/off
+    (Low-pass, Spectrum) is set by the E3 turn itself (right ON, left off), through set_choice,
+    never a rebuild; a turn towards the value held says so. E2 jumps a group; E1/E2 pushes
+    change nothing."""
+    from k1000.ui import input_map as im
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-10.0), playing=True)
+        await boot(ctl)
+        ctl.goto_page("SETUP")
+        _setup_to(ctl, "out_trim_db.0")
+        ctl.handle_event(_enc_ev(2, -2))
+        assert ctl.state.out_trim_db[0] == -1.0
+        _setup_to(ctl, "sub_lowpass_on")
+        ctl.handle_event(_enc_ev(2, 1))                               # right: ON
+        assert ctl.state.sub_lowpass_on is True and ctl.focus.pick_now() is None
+        ctl.handle_event(_enc_ev(2, 1))
+        assert ctl.focus.hint_now() == "ALREADY ON" and ctl.state.sub_lowpass_on is True
+        ctl.handle_event(_enc_ev(2, -1))                              # left: off
+        assert ctl.state.sub_lowpass_on is False
+        _setup_to(ctl, "spectrum_on")
+        ctl.handle_event(_enc_ev(2, -1))
+        assert ctl.state.spectrum_on is False and ctl.focus.hint_now() == "SPECTRUM OFF"
+        ctl.handle_event(_enc_ev(2, 1))
+        assert ctl.state.spectrum_on is True and ctl.focus.hint_now() == "SPECTRUM ON"
+        before = ctl.state.to_dict()
+        for n in (0, 1):
+            _push(ctl, n)
+        assert ctl.state.to_dict() == before and ctl.page == "SETUP"
+        ctl.handle_event(_enc_ev(1, 1))                               # E2: the next group
+        assert im.SETUP_ITEMS[ctl.focus.item].group == "PHONE"
+        assert await ctl.settle(5.0)
+        assert not any(e[0] == "config" for e in cl.log)             # nothing here rebuilds
+        await ctl.stop()
+
+    run(body())
+
+
 def test_a_page_change_drops_a_pending_choice(tmp_path: Path) -> None:
-    """goto_page clears a chosen-but-not-set value: after a trip away (B1 tap to SHOW, hold back
-    to SETUP) the next push proposes again, it never sets a stale choice."""
+    """goto_page clears a proposed-but-not-applied value (the D-017 popup): after a trip away
+    (B1 tap to SHOW, hold back to SETUP) the next E3 push applies nothing, never a stale
+    proposal."""
     async def body() -> None:
         ctl, cl = make(tmp_path, State(), playing=True)
         await boot(ctl)
         ctl.goto_page("SETUP")
         _setup_to(ctl, "mono_subs")
-        ctl.handle_event(_enc_ev(1, 1))
+        ctl.handle_event(_enc_ev(2, 1))
         assert ctl.focus.pick_now() == ("mono_subs", True)
         ctl.goto_page("SETUP")                                        # same page: kept
         assert ctl.focus.pick_now() == ("mono_subs", True)
@@ -3993,8 +4057,11 @@ def test_a_page_change_drops_a_pending_choice(tmp_path: Path) -> None:
         ctl.handle_event(_sw_ev(4, "press"))
         ctl.handle_event(_sw_ev(4, "long"))                           # B1 hold: SETUP again
         assert ctl.page == "SETUP" and ctl.focus.pick_now() is None
-        _push(ctl)                                                    # proposes, does not set
-        assert ctl.focus.pick_now() == ("mono_subs", True) and ctl.state.mono_subs is False
+        _push(ctl)                                                    # nothing to apply: a hint
+        assert ctl.focus.pick_now() is None and ctl.state.mono_subs is False
+        assert ctl.focus.hint_now() == "TURN E3 TO CHANGE"
+        ctl.handle_event(_enc_ev(2, 1))                               # proposed again
+        assert ctl.focus.pick_now() == ("mono_subs", True)
         ctl.goto_page("PHONE")
         assert ctl.focus.pick_now() is None and ctl.state.mono_subs is False
         assert await ctl.settle(3.0)

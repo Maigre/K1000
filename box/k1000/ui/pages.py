@@ -23,6 +23,10 @@ Design rules (why it looks like this):
   blue. Hints (what the operator's own press did, 2.5 s) keep the amber strip: the chip row on
   SHOW, the middle strip on ALIGN, the footer on SETUP. "The system has a problem" and "this is
   what your press did" never share a place or a colour.
+- SETUP (D-017): the selected row always sits on the same screen row (the 4th of 8), the list
+  scrolls under it; a risky row's proposal, and an action's first push, open a popup over the
+  middle of the list (`now -> proposed`, what it does, `push E3 = apply · turn E1 = cancel`).
+  Amber values = rows that ask for an E3 push.
 - SHOW has persistent pills for every non-default system state (LO-CUT OFF, OUT P2, POL INV,
   AUX MIC, MONO SUB, LOUDNESS, DE-HARSH, AUDITION, LAPTOP OPEN…), on the bottom row between the
   E2 and E4 labels, where neither a hint nor the MUTED band ever covers them.
@@ -37,7 +41,8 @@ Design rules (why it looks like this):
   NO DEVICE > ENGINE DOWN replace the body. MUTED is a red pill in the status bar plus a red
   frame on every page; on SHOW also a red band over the chip row and the top of the graph (the
   0 dB line, every value, the edit box and FINE stay visible), on ALIGN the v0 band across the
-  middle, on SETUP a red footer (a band would hide the selected row), on the Knob test a tag.
+  middle, on SETUP a red footer (a band would hide the selected row or the popup), on the Knob
+  test a tag.
 - Unknown is not OK (fail closed): a status that does not say the engine runs shows an amber
   "ENGINE ?", one that does not say the device is present shows "DEVICE ?", plus a STATUS ?
   warning; never green.
@@ -64,8 +69,8 @@ from .input_map import (A_LAPTOP, A_RESET_LIVE, A_UNDO_RESET, BAND_CYCLE, F_ALIG
                         F_BALANCE, F_LOWCUT_FREQ, F_LOWCUT_ON, F_MASTER, F_SLOT, F_SPECTRUM_ON,
                         HINT_LOCKED,
                         KNOB_CORNERS, KNOB_TAGS_DEFAULT, LIVE_SLOT_LABELS, LIVE_SLOT_SHORT,
-                        LIVE_SLOTS, SETUP_GROUPS, SETUP_ITEMS, Focus, knob_labels, page_name,
-                        parse_knob_tags, setup_group_pos)
+                        LIVE_SLOTS, SETUP_ASK, SETUP_GROUPS, SETUP_ITEMS, Focus, knob_labels,
+                        page_name, parse_knob_tags, setup_group_pos, setup_popup)
 
 log = logging.getLogger(__name__)
 
@@ -134,6 +139,15 @@ ENGINE_OK = ("RUNNING", "PAUSED", "STARTING")
 ENGINE_DOWN_STATES = ("INACTIVE", "STALLED", "DOWN")
 ENGINE_UNKNOWN = "Unknown"             # status did not say (missing field, no status at all)
 FOOTER_H = 28                          # SETUP footer row (E2 label / hint / MUTED strip)
+# SETUP list (D-013; D-017: the selected item always on screen row SETUP_SEL_ROW, 3 rows above
+# it and 4 below, blank rows past either end of the list)
+SETUP_ROWS_SHOWN, SETUP_ROW_H, SETUP_LIST_Y0 = 8, 28, STATUS_H + 30
+SETUP_SEL_ROW = 3
+# The D-017 popup: over list rows 1..6 (the selected row, row 3, in its middle; the popup names
+# it, so that row is not drawn under it), so the list's first and last rows on screen stay in
+# sight and the status bar, the top line and the bottom line are never covered; inside the MUTED
+# frame, the scroll bar left out.
+SETUP_POPUP = (8, SETUP_LIST_Y0 + SETUP_ROW_H - 2, W - 14, SETUP_LIST_Y0 + 7 * SETUP_ROW_H + 1)
 
 # SHOW geometry (480 x 320; docs/07 §2.1). D-015 (Thomas, 2026-10-14): legends 20 -> 17 px,
 # values 44/40 -> 38/36 px, chips 24 -> 22 px tall: the graph 130 -> 152 px high.
@@ -629,7 +643,10 @@ class _Ctx:
         self.bottom_label_end: dict[str, float] = {}   # SHOW/ALIGN: where the bottom labels reach
         # Where each knob's texts landed (knob -> {"label", "tag", "value", "unit", "sub"} ->
         # (x0, y0, x1, y1)): the tests check the flush alignment and that nothing is cut.
+        # SETUP's popup (D-017) records its texts under POPUP_INK.
         self.ink: dict[int, dict[str, tuple[float, float, float, float]]] = {}
+        # SETUP (D-017): what the popup said ({title, big, what, instr, px}), None = no popup
+        self.popup: dict[str, Any] | None = None
 
     def mark(self, e: int, part: str, xy: tuple[float, float], text: str,
              f: ImageFont.FreeTypeFont, anchor: str) -> None:
@@ -1429,41 +1446,91 @@ def _setup_sel(c: _Ctx) -> int:
         return 0
 
 
-def _setup_pick(c: _Ctx, item) -> Any:
-    """The value chosen for `item` and waiting for its push, or None (D-013). Never for a
-    field that has become read-only meanwhile: its push only shows the hint."""
-    if item.field in (getattr(c.focus, "readonly", None) or {}):
-        return None
-    fn = getattr(c.focus, "pick_now", None)
-    try:
-        pk = fn(c.now) if callable(fn) else None
-    except Exception:
-        return None
-    return pk if pk is not None and pk[0] == item.field else None
-
-
-def _setup_prompt(c: _Ctx) -> str | None:
-    """SETUP's footer while a choice waits for its push: what the push will set."""
-    item = SETUP_ITEMS[_setup_sel(c)]
-    pk = _setup_pick(c, item)
-    if pk is None:
-        return None
-    text = f"PUSH TO SET {_fmt_setup(item, pk[1]).upper()}"
-    return text + " · MAY CLICK" if item.rebuild else text
+def _setup_popup(c: _Ctx) -> tuple[str, Any] | None:
+    """input_map.setup_popup for this frame: ("pick", proposed) or ("confirm", None) while the
+    selected row waits for an E3 push (D-017), else None (never on a read-only row)."""
+    return setup_popup(c.focus, c.now)
 
 
 def _setup_help(c: _Ctx, item, readonly: Any) -> str:
-    """The bottom line's right side: what the knobs do on the selected row."""
+    """The bottom line's right side: what E3 does on the selected row (D-017)."""
     if item.field in (readonly or {}):
         return "fixed here"
-    if item.kind == "num":
-        return "turn = change"
+    if item.kind == "num" or (item.picks and not item.risky):
+        return "turn E3 = change"
     if item.picks:
-        return "push = set" if _setup_pick(c, item) is not None else "turn = choose · push = set"
+        return "turn E3 · push E3 = apply"
     if item.kind == "page":
-        return "push = open"
+        return "push E3 = open"
     twice = item.needs_confirm and item.field not in (getattr(c.focus, "no_confirm", None) or ())
-    return "push ×2 = run" if twice else "push = run"
+    return "push E3 ×2 = run" if twice else "push E3 = run"
+
+
+def setup_consequence(item, value: Any, state: Any = None) -> str:
+    """The popup's consequence line for setting `item` to `value` (D-017): what the operator
+    hears. A pipeline rebuild MAY CLICK; Lo-Cut off sends full range to the tops; a polarity
+    flip dips that floor (the flip is made under a muted group fader, dspconfig: no click)."""
+    if item.rebuild:
+        return "MAY CLICK"
+    if item.field == F_LOWCUT_ON:
+        if not value:
+            return "FULL RANGE TO THE TOPS"
+        hz = _num(state, "lowcut_hz", None)
+        return f"TOPS CUT BELOW {fmt_hz(hz)} Hz" if hz is not None else "TOPS CUT AGAIN"
+    if item.field.endswith("_inverted"):
+        floor = "TOPS" if item.field.startswith("top") else "SUBS"
+        return f"THE {floor} DIP A MOMENT"
+    return ""
+
+
+def _popup_parts(state: Any, item, pop: tuple[str, Any]) -> tuple[str, list, str, str]:
+    """(title, the big line as [(text, colour)], consequence, instruction) of the popup."""
+    if pop[0] == "pick":
+        now_s = _fmt_setup(item, _get(state, item.field, None))
+        new_s = _fmt_setup(item, pop[1])
+        big = [(now_s, FG), ("  →  ", DIM), (new_s, AMBER)]
+        return (f"{item.group} › {item.label}", big, setup_consequence(item, pop[1], state),
+                "push E3 = apply · turn E1 = cancel")
+    ask, what, verb = SETUP_ASK.get(item.field, (f"{item.label}?", "", "run"))
+    return item.group, [(ask, AMBER)], what, f"push E3 again = {verb} · turn E1 = cancel"
+
+
+POPUP_INK = -2                         # _Ctx.ink key of the SETUP popup's texts
+
+
+def _draw_setup_popup(c: _Ctx, state: Any, item, pop: tuple[str, Any]) -> None:
+    """D-017: the box over the middle of the list: the row (group › label), `now → proposed`
+    big (or the action's question), what it does, and the two ways out. Red outline: an E3
+    push now changes something."""
+    d = c.d
+    x0, y0, x1, y1 = SETUP_POPUP
+    d.rectangle((x0, y0, x1, y1), fill=BG, outline=RED, width=3)
+    inner = x1 - x0 - 28
+    cx = (x0 + x1) // 2
+    title, big, what, instr = _popup_parts(state, item, pop)
+    px: dict[str, int] = {}
+
+    def line(part: str, text: str, y: float, size: int, fill, face: str = FONT_BOLD) -> None:
+        px[part] = _fit_size(text, size, inner, face)
+        f = font(px[part], face)
+        d.text((cx, y), text, font=f, fill=fill, anchor="mm")
+        c.mark(POPUP_INK, part, (cx, y), text, f, "mm")
+
+    line("title", title, y0 + 22, 20, FG)
+    text = "".join(t for t, _col in big)
+    px["big"] = _fit_size(text, 40 if pop[0] == "pick" else 34, inner, FONT_BOLD)
+    f = font(px["big"])
+    x = cx - d.textlength(text, font=f) / 2
+    by = y0 + 70 if what else y0 + 80
+    for k, (part, col) in enumerate(big):
+        d.text((x, by), part, font=f, fill=col, anchor="lm")
+        c.mark(POPUP_INK, f"big{k}", (x, by), part, f, "lm")
+        x += d.textlength(part, font=f)
+    if what:
+        line("what", what, y0 + 115, 20, AMBER)
+    line("instr", instr, y1 - 22, 18, FG, FONT_REG)
+    c.popup = {"title": title, "big": " ".join(t.strip() for t, _col in big), "what": what,
+               "instr": instr, "px": px}
 
 
 # SETUP rows (D-013): a header per group, then its items. 8 rows of 28 px from y 60 to 284.
@@ -1473,12 +1540,14 @@ SETUP_ROWS: tuple[tuple[str, Any], ...] = tuple(
 
 
 def _page_setup(c: _Ctx, state: Any, status: Any) -> None:
-    """SETUP (D-013): the items grouped by speaker floor. Top line: E1 ITEM, the group and the
-    position in it, E3 GROUP. The list: a header per group (the selected item's in white), the
-    selected row amber, red while a push would change something (a chosen value: `now ->
-    chosen`; an action waiting for its second push: PUSH AGAIN). A scroll bar on the right.
-    Bottom line: E2 VALUE and what the knobs do on that row; the footer: a hint, else the
-    pending choice's prompt."""
+    """SETUP (D-013 groups, D-017 knobs). Top line: E1 ITEM, the group and the position in it,
+    VALUE E3. The list: a header row per group (the selected item's in white), the selected row
+    amber and ALWAYS on screen row SETUP_SEL_ROW (the list scrolls under it, blank rows past its
+    ends); values amber on the rows that ask for an E3 push (the risky ones). A scroll bar on
+    the right says which part of the list is in sight. Bottom line: E2 GROUP and what E3 does on
+    that row; the footer: a hint. While an E3 push would change something (a risky row's
+    proposal, an action's first push): the popup over the middle of the list, red-edged, in
+    place of the selected row."""
     d = c.d
     labels = knob_labels("SETUP")
     for e, lab in enumerate(labels):
@@ -1496,19 +1565,15 @@ def _page_setup(c: _Ctx, state: Any, status: Any) -> None:
     d.text((W // 2, STATUS_H + 2), head, font=_fit(d, head, 20, 150), fill=FG, anchor="ma")
     d.text((W - 10, H - 22), _setup_help(c, item_sel, readonly), font=font(16, FONT_REG),
            fill=DIM, anchor="ra")
-    conf_fn = getattr(c.focus, "confirm_now", None)
-    confirm = conf_fn(c.now) if callable(conf_fn) else None
-    rows, row_h, y0 = 8, 28, STATUS_H + 30
+    pop = _setup_popup(c)
+    rows, row_h, y0 = SETUP_ROWS_SHOWN, SETUP_ROW_H, SETUP_LIST_Y0
+    n = len(SETUP_ROWS)
     sel_row = next(r for r, (k, v) in enumerate(SETUP_ROWS) if k == "item" and v == sel)
-    head_row = next(r for r in range(sel_row, -1, -1) if SETUP_ROWS[r][0] == "head")
-    first = sel_row - 3
-    if head_row < first and sel_row - head_row <= rows - 2:
-        first = head_row                      # the group's header stays on screen when it fits
-    first = max(0, min(first, len(SETUP_ROWS) - rows))
+    first = sel_row - SETUP_SEL_ROW           # D-017: no clamping, no pinned header
     x_val = W - 18
     for r in range(rows):
-        if first + r >= len(SETUP_ROWS):
-            break
+        if not 0 <= first + r < n:
+            continue                          # past either end of the list: a blank row
         kind, v = SETUP_ROWS[first + r]
         y = y0 + r * row_h
         cy = y + row_h // 2 - 1
@@ -1520,34 +1585,32 @@ def _page_setup(c: _Ctx, state: Any, status: Any) -> None:
             continue
         item = SETUP_ITEMS[v]
         is_sel = v == sel
-        pk = _setup_pick(c, item) if is_sel else None
-        pending = is_sel and (pk is not None or confirm == item.field)
+        if is_sel and pop is not None:
+            continue                          # the popup, drawn below, names this row
         if is_sel:
-            d.rectangle((4, y, W - 10, y + row_h - 3), fill=RED if pending else AMBER)
+            d.rectangle((4, y, W - 10, y + row_h - 3), fill=AMBER)
         dimmed = _setup_unavailable(item, status, readonly)
-        fg = FG if pending else (BG if is_sel else (DIM if dimmed else FG))
-        d.text((24, cy), item.label, font=font(20, FONT_BOLD if is_sel else FONT_REG), fill=fg,
-               anchor="lm")
-        if pk is not None:
-            val = f"{_fmt_setup(item, _get(state, item.field, None))} → {_fmt_setup(item, pk[1])}"
-        elif pending:
-            val = "PUSH AGAIN"
-        else:
-            val = _setup_value(state, item, status, readonly)
-        vcol = fg if is_sel else (DIM if dimmed else (AMBER if item.rebuild else fg))
+        fg = BG if is_sel else (DIM if dimmed else FG)
+        face = FONT_BOLD if is_sel else FONT_REG
+        d.text((24, cy), item.label, font=font(20, face), fill=fg, anchor="lm")
+        val = _setup_value(state, item, status, readonly)
+        # amber = asks for an E3 push to change (D-017: the risky rows)
+        vcol = fg if is_sel else (DIM if dimmed else (AMBER if item.risky else fg))
         if not is_sel and item.field == A_LAPTOP and val.startswith("OPEN "):
             vcol = AMBER                       # a gate open in the fence: never quiet
-        lw = 24 + int(d.textlength(item.label, font=font(20, FONT_BOLD if is_sel else FONT_REG)))
-        d.text((x_val, cy), val, font=_fit(d, val, 20, x_val - lw - 16, FONT_REG if not is_sel else FONT_BOLD),
-               fill=vcol, anchor="rm")
-    # scroll bar: where the 8 rows sit in the whole list
+        lw = 24 + int(d.textlength(item.label, font=font(20, face)))
+        d.text((x_val, cy), val, font=_fit(d, val, 20, x_val - lw - 16, face), fill=vcol,
+               anchor="rm")
+    # scroll bar: the part of the list in sight (the blank rows past its ends are not the list)
     ty0, ty1 = y0, y0 + rows * row_h - 3
     d.rectangle((W - 6, ty0, W - 3, ty1), fill=FAINT)
-    n = len(SETUP_ROWS)
-    t0 = ty0 + (ty1 - ty0) * first // n
-    t1 = ty0 + (ty1 - ty0) * min(n, first + rows) // n
+    v0, v1 = max(0, first), min(n, first + rows)
+    t0 = ty0 + (ty1 - ty0) * v0 // n
+    t1 = ty0 + (ty1 - ty0) * v1 // n
     d.rectangle((W - 6, t0, W - 3, t1), fill=DIM)
-    footer = _hint(c) or _setup_prompt(c)
+    if pop is not None:
+        _draw_setup_popup(c, state, item_sel, pop)
+    footer = _hint(c)
     if footer:
         d.rectangle((0, H - FOOTER_H, W, H), fill=AMBER)
         d.text((W // 2, H - FOOTER_H // 2), footer, font=_fit(d, footer, 20, W - 20), fill=BG,
@@ -1687,7 +1750,7 @@ def _overlay_muted(c: _Ctx, state: Any, status: Any, page: str = "ALIGN") -> Non
     stop), so the 0 dB line, the cuts, every value, the edit box and FINE stay visible.
     ALIGN (and the v0 names): the v0 full-width band across the middle strip, between the top
     sub-line and the bottom ones (D-015: the delay's side stays readable). SETUP: red frame +
-    red footer strip (a band would cover the selected row and its 'PUSH AGAIN'); an active hint
+    red footer strip (a band would cover the selected row or the D-017 popup); an active hint
     takes the footer for its 2.5 s. HWTEST: frame + red tag.
     """
     d = c.d
@@ -1695,14 +1758,14 @@ def _overlay_muted(c: _Ctx, state: Any, status: Any, page: str = "ALIGN") -> Non
     hint, unmute = _mute_hint(c, state, status)
     page = page_name(page)
     if page == "SETUP":
-        if not hint and not _setup_prompt(c):
+        if not hint:
             d.rectangle((0, H - FOOTER_H, W, H), fill=BAND_RED)
             cy = H - FOOTER_H // 2
             d.text((14, cy), "MUTED", font=font(22), fill=FG, anchor="lm")
             fx = 14 + int(d.textlength("MUTED", font=font(22))) + 12
             d.text((W - 14, cy), unmute, font=_fit(d, unmute, 18, W - fx - 14, FONT_REG),
                    fill=FG, anchor="rm")
-        # else: the hint (its 2.5 s) or a pending choice's prompt has the footer (the page)
+        # else: the hint (its 2.5 s) has the footer (the page drew it)
         return
     if page == "HWTEST":
         box = (W - 120, STATUS_H + 6, W - 10, STATUS_H + 32)
@@ -2053,12 +2116,22 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
                                                       align_unlock_s=27.4),
          Focus(editing=F_ALIGN_DELAY, edit_until=inf, held={0, 1, 2, 3})),
         # SETUP
-        # SETUP (D-013): grouped by speaker floor; E2 chooses, a push sets
+        # SETUP (D-013 groups; D-017 knobs: the selected row on a fixed screen row, E3 the value,
+        # a risky row proposed in a popup and applied by an E3 push)
         ("setup", "SETUP", s, dev, Focus(item=tpol_i, readonly=ro)),
+        ("setup_first", "SETUP", s, dev, Focus(item=0, readonly=ro)),
+        ("setup_last", "SETUP", s, dev, Focus(item=len(SETUP_ITEMS) - 1, readonly=ro)),
+        # the two D-017 popups as on Thomas's box (knob_tags off, the M4): a rebuild proposed,
+        # and Reset live EQ after its first E3 push
+        ("setup_popup", "SETUP", s, with_(run, knob_tags="off"),
+         Focus(item=mono_i, pick="mono_subs", pick_value=True, pick_until=inf, readonly=ro_m4)),
+        ("setup_popup_reset", "SETUP", s, with_(run, knob_tags="off"),
+         Focus(item=reset_i, confirm=A_RESET_LIVE, confirm_until=inf, readonly=ro_m4)),
+        ("setup_popup_lowcut", "SETUP", s, run,
+         Focus(item=_setup_index(F_LOWCUT_ON), pick=F_LOWCUT_ON, pick_value=False, pick_until=inf,
+               readonly=ro_m4)),
         ("setup_reset_confirm", "SETUP", s, dev, Focus(item=reset_i, confirm=A_RESET_LIVE,
-                                                       confirm_until=inf,
-                                                       hint="PUSH AGAIN TO RESET ALL LIVE EQ",
-                                                       hint_until=inf, readonly=ro)),
+                                                       confirm_until=inf, readonly=ro)),
         ("setup_undo", "SETUP", s, with_(dev, undo_reset_s=287.0), Focus(item=undo_i, readonly=ro)),
         ("setup_confirm", "SETUP", s, dev, Focus(item=mono_i, **mono_pick)),
         ("setup_pick_audition", "SETUP", s, dev,
@@ -2070,10 +2143,9 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
                                              alerts=[("info", "APPLYING SETUP…")]),
          Focus(item=mono_i, readonly=ro)),
         ("setup_laptop_confirm", "SETUP", s, dev,
-         Focus(item=laptop_i, confirm=A_LAPTOP, confirm_until=inf,
-               hint="PUSH AGAIN: LAPTOP ACCESS FOR 2 H", hint_until=inf, readonly=ro)),
+         Focus(item=laptop_i, confirm=A_LAPTOP, confirm_until=inf, readonly=ro)),
         ("setup_laptop_open", "SETUP", s, dev_open, Focus(item=laptop_i - 1, readonly=ro)),
-        # D-016: the three switches are chosen then set like Mono (a rebuild: MAY CLICK)
+        # D-016: the three switches are risky rows like Mono (a rebuild: MAY CLICK)
         ("setup_deharsh_pick", "SETUP", s, run,
          Focus(item=dh_i, pick="deharsh_on", pick_value=True, pick_until=inf, readonly=ro_m4)),
         ("setup_loudness", "SETUP", dyn, run,

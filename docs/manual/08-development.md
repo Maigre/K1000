@@ -68,7 +68,7 @@ SHOW is on screen and Spectrum is ON, so a spectrum poll never queues in front o
 - **A fixed-slot pipeline.** Every filter exists from boot; every show-time action is a parameter
   write or a ramped fader, never a pipeline rebuild. Mono L+R, the profile, the dev audition and
   D-016's De-harsh, Loudness and AUX IN are the only rebuilds, and they are SETUP actions with a
-  confirm (chosen with E2, set by a push). D-016's three optional blocks exist only while switched
+  confirm (proposed by an E3 turn in a popup, applied by an E3 push, D-017). D-016's three optional blocks exist only while switched
   on (with all three off the config is byte for byte the pre-D-016 one); their numbers are
   parameters like any other, moved without a rebuild (`dspconfig` module docstring).
 - **One state, every surface.** Knobs, phone and CamillaGUI edit the same engine. K1000 adopts what
@@ -76,7 +76,7 @@ SHOW is on screen and Spectrum is ON, so a spectrum poll never queues in front o
   mute it did not make (the Aux4 marker records what it holds).
 
 Details: `docs/03-v0-architecture.md` §2–§3. Why it is built this way: D-002 (architecture), D-004
-(CamillaDSP v5 beta), D-005/D-006 (Pi OS Lite), D-007 (phone), D-009 (UI v1), D-013 (buttons, SETUP) in
+(CamillaDSP v5 beta), D-005/D-006 (Pi OS Lite), D-007 (phone), D-009 (UI v1), D-013 (buttons, SETUP), D-017 (SETUP's knobs) in
 [`DECISIONS.md`](../../DECISIONS.md).
 
 ## Running the tests

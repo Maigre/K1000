@@ -412,9 +412,11 @@ def test_hwtest_muted_shows_a_red_tag():
 
 # SETUP's list (D-013): 8 rows of 28 px under the top line; a group header's name at x 10, an
 # item's label at x 24 (indented), its value right-aligned at W - 18; all drawn at the row's middle.
+# D-017: the selected row always on the 4th of them (SETUP_SEL_Y, its middle).
 SETUP_LIST_Y = (pages.STATUS_H + 30, pages.STATUS_H + 30 + 8 * 28)
 SETUP_HEAD_X, SETUP_LABEL_X, SETUP_VALUE_X = 10, 24, pages.W - 18
 SETUP_FOOTER_Y = pages.H - pages.FOOTER_H // 2
+SETUP_SEL_Y = SETUP_LIST_Y[0] + 3 * 28 + 28 // 2 - 1
 
 
 def _ink(page, state, status, focus, now=0.0, tags=None):
@@ -481,11 +483,11 @@ def _other_choice(item, state):
     return next(c for c in item.choices if c != cur)
 
 
-# Every SETUP row as it can be selected (D-013): plain; an action waiting for its second push
-# (Reset live EQ, Laptop access: PUSH AGAIN); an ON/off or a choice with a value chosen.
+# Every SETUP row as it can be selected (D-017): plain; with its popup open, an action waiting
+# for its second E3 push (Reset live EQ, Laptop access) or a risky row with a value proposed.
 SETUP_ROW_MODES = [(i, mode) for i, it in enumerate(im.SETUP_ITEMS)
                    for mode in ("plain",) + (("confirm",) if it.needs_confirm else ())
-                   + (("pick",) if it.picks else ())]
+                   + (("pick",) if it.risky else ())]
 
 
 def _setup_mode_focus(item: int, mode: str, state, **kw) -> Focus:
@@ -497,38 +499,55 @@ def _setup_mode_focus(item: int, mode: str, state, **kw) -> Focus:
     return Focus(item=item, **kw)
 
 
+def _setup_ctx(state, status, focus, now=0.0):
+    """Draw SETUP's body and return the frame context: `popup` is what the D-017 popup said
+    ({title, big, what, instr, px}; None when closed), `ink[pages.POPUP_INK]` where its texts
+    landed, `ink[0..2]` the knob labels."""
+    c = pages._Ctx(focus, now, pages.knob_tags(status))
+    pages._page_setup(c, state, status)
+    return c
+
+
+def _popup_edge(img) -> bool:
+    """The D-017 popup's red outline is on screen (both side edges, at mid height)."""
+    x0, y0, x1, y1 = pages.SETUP_POPUP
+    ym = (y0 + y1) // 2
+    return img.getpixel((x0 + 1, ym)) == pages.RED and img.getpixel((x1 - 1, ym)) == pages.RED
+
+
 @pytest.mark.parametrize("item,mode", SETUP_ROW_MODES,
                          ids=[f"{im.SETUP_ITEMS[i].group}-{im.SETUP_ITEMS[i].label}-{m}"
                               for i, m in SETUP_ROW_MODES])
 def test_setup_muted_keeps_selected_row_visible(item, mode):
-    """The selected row (and its PUSH AGAIN, or its `now -> chosen`) must stay visible while
-    muted: SETUP is used at setup time, when the box is muted. MUTED moves to a red footer
-    instead of the band; a pending choice's prompt and a hint take that footer."""
+    """The selected row, or its popup (D-017: a risky row's proposal, an action waiting for its
+    second E3 push), must stay visible while muted: SETUP is used at setup time, when the box is
+    muted. MUTED moves to a red footer instead of the band, below the popup; a hint takes that
+    footer, the row or the popup stays."""
     s = st.State(muted=True)
     it = im.SETUP_ITEMS[item]
     status = pages.ScreenStatus(muted=True, **OK)
-    img, drawn = _drawn("SETUP", s, status, _setup_mode_focus(item, mode, s))
-    y, fill, bar, val = _setup_selected(img, drawn, it.label)
-    pending = mode != "plain"
-    assert bar == (pages.RED if pending else pages.AMBER)
-    assert fill == (pages.FG if pending else pages.BG)
-    assert img.getpixel((240, y - 11)) == bar                          # the bar spans the row
-    if mode == "confirm":
-        assert val == "PUSH AGAIN"
-    elif mode == "pick":
-        assert " → " in val
-    if mode == "pick":                                                 # the prompt has the footer
-        assert img.getpixel((20, pages.H - 8)) == pages.AMBER
-        assert _setup_footer(drawn)[0].startswith("PUSH TO SET ")
-        assert not any(t == "MUTED" and y == SETUP_FOOTER_Y for t, _x, y, _f in drawn)
-        assert _muted_pill(img) and img.getpixel((2, 100)) == pages.BAND_RED   # still MUTED
+    focus = _setup_mode_focus(item, mode, s)
+    img, drawn = _drawn("SETUP", s, status, focus)
+    if mode == "plain":
+        y, fill, bar, _val = _setup_selected(img, drawn, it.label)
+        assert (bar, fill) == (pages.AMBER, pages.BG)
+        assert img.getpixel((240, y - 11)) == bar                      # the bar spans the row
+        assert not _popup_edge(img)
     else:
-        assert img.getpixel((150, pages.H - 8)) == pages.BAND_RED      # MUTED footer
+        assert _popup_edge(img)
+        c = _setup_ctx(s, status, focus)
+        assert c.popup is not None
+        assert ("→" in c.popup["big"]) if mode == "pick" else c.popup["big"].endswith("?")
+    assert img.getpixel((150, pages.H - 8)) == pages.BAND_RED          # MUTED footer
+    assert _muted_pill(img) and img.getpixel((2, 100)) == pages.BAND_RED
     hinted = _setup_mode_focus(item, mode, s, hint="x", hint_until=math.inf)   # a hint: footer
     img, drawn = _drawn("SETUP", s, status, hinted)
     assert img.getpixel((20, pages.H - 8)) == pages.AMBER
     assert _setup_footer(drawn) == ["x"]
-    assert _setup_selected(img, drawn, it.label)[2] == bar             # the row stays
+    if mode == "plain":
+        assert _setup_selected(img, drawn, it.label)[2] == pages.AMBER  # the row stays
+    else:
+        assert _popup_edge(img)                                        # the popup stays
 
 
 @pytest.mark.parametrize("page,editing,e,ink", [
@@ -1317,10 +1336,9 @@ def test_setup_groups_are_d013s():
 
 
 def test_setup_item_kinds_say_how_each_row_is_set():
-    """D-013: an action that touches the sound (Reset live EQ) or opens the fence (Laptop access)
-    needs a second push; every ON/off and choice is chosen first and set by a push, so nothing
-    but a number changes on one gesture. The pipeline rebuilds (a possible click) are among the
-    choices, and say so."""
+    """D-013's kinds, D-017's gestures: an action that touches the sound (Reset live EQ) or opens
+    the fence (Laptop access) needs a second E3 push; ON/off and choice rows are stepped by E3;
+    the pipeline rebuilds (a possible click) are among them, and say so."""
     by = {i.field: i for i in im.SETUP_ITEMS}
     assert {f for f, i in by.items() if i.needs_confirm} == {"reset_live", "laptop_access"}
     assert {f for f, i in by.items() if i.picks} == \
@@ -1328,15 +1346,15 @@ def test_setup_item_kinds_say_how_each_row_is_set():
          "profile", "dev_audition", "deharsh_on", "loud_on", "aux_mode"}
     assert {f for f, i in by.items() if i.rebuild} == set(st.REBUILD_FIELDS)
     for f in st.REBUILD_FIELDS:                                       # never one gesture
-        assert by[f].picks and not by[f].needs_confirm, f
-    assert not by["lowcut_on"].confirm                                 # choose + push = confirm
+        assert by[f].picks and by[f].risky and not by[f].needs_confirm, f
+    assert not by["lowcut_on"].confirm                                 # turn + push = confirm
     for f, i in by.items():
         if i.kind == "bool":
             assert i.choices == (False, True), f
         elif i.kind == "choice":
             assert i.choices == tuple(st.CHOICES[f]) and len(i.choices) > 1, f
         else:
-            assert i.choices == () and not i.picks, f
+            assert i.choices == () and not i.picks and not i.risky, f
     assert by["dev_audition"].choices == ("sum", "tops", "subs")
     assert by["profile"].choices == ("dev", "m4")
     assert by["aux_mode"].choices == ("off", "mic", "line")                # D-016
@@ -1344,8 +1362,26 @@ def test_setup_item_kinds_say_how_each_row_is_set():
     assert {"deharsh_on", "loud_on", "aux_mode"} <= {f for f, i in by.items() if i.rebuild}
     # the old kinds and hints are gone: no blind double push on anything but the two actions
     assert {i.kind for i in im.SETUP_ITEMS} == {"num", "bool", "choice", "page", "action"}
-    for gone in ("HINT_PUSH_TOGGLE", "HINT_CONFIRM_LOWCUT"):
+    for gone in ("HINT_PUSH_TOGGLE", "HINT_CONFIRM_LOWCUT", "HINT_CONFIRM", "HINT_CONFIRM_RESET",
+                 "HINT_CONFIRM_LAPTOP"):
         assert not hasattr(im, gone), gone
+
+
+# D-017: the risky rows (Claude's proposal, Thomas's to change: SETUP_RISKY, one line)
+D017_RISKY = set(st.REBUILD_FIELDS) | {"top_inverted", "sub_inverted", "lowcut_on"}
+EVERYDAY_ON_OFF = ("sub_lowpass_on", "spectrum_on")
+
+
+def test_setup_risky_rows_are_d017s():
+    """Every pipeline rebuild (Mono L+R, Profile, Audition, De-harsh, Loudness, AUX IN 1/2), both
+    polarities and Lo-Cut are risky (an E3 turn proposes, an E3 push applies); one definition,
+    input_map.SETUP_RISKY. Every other ON/off applies as E3 turns. Only ON/off and choice rows
+    can be risky."""
+    by = {i.field: i for i in im.SETUP_ITEMS}
+    assert im.SETUP_RISKY == D017_RISKY
+    assert {f for f, i in by.items() if i.risky} == D017_RISKY
+    assert {f for f, i in by.items() if i.picks and not i.risky} == set(EVERYDAY_ON_OFF)
+    assert not any(i.risky for i in im.SETUP_ITEMS if not i.picks)
 
 
 def test_setup_group_helpers():
@@ -1675,129 +1711,214 @@ def test_no_button_switches_the_lo_cut_or_resets_any_more(page):
                     (page, sw, kind, a)
 
 
-def test_setup_reset_live_needs_two_pushes_and_undo_one():
+def test_setup_reset_live_needs_two_e3_pushes_and_undo_one():
+    """D-017: Reset live EQ's first E3 push opens its popup (nothing runs), the second within
+    CONFIRM_WINDOW_S resets; Undo reset runs on one E3 push; an E3 turn runs nothing; E1/E2
+    pushes never run anything; an E1 turn cancels the popup without moving."""
     idx = _item("reset_live")
     f = Focus(item=idx)
-    assert map_event("SETUP", f, Sw(0, "short", ts=10.0)) == [ShowHint(im.HINT_CONFIRM_RESET)]
-    assert f.confirm_now(10.5) == "reset_live"
-    assert map_event("SETUP", f, Sw(1, "short", ts=11.0)) == [ResetLive()]   # E1 or E2 push
-    assert f.confirm is None
-    map_event("SETUP", f, Sw(0, "short", ts=20.0))                # an expired confirm arms again
-    assert map_event("SETUP", f, Sw(0, "short", ts=30.0)) == [ShowHint(im.HINT_CONFIRM_RESET)]
-    apply_focus(f, SelectItem(1))                                 # moving cancels
-    assert f.confirm is None and im.SETUP_ITEMS[f.item].field == "undo_reset"
-    assert map_event("SETUP", f, Sw(0, "short", ts=40.0)) == [UndoReset()]   # one push
-    assert map_event("SETUP", f, Enc(1, 1)) == [ShowHint(im.HINT_PUSH_RUN)]   # a turn runs nothing
+    assert map_event("SETUP", f, Sw(2, "short", ts=10.0)) == []                 # the popup
+    assert f.confirm_now(10.5) == "reset_live" and im.setup_popup(f, 10.5) == ("confirm", None)
+    assert map_event("SETUP", f, Sw(2, "short", ts=11.0)) == [ResetLive()]
+    assert f.confirm is None and im.setup_popup(f, 11.0) is None
+    map_event("SETUP", f, Sw(2, "short", ts=20.0))                # an expired confirm arms again
+    assert map_event("SETUP", f, Sw(2, "short", ts=20.0 + im.CONFIRM_WINDOW_S)) == []
+    assert f.confirm_now(26.0) == "reset_live"
+    for n in (0, 1):                                              # E1/E2 pushes: a hint only
+        assert map_event("SETUP", f, Sw(n, "short", ts=26.0)) == [ShowHint(im.HINT_PUSH_RUN)]
+    assert f.confirm_now(26.5) == "reset_live"
+    assert map_event("SETUP", f, Enc(0, 1, ts=27.0)) == [ShowHint(im.HINT_CANCELLED)]
+    assert f.confirm is None and f.item == idx                    # cancelled, not moved
+    apply_focus(f, SelectItem(1))
+    assert im.SETUP_ITEMS[f.item].field == "undo_reset"
+    assert map_event("SETUP", f, Sw(2, "short", ts=40.0)) == [UndoReset()]     # one push
+    assert map_event("SETUP", f, Enc(2, 1)) == [ShowHint(im.HINT_PUSH_RUN)]    # a turn runs nothing
     f.item = idx
-    assert map_event("SETUP", f, Enc(1, 1)) == [ShowHint(im.HINT_PUSH_TWICE)]
+    assert map_event("SETUP", f, Enc(2, 1)) == [ShowHint(im.HINT_PUSH_TWICE)]
     assert f.confirm is None
     # a confirm of one item never confirms another: not the other confirmed action...
     g = Focus(item=idx)
-    map_event("SETUP", g, Sw(0, "short", ts=50.0))
+    map_event("SETUP", g, Sw(2, "short", ts=50.0))
     g.item = _item(im.A_LAPTOP)
-    assert map_event("SETUP", g, Sw(0, "short", ts=51.0)) == [ShowHint(im.HINT_CONFIRM_LAPTOP)]
-    # ...nor a rebuild: its push only proposes a value (D-013), never sets it
+    assert map_event("SETUP", g, Sw(2, "short", ts=51.0)) == []
+    assert g.confirm_now(51.0) == im.A_LAPTOP
+    # ...nor a risky row: with nothing proposed its push only says to turn E3
     g = Focus(item=idx)
-    map_event("SETUP", g, Sw(0, "short", ts=50.0))
+    map_event("SETUP", g, Sw(2, "short", ts=50.0))
     g.item = _item("mono_subs")
-    assert map_event("SETUP", g, Sw(0, "short", ts=51.0), state=st.State()) == []
-    assert g.pick_now(51.0) == ("mono_subs", True) and g.confirm is None
+    assert map_event("SETUP", g, Sw(2, "short", ts=51.0), state=st.State()) == \
+        [ShowHint(im.HINT_TURN_VALUE)]
+    assert g.pick_now(51.0) is None
 
 
-def test_setup_laptop_access_opens_on_a_double_push_and_closes_on_one():
-    """SETUP > Laptop access emits SetupAction("laptop_access") after its double push (the
-    opening); while the Controller marks it open (Focus.no_confirm) one push does (the closing,
-    the safe direction). A generic action item still gets the generic confirm."""
+def test_setup_laptop_access_opens_on_a_double_e3_push_and_closes_on_one():
+    """SETUP > Laptop access emits SetupAction("laptop_access") after its double E3 push (the
+    opening: the first opens the popup); while the Controller marks it open (Focus.no_confirm)
+    one E3 push does (the closing, the safe direction)."""
     f = Focus(item=_item(im.A_LAPTOP))
-    assert map_event("SETUP", f, Sw(0, "short", ts=1.0)) == [ShowHint(im.HINT_CONFIRM_LAPTOP)]
-    assert f.confirm == im.A_LAPTOP
-    assert map_event("SETUP", f, Sw(0, "short", ts=2.0)) == [im.SetupAction(im.A_LAPTOP)]
+    assert map_event("SETUP", f, Sw(2, "short", ts=1.0)) == []                  # the popup
+    assert f.confirm == im.A_LAPTOP and im.setup_popup(f, 1.0) == ("confirm", None)
+    assert map_event("SETUP", f, Sw(2, "short", ts=2.0)) == [im.SetupAction(im.A_LAPTOP)]
     f.no_confirm.add(im.A_LAPTOP)                                  # open: one push closes
-    assert map_event("SETUP", f, Sw(0, "short", ts=3.0)) == [im.SetupAction(im.A_LAPTOP)]
+    assert map_event("SETUP", f, Sw(2, "short", ts=3.0)) == [im.SetupAction(im.A_LAPTOP)]
     assert f.confirm is None
     f.no_confirm.discard(im.A_LAPTOP)
-    assert map_event("SETUP", f, Sw(1, "short", ts=4.0)) == [ShowHint(im.HINT_CONFIRM_LAPTOP)]
-    assert map_event("SETUP", f, Sw(0, "short", ts=10.0)) == [ShowHint(im.HINT_CONFIRM_LAPTOP)]
+    assert map_event("SETUP", f, Sw(1, "short", ts=4.0)) == [ShowHint(im.HINT_PUSH_TWICE)]
+    assert map_event("SETUP", f, Sw(2, "short", ts=4.0)) == []
+    assert map_event("SETUP", f, Sw(2, "short", ts=10.0)) == []   # expired: the popup again
+    assert f.confirm_now(10.0) == im.A_LAPTOP
 
 
 def test_setup_action_items_beyond_reset_and_undo(monkeypatch):
-    """A later SETUP action only needs its SetupItem: input_map emits SetupAction(name), after
-    its confirm when it has one; a waived confirm (no_confirm) is per item."""
+    """A later SETUP action only needs its SetupItem: input_map emits SetupAction(name) on an E3
+    push, after its popup when it has a confirm; a waived confirm (no_confirm) is per item."""
     extra = im.SetupItem("Other", "other_action", "action", confirm=True)
     monkeypatch.setattr(im, "SETUP_ITEMS", im.SETUP_ITEMS[:-2] + (extra,) + im.SETUP_ITEMS[-2:])
     f = Focus(item=_item("other_action"), no_confirm={im.A_LAPTOP})
-    assert map_event("SETUP", f, Sw(0, "short", ts=1.0)) == [ShowHint(im.HINT_CONFIRM)]
-    assert map_event("SETUP", f, Sw(0, "short", ts=2.0)) == [im.SetupAction("other_action")]
+    assert map_event("SETUP", f, Sw(2, "short", ts=1.0)) == []
+    assert im.setup_popup(f, 1.0) == ("confirm", None)
+    assert map_event("SETUP", f, Sw(2, "short", ts=2.0)) == [im.SetupAction("other_action")]
 
 
-@pytest.mark.parametrize("field", ["lowcut_on", "spectrum_on", "top_inverted", "sub_inverted",
-                                   "sub_lowpass_on"])
-def test_setup_lo_cut_and_every_on_off_take_two_gestures(field):
-    """Lo-Cut (no longer confirm=True, D-013) and every other ON/off: no single push and no
-    turn changes it. A turn chooses, a push sets; or push (proposes), push (sets)."""
+@pytest.mark.parametrize("field", EVERYDAY_ON_OFF)
+def test_setup_everyday_on_off_applies_as_e3_turns_by_direction(field):
+    """D-017: an ON/off that is not risky (Low-pass, Spectrum) is set as E3 turns: right = ON,
+    left = off, through SetChoice (the controller's path); a turn towards the value already held
+    only says so, so a fast turn never toggles back and forth; never a popup; E3's push sets
+    nothing."""
+    for cur in (False, True):
+        s = st.State.from_dict({**st.State().to_dict(), field: cur})
+        f = Focus(item=_item(field))
+        right = map_event("SETUP", f, Enc(2, 1, ts=1.0), state=s)
+        left = map_event("SETUP", f, Enc(2, -1, ts=2.0), state=s)
+        assert right == ([ShowHint("ALREADY ON")] if cur else [SetChoice(field, True)]), cur
+        assert left == ([SetChoice(field, False)] if cur else [ShowHint("ALREADY OFF")]), cur
+        assert map_event("SETUP", f, Enc(2, 5, ts=3.0), state=s) == right     # fast: one step
+        assert f.pick is None and im.setup_popup(f, 3.0) is None               # never a popup
+        assert map_event("SETUP", f, Sw(2, "short", ts=4.0), state=s) == \
+            [ShowHint(im.HINT_TURN_VALUE)]
+        f.held.add(2)                                    # E3's push held: the same, no fine here
+        assert map_event("SETUP", f, Enc(2, 1, ts=5.0), state=s) == right
+
+
+@pytest.mark.parametrize("field", sorted(D017_RISKY))
+def test_setup_every_risky_row_proposes_on_a_turn_and_applies_only_on_an_e3_push(field):
+    """D-017: an E3 turn on a risky row opens the popup (`now -> proposed`) and sets nothing,
+    however many turns; E1/E2 pushes leave it open and only say to push E3; the E3 push applies
+    exactly the proposal. An E1 or an E2 turn cancels it (and moves nothing); so does the end of
+    PICK_WINDOW_S without a turn."""
     s = st.State()
-    cur = bool(s.get(field))
-    f = Focus(item=_item(field))
-    assert map_event("SETUP", f, Sw(0, "short", ts=1.0), state=s) == []      # proposes only
-    assert f.pick_now(1.0) == (field, not cur)
-    assert map_event("SETUP", f, Sw(0, "short", ts=2.0), state=s) == [SetChoice(field, not cur)]
-    g = Focus(item=_item(field))
-    for k, d in enumerate((1, 1, -1, 3, -2)):                                # a turn never sets
-        assert map_event("SETUP", g, Enc(1, d, ts=1.0 + k), state=s) == [], d
-    assert g.pick_now(5.0) == (field, not cur)                              # it only chose
-    assert map_event("SETUP", g, Sw(1, "short", ts=5.5), state=s) == [SetChoice(field, not cur)]
+    i = _item(field)
+    it = im.SETUP_ITEMS[i]
+    cur = im.setup_value_of(s, it)
+    d = 1 if cur != it.choices[-1] else -1
+    want = it.choices[it.choices.index(cur) + d]
+    f = Focus(item=i)
+    assert map_event("SETUP", f, Enc(2, d, ts=1.0), state=s) == []
+    assert im.setup_popup(f, 1.0) == ("pick", want)
+    for n in (0, 1):
+        assert map_event("SETUP", f, Sw(n, "short", ts=1.5), state=s) == \
+            [ShowHint(im.HINT_PUSH_APPLY)]
+    assert im.setup_popup(f, 1.5) == ("pick", want)
+    assert map_event("SETUP", f, Sw(2, "short", ts=2.0), state=s) == [SetChoice(field, want)]
+    assert im.setup_popup(f, 2.0) is None and f.pick is None
+    for enc in (0, 1):                                            # E1 / E2 turn: cancelled
+        g = Focus(item=i)
+        map_event("SETUP", g, Enc(2, d, ts=1.0), state=s)
+        assert map_event("SETUP", g, Enc(enc, 1, ts=1.2), state=s) == [ShowHint(im.HINT_CANCELLED)]
+        assert g.item == i and im.setup_popup(g, 1.2) is None
+        assert map_event("SETUP", g, Sw(2, "short", ts=1.4), state=s) == \
+            [ShowHint(im.HINT_TURN_VALUE)]
+    g = Focus(item=i)                                             # timeout: nothing applied
+    map_event("SETUP", g, Enc(2, d, ts=1.0), state=s)
+    assert map_event("SETUP", g, Sw(2, "short", ts=1.0 + im.PICK_WINDOW_S), state=s) == \
+        [ShowHint(im.HINT_TURN_VALUE)]
 
 
 def test_setup_push_after_a_fine_turn_is_not_a_select():
-    """The SHOW fine-mode habit (hold a push, turn, release fast = 'short') must not set the
-    selected SETUP item (a polarity, Mono L+R: a rebuild) or open a page. On an ON/off the turn
-    chose a value (the row shows it); only a later plain push sets it."""
+    """The SHOW fine-mode habit (hold E3's push, turn, release fast = 'short') must never apply a
+    risky row's proposal (a polarity, Mono L+R: a rebuild) or open a page. The turn proposed
+    (the popup shows it); only a later plain E3 push applies."""
     s = st.State()
     f = Focus(item=_item("sub_inverted"))
-    assert map_event("SETUP", f, Sw(1, "press", ts=1.0), state=s) == []
-    assert map_event("SETUP", f, Enc(1, 1, ts=1.1), state=s) == []
-    assert f.pick_now(1.1) == ("sub_inverted", True)                     # chosen, not set
-    assert map_event("SETUP", f, Sw(1, "short", ts=1.3), state=s) == []  # no SetChoice
+    assert map_event("SETUP", f, Sw(2, "press", ts=1.0), state=s) == []
+    assert map_event("SETUP", f, Enc(2, 1, ts=1.1), state=s) == []
+    assert f.pick_now(1.1) == ("sub_inverted", True)                     # proposed, not set
+    assert map_event("SETUP", f, Sw(2, "short", ts=1.3), state=s) == []  # no SetChoice
     assert f.pick_now(1.3) == ("sub_inverted", True)                     # still waiting
-    assert map_event("SETUP", f, Sw(1, "press", ts=2.0), state=s) == []  # a plain push sets it
-    assert map_event("SETUP", f, Sw(1, "short", ts=2.1), state=s) == [SetChoice("sub_inverted", True)]
+    assert map_event("SETUP", f, Sw(2, "press", ts=2.0), state=s) == []  # a plain push sets it
+    assert map_event("SETUP", f, Sw(2, "short", ts=2.1), state=s) == [SetChoice("sub_inverted", True)]
     # Mono L+R (a pipeline rebuild): the same, never one gesture
     g = Focus(item=_item("mono_subs"))
-    assert map_event("SETUP", g, Sw(1, "press", ts=1.0), state=s) == []
-    assert map_event("SETUP", g, Enc(1, 1, ts=1.1), state=s) == []
-    assert map_event("SETUP", g, Sw(1, "short", ts=1.3), state=s) == []
+    assert map_event("SETUP", g, Sw(2, "press", ts=1.0), state=s) == []
+    assert map_event("SETUP", g, Enc(2, 1, ts=1.1), state=s) == []
+    assert map_event("SETUP", g, Sw(2, "short", ts=1.3), state=s) == []
     # a page row: the fine release does not open it, a plain push does
     h = Focus(item=_item("HWTEST"))
-    map_event("SETUP", h, Sw(1, "press", ts=1.0), state=s)
-    assert map_event("SETUP", h, Enc(1, 1, ts=1.1), state=s) == [ShowHint(im.HINT_PUSH_OPEN)]
-    assert map_event("SETUP", h, Sw(1, "short", ts=1.3), state=s) == []
-    map_event("SETUP", h, Sw(1, "press", ts=2.0), state=s)
-    assert map_event("SETUP", h, Sw(1, "short", ts=2.1), state=s) == [GotoPage("HWTEST")]
+    map_event("SETUP", h, Sw(2, "press", ts=1.0), state=s)
+    assert map_event("SETUP", h, Enc(2, 1, ts=1.1), state=s) == [ShowHint(im.HINT_PUSH_OPEN)]
+    assert map_event("SETUP", h, Sw(2, "short", ts=1.3), state=s) == []
+    map_event("SETUP", h, Sw(2, "press", ts=2.0), state=s)
+    assert map_event("SETUP", h, Sw(2, "short", ts=2.1), state=s) == [GotoPage("HWTEST")]
+
+
+@pytest.mark.parametrize("field", ["mono_subs", "sub_inverted", "lowcut_on", "aux_mode"])
+def test_setup_a_detent_clicked_by_the_pressing_finger_never_applies(field):
+    """D-017 review: E3 clicks one detent as the finger presses it (turn at t, press 5 ms
+    later): that turn opens the popup, and the same push must not apply it, the popup never
+    seen. The push is refused (PUSH E3 TO APPLY), the popup stays, the next push applies. A
+    proposal moved again just before a press is refused the same way; a press PICK_SETTLE_S
+    after the last move applies."""
+    s = st.State()
+    i = _item(field)
+    it = im.SETUP_ITEMS[i]
+    cur = im.setup_value_of(s, it)
+    d = 1 if cur != it.choices[-1] else -1
+    want = it.choices[it.choices.index(cur) + d]
+    f = Focus(item=i)
+    assert map_event("SETUP", f, Enc(2, d, ts=1.0), state=s) == []
+    assert map_event("SETUP", f, Sw(2, "press", ts=1.005), state=s) == []
+    assert map_event("SETUP", f, Sw(2, "release", ts=1.15), state=s) == []
+    assert map_event("SETUP", f, Sw(2, "short", ts=1.15), state=s) == [ShowHint(im.HINT_PUSH_APPLY)]
+    assert im.setup_popup(f, 1.2) == ("pick", want)                      # still open, nothing set
+    assert map_event("SETUP", f, Sw(2, "press", ts=1.6), state=s) == []
+    assert map_event("SETUP", f, Sw(2, "short", ts=1.7), state=s) == [SetChoice(field, want)]
+    g = Focus(item=i)                                    # opened earlier, moved just before the press
+    map_event("SETUP", g, Enc(2, d, ts=1.0), state=s)
+    map_event("SETUP", g, Enc(2, -d, ts=2.0), state=s)                  # back: closed
+    map_event("SETUP", g, Enc(2, d, ts=2.1), state=s)                   # open again
+    map_event("SETUP", g, Sw(2, "press", ts=2.1 + im.PICK_SETTLE_S - 0.01), state=s)
+    assert map_event("SETUP", g, Sw(2, "short", ts=2.5), state=s) == [ShowHint(im.HINT_PUSH_APPLY)]
+    map_event("SETUP", g, Sw(2, "press", ts=2.1 + im.PICK_SETTLE_S), state=s)
+    assert map_event("SETUP", g, Sw(2, "short", ts=2.6), state=s) == [SetChoice(field, want)]
 
 
 @pytest.mark.parametrize("field,want_not", [("mono_subs", SetChoice), ("lowcut_on", SetChoice),
                                             ("HWTEST", GotoPage), (im.A_UNDO_RESET, UndoReset)])
-@pytest.mark.parametrize("push", [0, 1])
+@pytest.mark.parametrize("push", [0, 1, 2])
 def test_setup_fine_turn_release_with_the_drivers_event_order_is_not_a_select(field, want_not, push):
     """The same habit with the events exactly as the driver sends them: press, turn, RELEASE,
     SHORT (Switch.tick appends RELEASE then SHORT on a release before long_ms). Found by the
     D-013 review: the release used to forget the turn, so the short set the value the turn had
-    just chosen (one gesture). A plain push after it still selects."""
+    just chosen (one gesture). A plain E3 push after it acts; E1/E2 pushes never do (D-017)."""
     s = st.State()
     f = Focus(item=_item(field))
+    it = im.SETUP_ITEMS[f.item]
+    d = -1 if it.picks and im.setup_value_of(s, it) == it.choices[-1] else 1   # towards a change
     acts = []
-    for ev in (Sw(push, "press", ts=1.0), Enc(push, 1, ts=1.1), Sw(push, "release", ts=1.3),
+    for ev in (Sw(push, "press", ts=1.0), Enc(push, d, ts=1.1), Sw(push, "release", ts=1.3),
                Sw(push, "short", ts=1.3)):
         acts += map_event("SETUP", f, ev, state=s)
     assert not any(isinstance(a, want_not) for a in acts), acts
     acts = []
     for ev in (Sw(push, "press", ts=2.0), Sw(push, "release", ts=2.1), Sw(push, "short", ts=2.1)):
         acts += map_event("SETUP", f, ev, state=s)
-    if want_not is SetChoice and push == 1:   # E2's turn chose; a plain push now sets it
-        # (E1's turn moved to the next item instead: nothing chosen there)
+    if push != 2:                             # E1 / E2: a hint, never an action
+        assert all(isinstance(a, ShowHint) for a in acts), acts
+    elif want_not is SetChoice:               # E3's turn proposed; a plain E3 push applies it
         assert any(isinstance(a, SetChoice) for a in acts), acts
-    elif want_not is GotoPage:
-        assert GotoPage("HWTEST") in acts
+    else:
+        assert any(isinstance(a, want_not) for a in acts), acts
 
 
 def test_phone_fine_turn_release_is_not_a_toggle():
@@ -1824,28 +1945,28 @@ def test_b2_hold_off_align_says_where_mute_went(page):
 
 
 def test_laptop_access_open_says_one_push():
-    """While Laptop access is open one push closes it: the turn hint and the bottom line say so."""
+    """While Laptop access is open one E3 push closes it: the turn hint and the bottom line say so."""
     f = Focus(item=_item(im.A_LAPTOP))
-    assert map_event("SETUP", f, Enc(1, 1)) == [ShowHint(im.HINT_PUSH_TWICE)]
+    assert map_event("SETUP", f, Enc(2, 1)) == [ShowHint(im.HINT_PUSH_TWICE)]
     f.no_confirm.add(im.A_LAPTOP)
-    assert map_event("SETUP", f, Enc(1, 1)) == [ShowHint(im.HINT_PUSH_RUN)]
+    assert map_event("SETUP", f, Enc(2, 1)) == [ShowHint(im.HINT_PUSH_RUN)]
     _img, drawn = _drawn("SETUP", st.State(), None, f)
     texts = [t for t, *_ in drawn]
-    assert "push = run" in texts and "push ×2 = run" not in texts
+    assert "push E3 = run" in texts and "push E3 ×2 = run" not in texts
 
 
 def test_a_choice_on_a_field_turned_read_only_is_not_drawn_pending():
-    """A choice waits on Audition, then the profile leaves dev (read-only): the row and the
-    footer stop promising a change; the push only shows the hint."""
+    """A proposal waits on Audition, then the profile leaves dev (read-only): the popup closes;
+    the E3 push only shows the hint."""
     inf = float("inf")
     f = Focus(item=_item("dev_audition"), pick="dev_audition", pick_value="tops", pick_until=inf)
-    _img, drawn = _drawn("SETUP", st.State(), None, f)
-    assert any("→ TOPS" in t for t, *_ in drawn)
+    c = _setup_ctx(st.State(), None, f)
+    assert c.popup is not None and c.popup["big"] == "SUM → TOPS"
     f.readonly = {"dev_audition": "AUDITION: DEV PROFILE ONLY"}
-    _img, drawn = _drawn("SETUP", st.State(), None, f)
-    texts = [t for t, *_ in drawn]
-    assert not any("→" in t for t in texts) and not any(t.startswith("PUSH TO SET") for t in texts)
-    assert map_event("SETUP", f, Sw(1, "short"), state=st.State()) == [
+    assert _setup_ctx(st.State(), None, f).popup is None
+    img, drawn = _drawn("SETUP", st.State(), None, f)
+    assert not any("→" in t for t, *_ in drawn) and not _popup_edge(img)
+    assert map_event("SETUP", f, Sw(2, "short"), state=st.State()) == [
         ShowHint("AUDITION: DEV PROFILE ONLY")]
 
 
@@ -1899,44 +2020,99 @@ def test_b4_acts_on_what_its_press_saw(page):
 
 
 def test_setup_navigation_and_values():
-    """SETUP knobs (D-013): E1 ITEM (one item per detent, clamps), E2 VALUE, E3 GROUP, E4 unused."""
-    assert im.knob_labels("SETUP") == ["ITEM", "VALUE", "GROUP", ""]
+    """SETUP knobs (D-017): E1 ITEM (one item per detent, clamps), E2 GROUP, E3 VALUE (turn =
+    change, push = set / open / run), E4 unused."""
+    assert im.knob_labels("SETUP") == ["ITEM", "GROUP", "VALUE", ""]
     s = st.State()
     f = Focus()
     acts = map_event("SETUP", f, Enc(0, 1), state=s)
     assert acts == [SelectItem(1)]
     apply_focus(f, acts[0])
     assert f.item == 1 and im.SETUP_ITEMS[1].field == "out_trim_db.3"      # TOPS › Trim R
-    assert map_event("SETUP", f, Enc(1, -2), state=s) == [Nudge("out_trim_db.3", -2, False)]
-    assert map_event("SETUP", f, Sw(1, "short"), state=s) == [ShowHint(im.HINT_TURN_VALUE)]
+    assert map_event("SETUP", f, Enc(2, -2), state=s) == [Nudge("out_trim_db.3", -2, False)]
+    assert map_event("SETUP", f, Sw(2, "short"), state=s) == [ShowHint(im.HINT_TURN_VALUE)]
+    assert map_event("SETUP", f, Enc(1, -2), state=s) == [SelectGroup(-1)]   # E2: not a value
     apply_focus(f, SelectItem(1))
     assert im.SETUP_ITEMS[f.item].field == "top_inverted" and f.pick is None
-    assert map_event("SETUP", f, Enc(1, 1, ts=5.0), state=s) == []        # chooses (below)
+    assert map_event("SETUP", f, Enc(2, 1, ts=5.0), state=s) == []        # proposes (risky)
     assert f.pick_now(5.0) == ("top_inverted", True)
-    assert map_event("SETUP", f, Sw(1, "short", ts=6.0), state=s) == [SetChoice("top_inverted", True)]
-    assert map_event("SETUP", f, Enc(2, 1), state=s) == [SelectGroup(1)]  # E3: the next group
+    assert map_event("SETUP", f, Sw(2, "short", ts=6.0), state=s) == [SetChoice("top_inverted", True)]
+    assert map_event("SETUP", f, Enc(1, 1), state=s) == [SelectGroup(1)]  # E2: the next group
     assert map_event("SETUP", f, Enc(3, 1), state=s) == []                # E4 unused on SETUP
+    assert map_event("SETUP", f, Sw(3, "short"), state=s) == []
     f.item = _item("input_trim_db")
-    assert map_event("SETUP", f, Enc(1, 3), state=s) == [Nudge("input_trim_db", 3, False)]
+    assert map_event("SETUP", f, Enc(2, 3), state=s) == [Nudge("input_trim_db", 3, False)]
     apply_focus(f, SelectItem(-99))
     assert f.item == 0
     apply_focus(f, SelectItem(99))
     assert f.item == len(im.SETUP_ITEMS) - 1
-    assert map_event("SETUP", f, Sw(0, "short"), state=s) == [GotoPage("HWTEST")]
+    assert map_event("SETUP", f, Sw(2, "short"), state=s) == [GotoPage("HWTEST")]
     f.item = _item("PHONE")
-    assert map_event("SETUP", f, Sw(1, "short"), state=s) == [GotoPage("PHONE")]
+    assert map_event("SETUP", f, Sw(2, "short"), state=s) == [GotoPage("PHONE")]
 
 
-def test_e3_jumps_one_group_per_event_and_clamps():
-    """E3 on SETUP (D-013): one group per event however fast the turn; forward = the first
-    item of the next group; backward from inside a group = its own first item first; clamps
-    at both ends. A jump drops a pending choice and a pending confirm."""
+def test_setup_e3_moves_a_number_per_detent_fine_while_its_push_is_held():
+    """D-017: E3 turns a number one Nudge per detent (a merged fast turn: every detent, never
+    accelerated); E3's push held while turning = fine steps (the per-encoder rule: another
+    knob's push held does not make E3 fine); the release after it shows nothing."""
+    s = st.State()
+    fld = "out_trim_db.0"
+    f = Focus(item=_item(fld))
+    assert map_event("SETUP", f, Enc(2, 1, ts=1.0), state=s) == [Nudge(fld, 1, False)]
+    assert map_event("SETUP", f, Enc(2, -3, ts=1.01), state=s) == [Nudge(fld, -3, False)]
+    for k in range(6):
+        assert map_event("SETUP", f, Enc(2, -1, ts=1.02 + k * 0.01), state=s) == \
+            [Nudge(fld, -1, False)]
+    assert map_event("SETUP", f, Sw(2, "press", ts=2.0), state=s) == []
+    assert map_event("SETUP", f, Enc(2, 2, ts=2.1), state=s) == [Nudge(fld, 2, True)]
+    assert map_event("SETUP", f, Sw(2, "release", ts=2.3), state=s) == []
+    assert map_event("SETUP", f, Sw(2, "short", ts=2.3), state=s) == []   # end of a fine turn
+    assert map_event("SETUP", f, Enc(2, 1, ts=3.0), state=s) == [Nudge(fld, 1, False)]
+    map_event("SETUP", f, Sw(0, "press", ts=4.0), state=s)                # E1's push held
+    assert map_event("SETUP", f, Enc(2, 1, ts=4.1), state=s) == [Nudge(fld, 1, False)]
+    for d016 in ("deharsh_hz", "loud_boost_db", "aux_gain_db"):           # D-016's numbers too
+        g = Focus(item=_item(d016))
+        assert map_event("SETUP", g, Enc(2, 2, ts=1.0), state=s) == [Nudge(d016, 2, False)]
+
+
+@pytest.mark.parametrize("item", range(len(im.SETUP_ITEMS)),
+                         ids=[f"{it.group}-{it.label}" for it in im.SETUP_ITEMS])
+def test_setup_e1_and_e2_pushes_act_on_nothing_and_point_to_e3(item):
+    """D-017: on SETUP only E3's push sets, opens or runs. An E1 or E2 push emits no action but
+    a hint naming the E3 gesture the row takes (or, on a read-only row, why it is fixed), and
+    leaves a popup as it was."""
+    s = st.State()
+    it = im.SETUP_ITEMS[item]
+    want = (im.HINT_TURN_VALUE if it.kind in ("num", "bool", "choice") else
+            im.HINT_PUSH_OPEN if it.kind == "page" else
+            im.HINT_PUSH_TWICE if it.needs_confirm else im.HINT_PUSH_RUN)
+    for n in (0, 1):
+        f = Focus(item=item)
+        acts = []
+        for kind in ("press", "release", "short"):
+            acts += map_event("SETUP", f, Sw(n, kind, ts=1.0), state=s)
+        assert acts == [ShowHint(want)], (n, acts)
+        assert f.pick is None and f.confirm is None and f.item == item
+    if it.risky or it.needs_confirm:                  # with its popup open: still only a hint
+        f = _setup_mode_focus(item, "pick" if it.risky else "confirm", s)
+        before = (f.pick, f.pick_value, f.confirm)
+        for n in (0, 1):
+            assert map_event("SETUP", f, Sw(n, "short", ts=1.0), state=s) == \
+                [ShowHint(im.HINT_PUSH_APPLY if it.risky else im.HINT_PUSH_RUN)]
+        assert (f.pick, f.pick_value, f.confirm) == before
+
+
+def test_e2_jumps_one_group_per_event_and_clamps():
+    """E2 on SETUP (D-017; E3 under D-013): one group per event however fast the turn; forward =
+    the first item of the next group; backward from inside a group = its own first item first;
+    clamps at both ends. A jump drops a pending proposal and a pending confirm; with the popup
+    open the turn only cancels it."""
     names = im.SETUP_GROUP_NAMES
     first = [next(i for i, it in enumerate(im.SETUP_ITEMS) if it.group == g) for g in names]
     f = Focus()
     seen = []
     for k, d in enumerate((1, 3, 1, 7, 1, 1, 2)):
-        acts = map_event("SETUP", f, Enc(2, d, ts=k * 0.01))
+        acts = map_event("SETUP", f, Enc(1, d, ts=k * 0.01))
         assert acts == [SelectGroup(1)], d
         assert apply_focus(f, acts[0]) is True
         seen.append(im.SETUP_ITEMS[f.item].group)
@@ -1945,7 +2121,7 @@ def test_e3_jumps_one_group_per_event_and_clamps():
     f.item = _item("dev_audition")                                         # BOX 2/3
     back = []
     for k in range(7):
-        acts = map_event("SETUP", f, Enc(2, -3, ts=1.0 + k * 0.01))
+        acts = map_event("SETUP", f, Enc(1, -3, ts=1.0 + k * 0.01))
         assert acts == [SelectGroup(-1)]
         apply_focus(f, acts[0])
         back.append(f.item)
@@ -1956,194 +2132,229 @@ def test_e3_jumps_one_group_per_event_and_clamps():
     assert f.item == first[1]
     apply_focus(f, SelectGroup(-1))
     assert f.item == first[0]
-    # a jump clears a pending choice and a pending confirm
+    # a jump clears a pending proposal and a pending confirm
     g = Focus(item=_item("mono_subs"), pick="mono_subs", pick_value=True, pick_until=INF,
               confirm="reset_live", confirm_until=INF)
     apply_focus(g, SelectGroup(1))
     assert im.SETUP_ITEMS[g.item].group == "INPUT"
     assert g.pick is None and g.pick_now(0.0) is None and g.confirm is None
+    # with the popup open, E2 cancels it and jumps nowhere
     g = Focus(item=_item("mono_subs"), pick="mono_subs", pick_value=True, pick_until=INF)
-    apply_focus(g, SelectGroup(-1))
-    assert g.pick is None and g.item == first[1]
+    assert map_event("SETUP", g, Enc(1, -1, ts=0.0)) == [ShowHint(im.HINT_CANCELLED)]
+    assert g.pick is None and g.item == _item("mono_subs")
 
 
-def test_setup_turn_chooses_wraps_and_back_on_the_current_value_clears():
-    """E2 on an ON/off or a choice CHOOSES (D-013): one choice per event, wrapping, from the
-    value already chosen, else the current one; landing back on the current = nothing chosen.
-    A turn alone never sets anything."""
+def test_setup_e3_proposal_steps_by_direction_stops_at_the_ends_and_closes_on_the_current():
+    """D-017 on a risky row: E3 right = the next choice, left = the previous one, from the
+    proposal shown, else from the current value; it stops at both ends (never wraps: a fast turn
+    lands where it points); back on the current value the popup closes; at an end with no popup
+    a hint says the row is already there. A turn alone never sets anything."""
     s = st.State()                                                         # audition "sum"
     f = Focus(item=_item("dev_audition"))
-    want = [(1, "tops"), (1, "subs"), (1, None), (1, "tops"), (-1, None), (-1, "subs"),
-            (-1, "tops"), (-1, None)]
-    for k, (d, v) in enumerate(want):
+    steps = [(1, "tops", []), (1, "subs", []), (1, "subs", []), (-1, "tops", []), (-1, None, []),
+             (-1, None, [ShowHint("ALREADY SUM")])]
+    for k, (d, v, acts) in enumerate(steps):
         t = 1.0 + k
-        assert map_event("SETUP", f, Enc(1, d, ts=t), state=s) == [], k
+        assert map_event("SETUP", f, Enc(2, d, ts=t), state=s) == acts, k
         assert f.pick_now(t) == (None if v is None else ("dev_audition", v)), k
         if v is None:
             assert f.pick is None
-    # an ON/off: one detent chooses the other value, the next is back on the current
+    # an ON/off: right = ON (INVERTED), left = off (normal), whatever was proposed before
     g = Focus(item=_item("top_inverted"))
-    map_event("SETUP", g, Enc(1, -1, ts=1.0), state=s)
-    assert g.pick_now(1.0) == ("top_inverted", True)
-    map_event("SETUP", g, Enc(1, -1, ts=1.1), state=s)
-    assert g.pick_now(1.1) is None
-    # it reads the state it is given: the current value is where the choosing starts
+    assert map_event("SETUP", g, Enc(2, -1, ts=1.0), state=s) == [ShowHint("ALREADY NORMAL")]
+    assert map_event("SETUP", g, Enc(2, 1, ts=1.1), state=s) == []
+    assert g.pick_now(1.1) == ("top_inverted", True)
+    assert map_event("SETUP", g, Enc(2, 1, ts=1.2), state=s) == []        # stays INVERTED
+    assert g.pick_now(1.2) == ("top_inverted", True)
+    assert map_event("SETUP", g, Enc(2, -1, ts=1.3), state=s) == []       # back: closed
+    assert g.pick_now(1.3) is None
+    # it reads the state it is given: the current value is where the stepping starts
     h = Focus(item=_item("dev_audition"))
-    map_event("SETUP", h, Enc(1, 1, ts=1.0), state=st.State(dev_audition="subs"))
-    assert h.pick_now(1.0) == ("dev_audition", "sum")
-    # a value left chosen for ANOTHER field is not the start (nor set by this row's push)
+    assert map_event("SETUP", h, Enc(2, 1, ts=1.0), state=st.State(dev_audition="subs")) == \
+        [ShowHint("ALREADY SUBS")]
+    map_event("SETUP", h, Enc(2, -1, ts=1.1), state=st.State(dev_audition="subs"))
+    assert h.pick_now(1.1) == ("dev_audition", "tops")
+    # a value left proposed for ANOTHER field is not the start (nor applied by this row's push)
     k = Focus(item=_item("sub_inverted"), pick="mono_subs", pick_value=True, pick_until=INF)
-    map_event("SETUP", k, Enc(1, 1, ts=1.0), state=s)
+    map_event("SETUP", k, Enc(2, 1, ts=1.0), state=s)
     assert k.pick_now(1.0) == ("sub_inverted", True)
     k = Focus(item=_item("sub_inverted"), pick="mono_subs", pick_value=True, pick_until=INF)
-    assert map_event("SETUP", k, Sw(1, "short", ts=1.0), state=s) == []
-    assert k.pick_now(1.0) == ("sub_inverted", True)
+    assert map_event("SETUP", k, Sw(2, "short", ts=1.0), state=s) == [ShowHint(im.HINT_TURN_VALUE)]
 
 
 def test_setup_one_choice_per_event_however_fast():
-    """A fast turn reaches map_event as ONE merged event (delta 3, 5...): it moves the choice
-    one step, in its direction, never 3 steps (which would wrap past the target unseen)."""
+    """A fast turn reaches map_event as ONE merged event (delta 3, 5...): it moves the proposal
+    one step, in its direction, never 3 steps past what the operator could read."""
     s = st.State()
     f = Focus(item=_item("dev_audition"))
-    assert map_event("SETUP", f, Enc(1, 3, ts=1.0), state=s) == []
+    assert map_event("SETUP", f, Enc(2, 3, ts=1.0), state=s) == []
     assert f.pick_now(1.0) == ("dev_audition", "tops")
-    map_event("SETUP", f, Enc(1, 5, ts=1.01), state=s)
+    map_event("SETUP", f, Enc(2, 5, ts=1.01), state=s)
     assert f.pick_now(1.01) == ("dev_audition", "subs")
-    map_event("SETUP", f, Enc(1, -4, ts=1.02), state=s)
+    map_event("SETUP", f, Enc(2, -4, ts=1.02), state=s)
     assert f.pick_now(1.02) == ("dev_audition", "tops")
     g = Focus(item=_item("mono_subs"))
-    map_event("SETUP", g, Enc(1, 2, ts=1.0), state=s)                      # 2 detents: still ON
+    map_event("SETUP", g, Enc(2, 2, ts=1.0), state=s)                      # 2 detents: still ON
     assert g.pick_now(1.0) == ("mono_subs", True)
+    h = Focus(item=_item("aux_mode"))
+    map_event("SETUP", h, Enc(2, 9, ts=1.0), state=s)                      # off -> MIC, not LINE
+    assert h.pick_now(1.0) == ("aux_mode", "mic")
 
 
-@pytest.mark.parametrize("push", [0, 1])                                   # E1 or E2 push
-def test_setup_push_sets_the_chosen_value_and_clears_the_choice(push):
+def test_setup_e3_push_applies_the_proposal_and_clears_it():
     s = st.State()
     f = Focus(item=_item("dev_audition"))
-    map_event("SETUP", f, Enc(1, 1, ts=1.0), state=s)
-    map_event("SETUP", f, Enc(1, 1, ts=1.2), state=s)
-    acts = map_event("SETUP", f, Sw(push, "short", ts=2.0), state=s)
+    map_event("SETUP", f, Enc(2, 1, ts=1.0), state=s)
+    map_event("SETUP", f, Enc(2, 1, ts=1.2), state=s)
+    for n in (0, 1):                                    # E1/E2 pushes never apply it
+        assert map_event("SETUP", f, Sw(n, "short", ts=1.5), state=s) == \
+            [ShowHint(im.HINT_PUSH_APPLY)]
+    acts = map_event("SETUP", f, Sw(2, "short", ts=2.0), state=s)
     assert acts == [SetChoice("dev_audition", "subs")]
     assert f.pick is None and f.pick_now(2.0) is None
     assert apply_focus(f, acts[0], now=2.0) is False                       # the controller sets it
     assert f.editing_now(2.1) == "dev_audition"
-    # the next push starts again: it proposes (from the state), it does not set again
-    assert map_event("SETUP", f, Sw(push, "short", ts=3.0), state=s) == []
-    assert f.pick_now(3.0) == ("dev_audition", "tops")
-
-
-def test_setup_push_with_nothing_chosen_proposes_the_next_value_then_sets_it():
-    """Push, push still works (D-013), now with the target on screen between the two."""
-    s = st.State()
-    f = Focus(item=_item("mono_subs"))
-    assert map_event("SETUP", f, Sw(1, "short", ts=1.0), state=s) == []
-    assert f.pick_now(1.0) == ("mono_subs", True)
-    assert map_event("SETUP", f, Sw(1, "short", ts=2.0), state=s) == [SetChoice("mono_subs", True)]
-    g = Focus(item=_item("profile"))                                       # a choice: the next one
-    m4 = st.State(profile="m4")
-    assert map_event("SETUP", g, Sw(0, "short", ts=1.0), state=m4) == []
-    assert g.pick_now(1.0) == ("profile", "dev")                           # wraps
-    assert map_event("SETUP", g, Sw(0, "short", ts=1.5), state=m4) == [SetChoice("profile", "dev")]
+    # the next push applies nothing again: it says to turn E3
+    assert map_event("SETUP", f, Sw(2, "short", ts=3.0), state=s) == [ShowHint(im.HINT_TURN_VALUE)]
+    assert f.pick_now(3.0) is None
 
 
 def test_setup_choice_expires_after_pick_window_and_each_turn_renews_it():
     s = st.State()
     assert im.PICK_WINDOW_S == 8.0
     f = Focus(item=_item("dev_audition"))
-    map_event("SETUP", f, Enc(1, 1, ts=10.0), state=s)
+    map_event("SETUP", f, Enc(2, 1, ts=10.0), state=s)
     assert f.pick_until == pytest.approx(10.0 + im.PICK_WINDOW_S)
-    map_event("SETUP", f, Enc(1, 1, ts=15.0), state=s)                     # renewed by the turn
+    map_event("SETUP", f, Enc(2, 1, ts=15.0), state=s)                     # renewed by the turn
     assert f.pick_now(15.0 + im.PICK_WINDOW_S - 0.1) == ("dev_audition", "subs")
     assert f.pick_now(15.0 + im.PICK_WINDOW_S) is None                     # expired
-    # a push after the window sets nothing: it proposes again, from the current value
-    assert map_event("SETUP", f, Sw(1, "short", ts=23.5), state=s) == []
-    assert f.pick_now(23.5) == ("dev_audition", "tops")
-    # a turn after the window starts from the current value, not from the stale choice
+    # an E3 push after the window applies nothing
+    assert map_event("SETUP", f, Sw(2, "short", ts=23.5), state=s) == [ShowHint(im.HINT_TURN_VALUE)]
+    assert f.pick_now(23.5) is None
+    # a turn after the window starts from the current value, not from the stale proposal
     g = Focus(item=_item("dev_audition"))
-    map_event("SETUP", g, Enc(1, 1, ts=0.0), state=s)
-    map_event("SETUP", g, Enc(1, 1, ts=1.0), state=s)                      # subs, until 9
-    map_event("SETUP", g, Enc(1, 1, ts=30.0), state=s)
+    map_event("SETUP", g, Enc(2, 1, ts=0.0), state=s)
+    map_event("SETUP", g, Enc(2, 1, ts=1.0), state=s)                      # subs, until 9
+    map_event("SETUP", g, Enc(2, 1, ts=30.0), state=s)
     assert g.pick_now(30.0) == ("dev_audition", "tops")
 
 
-def test_setup_e1_or_e3_move_clears_a_choice():
+def test_setup_e1_or_e2_turn_cancels_the_popup_and_moves_nothing():
+    """D-017: the popup says `turn E1 = cancel`. An E1 (or E2) turn closes it, applies nothing
+    and leaves the row selected; the next turn moves as usual. Moving otherwise (apply_focus,
+    a page change in the controller) drops a proposal too."""
     s = st.State()
-    f = Focus(item=_item("mono_subs"))
-    map_event("SETUP", f, Enc(1, 1, ts=1.0), state=s)
-    assert f.pick_now(1.0) == ("mono_subs", True)
-    acts = map_event("SETUP", f, Enc(0, 1, ts=1.5), state=s)
-    assert acts == [SelectItem(1)]
-    apply_focus(f, acts[0], now=1.5)
-    assert f.pick is None and f.pick_now(1.5) is None
-    apply_focus(f, SelectItem(-1), now=1.6)                                 # back on Mono L+R
-    assert map_event("SETUP", f, Sw(1, "short", ts=2.0), state=s) == []    # proposes: no set
-    assert f.pick_now(2.0) == ("mono_subs", True)
-    acts = map_event("SETUP", f, Enc(2, -1, ts=2.1), state=s)              # E3 too
-    assert acts == [SelectGroup(-1)]
-    apply_focus(f, acts[0], now=2.1)
-    assert f.pick is None
+    mono = _item("mono_subs")
+    for enc, d in ((0, 1), (0, -2), (1, 1), (1, -1)):
+        f = Focus(item=mono)
+        map_event("SETUP", f, Enc(2, 1, ts=1.0), state=s)
+        assert im.setup_popup(f, 1.0) == ("pick", True)
+        assert map_event("SETUP", f, Enc(enc, d, ts=1.5), state=s) == [ShowHint(im.HINT_CANCELLED)]
+        assert f.pick is None and f.item == mono and im.setup_popup(f, 1.5) is None
+        assert map_event("SETUP", f, Sw(2, "short", ts=2.0), state=s) == \
+            [ShowHint(im.HINT_TURN_VALUE)]                                 # nothing to apply
+        acts = map_event("SETUP", f, Enc(enc, d, ts=2.5), state=s)
+        assert acts == ([SelectItem(d)] if enc == 0 else [SelectGroup(1 if d > 0 else -1)])
+    f = Focus(item=mono, pick="mono_subs", pick_value=True, pick_until=INF)
+    apply_focus(f, SelectItem(1), now=1.0)
+    assert f.pick is None and f.pick_now(1.0) is None
+    # E4 and the buttons other than B1 leave it open (B4 may mute meanwhile)
+    g = Focus(item=mono, pick="mono_subs", pick_value=True, pick_until=INF)
+    map_event("SETUP", g, Enc(3, 1, ts=1.0), state=s)
+    for sw in (5, 6, 7):
+        for kind in ("press", "short", "long", "release"):
+            map_event("SETUP", g, Sw(sw, kind, ts=1.0), state=s, muted=False)
+    assert im.setup_popup(g, 1.0) == ("pick", True)
 
 
 def test_setup_readonly_rows_only_show_their_hint():
     """Focus.readonly (refreshed by the Controller at every knob event): Profile pinned in
-    k1000.yaml, Audition off the dev profile, Spectrum disabled in k1000.yaml. A turn or a push
-    there only says why; nothing is chosen, nothing set."""
+    k1000.yaml, Audition off the dev profile, Spectrum disabled in k1000.yaml. An E3 turn or any
+    push there only says why; nothing is proposed, nothing set."""
     s = st.State()
     ro = {"profile": "PROFILE PINNED IN k1000.yaml", "dev_audition": "AUDITION: DEV PROFILE ONLY",
           im.F_SPECTRUM_ON: "SPECTRUM OFF IN k1000.yaml"}
     for field, hint in ro.items():
         f = Focus(item=_item(field), readonly=dict(ro))
-        for ev in (Enc(1, 1, ts=1.0), Enc(1, -3, ts=1.5), Sw(0, "short", ts=2.0),
-                   Sw(1, "short", ts=3.0), Sw(1, "short", ts=3.5)):
+        for ev in (Enc(2, 1, ts=1.0), Enc(2, -3, ts=1.5), Sw(2, "short", ts=2.0),
+                   Sw(0, "short", ts=3.0), Sw(1, "short", ts=3.5)):
             assert map_event("SETUP", f, ev, state=s) == [ShowHint(hint)], (field, ev)
         assert f.pick is None and f.confirm is None
-    # a choice made before the field became read-only (a phone changed the profile) is not set
+    # a proposal made before the field became read-only (a phone changed the profile) is not set
     f = Focus(item=_item("profile"))
-    map_event("SETUP", f, Enc(1, 1, ts=1.0), state=s)
+    map_event("SETUP", f, Enc(2, 1, ts=1.0), state=s)
     assert f.pick_now(1.0) == ("profile", "m4")
     f.readonly = {"profile": ro["profile"]}
-    assert map_event("SETUP", f, Sw(1, "short", ts=2.0), state=s) == [ShowHint(ro["profile"])]
+    assert map_event("SETUP", f, Sw(2, "short", ts=2.0), state=s) == [ShowHint(ro["profile"])]
     # the other rows are untouched by it
     g = Focus(item=_item("mono_subs"), readonly=dict(ro))
-    assert map_event("SETUP", g, Sw(1, "short", ts=1.0), state=s) == []
+    assert map_event("SETUP", g, Enc(2, 1, ts=1.0), state=s) == []
     assert g.pick_now(1.0) == ("mono_subs", True)
 
 
 def test_setup_knobs_say_what_a_row_wants():
-    """A gesture with no meaning on a row says what that row takes, and changes nothing."""
+    """A gesture with no meaning on a row says what that row takes (naming E3), and changes
+    nothing."""
     s = st.State()
-    assert (im.HINT_TURN_VALUE, im.HINT_PUSH_OPEN, im.HINT_PUSH_RUN, im.HINT_PUSH_TWICE) == \
-        ("TURN THE VALUE KNOB", "PUSH TO OPEN", "PUSH TO RUN", "PUSH TWICE TO RUN")
+    assert (im.HINT_TURN_VALUE, im.HINT_PUSH_OPEN, im.HINT_PUSH_RUN, im.HINT_PUSH_TWICE,
+            im.HINT_PUSH_APPLY, im.HINT_CANCELLED) == \
+        ("TURN E3 TO CHANGE", "PUSH E3 TO OPEN", "PUSH E3 TO RUN", "PUSH E3 TWICE TO RUN",
+         "PUSH E3 TO APPLY", "CANCELLED")
     for field in ("out_trim_db.2", "out_trim_db.0", "sub_lowpass_hz", "input_trim_db"):
         f = Focus(item=_item(field))
-        assert map_event("SETUP", f, Sw(0, "short"), state=s) == [ShowHint(im.HINT_TURN_VALUE)]
-        assert map_event("SETUP", f, Sw(1, "short"), state=s) == [ShowHint(im.HINT_TURN_VALUE)]
+        for n in (0, 1, 2):
+            assert map_event("SETUP", f, Sw(n, "short"), state=s) == [ShowHint(im.HINT_TURN_VALUE)]
         assert f.pick is None and f.confirm is None
     for field, hint in (("PHONE", im.HINT_PUSH_OPEN), ("HWTEST", im.HINT_PUSH_OPEN),
                         (im.A_RESET_LIVE, im.HINT_PUSH_TWICE), (im.A_UNDO_RESET, im.HINT_PUSH_RUN),
                         (im.A_LAPTOP, im.HINT_PUSH_TWICE)):
         f = Focus(item=_item(field))
         for d in (1, -2):
-            assert map_event("SETUP", f, Enc(1, d), state=s) == [ShowHint(hint)], field
+            assert map_event("SETUP", f, Enc(2, d), state=s) == [ShowHint(hint)], field
         assert f.pick is None and f.confirm is None
+    # the action's popup open: a turn says the next push runs it
+    f = Focus(item=_item(im.A_RESET_LIVE), confirm=im.A_RESET_LIVE, confirm_until=INF)
+    assert map_event("SETUP", f, Enc(2, 1), state=s) == [ShowHint(im.HINT_PUSH_RUN)]
+    assert f.confirm == im.A_RESET_LIVE
 
 
-def test_setup_rebuild_is_chosen_then_set_never_one_gesture():
-    """Mono L+R, Profile, Audition rebuild the pipeline (a possible click): chosen with E2 (or
-    a first push), set by a push within PICK_WINDOW_S of the last choice; moving drops it."""
+@pytest.mark.parametrize("risky", ["d017", "list emptied"])
+def test_setup_rebuild_is_never_applied_by_turns_alone(risky, monkeypatch):
+    """A pipeline rebuild (a possible click) is turn + E3 push, never turns alone: however many
+    turns, both ways, fast, or with E3's push held and released; even with SETUP_RISKY emptied
+    (SetupItem.risky keeps every rebuild risky). The push applies the proposal within
+    PICK_WINDOW_S; moving drops it."""
+    if risky != "d017":
+        monkeypatch.setattr(im, "SETUP_RISKY", frozenset())
     s = st.State()
     for field in sorted(st.REBUILD_FIELDS):
-        f = Focus(item=_item(field))
-        target = _other_choice(im.SETUP_ITEMS[f.item], s)
-        assert map_event("SETUP", f, Sw(0, "short", ts=10.0), state=s) == []
-        assert f.pick_now(10.5) == (field, target) and f.confirm is None
-        assert map_event("SETUP", f, Sw(1, "short", ts=11.0), state=s) == [SetChoice(field, target)]
-        assert f.pick is None
-        assert map_event("SETUP", f, Sw(0, "short", ts=20.0), state=s) == []
-        assert map_event("SETUP", f, Sw(0, "short", ts=20.0 + im.PICK_WINDOW_S), state=s) == []
-        assert f.pick_now(28.5) == (field, target)                        # expired: proposed again
-        apply_focus(f, SelectItem(-1))                                    # moving cancels
-        assert f.pick is None
+        i = _item(field)
+        assert im.SETUP_ITEMS[i].risky, field
+        f = Focus(item=i)
+        acts, t = [], 1.0
+        for d in (1, 1, -1, 3, -2, 1, 5, -9, 1):
+            acts += map_event("SETUP", f, Enc(2, d, ts=t), state=s)
+            t += 0.03
+        acts += map_event("SETUP", f, Sw(2, "press", ts=t), state=s)
+        for d in (1, -1, 1):
+            acts += map_event("SETUP", f, Enc(2, d, ts=t), state=s)
+            t += 0.03
+        acts += map_event("SETUP", f, Sw(2, "release", ts=t), state=s)
+        acts += map_event("SETUP", f, Sw(2, "short", ts=t), state=s)
+        assert not any(isinstance(a, (SetChoice, Toggle)) for a in acts), (field, acts)
+        target = _other_choice(im.SETUP_ITEMS[i], s)
+        g = Focus(item=i)
+        d = 1 if im.SETUP_ITEMS[i].choices.index(target) > 0 else -1
+        assert map_event("SETUP", g, Enc(2, d, ts=10.0), state=s) == []
+        assert g.pick_now(10.5) == (field, target) and g.confirm is None
+        assert map_event("SETUP", g, Sw(2, "short", ts=11.0), state=s) == [SetChoice(field, target)]
+        assert g.pick is None
+        map_event("SETUP", g, Enc(2, d, ts=20.0), state=s)
+        assert map_event("SETUP", g, Sw(2, "short", ts=20.0 + im.PICK_WINDOW_S), state=s) == \
+            [ShowHint(im.HINT_TURN_VALUE)]                                # expired: nothing
+        map_event("SETUP", g, Enc(2, d, ts=30.0), state=s)
+        apply_focus(g, SelectItem(-1))                                    # moving cancels
+        assert g.pick is None
 
 
 def test_hwtest_records_and_exits_on_long_press():
@@ -2411,70 +2622,103 @@ def test_demo_cases_include_the_d011_pictures():
             "align_aligned"} <= names
 
 
-# --- D-013: SETUP by speaker floor, choose-then-set, on screen ------------------------------
+# --- D-013: SETUP by speaker floor; D-017: the fixed row, the popup, on screen ---------------
 def _setup_help_text(drawn):
     """The bottom line's right side: what the knobs do on the selected row."""
     return [t for t, x, y, _f in drawn if x == pages.W - 10 and y == pages.H - 22]
 
 
-@pytest.mark.parametrize("field,state_kw,chosen,row,prompt", [
-    ("mono_subs", {}, True, "off → ON", "PUSH TO SET ON · MAY CLICK"),
-    ("dev_audition", {}, "tops", "SUM → TOPS", "PUSH TO SET TOPS · MAY CLICK"),
-    ("profile", {}, "m4", "DEV → M4", "PUSH TO SET M4 · MAY CLICK"),
-    ("top_inverted", {}, True, "normal → INVERTED", "PUSH TO SET INVERTED"),
-    ("lowcut_on", {}, False, "ON → off", "PUSH TO SET OFF"),
-    ("spectrum_on", {"spectrum_on": False}, True, "off → ON", "PUSH TO SET ON"),
+@pytest.mark.parametrize("field,state_kw,proposed,big,what", [
+    ("mono_subs", {}, True, "off → ON", "MAY CLICK"),
+    ("dev_audition", {}, "tops", "SUM → TOPS", "MAY CLICK"),
+    ("profile", {}, "m4", "DEV → M4", "MAY CLICK"),
+    ("aux_mode", {}, "mic", "off → MIC", "MAY CLICK"),
+    ("top_inverted", {}, True, "normal → INVERTED", "THE TOPS DIP A MOMENT"),
+    ("sub_inverted", {}, True, "normal → INVERTED", "THE SUBS DIP A MOMENT"),
+    ("lowcut_on", {}, False, "ON · 100 Hz → off", "FULL RANGE TO THE TOPS"),
+    ("lowcut_on", {"lowcut_on": False, "lowcut_hz": 112.0}, True, "off → ON", "TOPS CUT BELOW 112 Hz"),
 ])
-def test_setup_pending_choice_row_shows_now_and_chosen(field, state_kw, chosen, row, prompt):
-    """Thomas: "once pushing it shows PUSH AGAIN but the value to select is not visible". Now the
-    row turns red with `now → chosen`, and the footer says what the push will set (MAY CLICK on
-    a pipeline rebuild). Expired, the row is plain again."""
+def test_setup_popup_shows_the_row_now_and_proposed_and_what_it_does(field, state_kw, proposed,
+                                                                     big, what):
+    """Thomas (2026-10-17): "a confirm popup for really sensitive settings (confirmed by e3
+    push)". The popup names the row, shows `now → proposed` big, what it does (MAY CLICK on a
+    rebuild), and the two ways out; it covers the selected row (red-edged: a push changes
+    something), the footer stays free for hints. Expired, the row is plain again."""
     s = st.State(**state_kw)
     i = _item(field)
-    label = im.SETUP_ITEMS[i].label
-    f = Focus(item=i, pick=field, pick_value=chosen, pick_until=10.0)
+    it = im.SETUP_ITEMS[i]
+    f = Focus(item=i, pick=field, pick_value=proposed, pick_until=10.0)
+    c = _setup_ctx(s, pages.ScreenStatus(**RUN), f, now=5.0)
+    big = big.replace("ON · 100 Hz", "ON")                 # the popup names the value alone
+    assert {k: v for k, v in c.popup.items() if k != "px"} == {
+        "title": f"{it.group} › {it.label}", "big": big, "what": what,
+        "instr": "push E3 = apply · turn E1 = cancel"}
     img, drawn = _drawn("SETUP", s, pages.ScreenStatus(**RUN), f, now=5.0)
-    _y, fill, bar, val = _setup_selected(img, drawn, label)
-    assert (bar, fill, val) == (pages.RED, pages.FG, row)
-    assert _setup_footer(drawn) == [prompt]
-    assert img.getpixel((5, pages.H - 5)) == pages.AMBER
-    assert _setup_help_text(drawn) == ["push = set"]
-    img, drawn = _drawn("SETUP", s, pages.ScreenStatus(**RUN), f, now=10.0)   # expired
-    _y, fill, bar, val = _setup_selected(img, drawn, label)
-    assert (bar, fill) == (pages.AMBER, pages.BG) and "→" not in val
+    assert _popup_edge(img)
+    assert not any(t == it.label and x == SETUP_LABEL_X for t, x, _y, _f in drawn)   # covered
     assert _setup_footer(drawn) == [] and img.getpixel((5, pages.H - 5)) == pages.BG
-    assert _setup_help_text(drawn) == ["turn = choose · push = set"]
+    assert _setup_help_text(drawn) == ["turn E3 · push E3 = apply"]
+    img, drawn = _drawn("SETUP", s, pages.ScreenStatus(**RUN), f, now=10.0)   # expired
+    _y, fill, bar, val = _setup_selected(img, drawn, it.label)
+    assert (bar, fill) == (pages.AMBER, pages.BG) and "→" not in val and not _popup_edge(img)
+    assert _setup_ctx(s, pages.ScreenStatus(**RUN), f, now=10.0).popup is None
 
 
-def test_setup_choice_prompt_takes_the_footer_over_muted_and_a_hint_over_the_prompt():
+@pytest.mark.parametrize("item,mode", [(i, m) for i, m in SETUP_ROW_MODES if m != "plain"],
+                         ids=[f"{im.SETUP_ITEMS[i].group}-{im.SETUP_ITEMS[i].label}-{m}"
+                              for i, m in SETUP_ROW_MODES if m != "plain"])
+def test_setup_popup_is_readable_and_covers_only_the_middle_of_the_list(item, mode):
+    """Every popup (each risky row, each confirmed action): its texts inside the box at a size
+    readable at arm's length (the value 28 px or more, the rest 14 or more); the box inside the
+    list, clear of the status bar, the top line (E1 ITEM, the group, VALUE E3), the bottom line
+    (E2 GROUP, the help) and the scroll bar: outside it the frame is pixel for pixel the one
+    without the popup."""
+    s = st.State()
+    status = pages.ScreenStatus(**RUN)
+    f = _setup_mode_focus(item, mode, s)
+    c = _setup_ctx(s, status, f)
+    px = c.popup["px"]
+    assert px["big"] >= 28 and min(px["title"], px["instr"], px.get("what", 99)) >= 14, px
+    x0, y0, x1, y1 = pages.SETUP_POPUP
+    assert SETUP_LIST_Y[0] <= y0 and y1 <= SETUP_LIST_Y[1] and x1 < pages.W - 6
+    for part, box in c.ink[pages.POPUP_INK].items():
+        assert x0 + 3 <= box[0] and box[2] <= x1 - 3 and y0 + 3 <= box[1] and box[3] <= y1 - 3, \
+            (part, box)
+    with_ = pages.render("SETUP", s, status, f, now=0.0)
+    without = pages.render("SETUP", s, status, Focus(item=item), now=0.0)
+    outside = [(x, y) for y in list(range(0, y0)) + list(range(y1 + 1, pages.H))
+               for x in range(0, pages.W, 3)]
+    assert all(with_.getpixel(p) == without.getpixel(p) for p in outside)
+
+
+def test_setup_popup_leaves_muted_its_footer_and_a_hint_takes_it():
+    """Muted with a popup open: the MUTED strip keeps the footer (the popup says what a push
+    does), inside the red frame the popup's own outline stays apart from it; a hint takes the
+    footer for its 2.5 s, the popup stays. The action popup the same."""
     s = st.State(muted=True)
     status = pages.ScreenStatus(muted=True, **RUN)
     mono = _item("mono_subs")
     pick = dict(pick="mono_subs", pick_value=True, pick_until=INF)
     img, drawn = _drawn("SETUP", s, status, Focus(item=mono, **pick))
-    assert _setup_footer(drawn) == ["PUSH TO SET ON · MAY CLICK"]
-    assert img.getpixel((20, pages.H - 8)) == pages.AMBER
-    assert _count(img, (4, pages.H - pages.FOOTER_H, pages.W - 4, pages.H - 4), pages.BAND_RED) == 0
-    assert not any(y == SETUP_FOOTER_Y and t in ("MUTED", "READY · hold B4 to unmute")
-                   for t, _x, y, _f in drawn)
-    assert _muted_pill(img) and img.getpixel((2, 100)) == pages.BAND_RED       # still says MUTED
-    img, drawn = _drawn("SETUP", s, status, Focus(item=mono, hint="NO CHANGE: ALREADY SET",
-                                                  hint_until=INF, **pick))
-    assert _setup_footer(drawn) == ["NO CHANGE: ALREADY SET"]
-    img, drawn = _drawn("SETUP", s, status, Focus(item=mono))                  # nothing pending
-    assert img.getpixel((150, pages.H - 8)) == pages.BAND_RED
+    assert _popup_edge(img) and img.getpixel((150, pages.H - 8)) == pages.BAND_RED
     footer = [t for t, _x, y, _f in drawn if y == SETUP_FOOTER_Y]
     assert "MUTED" in footer and "READY · hold B4 to unmute" in footer
-    # a pending confirm (PUSH AGAIN) leaves MUTED its footer: its hint said it already
+    assert _muted_pill(img) and img.getpixel((2, 100)) == pages.BAND_RED       # still says MUTED
+    x0, y0, x1, y1 = pages.SETUP_POPUP
+    assert img.getpixel((x0 - 2, (y0 + y1) // 2)) == pages.BG                  # apart from the frame
+    img, drawn = _drawn("SETUP", s, status, Focus(item=mono, hint="NO CHANGE: ALREADY SET",
+                                                  hint_until=INF, **pick))
+    assert _setup_footer(drawn) == ["NO CHANGE: ALREADY SET"] and _popup_edge(img)
     img, _d = _drawn("SETUP", s, status, Focus(item=_item(im.A_RESET_LIVE), confirm=im.A_RESET_LIVE,
                                                confirm_until=INF))
-    assert img.getpixel((150, pages.H - 8)) == pages.BAND_RED
+    assert _popup_edge(img) and img.getpixel((150, pages.H - 8)) == pages.BAND_RED
 
 
 def test_setup_readonly_rows_are_drawn_fixed():
     """Profile pinned by k1000.yaml: 'DEV · PINNED'; Audition off the dev profile: '—';
     Spectrum disabled in k1000.yaml: 'DISABLED'. Label and value dimmed when not selected; the
-    bottom line says 'fixed here' when selected. Free, a rebuild's value is amber."""
+    bottom line says 'fixed here' when selected. Free, a risky row's value is amber (D-017:
+    amber = asks for an E3 push), an everyday one's white."""
     s = st.State()
     ro = {"profile": "PROFILE PINNED IN k1000.yaml", "dev_audition": "AUDITION: DEV PROFILE ONLY",
           im.F_SPECTRUM_ON: "SPECTRUM OFF IN k1000.yaml"}
@@ -2488,8 +2732,14 @@ def test_setup_readonly_rows_are_drawn_fixed():
     assert row(drawn, "Profile") == (pages.DIM, "DEV · PINNED", pages.DIM)
     assert row(drawn, "Audition (dev)") == (pages.DIM, "—", pages.DIM)
     _img, drawn = _drawn("SETUP", s, pages.ScreenStatus(**RUN), Focus(item=_item("HWTEST")))
-    assert row(drawn, "Profile") == (pages.FG, "DEV", pages.AMBER)            # free: a rebuild
+    assert row(drawn, "Profile") == (pages.FG, "DEV", pages.AMBER)            # free: risky
     assert row(drawn, "Audition (dev)") == (pages.FG, "SUM", pages.AMBER)
+    _img, drawn = _drawn("SETUP", s, pages.ScreenStatus(**RUN), Focus(item=_item("sub_lowpass_hz")))
+    assert row(drawn, "Mono L+R") == (pages.FG, "off", pages.AMBER)           # a rebuild
+    assert row(drawn, "Polarity") == (pages.FG, "normal", pages.AMBER)        # SUBS › Polarity
+    assert row(drawn, "Low-pass") == (pages.FG, "off", pages.FG)              # everyday: white
+    _img, drawn = _drawn("SETUP", s, pages.ScreenStatus(**RUN), Focus(item=_item("top_inverted")))
+    assert row(drawn, "Lo-Cut") == (pages.FG, "ON · 100 Hz", pages.AMBER)     # risky, no rebuild
     for field, val in (("profile", "DEV · PINNED"), ("dev_audition", "—"),
                        (im.F_SPECTRUM_ON, "DISABLED")):
         img, drawn = _drawn("SETUP", s, pages.ScreenStatus(**RUN), Focus(item=_item(field), readonly=ro))
@@ -2498,64 +2748,115 @@ def test_setup_readonly_rows_are_drawn_fixed():
         assert _setup_help_text(drawn) == ["fixed here"], field
     img, drawn = _drawn("SETUP", s, pages.ScreenStatus(**RUN), Focus(item=_item(im.F_SPECTRUM_ON)))
     assert _setup_selected(img, drawn, "Spectrum")[3] == "ON"
-    assert _setup_help_text(drawn) == ["turn = choose · push = set"]
+    assert _setup_help_text(drawn) == ["turn E3 = change"]
 
 
 @pytest.mark.parametrize("item", range(len(im.SETUP_ITEMS)),
                          ids=[f"{it.group}-{it.label}" for it in im.SETUP_ITEMS])
-def test_setup_keeps_the_group_header_of_the_selected_item_on_screen(item):
-    """D-013: a header row per group (the selected item's white, the others grey), the items
-    under it indented; the top line names the group and the position in it (no '10/27'). The
-    header stays on screen while it fits with a row under the selection (positions 1-6 of a
-    group); deeper in a long group (D-016: TOPS 7, SUBS 8 and 9) the list scrolls as usual and
-    the top line still names the group."""
+def test_setup_selected_row_always_sits_on_the_same_screen_row(item):
+    """D-017 (Thomas: "A centered active row might be more simple and readable"): the selected
+    row is always drawn on the 4th of the 8 rows, the list scrolling under it, at both ends too
+    (blank rows above the first item, below the last; no clamping, no pinned header). Group
+    headers stay inline as dividers, the selected item's in white, the others grey; the top line
+    names the group and the position in it (no '10/27')."""
     it = im.SETUP_ITEMS[item]
     img, drawn = _drawn("SETUP", st.State(), pages.ScreenStatus(**RUN), Focus(item=item))
+    assert _setup_selected(img, drawn, it.label)[0] == SETUP_SEL_Y
+    rows = pages.SETUP_ROWS
+    k = next(r for r, (kind, v) in enumerate(rows) if kind == "item" and v == item)
+    for r in range(8):
+        y = SETUP_LIST_Y[0] + r * 28 + 13
+        at = [(t, x) for t, x, ty, _f in drawn if ty == y and x in (SETUP_HEAD_X, SETUP_LABEL_X)]
+        j = k - pages.SETUP_SEL_ROW + r
+        if not 0 <= j < len(rows):
+            assert at == [], (r, at)                                       # past an end: blank
+        elif rows[j][0] == "head":
+            assert at == [(rows[j][1], SETUP_HEAD_X)], (r, at)
+        else:
+            assert at == [(im.SETUP_ITEMS[rows[j][1]].label, SETUP_LABEL_X)], (r, at)
     heads = _setup_heads(drawn)
-    grp, pos, size = im.setup_group_pos(item)
-    assert all(f == pages.DIM for n, _y, f in heads if n != it.group)
+    assert all(f == (pages.FG if n == it.group else pages.DIM) for n, _y, f in heads)
     assert [n for n, _y, _f in heads] == [g for g in im.SETUP_GROUP_NAMES
                                           if g in {n for n, _y, _f in heads}]   # in order
-    y_sel = _setup_selected(img, drawn, it.label)[0]
+    grp, pos, size = im.setup_group_pos(item)
     top = [t for t, x, y, _f in drawn if y == pages.STATUS_H + 2 and x == pages.W // 2]
     assert top == [f"{grp} {pos}/{size}"]
     assert not any(t.endswith(f"/{len(im.SETUP_ITEMS)}") for t, *_r in drawn)
-    mine = [i.label for i in im.SETUP_ITEMS if i.group == grp]
-    if pos > 6:
-        assert [n for n, _y, _f in heads if n == it.group] == []
-        above = [t for t, x, y, _f in drawn if x == SETUP_LABEL_X and _in_list(y) and y < y_sel]
-        assert above == mine[pos - 1 - len(above):pos - 1] and len(above) >= 3
-        return
-    assert [f for n, _y, f in heads if n == it.group] == [pages.FG]
-    (y_head,) = [y for n, y, _f in heads if n == it.group]
-    assert y_sel - y_head == pos * 28                     # the group's rows, header first
-    above = [t for t, x, y, _f in drawn if x == SETUP_LABEL_X and y_head < y < y_sel]
-    assert above == mine[:pos - 1]
+
+
+def test_setup_first_and_last_items_sit_where_every_other_does():
+    """The ends, named: TOPS › Trim L (two blank rows, then the TOPS header, then it) and BOX ›
+    Knob test (four blank rows under it) on the same screen row as SUBS › Mono L+R."""
+    ys = []
+    for item in (0, _item("mono_subs"), len(im.SETUP_ITEMS) - 1):
+        img, drawn = _drawn("SETUP", st.State(), pages.ScreenStatus(**RUN), Focus(item=item))
+        ys.append(_setup_selected(img, drawn, im.SETUP_ITEMS[item].label)[0])
+        if item == 0:
+            assert _setup_heads(drawn)[0][:2] == ("TOPS", SETUP_SEL_Y - 28)
+            assert not [t for t, x, y, _f in drawn if _in_list(y) and y < SETUP_SEL_Y - 28
+                        and x in (SETUP_HEAD_X, SETUP_LABEL_X)]
+        if item == len(im.SETUP_ITEMS) - 1:
+            assert not [t for t, x, y, _f in drawn if _in_list(y) and y > SETUP_SEL_Y
+                        and x in (SETUP_HEAD_X, SETUP_LABEL_X, SETUP_VALUE_X)]
+    assert ys == [SETUP_SEL_Y] * 3
 
 
 def test_setup_scroll_bar_follows_the_selection():
-    """No ▲▼ marks any more: a scroll bar at the right edge says where the 8 rows sit."""
+    """No ▲▼ marks: a scroll bar at the right edge says which part of the list is in sight
+    (D-017: the blank rows past its ends are not the list, so at the ends the thumb is shorter
+    and touches its end of the bar)."""
     def thumb(item):
         img = pages.render("SETUP", st.State(), pages.ScreenStatus(**RUN), Focus(item=item), now=0.0)
         ys = [y for y in range(*SETUP_LIST_Y) if img.getpixel((pages.W - 5, y)) == pages.DIM]
         assert ys, item
         return ys[0], ys[-1]
+    n = len(pages.SETUP_ROWS)
+    ty0, ty1 = SETUP_LIST_Y[0], SETUP_LIST_Y[1] - 3
+    for item in (0, 1, _item("input_trim_db"), _item("mono_subs"), len(im.SETUP_ITEMS) - 1):
+        k = next(r for r, (kind, v) in enumerate(pages.SETUP_ROWS) if kind == "item" and v == item)
+        v0, v1 = max(0, k - 3), min(n, k + 5)
+        assert thumb(item) == (ty0 + (ty1 - ty0) * v0 // n, ty0 + (ty1 - ty0) * v1 // n), item
     top, bottom = thumb(0), thumb(len(im.SETUP_ITEMS) - 1)
-    assert top[0] == SETUP_LIST_Y[0] and bottom[1] >= SETUP_LIST_Y[1] - 4
+    assert top[0] == SETUP_LIST_Y[0] and bottom[1] == ty1
     assert top[0] < thumb(_item("input_trim_db"))[0] < bottom[0]
     assert top[1] - top[0] < SETUP_LIST_Y[1] - SETUP_LIST_Y[0] - 28   # a part of the list only
 
 
 @pytest.mark.parametrize("field,help", [
-    ("out_trim_db.2", "turn = change"), ("sub_lowpass_hz", "turn = change"),
-    ("top_inverted", "turn = choose · push = set"), ("profile", "turn = choose · push = set"),
-    ("PHONE", "push = open"), ("HWTEST", "push = open"),
-    (im.A_RESET_LIVE, "push ×2 = run"), (im.A_LAPTOP, "push ×2 = run"), (im.A_UNDO_RESET, "push = run"),
+    ("out_trim_db.2", "turn E3 = change"), ("sub_lowpass_hz", "turn E3 = change"),
+    ("sub_lowpass_on", "turn E3 = change"), ("spectrum_on", "turn E3 = change"),
+    ("top_inverted", "turn E3 · push E3 = apply"), ("lowcut_on", "turn E3 · push E3 = apply"),
+    ("mono_subs", "turn E3 · push E3 = apply"), ("profile", "turn E3 · push E3 = apply"),
+    ("PHONE", "push E3 = open"), ("HWTEST", "push E3 = open"),
+    (im.A_RESET_LIVE, "push E3 ×2 = run"), (im.A_LAPTOP, "push E3 ×2 = run"),
+    (im.A_UNDO_RESET, "push E3 = run"),
 ])
 def test_setup_bottom_line_says_what_the_knobs_do_on_the_row(field, help):
     _img, drawn = _drawn("SETUP", st.State(), pages.ScreenStatus(**RUN), Focus(item=_item(field)))
     assert _setup_help_text(drawn) == [help]
     assert "push = select" not in [t for t, *_r in drawn]
+
+
+@pytest.mark.parametrize("tags", ["dim", "off", "bright"])
+def test_setup_knob_labels_sit_at_their_corners(tags):
+    """D-017: E1 ITEM top-left, VALUE E3 top-right, E2 GROUP bottom-left, the help text bottom
+    right (E4 has nothing on SETUP); the group's name between the top two, the help clear of
+    GROUP. At each knob-tag style (Thomas's box: off)."""
+    status = pages.ScreenStatus(knob_tags=tags, **RUN)
+    for item in (0, _item("mono_subs"), _item(im.A_LAPTOP)):
+        c = _setup_ctx(st.State(), status, Focus(item=item))
+        lab = {e: c.ink[e]["label"] for e in c.ink if e >= 0}
+        assert set(lab) == {0, 1, 2}
+        assert lab[0][0] <= 45 and lab[0][3] <= SETUP_LIST_Y[0]              # ITEM: top-left
+        assert lab[2][2] >= pages.W - 45 and lab[2][3] <= SETUP_LIST_Y[0]    # VALUE: top-right
+        assert lab[1][0] <= 45 and lab[1][1] >= SETUP_LIST_Y[1]              # GROUP: bottom-left
+        _img, drawn = _drawn("SETUP", st.State(), status, Focus(item=item))
+        (help_text,) = _setup_help_text(drawn)
+        help_x0 = pages.W - 10 - pages._textlength(help_text, pages.font(16, pages.FONT_REG))
+        assert lab[1][2] + 12 < help_x0, (tags, item)
+        grp, pos, size = im.setup_group_pos(item)
+        head_w = pages._textlength(f"{grp} {pos}/{size}", pages.font(20))
+        assert lab[0][2] + 8 < pages.W / 2 - head_w / 2 and pages.W / 2 + head_w / 2 + 8 < lab[2][0]
 
 
 def test_setup_lo_cut_row_shows_its_frequency():
@@ -2575,14 +2876,16 @@ def test_demo_cases_include_the_d013_pictures():
             "setup_laptop_open", "hwtest", "hwtest_muted"} <= set(cases)
     _n, _p, s, status, f = cases["setup"]
     assert im.SETUP_ITEMS[f.item].field == "top_inverted"                 # TOPS › Polarity
-    for name, row, prompt in (("setup_confirm", "off → ON", "PUSH TO SET ON · MAY CLICK"),
-                              ("setup_muted", "off → ON", "PUSH TO SET ON · MAY CLICK"),
-                              ("setup_pick_audition", "SUM → TOPS", "PUSH TO SET TOPS · MAY CLICK")):
+    # D-017: the same states drawn the new way, the proposal in the popup
+    for name, big in (("setup_confirm", "off → ON"), ("setup_muted", "off → ON"),
+                      ("setup_pick_audition", "SUM → TOPS")):
         _n, page, s, status, f = cases[name]
-        img, drawn = _drawn(page, s, status, f)
-        _y, _fill, bar, val = _setup_selected(img, drawn, im.SETUP_ITEMS[f.item].label)
-        assert (bar, val) == (pages.RED, row), name
-        assert _setup_footer(drawn) == [prompt], name
+        c = _setup_ctx(s, status, f)
+        assert (c.popup["big"], c.popup["what"]) == (big, "MAY CLICK"), name
+    for name, ask in (("setup_reset_confirm", "Reset live EQ?"),
+                      ("setup_laptop_confirm", "Open laptop access?")):
+        _n, page, s, status, f = cases[name]
+        assert _setup_ctx(s, status, f).popup["big"] == ask, name
     _n, page, s, status, f = cases["setup_profile_pinned"]
     img, drawn = _drawn(page, s, status, f)
     assert _setup_selected(img, drawn, "Profile")[3] == "DEV · PINNED"
@@ -2590,6 +2893,29 @@ def test_demo_cases_include_the_d013_pictures():
         hw = cases[name][4].hw
         assert hw.sw_down[7] and hw.sw_last[7] == "long" and hw.last.endswith("= B4"), name
         assert not hw.sw_down[5] and hw.sw_last[5] == ""
+
+
+def test_demo_cases_include_the_d017_pictures():
+    """The two popups as on Thomas's box (knob_tags off, the M4): Mono L+R off → ON (a rebuild)
+    and Reset live EQ after its first E3 push; Lo-Cut ON → off (risky, no rebuild); the first
+    and last items on the fixed row."""
+    cases = {c[0]: c for c in pages.demo_cases()}
+    assert {"setup_popup", "setup_popup_reset", "setup_popup_lowcut", "setup_first",
+            "setup_last"} <= set(cases)
+    _n, _p, s, status, f = cases["setup_popup"]
+    c = _setup_ctx(s, status, f)
+    assert status.knob_tags == "off" and status.profile == "m4"
+    assert (c.popup["title"], c.popup["big"], c.popup["what"]) == ("SUBS › Mono L+R", "off → ON",
+                                                                   "MAY CLICK")
+    _n, _p, s, status, f = cases["setup_popup_reset"]
+    c = _setup_ctx(s, status, f)
+    assert status.knob_tags == "off"
+    assert (c.popup["big"], c.popup["instr"]) == ("Reset live EQ?",
+                                                  "push E3 again = reset · turn E1 = cancel")
+    _n, _p, s, status, f = cases["setup_popup_lowcut"]
+    assert _setup_ctx(s, status, f).popup["what"] == "FULL RANGE TO THE TOPS"
+    assert cases["setup_first"][4].item == 0
+    assert cases["setup_last"][4].item == len(im.SETUP_ITEMS) - 1
 
 
 # ------------------------------------------------------------------------------ D-014 band IN/OUT
@@ -3110,41 +3436,38 @@ def test_d016_rows_sit_with_what_they_act_on_switch_first():
 
 def test_d016_a_read_only_number_row_only_shows_its_reason():
     """The AUX level on a profile with no spare input (Focus.readonly, set by the Controller):
-    E2 shows the reason and moves nothing; the bottom line says `fixed here`. A number that is
+    E3 shows the reason and moves nothing; the bottom line says `fixed here`. A number that is
     not read-only turns as before."""
     why = "AUX: NO SPARE INPUT ON THIS DEVICE"
     s = st.State()
     f = Focus(item=_item("aux_gain_db"), readonly={"aux_gain_db": why, "aux_mode": why})
-    assert map_event("SETUP", f, Enc(1, 2), state=s) == [ShowHint(why)]
-    assert map_event("SETUP", f, Sw(1, "short"), state=s) == [ShowHint(why)]
+    assert map_event("SETUP", f, Enc(2, 2), state=s) == [ShowHint(why)]
+    assert map_event("SETUP", f, Sw(2, "short"), state=s) == [ShowHint(why)]
     f.item = _item("aux_mode")
-    assert map_event("SETUP", f, Enc(1, 1, ts=1.0), state=s) == [ShowHint(why)] and f.pick is None
+    assert map_event("SETUP", f, Enc(2, 1, ts=1.0), state=s) == [ShowHint(why)] and f.pick is None
     f.item = _item("input_trim_db")
-    assert map_event("SETUP", f, Enc(1, 2), state=s) == [Nudge("input_trim_db", 2, False)]
+    assert map_event("SETUP", f, Enc(2, 2), state=s) == [Nudge("input_trim_db", 2, False)]
     _img, drawn = _drawn("SETUP", s, pages.ScreenStatus(**RUN),
                          Focus(item=_item("aux_gain_db"), readonly={"aux_gain_db": why}))
     assert _setup_help_text(drawn) == ["fixed here"]
 
 
-@pytest.mark.parametrize("field,chosen,row,prompt", [
-    ("deharsh_on", True, "off → ON", "PUSH TO SET ON · MAY CLICK"),
-    ("loud_on", True, "off → ON", "PUSH TO SET ON · MAY CLICK"),
-    ("aux_mode", "mic", "off → MIC", "PUSH TO SET MIC · MAY CLICK"),
-    ("aux_mode", "line", "off → LINE", "PUSH TO SET LINE · MAY CLICK"),
+@pytest.mark.parametrize("field,proposed,big", [
+    ("deharsh_on", True, "off → ON"), ("loud_on", True, "off → ON"),
+    ("aux_mode", "mic", "off → MIC"), ("aux_mode", "line", "off → LINE"),
 ])
-def test_d016_switches_are_chosen_then_set_and_say_may_click(field, chosen, row, prompt):
+def test_d016_switches_are_chosen_then_set_and_say_may_click(field, proposed, big):
+    """D-016's switches are risky rows (rebuilds): an E3 turn proposes in the popup, which says
+    MAY CLICK; an E3 push applies (never one gesture)."""
     i = _item(field)
-    f = Focus(item=i, pick=field, pick_value=chosen, pick_until=10.0)
-    img, drawn = _drawn("SETUP", st.State(), pages.ScreenStatus(**RUN), f, now=5.0)
-    _y, fill, bar, val = _setup_selected(img, drawn, im.SETUP_ITEMS[i].label)
-    assert (bar, fill, val) == (pages.RED, pages.FG, row)
-    assert _setup_footer(drawn) == [prompt]
-    # the knobs: E2 chooses, a push sets (never one gesture)
+    f = Focus(item=i, pick=field, pick_value=proposed, pick_until=10.0)
+    c = _setup_ctx(st.State(), pages.ScreenStatus(**RUN), f, now=5.0)
+    assert (c.popup["big"], c.popup["what"]) == (big, "MAY CLICK")
     g = Focus(item=i)
-    assert map_event("SETUP", g, Enc(1, 1, ts=1.0), state=st.State()) == []
-    assert g.pick_now(1.0) == (field, True if field != "aux_mode" else "mic")
-    assert map_event("SETUP", g, Sw(1, "short", ts=2.0), state=st.State()) == \
-        [SetChoice(field, True if field != "aux_mode" else "mic")]
+    want = True if field != "aux_mode" else "mic"
+    assert map_event("SETUP", g, Enc(2, 1, ts=1.0), state=st.State()) == []
+    assert g.pick_now(1.0) == (field, want)
+    assert map_event("SETUP", g, Sw(2, "short", ts=2.0), state=st.State()) == [SetChoice(field, want)]
 
 
 D016_PILLS = ["LAPTOP OPEN 1:59", "LO-CUT OFF", "OUT P2 LS", "POL INV SUB+TOP", "AUX LINE",

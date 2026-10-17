@@ -52,14 +52,16 @@ in L/R ─ trim ─ System PEQ (8 bands) ─ Live EQ (4 peaking/notch @0 dB + lo
 UI v1 (D-009, accepted on the box 2026-10-13; it replaced the v0 MAIN / LIVE EQ pages, which are in
 git history), with D-011's changes (same day: Lo-Cut 2 Hz a click, one signed DELAY, dim knob
 tags), D-013's (same day: the buttons B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE, SETUP by
-speaker floor) and D-015's (2026-10-14: SHOW E3 Q / E4 GAIN, ALIGN E2 DELAY / E3 BALANCE, IN
-meters). The gig card is `docs/04-operator-card.md`.
+speaker floor), D-015's (2026-10-14: SHOW E3 Q / E4 GAIN, ALIGN E2 DELAY / E3 BALANCE, IN
+meters) and D-017's (2026-10-17, built, not on the box yet: SETUP E2 GROUP / E3 VALUE, a fixed
+selected row, a popup and an E3 push for the risky rows). The gig card is
+`docs/04-operator-card.md`.
 
 | Page | E1 | E2 | E3 | E4 |
 |---|---|---|---|---|
 | SHOW (front) | master | frequency of the selected band (push = fine) | Q (shelves: slope) | gain of the selected band |
 | ALIGN | master | DELAY, subs (clockwise) or tops (anticlockwise) later: **locked** (after the unlock, the first detent after 2.5 s at rest only wakes it) | sub↔top balance | top Lo-Cut freq, 2 Hz a click: **locked** |
-| SETUP | item | value (ON/off and choices: choose, then push to set) | group | — |
+| SETUP | item | group | value: turn = change; a risky row proposes in a popup, push E3 to apply (D-017) | — |
 
 - Master up is never accelerated and rises at most +6 dB per 2 s (`MASTER: SLOW DOWN`; k1000.yaml
   `controls.master_up_guard_db`, 0 = off). Down is always instant.
@@ -75,8 +77,9 @@ Buttons (D-013):
   frequency; its gain is never touched, so it is inaudible until E4 cuts.
 - B4 mute / unmute (long press, 0.8 s), every page.
 - SETUP, grouped by speaker floor (TOPS, SUBS, INPUT, LIVE EQ, PHONE, BOX), holds what used to be
-  on buttons: Reset live EQ (two pushes, then a one-level Undo reset), TOPS › Lo-Cut on/off, and
-  Spectrum and Laptop access. Every ON/off or choice is chosen with E2 and set by a push.
+  on buttons: Reset live EQ (two E3 pushes, then a one-level Undo reset), TOPS › Lo-Cut on/off, and
+  Spectrum and Laptop access. E3 changes a value as it turns; the risky rows (every rebuild, both
+  polarities, Lo-Cut) open a popup on the turn and apply on an E3 push (D-017).
 
 The screen shows the current page, plus mute/clip state. System alerts take the status bar; hints
 are a brief amber strip.
@@ -161,15 +164,15 @@ label K1000's outputs. Any doubt during the gig means re-patching in a minute.
      clockwise (`SUBS LATER`), tops nearer → E2 anticlockwise past 0 (`TOPS LATER`). The screen
      shows the distance, so read it against the tape measure.
    - Check with the mic for the fullest sum around 80–100 Hz, and try the polarity flip.
-5. **Lo-Cut**: A/B on program with SETUP › TOPS › Lo-Cut (turn E2 to choose, push to set, each
+5. **Lo-Cut**: A/B on program with SETUP › TOPS › Lo-Cut (turn E3, push E3 in the popup, each
    way; SHOW shows a `LO-CUT OFF` pill while it is off); the frequency is E4 on ALIGN after a B2
    hold. Default on when the subs are present, at 100 Hz (D-010); 160 Hz only if the tops limit
    early.
 6. **System EQ**: the laptop joins the K1000 Wi-Fi and SETUP › PHONE › Laptop access opens
-   CamillaGUI and SSH for 2 h (two pushes; the PHONE page prints the Wi-Fi password meanwhile).
+   CamillaGUI and SSH for 2 h (two E3 pushes; the PHONE page prints the Wi-Fi password meanwhile).
    Measure with the mic (REW or Open Sound Meter), then paste the filter list at
    `https://10.42.0.1/tune` (preview on the 8 system bands, Apply = saved, Undo), or use CamillaGUI
-   at `http://10.42.0.1:5005` (Fetch from DSP first). Keep to a few broad cuts. One push closes
+   at `http://10.42.0.1:5005` (Fetch from DSP first). Keep to a few broad cuts. One E3 push closes
    Laptop access when done. Without the K1000 Wi-Fi (already off after a no-go, or not working):
    CamillaGUI over a direct `eth0` cable, the laptop sharing its connection on 10.43.0.1/24 (never
    10.42.0.x, the AP's subnet), at `http://k1000.local:5005`; no `/tune` page that way (it answers
@@ -179,7 +182,7 @@ label K1000's outputs. Any doubt during the gig means re-patching in a minute.
    lands on it at Q 8.65, nothing audible), E4 down 12 clicks (−6 dB: the tone drops), E3 up to
    narrow: under 10 s. B3 again must re-select that bell and write nothing. Also try B3 with no peak
    (`NO PEAK`: E4 down first, about −6 dB, then sweep E2 until the tone drops; at 0 dB the sweep is
-   silent). Then SETUP › LIVE EQ › Reset live EQ (two pushes) and Undo reset (it must come
+   silent). Then SETUP › LIVE EQ › Reset live EQ (two E3 pushes) and Undo reset (it must come
    back exactly), and reset again for the show.
 8. **Spectrum** (ON for Sunday, D-010; SETUP › LIVE EQ › Spectrum, saved). Check, with real program at the
    rig: the graph reads well in that light and at that angle; the PEAK

@@ -10,8 +10,8 @@ Why it is shaped like this:
   runs, further detents pile up in the state and the next plan goes straight to the latest value.
   Setup actions (mono subs, audition, profile; D-016's de-harsh, sub loudness and AUX IN) come
   out of the diff as a `Rebuild`: they regenerate and upload the whole config with Main muted
-  around it, and are refused unless the operator confirmed them (SETUP: chosen, then set by a
-  push, D-013) or the box is muted.
+  around it, and are refused unless the operator confirmed them (SETUP: proposed by an E3 turn,
+  applied by an E3 push, D-017; chosen with E2 and set by a push under D-013) or the box is muted.
 - **Mute never waits.** B4 is the emergency gesture: `set_mute` sends the Main mute at once,
   outside the worker and its lock. Nothing else ever UNMUTES Main except the operator, a boot ramp,
   or a setup guard, and the last two re-check the operator's mute right before unmuting.
@@ -1265,10 +1265,12 @@ class Controller:
             return False
 
     def set_choice(self, field: str, value: Any) -> bool:
-        """SETUP (D-013): set `field` to the value the row showed, chosen with E2 and set by a
-        push (two gestures: the confirm a pipeline rebuild needs). Refused, and said, when the
-        field cannot change now (Focus.readonly) or the value is not one of its choices; a
-        value already set (a phone changed it meanwhile) changes nothing and says so."""
+        """SETUP: set `field` to the value the knobs gave: an everyday ON/off stepped by an E3
+        turn, or a risky row's proposal applied by an E3 push (D-017: turn + push, the confirm
+        a pipeline rebuild needs; input_map never sends a risky row on a turn). Refused, and
+        said, when the field cannot change now (Focus.readonly) or the value is not one of its
+        choices; a value already set (a phone changed it meanwhile) changes nothing and says
+        so."""
         if field not in SETUP_PICK_FIELDS:      # never `muted`: that is set_mute's, with its guards
             log.warning("set_choice %r: not a SETUP choice row", field)
             return False

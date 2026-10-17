@@ -42,7 +42,7 @@ box works today.
 | 1 | [Requirements](01-requirements.md) | Hardware, cables, speakers, software versions, network |
 | 2 | [Installation](02-installation.md) | A fresh card with `bootstrap.sh`, `install.sh` flags, converting a desktop card, the spare card, rollback |
 | 3 | [Configuration](03-configuration.md) | Every key of `/etc/k1000/k1000.yaml` (profiles, knobs, spectrum, phone), what needs a restart, the state files |
-| 4 | [Usage](04-usage.md) | Power on to sound, SHOW (master, live EQ, notching, spectrum), ALIGN, SETUP (by speaker floor, choose-then-set, incl. Laptop access and `/tune`), mute, alerts, the phone, end of night, bypass |
+| 4 | [Usage](04-usage.md) | Power on to sound, SHOW (master, live EQ, notching, spectrum), ALIGN, SETUP (by speaker floor, E3 turn = change, a popup and an E3 push for the risky rows, incl. Laptop access and `/tune`), mute, alerts, the phone, end of night, bypass |
 | 5 | [Tuning a Meyer rig](05-tuning.md) | Power order, gain structure, sub alignment, Lo-Cut, system EQ with a mic, live notching |
 | 6 | [Troubleshooting](06-troubleshooting.md) | Every screen message, common faults, the bypass, logs |
 | 7 | [Maintenance](07-maintenance.md) | Updates, rollback, the spare card, the certificate, SD cards, power cuts, soak test |

@@ -49,10 +49,10 @@ strip (MUTED takes it first), so the QR code stays visible.
 
 When Main is muted, every page gets the red `MUTED` pill and a red frame. SHOW and ALIGN also get
 a red band ([picture](../ui/muted.png)); SETUP and PHONE get a red footer strip instead (a band
-would cover the selected row or the QR); the Knob test gets a red `MUTED` tag. On SHOW, ALIGN and
-SETUP, the text next to MUTED says what happens next (the PHONE footer only says
-`hold B4 to unmute`). It never says something false. On SETUP, a choice waiting for its push
-takes the footer over the MUTED strip.
+would cover the selected row, the SETUP popup or the QR); the Knob test gets a red `MUTED` tag. On
+SHOW, ALIGN and SETUP, the text next to MUTED says what happens next (the PHONE footer only says
+`hold B4 to unmute`). It never says something false. On SETUP, a hint takes the footer for its
+2.5 s; a popup sits above it.
 
 | Band text | Means | Do |
 |---|---|---|
@@ -110,12 +110,13 @@ On SHOW the strip covers the band chips, on ALIGN the middle, on SETUP the foote
 | `LOCKED · HOLD B2 TO EDIT` | ALIGN: E2 (DELAY) or E4 (LO-CUT) turned (or B2 tapped) while locked. Nothing changed |
 | `DELAY + LO-CUT UNLOCKED` / `DELAY + LO-CUT LOCKED` | ALIGN: a B2 hold unlocked them for 30 s of idle; a B2 tap locked them |
 | `DELAY · TURN AGAIN TO CHANGE` | ALIGN's DELAY was at rest for 2.5 s: the first click only wakes it |
-| `PUSH TO SET ON`, `PUSH TO SET INVERTED`… (footer, while it waits) | SETUP: E2 chose a value (the row, red, shows `now → chosen`); a push of E1 or E2 sets it. Nothing changes until then; it lapses after 8 s or when E1/E3 moves |
-| `PUSH TO SET … · MAY CLICK` | The same on a pipeline rebuild (Mono L+R, Profile, Audition, De-harsh, Loudness, AUX IN) |
-| `NO CHANGE: ALREADY SET` | SETUP: the chosen value was already set (a phone changed it meanwhile) |
-| `TURN THE VALUE KNOB` | SETUP: a push on a number row; E2 changes it |
-| `PUSH TO OPEN`, `PUSH TO RUN`, `PUSH TWICE TO RUN` | SETUP: E2 turned on a page or an action row |
-| `PUSH AGAIN TO RESET ALL LIVE EQ`, `PUSH AGAIN: LAPTOP ACCESS FOR 2 H` | SETUP: the confirms, a second push within 5 s |
+| SETUP popup `now → proposed`, `push E3 = apply · turn E1 = cancel` | SETUP (D-017): E3 turned on a risky row (a pipeline rebuild: Mono L+R, Profile, Audition, De-harsh, Loudness, AUX IN; a polarity; Lo-Cut). Nothing changes until an E3 push; an E1 or E2 turn cancels it, so do leaving the page and 8 s without an E3 turn. `MAY CLICK`: a rebuild |
+| SETUP popup `Reset live EQ?`, `Open laptop access?` | SETUP: the first E3 push on a ×2 action; a second E3 push within 5 s runs it |
+| `CANCELLED` | SETUP: E1 or E2 turned while a popup was open. Nothing changed, the row is still selected |
+| `ALREADY ON`, `ALREADY OFF`, `ALREADY NORMAL`… | SETUP: E3 turned toward the value the row already holds |
+| `NO CHANGE: ALREADY SET` | SETUP: the proposed value was already set (a phone changed it meanwhile) |
+| `TURN E3 TO CHANGE` | SETUP: a push on a number or an ON/off row (E1 or E2 pushed, or E3 with nothing proposed); turn E3 |
+| `PUSH E3 TO OPEN`, `PUSH E3 TO RUN`, `PUSH E3 TWICE TO RUN`, `PUSH E3 TO APPLY` | SETUP: E3 turned on a page or an action row, or E1/E2 pushed: only E3's push acts on SETUP |
 | `LIVE EQ RESET · UNDO IN SETUP` / `LIVE EQ ALREADY FLAT` | After SETUP › LIVE EQ › Reset live EQ (or the phone's reset) |
 | `LIVE EQ RESTORED` / `NOTHING TO UNDO` | SETUP › LIVE EQ › Undo reset |
 | `RESET UNDO LOST` | An audible live-EQ edit (a gain moved off 0 dB) ended the reset's undo |
@@ -244,7 +245,7 @@ The full table is [`docs/06-phone.md`](../06-phone.md) §7. The usual ones:
 | Joins, then drops after a few seconds | `sudo /opt/k1000/net/setup-ap.sh --status` (backend hostapd, PMF unset), then `--band bg`, then a USB Wi-Fi dongle |
 | "Not connected to K1000" | The phone left the K1000 Wi-Fi: Wi-Fi off/on. With mobile data on, Android may route around it: **airplane mode, then Wi-Fi on** |
 | "Your connection is not private" | The K1000 CA is not installed on the phone, or not as a **CA certificate** |
-| "Phone control is OFF on the box" | SETUP › PHONE › Phone, push E1 |
+| "Phone control is OFF on the box" | SETUP › PHONE › Phone (push E3), then push E1 on the PHONE page |
 | "K1000 already has the maximum number of phones" | 4 at most (`phone.max_clients`) |
 | SETUP › PHONE › Phone shows `Wi-Fi AP OFF` | §1 above |
 | A laptop on the Ethernet cable, and the phone's Wi-Fi gone | The laptop shares on 10.42.0.0/24: share on another subnet (10.43.0.1/24) or unplug it (§1, the PHONE page) |

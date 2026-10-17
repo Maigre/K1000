@@ -340,6 +340,8 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
       SUBS/TOPS › Trim L/R, Mono subs → SUBS › Mono L+R, Lo-Cut → TOPS › Lo-Cut.
     - **Knobs**: E1 = item (header rows skipped, clamps), E2 = value, **E3 = group** (forward: the
       next group's first item; back from inside a group: its own first item first), E4 unused.
+      *(Since D-017, 2026-10-17: E2 = group, **E3 = value** (turn = change, push = set / open /
+      run), a fixed selected row, a popup for the risky rows. The knob mapping is D-017's.)*
     - **Screen**: a header row per group, `<GROUP> <pos>/<size>` on the top line, a scroll bar at
       the right edge (no more `▲▼` and `10/19`), and a bottom line saying what the knobs do on the
       selected row (`turn = change`, `turn = choose · push = set`, `push = open`, `push ×2 = run`,
@@ -588,3 +590,90 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
 - **Gate**: Thomas tries each at the rig (de-harsh against his 2.7 kHz notch, loudness at
   background level, a mic on IN1) and decides to keep, change the defaults, or drop; until then
   they stay off. Deploy, then the printed operator card (still one A4 page).
+
+## D-017 — SETUP: a fixed selected row, E3 the value knob, a confirm popup for risky rows · decided 2026-10-17
+
+- **Ask** (Thomas, testing the box at the rig, 2026-10-17, the day before the gig): "While testing I
+  felt the SETUP page was a bit tricky to manipulate: the E1 to select line is OK, but line
+  scrolling locked or unlocked based on settings group is a bit weird. A centered active row might
+  be more simple and readable. Also the push to edit then turn is not ergonomic. I think a value
+  edit by turning e3 is enough with a confirm popup for really sensitive settings (confirmed by e3
+  push) would be simpler and clearer."
+- **Decided** (Thomas's ask, built as he described it; **the risky list is Claude's proposal**, his
+  to change, and so are the popup's wording and the details marked below): built and tested off the
+  box, **not on the box yet**.
+  - **Knobs on SETUP: E1 ITEM · E2 GROUP · E3 VALUE · E4 nothing.** Labels: `E1 ITEM` top-left,
+    `VALUE E3` top-right, `E2 GROUP` bottom-left, and bottom-right what E3 does on the row
+    (`turn E3 = change`, `turn E3 · push E3 = apply`, `push E3 = open`, `push E3 = run`,
+    `push E3 ×2 = run`, `fixed here`).
+  - **A fixed selected row.** The selected item is always drawn on the 4th of the 8 rows (3
+    above, 4 below); the list scrolls under it, at the ends too (blank rows above TOPS › Trim L,
+    below BOX › Knob test). No clamping, no pinned header: the group headers are inline dividers,
+    the selected item's in white. The top line keeps `SUBS 4/9`; the scroll bar shows the part of
+    the list in sight (shorter at the ends).
+  - **E3 turn = change, applied as it turns**, on the everyday rows. A number: one step per
+    detent, as E2 did (E3's push held = fine). An ON/off that is not risky (SUBS › Low-pass, LIVE
+    EQ › Spectrum): **right = ON, left = off**, through the same `SetChoice` the controller already
+    takes; a turn toward the value already held says `ALREADY ON` / `ALREADY OFF`, so a fast turn
+    never toggles.
+  - **A risky row: an E3 turn opens a popup instead of applying.** A box over the middle of the list
+    (rows 2–7; the first and last rows on screen, the top line and the bottom line stay in sight),
+    red-edged: the row (`SUBS › Mono L+R`), **`now → proposed`** big (`off → ON`), what it does
+    (Claude's wording: `MAY CLICK` on a pipeline rebuild, `FULL RANGE TO THE TOPS` for Lo-Cut off,
+    `TOPS CUT BELOW 100 Hz` for Lo-Cut on, `THE TOPS DIP A MOMENT` / `THE SUBS DIP A MOMENT` for a
+    polarity flip), and `push E3 = apply · turn E1 = cancel`. More E3 turns move the proposal: an
+    ON/off right = ON / INVERTED, left = off / normal; a choice the next or the previous one, one
+    per event, **stopping at both ends** (Claude's call: D-013 wrapped; now a fast turn lands where
+    the knob points); back on the current value the popup closes. **Only an E3 push applies it**,
+    with the same `SetChoice` as before: the controller's rebuild guard is unchanged, a rebuild is
+    still never one gesture (turn + push). A push PRESSED within PICK_SETTLE_S (0.25 s) of the
+    proposal opening or moving does not apply (`PUSH E3 TO APPLY`, the popup stays): a detent
+    clicked by the finger pressing E3 would otherwise propose and apply in one go, the popup never
+    seen (review 2026-10-17; D-013 had the same hole with E2). It cancels on an E1 or E2 turn
+    (`CANCELLED`; that turn moves nothing, the row stays selected: Claude's call), on leaving the
+    page, and after 8 s without an E3 turn. A push released after turning E3 (the fine habit from
+    SHOW) never applies.
+  - **The risky list** (Claude's proposal; one line, `input_map.SETUP_RISKY`): every pipeline
+    rebuild (Mono L+R, Profile, Audition, De-harsh, Loudness, AUX IN 1/2), both Polarity rows, and
+    Lo-Cut. `SetupItem.risky` keeps every rebuild risky even if the list forgets one. Their values
+    are amber in the list (until now only the rebuilds' were): amber = asks for an E3 push.
+  - **Pages and actions on an E3 push.** Phone and Knob test open; Undo reset runs. Reset live EQ
+    and opening Laptop access show the same popup on the first push (`Reset live EQ?` ·
+    `ALL 6 LIVE BANDS FLAT · UNDO 5 MIN`; `Open laptop access?` · `GUI + SSH OVER THE K1000 WI-FI
+    · 2 H`; `push E3 again = reset · turn E1 = cancel`) and run on the second within 5 s; closing
+    Laptop access stays one push. An E3 turn there says `PUSH E3 TO OPEN` / `PUSH E3 TWICE TO RUN`.
+  - **E1 and E2 pushes on SETUP act on nothing**: a hint naming the E3 gesture the row takes
+    (`TURN E3 TO CHANGE`, `PUSH E3 TO OPEN`, `PUSH E3 TO APPLY` with the popup open…), or why the row
+    is fixed, to help the habit change. An E3 push on a number or an ON/off with nothing proposed
+    says `TURN E3 TO CHANGE`.
+  - **Read-only rows** as before: dimmed, `fixed here`; a turn or a push only says why.
+- **Why**: Thomas's two findings at the rig. The D-013 list scrolled one way or another depending
+  on the group (its header pinned while it fit, the ends clamped), so the selection moved about on
+  screen; a fixed row is read at the same place every time. Choose-then-set made every ON/off two
+  gestures on two knobs; now E3 alone changes, and only the rows where a wrong value is heard (a
+  click, a dip, full range into the tops) keep a second gesture, the E3 push, with the target and
+  its consequence in a popup the eye cannot miss.
+- **One wording differs from the brief**: the polarity line says the floor dips, not `A CLICK`:
+  the flip is written under a muted group fader (`dspconfig`'s delay/polarity guard), so it dips,
+  it does not click.
+- **What did not change**: SHOW, ALIGN, the buttons (B1 tap/hold, B2, B3, B4 mute), the PHONE page
+  (E1 turn = the QR, E1 push = phone on/off) and the Knob test; auto-home (never while a popup
+  waits); the controller's apply and guard logic (`set_choice`, the rebuild guard); the phone, its
+  SETUP sheet and protocol 2 (`setup_schema` unchanged); the engine config; state.json.
+- **Supersedes**: D-013's SETUP knobs ("E1 = item …, E2 = value, **E3 = group**") and its whole
+  "Choose, then set" (turn E2 to choose, push E1 or E2 to set, push-push, the red row with
+  `now → chosen`, `PUSH TO SET ON · MAY CLICK`, `PUSH AGAIN`, the bottom line `turn = choose · push
+  = set`); D-013's "a header row per group" scrolling (the header pinned while it fits); D-015's
+  "SETUP and its knobs (E1 item, E2 value, E3 group)" among what did not change; D-016's "chosen
+  then set like Mono" (its switches are risky rows). D-013's groups and items, its read-only rows,
+  the 8 s and 5 s windows and everything else stand.
+- **Pictures** (`docs/ui/`): `setup_popup.png` (SUBS › Mono L+R `off → ON`, as on Thomas's box: no
+  knob tags, the M4), `setup_popup_reset.png` (`Reset live EQ?`), `setup_popup_lowcut.png`
+  (`FULL RANGE TO THE TOPS`), `setup_first.png` and `setup_last.png` (the ends, on the fixed row);
+  every other SETUP picture regenerated (the proposals and confirms of `setup_confirm`,
+  `setup_pick_audition`, `setup_muted`, `setup_deharsh_pick`, `setup_aux_pick`,
+  `setup_reset_confirm` and `setup_laptop_confirm` now in the popup).
+- **Gate**: a deploy, then a SETUP walk on the box (E1 down the list, E3 on a trim, Low-pass right
+  and left, Mono L+R's popup and its E3 push, Reset live EQ twice, an E1 turn cancelling a popup);
+  before the gig only if Thomas wants it there, else after it. Then the printed operator card
+  (still one A4 page).

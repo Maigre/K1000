@@ -296,7 +296,7 @@ PHONE page's third QR (**FIRST TIME**, `http://10.42.0.1/`). Back to the portal,
 | Phone shows K1000, *Obtaining IP address…*, then drops | §6: `setup-ap.sh --status` (backend hostapd, PMF unset), then `--band bg`, then the dongle |
 | Page says *Not connected to K1000 — join the K1000 Wi-Fi* | Not on K1000 (check the Wi-Fi), or k1000 is restarting (it reconnects by itself within ~3 s) |
 | Page says *K1000 was updated: reloading* | The box was updated; the page reloads itself once. If it then says *close and reopen*, swipe K1000 away and open it again |
-| Page says *Phone control is OFF on the box* | SETUP › PHONE › Phone › push E1 |
+| Page says *Phone control is OFF on the box* | SETUP › PHONE › Phone (push E3) › push E1 on the PHONE page |
 | *The mute changed meanwhile* | Someone (B4, another phone) muted/unmuted during your hold: look, then hold again |
 | *K1000 already has the maximum number of phones* | 4 phones max: close the page on another phone |
 | Phone does not list "K1000" | Phone without 5 GHz, or channel 36 blocked by its region: `sudo /opt/k1000/net/setup-ap.sh --band bg` |
@@ -311,7 +311,7 @@ PHONE page's third QR (**FIRST TIME**, `http://10.42.0.1/`). Back to the portal,
 | Chrome will not install the APK | Chrome may first warn about the file (an APK, over plain HTTP): **Download anyway** / **Keep**. Then Android asks once: *Settings* › **Allow from this source** for Chrome (Settings › Apps › Special app access › Install unknown apps › Chrome). The 8 hex digits on the page = the start of the release's `K1000-<version>.apk.sha256` |
 | SSH to the box over K1000 | Fenced off by default: `sudo /opt/k1000/net/setup-ap.sh --ssh on` (or use `eth0`, not with a laptop sharing on 10.42.0.x: §1) |
 | Certificate expiry | The leaf is valid until **2029-01-14**; the box logs a warning 60 days before. Re-sign it on the laptop that holds the CA key (the README next to that key) |
-| Laptop on K1000 cannot open CamillaGUI or `/tune` | SETUP › PHONE › Laptop access must say `OPEN h:mm` (§11). Closed: push twice. It closes by itself after 2 h and when k1000 restarts: open it again |
+| Laptop on K1000 cannot open CamillaGUI or `/tune` | SETUP › PHONE › Laptop access must say `OPEN h:mm` (§11). Closed: push E3 twice. It closes by itself after 2 h and when k1000 restarts: open it again |
 | SETUP › PHONE › Laptop access says `NO ANSWER` | The root watcher is not running: `systemctl status k1000-laptop.path` (k1000 brings it; after a deploy, k1000 must have restarted once). `journalctl -t k1000-laptop` |
 | SETUP › PHONE › Laptop access says `NO WI-FI FENCE` | The AP and its fence are not set up (`setup-ap.sh`): there is no K1000 Wi-Fi to open. Use the wired LAN |
 | Laptop cannot scan the Wi-Fi QR | While laptop access is open, the PHONE page prints the Wi-Fi password on every step |
@@ -367,10 +367,10 @@ socket, `/tune/ws` (§11).
 11. `sudo systemctl restart k1000`: audio unchanged, the page reconnects by itself.
 12. From the phone, `http://10.42.0.1:5005/` (CamillaGUI) does **not** load (the fence), with
     SETUP › PHONE › Laptop access closed.
-13. **Laptop access** (§11): SETUP › PHONE › Laptop access, push twice → `OPEN 2:00` and the SHOW pill
+13. **Laptop access** (§11): SETUP › PHONE › Laptop access, push E3 twice → `OPEN 2:00` and the SHOW pill
     `LAPTOP OPEN 2:00`. The laptop joins K1000 with the password the PHONE page now prints, opens
     `http://10.42.0.1:5005/gui/index.html` (CamillaGUI), `https://10.42.0.1/tune`, and `ssh
-    k1000@10.42.0.1`. Paste a REW filter list on `/tune`: preview, Apply, Undo. One push on
+    k1000@10.42.0.1`. Paste a REW filter list on `/tune`: preview, Apply, Undo. One E3 push on
     SETUP › PHONE › Laptop access closes it: CamillaGUI no longer loads (a reload of `/tune` says closed).
 
 All pass → phone **on** for Sunday. Any fail → phone **fully off** for Sunday, knobs only:
@@ -483,9 +483,9 @@ only over the K1000 Wi-Fi (there is no house network, and a laptop sharing its c
 `eth0` cable takes the AP down: §1), and the fence keeps CamillaGUI and SSH away from the Wi-Fi.
 Laptop access opens exactly those two, for a while.
 
-**On the box:** SETUP › PHONE › **Laptop access**, push twice (`PUSH AGAIN: LAPTOP ACCESS FOR 2 H`). The
+**On the box:** SETUP › PHONE › **Laptop access**, push E3 twice (the first opens the popup `Open laptop access?`, D-017). The
 row then reads `OPEN 1:59` (hours:minutes left), SHOW carries the pill `LAPTOP OPEN 1:59`, and
-the PHONE page prints the Wi-Fi password on every step (a laptop cannot scan the QR). **One push
+the PHONE page prints the Wi-Fi password on every step (a laptop cannot scan the QR). **One E3 push
 closes it** (the safe direction needs no confirm). It also closes by itself:
 
 - after **2 hours** (counted on the boot clock: a clock set by NTP mid-show changes nothing);
@@ -524,13 +524,13 @@ The request carries nothing: ports, subnet and duration are the root script's. I
 
 **The laptop, step by step:**
 
-1. SETUP › PHONE › Laptop access, push twice. SETUP › PHONE › Phone: the Wi-Fi password is printed.
+1. SETUP › PHONE › Laptop access, push E3 twice. SETUP › PHONE › Phone: the Wi-Fi password is printed.
 2. Join **K1000** with that password.
 3. CamillaGUI: `http://10.42.0.1:5005/gui/index.html` (press *Fetch from DSP* before editing:
    `box/README.md`, "Laptop"). SSH: `ssh k1000@10.42.0.1`.
 4. Or the **tune page**: `https://10.42.0.1/tune` (the laptop needs the K1000 CA like the phone,
    §3; or accept the browser's warning once).
-5. Done: one push on SETUP › PHONE › Laptop access.
+5. Done: one E3 push on SETUP › PHONE › Laptop access.
 
 **The tune page** (`/tune`, served by k1000 next to the phone page; `403 laptop access is closed`
 while it is closed, every open tune page dropped the moment it closes). It needs the phone

@@ -404,7 +404,7 @@ the Friday rig test; on a no-go the AP goes fully off and the knobs carry the sh
 ## Laptop at the rig: SETUP › Laptop access and the tune page
 
 At the rig the laptop has only the K1000 Wi-Fi, whose fence keeps CamillaGUI and SSH off it.
-**SETUP › PHONE › Laptop access, push twice** opens both, from the K1000 Wi-Fi's subnet only, for 2 hours
+**SETUP › PHONE › Laptop access, push E3 twice** opens both, from the K1000 Wi-Fi's subnet only, for 2 hours
 at most (`docs/06-phone.md` §11):
 
 - The row reads `OPEN 1:59`, SHOW shows the pill `LAPTOP OPEN 1:59`, and SETUP › PHONE › Phone prints the
@@ -414,7 +414,7 @@ at most (`docs/06-phone.md` §11):
   `https://10.42.0.1/tune`: paste a REW / Open Sound Meter / EqualizerAPO filter list, preview it
   on the 8 system PEQ bands (peaking only, 8 at most, clamped and said so), **Apply** (through
   k1000 like a knob: click-safe, saved), **Undo** (the system EQ before).
-- **One push closes it.** It closes by itself after 2 h, when k1000 stops or restarts, and at
+- **One E3 push closes it.** It closes by itself after 2 h, when k1000 stops or restarts, and at
   every boot: nothing about it is persistent. Open connections stay until they end; new ones are
   refused.
 - Who does what: k1000 (user k1000, no capability but port binding, so no sudo and no nft) only
@@ -449,7 +449,8 @@ What each button and knob does per page (SHOW · ALIGN · SETUP) is the operator
 B2 = next band on SHOW, a hold unlocks the delay and Lo-Cut on ALIGN · B3 = the notch helper on SHOW
 · B4 hold = mute/unmute (every page). The knobs (D-015): SHOW E1 MASTER · E2 FREQ · E3 Q · E4 GAIN
 of the selected band; ALIGN E1 MASTER · E2 DELAY · E3 BALANCE · E4 LO-CUT, the two bottom ones
-(DELAY, LO-CUT) locked. ALIGN's E2 DELAY (D-011) is one setting for both sides:
+(DELAY, LO-CUT) locked; SETUP (D-017) E1 ITEM · E2 GROUP · E3 VALUE (turn = change; a risky row
+proposes in a popup and an E3 push applies it). ALIGN's E2 DELAY (D-011) is one setting for both sides:
 clockwise from 0 delays the subs (`SUBS LATER`), anticlockwise the tops (`TOPS LATER`); it writes
 `sub_delay_ms` or `top_delay_ms` and zeroes the other (SETUP has no Top delay any more). The Lo-Cut
 moves 2 Hz a click (1 Hz with the push).
@@ -491,8 +492,8 @@ sudo systemctl start k1000
 The program spectrum behind SHOW's EQ curve (D-009) polls the engine on a second websocket, only
 while SHOW is displayed and SETUP › LIVE EQ › Spectrum is ON (`docs/03-v0-architecture.md` §8).
 
-- **SETUP › LIVE EQ › Spectrum** switches it at run time (saved in `state.json`; E2 chooses, a push
-  sets). Off, SHOW draws the curve alone and B3 still sets a notch up (`NO PEAK`: E4 down first,
+- **SETUP › LIVE EQ › Spectrum** switches it at run time (saved in `state.json`; E3 right = ON,
+  left = off, D-017). Off, SHOW draws the curve alone and B3 still sets a notch up (`NO PEAK`: E4 down first,
   about −6 dB, then sweep E2 until the ring drops; at 0 dB the sweep is silent).
 - **Out entirely** (Friday's no-go, or anything odd): `spectrum: enabled: false` in
   `/etc/k1000/k1000.yaml`, then `sudo systemctl restart k1000` between shows. No task and no second
@@ -575,7 +576,7 @@ The tool writes one line every 10 s:
 - **Settings:** `/etc/k1000/k1000.yaml` is never touched by install.sh. Fix it by hand, then
   `sudo systemctl restart k1000`.
 - **Sound state:** `/var/lib/k1000/state.json` holds the levels and EQ.
-  - Live EQ: SETUP › LIVE EQ › Reset live EQ, push twice within 5 s. Undo reset (one push) puts it
+  - Live EQ: SETUP › LIVE EQ › Reset live EQ, push E3 twice within 5 s. Undo reset (one E3 push) puts it
     back exactly, once, until the next audible live-EQ edit or 5 min.
   - A torn `state.json` is rebuilt from `active.yml` (the bad copy is kept as `state.json.bad`) and
     comes back MUTED ("STATE REBUILT · CHECK MASTER"), with SETUP's De-harsh, Loudness and AUX IN

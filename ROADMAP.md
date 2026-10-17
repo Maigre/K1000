@@ -84,7 +84,7 @@ gantt
 | Integration round | done: drills, five-lens review, 42 fixes, re-accepted; power-cut drill done Tue 13 (no sync: state files byte-identical, boot 10.4 s) | Friday: Thomas pulls the plug once at show level (item 11) |
 | Lite OS (D-006) | done: the box converged to Lite (`k1000-lean.sh`, 972 desktop packages out), console guard, cloud-init off; `bootstrap.sh` checked on a fresh-card container | the spare card (Thu) |
 | Phone (D-007) | wired into main (`f7aa58b`); AP up on the box on **hostapd** with PMF off (NetworkManager's AP on the Pi's chip drops older Android clients), captive DNS off, 5 GHz | Thomas: CA, join by QR, PWA install (`docs/06-phone.md`); go/no-go Friday |
-| Live UI v1 (Thomas, 12/10) | accepted on the box Tue 13 (D-009) and deployed: `167776b` + polish `8e86ddb`; D-011 on the box (`24cba65`); **D-013 on the box** since 14:31 (`dd740ce`: buttons B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE, SETUP by speaker floor, choose-then-set) | Thomas at the bench today; D-013 on the box before the freeze, Wed evening; spectrum ON for Sunday (D-010), checked Friday |
+| Live UI v1 (Thomas, 12/10) | accepted on the box Tue 13 (D-009) and deployed: `167776b` + polish `8e86ddb`; D-011 on the box (`24cba65`); **D-013 on the box** since 14:31 (`dd740ce`: buttons B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE, SETUP by speaker floor, choose-then-set); D-017 (SETUP's knobs, Sat 17: E3 value, a fixed row, a popup for the risky rows) built, not on the box | Thomas at the bench today; D-013 on the box before the freeze, Wed evening; spectrum ON for Sunday (D-010), checked Friday |
 | Knobs | corners confirmed; a click counts exactly one step (10 clicks = +10); fast-turn fix in UI v1 | the buttons: Knob test → `controls:` (the box still holds the defaults), which also confirms where B1–B4 sit for D-013's labels |
 | Licence (D-008) | GPL-3.0-or-later, `LICENSE` in the repo; smbus2 and SPDX headers done | — |
 | User documentation (Thomas, 12/10) | written: `docs/manual` 00–09, quick start, operator card; claim-checked against the code | Thomas fills in the card's Where line and the bypass patch, then prints |
@@ -142,7 +142,7 @@ Progress:
 | Area | State |
 |---|---|
 | Pipeline | input trim, 8 system PEQ, 4 live PEQ + 2 shelves, split (mono-subs option), sub/top polarity, delay (whole samples), top Lo-Cut, sub low-pass, Aux group faders (balance), 4 output trims, Main master + mute |
-| Knobs and screen | SHOW / ALIGN / SETUP pages, plus Knob test and PHONE; the live-EQ curve over the program spectrum with a PEAK pointer; B3 notch helper; ALIGN's delay (subs or tops, D-011) and Lo-Cut locked (B2 hold); reset and undo in SETUP; B4 mute on every page; B1 tap SHOW ↔ ALIGN, hold SETUP; SETUP by speaker floor with choose-then-set (D-013, `dd740ce`); meters with CLIP / IN CLIP; MUTED band with alerts; NO DEVICE / ENGINE DOWN |
+| Knobs and screen | SHOW / ALIGN / SETUP pages, plus Knob test and PHONE; the live-EQ curve over the program spectrum with a PEAK pointer; B3 notch helper; ALIGN's delay (subs or tops, D-011) and Lo-Cut locked (B2 hold); reset and undo in SETUP; B4 mute on every page; B1 tap SHOW ↔ ALIGN, hold SETUP; SETUP by speaker floor with choose-then-set (D-013, `dd740ce`; D-017 built off the box: E3 value, a fixed row, a popup for the risky rows); meters with CLIP / IN CLIP; MUTED band with alerts; NO DEVICE / ENGINE DOWN |
 | Audio safety | boots muted; ramp gated on Running; Aux4 marker; outside cuts kept, raises pulled down; pipeline restore and device repair; mute saved at once; torn state recovered muted |
 | Ops | restart-forever units, device wait, watchdog, persistent journal, soak tool with `--summary`, M4 bring-up tool, rollback |
 | Phone | The own-AP PWA, wired (master, balance, Lo-Cut, live EQ, mute); laptop access (2 h) for CamillaGUI, SSH and the `/tune` REW import over the K1000 Wi-Fi; CamillaGUI on the LAN |
@@ -199,6 +199,11 @@ parametric bands + the spectrum serve live notching better on 4 knobs).
     screen and the phone. Built and tested off the box (the engine config byte for byte f2671b0's
     with all three off); not deployed yet. Thomas tries each at the rig and decides; how to set them
     by ear: `docs/manual/05-tuning.md` §9. His USB-stick player ask goes after the gig (below).
+  - Thomas at the rig, Sat 17 (D-017, decided): SETUP's knobs. E1 ITEM · E2 GROUP · **E3 VALUE**
+    (turn = change, an everyday ON/off right ON / left off), the selected row fixed on the 4th
+    screen row, and for the risky rows (every rebuild, both polarities, Lo-Cut: Claude's list, his
+    to change) a popup `now → proposed` applied only by an E3 push. Built and tested off the box;
+    not deployed yet (his call: before the gig or after it).
   - Knob fast-turn fix.
   - Design: `docs/07-live-ui-v1.md` + `docs/ui/v1/`. Knob analysis: `docs/08-knob-precision.md`.
 - **Phone PWA on the box's own AP** (D-007): live EQ curve with draggable bands, "notch here",

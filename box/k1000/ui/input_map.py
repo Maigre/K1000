@@ -26,16 +26,20 @@ HWTEST reached from SETUP.
   round until then): a turn shows HINT_LOCKED and changes nothing. A B2 hold unlocks them for
   UNLOCK_S, renewed by every input on ALIGN (so any UNLOCK_S of idle relocks); a B2 tap relocks
   at once; leaving ALIGN relocks.
-- SETUP (D-013): the items grouped by speaker floor (TOPS, SUBS, INPUT, LIVE EQ, PHONE, BOX).
-  E1 selects the item, E3 jumps a group. E2 turns a number; on an ON/off or a choice it CHOOSES
-  (the row shows `now -> chosen`) and a push SETS it: two gestures, the value always visible.
-  A push with nothing chosen proposes the next value, so push, push still works. Reset live EQ
-  and Laptop access need a second push within CONFIRM_WINDOW_S. A row the Controller holds
-  read-only (`Focus.readonly`), a number included, only shows its reason.
+- SETUP (D-013 groups, D-017 knobs): the items grouped by speaker floor (TOPS, SUBS, INPUT,
+  LIVE EQ, PHONE, BOX). E1 selects the item (drawn on a fixed screen row), E2 jumps a group, E3
+  is the value: a number moves as E3 turns, an everyday ON/off goes ON on a right turn and off on
+  a left one, applied at once. A RISKY row (SETUP_RISKY: every pipeline rebuild, both polarities,
+  Lo-Cut) only PROPOSES on an E3 turn (a popup, `now -> proposed`) and an E3 push applies it: two
+  gestures, the value always visible; an E1 or E2 turn, leaving the page or PICK_WINDOW_S
+  cancels. Pages open and actions run on an E3 push; Reset live EQ and opening Laptop access
+  need a second E3 push within CONFIRM_WINDOW_S (the same popup). E1 and E2 pushes only point to
+  E3. A row the Controller holds read-only (`Focus.readonly`), a number included, only shows its
+  reason.
 - D-016 (2026-10-16, all OFF by default): TOPS De-harsh (ON/off, a rebuild) + its freq and
   threshold, SUBS Loudness (ON/off, a rebuild) + its boost and reference, INPUT AUX IN 1/2
-  (off / MIC / LINE, a rebuild) + its level. The switches are chosen then set like Mono; the
-  numbers turn like a trim.
+  (off / MIC / LINE, a rebuild) + its level. The switches are risky rows like Mono; the numbers
+  turn like a trim.
 - B1: tap (on release) = SHOW <-> ALIGN, and back from SETUP to SHOW, from PHONE to SETUP;
   hold = SETUP from SHOW/ALIGN, SHOW from SETUP/PHONE. The Controller brings ALIGN and SETUP
   back to SHOW after HOME_AFTER_S without input.
@@ -55,8 +59,9 @@ Safety rules carried here:
   HINT_B3_HOLD_UNCONFIRMED, as the B3 hold did before D-014.
 - DELAY (every settled change dips the subs or the tops under the delay guard) keeps v0's
   wake-up detent on top of the lock: the first detent after ARM_WINDOW_S at rest only wakes it.
-- Every SETUP setting that is not a number (the pipeline rebuilds among them: mono subs,
-  audition, profile) is chosen first, then set by a push: never one gesture.
+- Every risky SETUP row (SETUP_RISKY, and every pipeline rebuild whatever that list says:
+  mono subs, audition, profile, D-016's switches) is proposed by an E3 turn, then applied by an
+  E3 push: never one gesture, and a push released after turning E3 never applies.
 - Acceleration makes master go DOWN faster; it never accelerates master UP (and the Controller
   caps master rises per window: the master-up guard).
 """
@@ -91,7 +96,8 @@ class Toggle:
 
 @dataclass(frozen=True)
 class SetChoice:
-    """SETUP (D-013): set `field` to `value`, the choice the row showed when the push came. The
+    """SETUP: set `field` to `value`: what an E3 turn stepped an everyday ON/off to, or what a
+    risky row's popup proposed when the E3 push came (D-017; D-013 chose with E2). The
     controller checks it again (profile pinned, rebuild rules) and says so if it refuses."""
     field: str
     value: Any
@@ -118,8 +124,8 @@ class SelectItem:
 
 @dataclass(frozen=True)
 class SelectGroup:
-    """SETUP page, E3 (D-013): the first item of the next (delta > 0) or previous group; back
-    from inside a group first goes to its own first item. UI-local, clamps."""
+    """SETUP page, E2 (D-017; E3 under D-013): the first item of the next (delta > 0) or previous
+    group; back from inside a group first goes to its own first item. UI-local, clamps."""
     delta: int
 
 
@@ -291,10 +297,11 @@ def next_band(slot: int, delta: int = 1) -> int:
 
 @dataclass(frozen=True)
 class SetupItem:
-    """One SETUP row. kind: num (E2 turns it), bool / choice (E2 chooses, a push sets: D-013),
-    page (a push opens it), action (a push runs it: `field` names the action). `confirm`
-    (actions): the push must come twice within CONFIRM_WINDOW_S. `group`: its SETUP_GROUPS
-    name, filled in by SETUP_ITEMS."""
+    """One SETUP row (knobs D-017). kind: num (an E3 turn moves it), bool / choice (an E3 turn
+    steps it, applied at once; on a `risky` row the turn only proposes, in a popup, and an E3
+    push applies), page (an E3 push opens it), action (an E3 push runs it: `field` names the
+    action). `confirm` (actions): the E3 push must come twice within CONFIRM_WINDOW_S. `group`:
+    its SETUP_GROUPS name, filled in by SETUP_ITEMS."""
     label: str
     field: str
     kind: Literal["num", "bool", "choice", "page", "action"]
@@ -307,12 +314,19 @@ class SetupItem:
 
     @property
     def picks(self) -> bool:
-        """E2 chooses the value and a push sets it (ON/off and the choices)."""
+        """An ON/off or a choice (an E3 turn steps it; D-013 chose these with E2)."""
         return self.kind in ("bool", "choice")
 
     @property
+    def risky(self) -> bool:
+        """D-017: an E3 turn only proposes (the popup) and an E3 push applies. The rows named in
+        SETUP_RISKY, and every pipeline rebuild whatever that list says: a rebuild is never one
+        gesture."""
+        return self.picks and (self.field in SETUP_RISKY or self.rebuild)
+
+    @property
     def rebuild(self) -> bool:
-        """Setting it rebuilds the pipeline (a possible click): said in the prompt."""
+        """Setting it rebuilds the pipeline (a possible click): said in the popup."""
         return self.field in REBUILD_FIELDS
 
     @property
@@ -328,10 +342,11 @@ A_LAPTOP = "laptop_access"      # the Friday tune's laptop over the K1000 Wi-Fi 
 
 # SETUP (D-013): grouped by speaker floor, then the rest by what it serves. The ALIGN page keeps
 # what is set per venue (balance, the signed delay, the Lo-Cut frequency); SETUP holds what is set
-# once per rig. Every ON/off and choice is chosen with E2 and set by a push (the row shows both
-# values), so a pipeline rebuild (Mono, Profile, Audition, and D-016's De-harsh, Loudness and AUX
-# IN: a possible click) is never one gesture. Laptop access opens with a double push and closes
-# with one (the Controller waives its confirm while it is open).
+# once per rig. D-017: E3 is the value knob; a risky row (SETUP_RISKY below) is proposed by an E3
+# turn and applied by an E3 push (the popup shows both values), so a pipeline rebuild (Mono,
+# Profile, Audition, and D-016's De-harsh, Loudness and AUX IN: a possible click) is never one
+# gesture. Laptop access opens with a double E3 push and closes with one (the Controller waives
+# its confirm while it is open).
 # D-016 rows sit in the group of what they act on, each switch right before its numbers (the phone
 # pairs a switch with the next number whose label starts with the switch's). Labels fit the 480 px
 # row beside their longest value at 20 px ("De-harsh thresh  -48.0 dB"; tests/test_ui.py checks it).
@@ -381,6 +396,13 @@ SETUP_GROUPS: tuple[tuple[str, tuple[SetupItem, ...]], ...] = (
 )
 SETUP_ITEMS: tuple[SetupItem, ...] = tuple(
     dataclasses.replace(it, group=name) for name, items in SETUP_GROUPS for it in items)
+# D-017, the risky rows: an E3 turn opens a popup (`now -> proposed`) and only an E3 push applies
+# it. Every pipeline rebuild (Mono L+R, Profile, Audition, De-harsh, Loudness, AUX IN 1/2: a
+# possible click; SetupItem.risky keeps them risky even if this line forgets one), both
+# polarities (the floor dips, the sub/top sum changes) and Lo-Cut (off sends full range to the
+# tops). Every other ON/off (Low-pass, Spectrum) is applied as E3 turns. Claude's proposal
+# (2026-10-17): Thomas changes the list here, one line.
+SETUP_RISKY: frozenset[str] = REBUILD_FIELDS | {"top_inverted", "sub_inverted", F_LOWCUT_ON}
 SETUP_GROUP_NAMES: tuple[str, ...] = tuple(name for name, _items in SETUP_GROUPS)
 
 
@@ -403,8 +425,8 @@ def setup_group_pos(i: int) -> tuple[str, int, int]:
 
 
 def setup_group_step(i: int, delta: int) -> int:
-    """E3 on SETUP: the first item `delta` groups away (clamped). Backwards from inside a group,
-    the first step lands on that group's own first item."""
+    """E2 on SETUP (D-017; E3 under D-013): the first item `delta` groups away (clamped).
+    Backwards from inside a group, the first step lands on that group's own first item."""
     i = max(0, min(len(SETUP_ITEMS) - 1, i))
     first = setup_group_start(i)
     if delta < 0 and i != first:
@@ -466,6 +488,8 @@ class Knob:
 # E1..E4 per page — the contract's knob table, as data. D-015 (Thomas on the box, 2026-10-14):
 # SHOW's Q on E3 and GAIN on E4 (GAIN was E3); ALIGN's DELAY on E2 and BALANCE on E3 (the other
 # way round before), so the two LOCKED knobs, DELAY and LO-CUT, are the two bottom ones.
+# D-017 (Thomas at the rig, 2026-10-17): SETUP's VALUE on E3 (turn = change, push = set / open /
+# run) and GROUP on E2 (E2 VALUE and E3 GROUP under D-013).
 KNOBS: dict[str, tuple[Knob, Knob, Knob, Knob]] = {
     "SHOW": (
         Knob("MASTER", F_MASTER, accel_up=1, accel_down=4),
@@ -481,8 +505,8 @@ KNOBS: dict[str, tuple[Knob, Knob, Knob, Knob]] = {
     ),
     "SETUP": (
         Knob("ITEM", None, kind="item"),
-        Knob("VALUE", None, kind="setup_value"),
         Knob("GROUP", None, kind="group"),
+        Knob("VALUE", None, kind="setup_value"),
         Knob("", None),
     ),
     "HWTEST": (Knob("", None), Knob("", None), Knob("", None), Knob("", None)),
@@ -568,16 +592,30 @@ HINT_RESET_IN_SETUP = "RESET LIVE EQ: IN SETUP"     # B3 hold on SHOW until D-01
 # D-014's gate: a B3 hold on SHOW while the button map is unconfirmed (it names the button, so an
 # operator who meant B4 MUTE sees which one he held).
 HINT_B3_HOLD_UNCONFIRMED = "B3 HOLD: IN/OUT AFTER KNOB TEST"
-HINT_TURN_VALUE = "TURN THE VALUE KNOB"
-HINT_PUSH_OPEN = "PUSH TO OPEN"
-HINT_PUSH_RUN = "PUSH TO RUN"
-HINT_PUSH_TWICE = "PUSH TWICE TO RUN"
-HINT_CONFIRM = "PUSH AGAIN TO APPLY (MAY CLICK)"
-HINT_CONFIRM_RESET = "PUSH AGAIN TO RESET ALL LIVE EQ"
-HINT_CONFIRM_LAPTOP = "PUSH AGAIN: LAPTOP ACCESS FOR 2 H"
+# SETUP (D-017): every hint names E3, the one knob that changes, opens or runs anything there;
+# an E1 or E2 push says which E3 gesture the row takes.
+HINT_TURN_VALUE = "TURN E3 TO CHANGE"
+HINT_PUSH_OPEN = "PUSH E3 TO OPEN"
+HINT_PUSH_RUN = "PUSH E3 TO RUN"
+HINT_PUSH_TWICE = "PUSH E3 TWICE TO RUN"
+HINT_PUSH_APPLY = "PUSH E3 TO APPLY"
+HINT_CANCELLED = "CANCELLED"
+HINT_ALREADY = "ALREADY {}"     # an E3 turn towards the value the row already holds
 HINT_ARM = "{} · TURN AGAIN TO CHANGE"
 CONFIRM_WINDOW_S = 5.0
-PICK_WINDOW_S = 8.0           # SETUP: a chosen value waits this long for its push (each turn renews)
+PICK_WINDOW_S = 8.0           # SETUP: a proposal waits this long for its E3 push (each turn renews)
+# SETUP: an E3 push applies a proposal only if it was PRESSED at least this long after the
+# proposal last moved. A detent clicked by the finger pressing the knob (or a turn and a push
+# made as one gesture) would otherwise propose and apply in one go, the popup never seen
+# (D-017 review). Refused, the popup stays and says PUSH E3 TO APPLY.
+PICK_SETTLE_S = 0.25
+SETUP_VALUE_KNOB = 2          # E3 (D-017): SETUP's value knob, its push the only one that acts
+# D-017: what the popup says on an action's first E3 push (question, consequence, what the second
+# push does); another confirmed action asks "<label>?".
+SETUP_ASK: dict[str, tuple[str, str, str]] = {
+    A_RESET_LIVE: ("Reset live EQ?", "ALL 6 LIVE BANDS FLAT · UNDO 5 MIN", "reset"),
+    A_LAPTOP: ("Open laptop access?", "GUI + SSH OVER THE K1000 WI-FI · 2 H", "open"),
+}
 
 # ------------------------------------------------------------------------------------------
 # Physical -> logical mapping (from /etc/k1000/k1000.yaml, section `controls:`)
@@ -712,13 +750,16 @@ class Focus:
     turned: set[int] = field(default_factory=set)        # held pushes whose knob was turned
     last_turn: dict[int, tuple[float, int]] = field(default_factory=dict)  # enc -> (ts, sign)
     turn_dt: dict[int, float | None] = field(default_factory=dict)  # enc -> previous interval
-    confirm: str | None = None            # SETUP action waiting for its second push
+    confirm: str | None = None            # SETUP action waiting for its second E3 push (the popup)
     confirm_until: float = 0.0
-    # SETUP (D-013): the value E2 chose for `pick` (a field), set by the next push before
-    # pick_until; None = nothing chosen. The row shows `now -> chosen`.
+    # SETUP (D-017): the value an E3 turn proposed for `pick` (a risky row's field), applied by
+    # the next E3 push before pick_until; None = nothing proposed. The popup shows
+    # `now -> proposed`.
     pick: str | None = None
     pick_value: Any = None
     pick_until: float = 0.0
+    pick_at: float = 0.0                  # when the proposal was opened or last moved
+    pressed_at: dict[int, float] = field(default_factory=dict)   # enc -> its push's last press
     hw: HwTestLog = field(default_factory=HwTestLog)
     # B4 press (mute, D-013): (the mute B4 acts against, its generation) as the operator saw
     # them when the press STARTED. B4 long fires 0.8 s later, while still held: it acts on that.
@@ -747,12 +788,12 @@ class Focus:
         return self.confirm if self.confirm and now < self.confirm_until else None
 
     def pick_now(self, now: float | None = None) -> tuple[str, Any] | None:
-        """(field, chosen value) while a SETUP choice waits for its push, else None."""
+        """(field, proposed value) while a SETUP proposal waits for its E3 push, else None."""
         now = time.monotonic() if now is None else now
         return (self.pick, self.pick_value) if self.pick and now < self.pick_until else None
 
     def clear_pick(self) -> None:
-        self.pick, self.pick_value, self.pick_until = None, None, 0.0
+        self.pick, self.pick_value, self.pick_until, self.pick_at = None, None, 0.0, 0.0
 
     def unlocked(self, now: float | None = None) -> bool:
         """ALIGN's E2/E4 (delay, Lo-Cut) are editable now."""
@@ -890,6 +931,12 @@ def map_event(page: str, focus: Focus, event: Any, cfg: Any = None, *,
         fine = e in focus.held
         if fine:
             focus.turned.add(e)       # its release is the end of a fine turn, not a 'select'
+        if knob.kind in ("item", "group") and setup_popup(focus, now) is not None:
+            # D-017: the popup says "turn E1 = cancel". An E1 (or E2) turn closes it and moves
+            # nothing: the row it named stays selected, nothing applied.
+            focus.clear_pick()
+            focus.confirm = None
+            return [ShowHint(HINT_CANCELLED)]
         # Slot/item: every detent counts (the driver merges a fast turn into one event).
         if knob.kind == "slot":
             return [SelectSlot(delta)]
@@ -920,6 +967,7 @@ def map_event(page: str, focus: Focus, event: Any, cfg: Any = None, *,
         if kind == "press":
             focus.held.add(n)
             focus.turned.discard(n)
+            focus.pressed_at[n] = now
         elif kind == "release":
             # The driver sends `release` THEN `short` (hw/mcp23017.py): `turned` must survive
             # the release so the short that follows still knows the knob was turned.
@@ -928,11 +976,14 @@ def map_event(page: str, focus: Focus, event: Any, cfg: Any = None, *,
             focus.held.discard(n)
             focus.turned.discard(n)
         # A push released after turning its knob (the fine-mode habit from SHOW) is not a
-        # 'select': on SETUP it would set the value the turn chose, or open a page.
+        # 'select': on SETUP it would apply the value the E3 turn proposed, or open a page.
         if page == "PHONE" and kind == "short" and n in (0, 1) and not turned:
             return [PhoneToggle()]
-        if page == "SETUP" and kind == "short" and n in (0, 1) and not turned:
-            return _setup_push(focus, now, state)
+        if page == "SETUP" and kind == "short" and not turned:
+            if n == SETUP_VALUE_KNOB:           # D-017: E3's push sets, opens, runs
+                return _setup_push(focus, now, state)
+            if n in (0, 1):                     # E1/E2 pushes only say what E3 does here
+                return [ShowHint(_setup_e3_hint(focus, now))]
         return []
 
     if n == 0:   # B1 (D-013): tap (on release) = SHOW <-> ALIGN / back; hold = SETUP / home
@@ -989,29 +1040,83 @@ def setup_value_of(state: Any, item: SetupItem) -> Any:
     return bool(v) if item.kind == "bool" and v is not None else v
 
 
-def _pick_step(focus: Focus, item: SetupItem, delta: int, now: float, state: Any) -> list[Action]:
-    """E2 on an ON/off or a choice: move the chosen value one choice (wraps) in `delta`'s
-    direction from the one already chosen, else from the current value. Back on the current
-    value = nothing chosen."""
+def setup_popup(focus: Any, now: float | None = None) -> tuple[str, Any] | None:
+    """D-017: the SETUP popup open on the selected row, else None. ("pick", proposed value)
+    while a risky row's proposal waits for its E3 push; ("confirm", None) while an action waits
+    for its second E3 push. Never on a row the Controller holds read-only (its push only says
+    why), never for a row other than the selected one. Tolerant of an odd focus (pages draws
+    it)."""
+    now = time.monotonic() if now is None else now
+    try:
+        item = SETUP_ITEMS[max(0, min(len(SETUP_ITEMS) - 1, int(getattr(focus, "item", 0) or 0)))]
+        if item.field in (getattr(focus, "readonly", None) or {}):
+            return None
+        pick_now = getattr(focus, "pick_now", None)
+        confirm_now = getattr(focus, "confirm_now", None)
+        pk = pick_now(now) if callable(pick_now) else None
+        if pk is not None and pk[0] == item.field and item.risky:
+            return ("pick", pk[1])
+        if callable(confirm_now) and confirm_now(now) == item.field and item.kind == "action":
+            return ("confirm", None)
+    except Exception:   # noqa: BLE001 - a broken focus shows no popup, never breaks a frame
+        return None
+    return None
+
+
+def _choice_step(item: SetupItem, base: Any, delta: int) -> Any:
+    """One choice from `base` in `delta`'s direction, stopping at both ends (D-017: a knob turned
+    right never wraps back to the first choice, so a fast turn lands where it points). An ON/off
+    is the direction itself: right = ON (INVERTED), left = off (normal). One step per event,
+    however many detents it carries."""
+    if item.kind == "bool":
+        return delta > 0
     choices = item.choices
     if not choices:
-        return []
+        return base
+    step = 1 if delta > 0 else -1
+    i = choices.index(base) if base in choices else (-1 if step > 0 else len(choices))
+    return choices[max(0, min(len(choices) - 1, i + step))]
+
+
+def _already(item: SetupItem, value: Any) -> ShowHint:
+    return ShowHint(HINT_ALREADY.format(choice_name(item, value).upper()))
+
+
+def _setup_apply_step(focus: Focus, item: SetupItem, delta: int, state: Any) -> list[Action]:
+    """E3 on an everyday ON/off or choice (not risky): one step in the turn's direction, set at
+    once through the controller's SetChoice path; already there = a hint, nothing sent."""
+    cur = setup_value_of(state, item)
+    target = _choice_step(item, cur, delta)
+    focus.clear_pick()
+    focus.confirm = None
+    if target == cur:
+        return [_already(item, cur)]
+    return [SetChoice(item.field, target)]
+
+
+def _setup_propose(focus: Focus, item: SetupItem, delta: int, now: float,
+                   state: Any) -> list[Action]:
+    """E3 on a risky row: open (or move) the popup's proposal one step in the turn's direction,
+    from the proposal already shown, else from the current value. Back on the current value =
+    the popup closes; no popup and already there = a hint. Never sets anything."""
     cur = setup_value_of(state, item)
     pk = focus.pick_now(now)
-    base = pk[1] if pk is not None and pk[0] == item.field else cur
-    step = 1 if delta > 0 else -1          # one choice per event, however fast the turn
-    i = choices.index(base) if base in choices else (-1 if step > 0 else 0)
-    cand = choices[(i + step) % len(choices)]
+    open_ = pk is not None and pk[0] == item.field
+    cand = _choice_step(item, pk[1] if open_ else cur, delta)
+    focus.confirm = None
     if cand == cur:
         focus.clear_pick()
-    else:
-        focus.pick, focus.pick_value, focus.pick_until = item.field, cand, now + PICK_WINDOW_S
-    focus.confirm = None
+        return [] if open_ else [_already(item, cur)]
+    focus.pick, focus.pick_value, focus.pick_until = item.field, cand, now + PICK_WINDOW_S
+    focus.pick_at = now
     return []
 
 
 def _setup_turn(focus: Focus, delta: int, fine: bool, now: float = 0.0,
                 state: Any = None) -> list[Action]:
+    """E3 turn on SETUP (D-017): a number moves (fine while E3's push is held), an everyday
+    ON/off or choice steps and applies, a risky row proposes (the popup), a page or an action
+    says to push E3."""
     item = _setup_item(focus)
     ro = focus.readonly.get(item.field)
     if ro:              # a number too (D-016: the AUX level where no input is spare)
@@ -1019,25 +1124,40 @@ def _setup_turn(focus: Focus, delta: int, fine: bool, now: float = 0.0,
     if item.kind == "num":
         return [Nudge(item.field, delta, fine)]
     if item.picks:
-        return _pick_step(focus, item, delta, now, state)
+        if item.risky:
+            return _setup_propose(focus, item, delta, now, state)
+        return _setup_apply_step(focus, item, delta, state)
     if item.kind == "page":
         return [ShowHint(HINT_PUSH_OPEN)]
-    twice = item.needs_confirm and item.field not in getattr(focus, "no_confirm", ())
+    waiting = focus.confirm_now(now) == item.field          # the popup: the next push runs it
+    twice = (item.needs_confirm and item.field not in getattr(focus, "no_confirm", ())
+             and not waiting)
     return [ShowHint(HINT_PUSH_TWICE if twice else HINT_PUSH_RUN)]
 
 
-def _confirm_hint(item: SetupItem) -> str:
-    if item.field == A_RESET_LIVE:
-        return HINT_CONFIRM_RESET
-    if item.field == A_LAPTOP:
-        return HINT_CONFIRM_LAPTOP
-    return HINT_CONFIRM
+def _setup_e3_hint(focus: Focus, now: float) -> str:
+    """What an E1 or E2 push on SETUP says (D-017: they act on nothing there): the E3 gesture
+    the selected row takes, or why it is fixed."""
+    item = _setup_item(focus)
+    ro = focus.readonly.get(item.field)
+    if ro:
+        return ro
+    pop = setup_popup(focus, now)
+    if pop is not None:
+        return HINT_PUSH_APPLY if pop[0] == "pick" else HINT_PUSH_RUN
+    if item.kind in ("num", "bool", "choice"):
+        return HINT_TURN_VALUE
+    if item.kind == "page":
+        return HINT_PUSH_OPEN
+    twice = item.needs_confirm and item.field not in getattr(focus, "no_confirm", ())
+    return HINT_PUSH_TWICE if twice else HINT_PUSH_RUN
 
 
 def _setup_push(focus: Focus, now: float, state: Any = None) -> list[Action]:
-    """E1/E2 push on SETUP: set the chosen value (D-013), open a page, run an action (twice when
-    it needs a confirm). With nothing chosen, a push on an ON/off or a choice proposes the next
-    value (the row shows it) and the next push sets it."""
+    """E3 push on SETUP (D-017): apply a risky row's proposal (the popup), open a page, run an
+    action. A confirmed action's first push opens its popup and the second, within
+    CONFIRM_WINDOW_S, runs it (Laptop access while open: one push, `Focus.no_confirm`). On a
+    number or an ON/off with nothing proposed it only says to turn E3."""
     item = _setup_item(focus)
     if item.kind == "page":
         return [GotoPage(item.field)]
@@ -1046,16 +1166,22 @@ def _setup_push(focus: Focus, now: float, state: Any = None) -> list[Action]:
         return [ShowHint(ro)]
     if item.picks:
         pk = focus.pick_now(now)
-        if pk is not None and pk[0] == item.field:
+        if item.risky and pk is not None and pk[0] == item.field:
+            pressed = focus.pressed_at.get(SETUP_VALUE_KNOB)
+            if pressed is not None and pressed - focus.pick_at < PICK_SETTLE_S:
+                # The knob clicked a detent as the finger pressed it (or a turn and a push came
+                # as one gesture): the popup was never seen. It stays open; the next push applies.
+                return [ShowHint(HINT_PUSH_APPLY)]
             focus.clear_pick()
             return [SetChoice(item.field, pk[1])]
-        return _pick_step(focus, item, 1, now, state)
+        return [ShowHint(HINT_TURN_VALUE)]
     if item.kind == "num":
         return [ShowHint(HINT_TURN_VALUE)]
     if item.needs_confirm and item.field not in getattr(focus, "no_confirm", ()):
         if focus.confirm_now(now) != item.field:
             focus.confirm, focus.confirm_until = item.field, now + CONFIRM_WINDOW_S
-            return [ShowHint(_confirm_hint(item))]
+            focus.clear_pick()
+            return []                   # the popup asks; the next E3 push runs it
         focus.confirm = None
     if item.kind == "action":
         if item.field == A_RESET_LIVE:
