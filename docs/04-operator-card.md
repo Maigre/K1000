@@ -42,6 +42,7 @@ UI v1 (D-009 to D-017), ops `box/README.md`. **New:** SETUP knobs (D-017) · De-
 | CLIP · IN CLIP pill · meter red (> −6 dBFS) | master down · source down; Meyers limit ≈ −14 |
 | Orange `… (GUI)`, `… CHANGED (GUI)` | CamillaGUI: cuts kept, rest restored → no Applies |
 | NO SPECTRUM · ENGINE ? · DEVICE ? · UI ERROR | engine refuses it: sound fine, Spectrum OFF · unsure → wait |
+| Bass boost all the time, poor mids, EQ does nothing | M4 INPUT MONITOR MIX not full right → full right, MONs unlit · test: hold B4, music still on the tops = the M4 |
 
 **Power on:** Meyers OFF, source quiet → M4 on the Pi's USB, rear switch on → K1000 on; ~15 s: ● RUNNING, M4 · MOTU M4, **MUTED · READY** → Meyers ON → hold B4 → E1 up. No MUTED band (`RAMPS IN BY ITSELF`): live at its saved level → Meyers ON with the source down, **no B4** (it mutes). **Off:** hold B4 (saved at once) → Meyers OFF → unplug K1000, M4. **M4 taped:** MONITOR, INPUT MONITOR MIX full right · MONs unlit · 48V off · GAIN 1/2 min.
 

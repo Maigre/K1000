@@ -29,7 +29,7 @@ Set the front panel **before plugging**, then tape it at the end of the day:
 | Control | Position | Why |
 |---|---|---|
 | MONITOR (big knob) | fully clockwise | It sets outs 1-2 = the tops. Outs 3-4 have no knob. UNVERIFIED that fully clockwise is exactly unity: loop test, step 6 |
-| INPUT MONITOR MIX | fully clockwise | USB playback only. It is a balance knob, not a switch: counter-clockwise = inputs only, i.e. the tops silent or fed the raw program. UNVERIFIED that fully clockwise blocks the inputs: leak test, step 6 |
+| INPUT MONITOR MIX | fully clockwise | USB playback only. It is a balance knob, not a switch: counter-clockwise = inputs only, i.e. the tops silent or fed the raw program. UNVERIFIED that fully clockwise blocks the inputs: leak test, step 6 · 2026-10-17 field case: at about half it leaked the raw program onto the tops (a constant bass boost, poor mids); fully clockwise fixed it by ear. Still not measured at the −116 dBFS floor |
 | MON 1, MON 2, 3-4 | all unlit (no blue box around the input numbers on the LCD) | Lit = that input goes straight to outs 1-2, past K1000 and past its MUTE |
 | 48V | off | |
 | GAIN 1 / GAIN 2 | fully counter-clockwise | Inputs 1-2 are not in the program (while SETUP › INPUT › AUX IN 1/2 is off, the default; D-016) |

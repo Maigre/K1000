@@ -50,6 +50,7 @@ During the show leave ALIGN and SETUP alone; they go back to SHOW by themselves 
 | `NO AUDIO FLOWING · HELD MUTED` | K1000 gets no audio from the M4: its USB and power |
 | IN meters still, no sound | Source playing? Into the rear LINE IN 3/4 (not the front 1–2)? |
 | SUB/TOP meters move, no sound | After K1000: speaker power, cables, the M4 MONITOR knob fully right |
+| Bass boost all the time, thin mids, EQ does not help | The M4's INPUT MONITOR MIX knob: fully right, MON buttons unlit. Check: hold B4. If music still comes from the tops, it is the M4 leaking, not K1000 |
 | `CLIP` · `IN CLIP` (red, top line) | E1 down · the source down |
 | `KNOBS OFFLINE` (red bar, B4 dead) | `USE PHONE MUTE`: mute from the phone. Else source down, bypass |
 | Another orange or red bar, sound fine | Carry on; report it after the show |

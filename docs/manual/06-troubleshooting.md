@@ -212,6 +212,21 @@ ssh k1000 'journalctl -u camilladsp -n 40 --no-pager'
 | One side of everything | The source side: the capture meter, the input cable; Mono L+R hides a missing side on the subs only |
 | Only on the bench (`dev`) | SETUP › BOX › Audition (dev) is on `TOPS` or `SUBS` |
 
+### Constant bass boost, poor mids
+
+The M4's INPUT MONITOR MIX knob is short of fully clockwise (or a MON button is lit). The M4 then
+mixes the raw inputs into outs 1-2, under K1000's output. The raw copy skips the tops' high-pass,
+so the tops get the full low end. It arrives about 20 ms ahead of the processed copy, and the two
+sum into a comb filter, which gives the hollow mids. The knob also lowers K1000's own signal on
+outs 1-2, so the tops seem to need more trim. No K1000 EQ, trim or balance fixes it.
+
+**30 s test:** play, then hold B4 (K1000 muted). Anything still coming out of the tops is the
+M4's direct monitoring. Fix: INPUT MONITOR MIX fully clockwise, MON 1, MON 2 and 3-4 unlit,
+then tape them. Hold B4 again to come back.
+
+Field case, 2026-10-17 at the rig: the knob sat at about half. Turning it fully clockwise fixed
+it completely, by ear. Not yet measured (see the leak test in docs/05-m4-day.md).
+
 ### Hum or buzz
 
 Not something K1000 creates. Usual causes:
