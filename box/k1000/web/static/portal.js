@@ -11,7 +11,11 @@
 
    The app card is in the page only when the box has an APK to offer (the box puts a "no app on
    this box" card there otherwise). It is hidden where it cannot work: on an iPhone, in that
-   sign-in window (Chrome installs it), and on a box without HTTPS (the app only talks HTTPS). */
+   sign-in window (Chrome installs it), and on a box without HTTPS (the app only talks HTTPS).
+
+   One button is amber, the next step: the app's while its card shows; otherwise "Open the web
+   app" once the certificate check passes (or on a box without HTTPS), the certificate's while it
+   fails. */
 "use strict";
 (() => {
   const d = document.body.dataset;
@@ -62,7 +66,7 @@
       check.className = "check ok";
       text.textContent = "This phone trusts the K1000 certificate ✓";
       ca.hidden = true;
-      open.classList.add("primary");
+      if (!appShown) open.classList.add("primary");          // one amber button: the app's, when shown
     })
     .catch(() => {
       clearTimeout(t);

@@ -216,18 +216,19 @@ def test_apk_size_reads_in_megabytes() -> None:
         "0.1 MB", "0.1 MB", "0.5 MB", "1.2 MB", "12.3 MB"]
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run portal.js")
-@pytest.mark.parametrize("case", ["chrome", "chrome-noapk", "iphone", "webview", "no-tls"])
-def test_portal_js_hides_the_app_where_it_cannot_work(case: str) -> None:
-    """The app card is shown in Chrome on Android; hidden on an iPhone (an APK is Android's), in
-    Android's sign-in WebView (Chrome installs the APK) and on a box without HTTPS (the app only
-    talks HTTPS). The web app's button is there except in the sign-in window."""
+def _portal_js(case: str, cert: str = "") -> dict[str, Any]:
+    """portal.js under node with a stub DOM: `case` is the phone (chrome, chrome-noapk, iphone,
+    webview) or no-tls; `cert` the certificate check's outcome: "" never settles, "trusted" the
+    HTTPS fetch answers, "untrusted" it fails (what a phone without the K1000 CA gets)."""
     ua = {"webview": "Mozilla/5.0 (Linux; Android 13; Pixel 4a; wv) AppleWebKit/537.36",
           "iphone": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Version/17.5 Mobile/15E148 Safari/604.1",
           }.get(case, "Mozilla/5.0 (Linux; Android 13; Pixel 4a) AppleWebKit/537.36 Chrome/130")
     data = {"app": "https://10.42.0.1/", "web": "https://10.42.0.1/v2/",
             "ping": "" if case == "no-tls" else "https://10.42.0.1/ping",
             "ca": "1", "tls": "" if case == "no-tls" else "1", "on": "1"}
+    fetch = {"trusted": "() => Promise.resolve({ ok: true, status: 204 })",
+             "untrusted": "() => Promise.reject(new TypeError('Failed to fetch'))",
+             }.get(cert, "() => new Promise(() => {})")
     harness = r"""
 const els = {};
 const el = (id) => els[id] || (els[id] = { id, hidden: false, className: "", textContent: "",
@@ -240,25 +241,56 @@ globalThis.document = { body, getElementById: (id) => (%(absent)s.includes(id) ?
   createTextNode: (t) => t };
 Object.defineProperty(globalThis, "navigator", { value: { userAgent: %(ua)s, maxTouchPoints: 5 }, configurable: true });
 globalThis.location = { origin: "http://10.42.0.1" };
-globalThis.fetch = () => new Promise(() => {});
+globalThis.fetch = %(fetch)s;
 globalThis.AbortController = class { abort() {} get signal() { return null; } };
 globalThis.setTimeout = () => 0; globalThis.clearTimeout = () => {};
 %(src)s
-const app = els.app || els.noapp;
-console.log(JSON.stringify({ app: app.hidden, open: els.open.hidden, web: els.web ? els.web.hidden : false,
-  signin: els.signin ? els.signin.hidden : true, body: [...body.classes],
-  primary: els.open.classes.has("primary") }));
-""" % {"data": json.dumps(data), "ua": json.dumps(ua),
+setImmediate(() => {    // after the certificate check's promise has settled (when it does)
+  const app = els.app || els.noapp;
+  console.log(JSON.stringify({ app: app.hidden, open: els.open.hidden, web: els.web ? els.web.hidden : false,
+    signin: els.signin ? els.signin.hidden : true, body: [...body.classes],
+    primary: els.open.classes.has("primary"), check: els.check.className, ca: els.ca.hidden,
+    caPrimary: mk("ca-link").classes.has("primary") }));
+});
+""" % {"data": json.dumps(data), "ua": json.dumps(ua), "fetch": fetch,
        "absent": json.dumps(["app"] if case == "chrome-noapk" else ["noapp"]),
        "src": (web.STATIC_DIR / "portal.js").read_text()}
     r = subprocess.run(["node", "-e", harness], capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, r.stderr
-    out = json.loads(r.stdout.strip().splitlines()[-1])
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run portal.js")
+@pytest.mark.parametrize("case", ["chrome", "chrome-noapk", "iphone", "webview", "no-tls"])
+def test_portal_js_hides_the_app_where_it_cannot_work(case: str) -> None:
+    """The app card is shown in Chrome on Android; hidden on an iPhone (an APK is Android's), in
+    Android's sign-in WebView (Chrome installs the APK) and on a box without HTTPS (the app only
+    talks HTTPS). The web app's button is there except in the sign-in window."""
+    out = _portal_js(case)
     assert out["app"] is (case not in ("chrome", "chrome-noapk"))
     assert out["open"] is (case == "webview") and out["web"] is (case == "webview")
     assert out["signin"] is (case != "webview")
     assert out["body"] == (["ios"] if case == "iphone" else ["android"])
     assert out["primary"] is (case == "no-tls")       # elsewhere: once the certificate check passes
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run portal.js")
+@pytest.mark.parametrize("cert", ["trusted", "untrusted"])
+@pytest.mark.parametrize("case", ["chrome", "chrome-noapk", "iphone"])
+def test_portal_js_shows_the_certificate_steps_only_while_the_check_fails(case: str, cert: str) -> None:
+    """The certificate check's two outcomes: trusted hides the certificate steps; failing shows
+    them. One amber button, the next step: the app's while its card shows (amber in the page
+    itself), else "Open the web app" when trusted, else the certificate download."""
+    out = _portal_js(case, cert)
+    app = case == "chrome"                           # the app card shows (the APK, Chrome on Android)
+    assert out["app"] is (case == "iphone")          # the app or the no-app card, not on an iPhone
+    assert out["open"] is False and out["web"] is False
+    if cert == "trusted":
+        assert out["check"] == "check ok" and out["ca"] is True
+        assert out["primary"] is not app and out["caPrimary"] is False
+    else:
+        assert out["check"] == "check warn" and out["ca"] is False
+        assert out["primary"] is False and out["caPrimary"] is not app
 
 
 def test_portal_sends_a_large_apk_over_tcp(tmp_path: Path) -> None:
