@@ -3828,14 +3828,23 @@ def test_common_delay_unmuted_before_the_write_stays_held(tmp_path: Path) -> Non
 
 def test_common_delay_goes_with_a_setup_rebuild_under_the_main_guard(tmp_path: Path) -> None:
     """A setup change rebuilds the pipeline with Main muted around it: the common delay goes in
-    that upload, not in a write of its own."""
+    that upload, not in a write of its own, and PA LATE (same priority) makes way for APPLYING
+    SETUP… while it runs."""
     async def body() -> None:
         ctl, cl = make(tmp_path, State(sub_delay_ms=1.0, top_delay_ms=1.5), playing=True)
         await boot(ctl)
         assert _pa_late(ctl) == [("warning", "PA LATE 1.00 MS · MUTE TO CLEAR")]
+        shown: list[tuple[str, str]] = []
+
+        async def at_upload(entry: tuple[Any, ...]) -> None:
+            if entry[0] == "config":
+                shown.append((ctl.status.message, ctl.status.alert))
+
+        cl.on_write = at_upload
         n = len(cl.log)
         assert ctl.toggle("mono_subs", confirmed=True)
         assert await ctl.settle(3.0)
+        assert shown == [("APPLYING SETUP…", "APPLYING SETUP…")]
         ops = nomark(cl.log[n:])
         uploads = [e for e in ops if e[0] == "config"]
         assert len(uploads) == 1 and len(_config_writes(ops)) == 1, ops

@@ -2355,6 +2355,9 @@ class Controller:
         cfg = expected if (profile_change or live is None) else dc.with_live_devices(expected, live)
         log.warning("setup action: %s -> pipeline rebuild%s", reason,
                     " + device restart" if profile_change else "")
+        # The upload takes the common delay out (`target` is the state's, never held): PA LATE
+        # would hide APPLYING SETUP… (same priority); `_apply_once` puts it back if it failed.
+        self._set_message("common", 4, None)
         self._set_message("setup", 4, "APPLYING SETUP…")
         try:
             ok = await self._guarded_upload(cfg, ramp_after=profile_change, epoch=epoch)
