@@ -3308,7 +3308,8 @@ class Controller:
 
     def _note_latency(self, est: Any, level: Any) -> None:
         """D-018: the poll's engine state and buffer level -> the readout (and its journal line)."""
-        r = self.latency.note(est, level, getattr(self.profile, "io_latency_ms", None))
+        r = self.latency.note(est, level,
+                              self.latency.io_share(getattr(self.profile, "io_latency_ms", None)))
         view = ((None, True, False, None) if r is None
                 else (r.ms, r.io_ms is not None, r.over, r.level))
         st = self.status

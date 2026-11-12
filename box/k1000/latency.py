@@ -6,11 +6,13 @@ Why it is shaped like this:
 - **An estimate from what the engine already reports.** Capture and playback are one device on
   one clock, so the samples inside the engine stay constant while nothing stops (docs/16 §2.2):
   the playback buffer level plus the chunk being collected on the capture side. The interface
-  adds its converters and USB, a fixed share measured through a loop cable
-  (`profiles.<name>.io_latency_ms`: 3.8 ms on the M4, 16 Oct). On the bench, 536 + 256 frames at
-  48 kHz + 3.8 ms = 20.3 ms, the loop measurement of 16 Oct. A profile without that figure (dev)
-  shows the engine's share alone, marked as a floor (`io` False). An estimate, not a loop
-  measurement.
+  adds its converters and USB, measured through a loop cable (`profiles.<name>.io_latency_ms`),
+  and the level itself reads about a quarter chunk low, because the device reports its position
+  once per period, half a chunk (`io_share_ms`). Bench of 12 Nov, the M4 on both engines, chunk
+  32 to 256, 27 starts: in to out = (level + chunk) / rate + 2.3 ms + a quarter chunk, within
+  0.3 ms. At 536 + 256 frames that is 20.1 ms for a measured 20.2 to 20.3. A profile without the
+  figure (dev) shows the engine's share alone, marked as a floor (`io` False). An estimate, not
+  a loop measurement.
 - **One more read a second, nothing written.** The control service's status poll adds one
   GetBufferLevel; chunksize and samplerate come from the running config the poll already reads.
   The engine refreshes the level about every 10 s (its adjust period) and reads 0 until its first
@@ -74,6 +76,15 @@ def latency_limit_ms(settings: Any) -> float:
     if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
         return LIMIT_MS
     return float(min(LIMIT_RANGE[1], max(LIMIT_RANGE[0], v)))
+
+
+def io_share_ms(io_latency_ms: float | None, chunksize: int, samplerate: float) -> float | None:
+    """What is added to the engine's share: the interface's own latency (the profile's
+    `io_latency_ms`) plus a quarter chunk, the average by which the buffer level reads low (the
+    device's position moves once per period, half a chunk). None stays None: not known."""
+    if io_latency_ms is None:
+        return None
+    return float(io_latency_ms) + 0.25 * chunksize / samplerate * 1000.0
 
 
 def run_devices(cfg: Any) -> tuple[int, float] | None:
@@ -149,6 +160,13 @@ class LatencyWatch:
         self._devices = None
         self.reading = None
         self._logged = None
+
+    def io_share(self, io_latency_ms: float | None) -> float | None:
+        """`io_share_ms` for the running chunk and rate (the profile's figure alone until the
+        running config is known)."""
+        if io_latency_ms is None or self._devices is None:
+            return io_latency_ms
+        return io_share_ms(io_latency_ms, *self._devices)
 
     def note(self, engine_state: Any, level: Any, io_ms: float | None) -> Reading | None:
         """One poll: the engine's state and its GetBufferLevel value (None = not read) -> the

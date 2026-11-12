@@ -36,7 +36,7 @@ profiles:
     # clamped with a journal line. Measured at 256 + 512: 20.3 ms in to out (16 Oct).
     chunksize: 256
     target_level: 512            # ~10.7 ms: the gig value (D-010), to come down by measurement (D-018)
-    io_latency_ms: 3.8           # the M4's converters + USB, loop-measured 16 Oct: the delay readout adds it (D-018)
+    io_latency_ms: 2.3           # the M4's converters + USB, loop-measured 12 Nov: the delay readout adds it (D-018)
 
 # Physical -> logical controls (MCP23017 indices, see docs/03-v0-architecture.md §1).
 # UNCONFIRMED DEFAULTS until SETUP > Knob test (HWTEST) on the box has identified every button

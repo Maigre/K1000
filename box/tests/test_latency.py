@@ -20,7 +20,8 @@ from k1000 import latency as lat
 from k1000 import state as st
 from k1000.cdsp import CdspError
 from k1000.control import Controller, Paths, Status
-from k1000.latency import DropoutCounter, LatencyWatch, Reading, latency_limit_ms, run_devices, scan
+from k1000.latency import (DropoutCounter, LatencyWatch, Reading, io_share_ms, latency_limit_ms,
+                           run_devices, scan)
 from k1000.profiles import load_profile, load_settings
 from k1000.ui import pages
 from k1000.ui.input_map import Focus
@@ -55,6 +56,24 @@ def test_the_bench_figure_is_the_estimate() -> None:
     assert Reading(240, 128, 48000.0, io_ms=3.8, limit_ms=11.4).ms == 11.5
 
 
+def test_the_interface_share_fits_the_bench_of_12_nov() -> None:
+    """Loop measurements on the box, both engines, K1000 in the loop (chunk, level, measured ms):
+    in to out = (level + chunk) / rate + io_latency_ms + a quarter chunk, within 0.3 ms."""
+    bench = ((256, 536, 20.20), (256, 296, 15.20), (128, 292, 11.70), (128, 340, 12.70),
+             (128, 173, 9.24), (64, 126, 6.55), (64, 178, 7.76), (64, 62, 5.22), (32, 61, 4.34),
+             (32, 92, 5.01))
+    for chunk, level, measured in bench:
+        io = io_share_ms(2.3, chunk, 48000.0)
+        est = Reading(level, chunk, 48000.0, io_ms=io).ms
+        assert abs(est - measured) <= 0.3, (chunk, level, est, measured)
+    assert io_share_ms(None, 256, 48000.0) is None
+    assert io_share_ms(2.3, 256, 48000.0) == pytest.approx(3.633, abs=1e-3)
+    w = LatencyWatch()
+    assert w.io_share(2.3) == 2.3 and w.io_share(None) is None      # no running config yet
+    w.note_config({"devices": {"chunksize": 64, "samplerate": 48000}})
+    assert w.io_share(2.3) == pytest.approx(2.633, abs=1e-3)
+
+
 def test_limit_and_devices_are_read_tolerantly() -> None:
     assert latency_limit_ms({}) == 10.0 == lat.LIMIT_MS
     assert latency_limit_ms({"engine": {"latency_limit_ms": 12}}) == 12.0
@@ -72,17 +91,17 @@ def test_limit_and_devices_are_read_tolerantly() -> None:
 
 
 def test_io_latency_is_a_profile_number() -> None:
-    assert load_profile("m4", {}, probe=False).io_latency_ms == 3.8
+    assert load_profile("m4", {}, probe=False).io_latency_ms == 2.3
     assert load_profile("dev", {}).io_latency_ms is None
     shipped = load_settings(BOX / "etc" / "k1000.yaml")
-    assert load_profile("m4", shipped, probe=False).io_latency_ms == 3.8
+    assert load_profile("m4", shipped, probe=False).io_latency_ms == 2.3
     assert load_profile("dev", shipped).io_latency_ms is None
     assert load_profile("m4", {"profiles": {"m4": {"io_latency_ms": 5}}}, probe=False).io_latency_ms == 5.0
     assert load_profile("m4", {"profiles": {"m4": {"io_latency_ms": None}}}, probe=False).io_latency_ms is None
     assert load_profile("dev", {"profiles": {"dev": {"io_latency_ms": 1.2}}}).io_latency_ms == 1.2
     for junk in ("3.8", True, -1, 51, float("nan")):
         p = load_profile("m4", {"profiles": {"m4": {"io_latency_ms": junk}}}, probe=False)
-        assert p.io_latency_ms == 3.8 and any("io_latency_ms" in w for w in p.warnings), junk
+        assert p.io_latency_ms == 2.3 and any("io_latency_ms" in w for w in p.warnings), junk
 
 
 # ======================================================================= the journal
@@ -296,7 +315,7 @@ class LevelClient(FakeClient):
         return await super().command(name, timeout, **fields)
 
 
-def make(tmp_path: Path, *, io: float | None = 3.8, settings: dict[str, Any] | None = None,
+def make(tmp_path: Path, *, io: float | None = 2.3, settings: dict[str, Any] | None = None,
          engine_log: Path | None = None) -> tuple[Controller, LevelClient]:
     s = st.State()
     profile = dataclasses.replace(DEV, io_latency_ms=io)
@@ -322,16 +341,16 @@ def test_the_poll_reads_the_level_once_and_shows_the_delay(tmp_path: Path, caplo
         assert cl.log[writes:] == []                                 # nothing written
         s = ctl.snapshot()[2]
         assert (s.latency_ms, s.latency_io, s.latency_over, s.buffer_level, s.latency_limit_ms) \
-            == (20.3, True, True, 536, 10.0)
+            == (20.1, True, True, 536, 10.0)
         assert ctl.version == v                                      # unchanged: no wake-up
         cl.level = 540
         await ctl.poll_once()
-        assert ctl.snapshot()[2].latency_ms == 20.4 and ctl.version > v
+        assert ctl.snapshot()[2].latency_ms == 20.2 and ctl.version > v
         await ctl.stop()
 
     run(body())
     lines = [r.getMessage() for r in caplog.records if r.name == "k1000.latency"]
-    assert lines == ["latency: buffer=536 frames, about 20.3 ms in to out (limit 10.0)"]
+    assert lines == ["latency: buffer=536 frames, about 20.1 ms in to out (limit 10.0)"]
 
 
 def test_no_reading_without_a_level_and_never_a_failed_poll(tmp_path: Path) -> None:
@@ -361,14 +380,14 @@ def test_a_lost_link_clears_the_readout_and_the_next_one_is_logged(tmp_path: Pat
         ctl, cl = make(tmp_path)
         await boot(ctl)
         await ctl.poll_once()
-        assert ctl.status.latency_ms == 20.3
+        assert ctl.status.latency_ms == 20.1
         await cl.drop()
         await until(lambda: ctl.status.latency_ms is None, what="readout cleared")
         assert ctl.status.buffer_level is None
         await cl.reconnect()
         await until(lambda: ctl.engine_ready, what="sync")
         await ctl.poll_once()                                        # devices from the connect sync
-        assert ctl.status.latency_ms == 20.3
+        assert ctl.status.latency_ms == 20.1
         await ctl.stop()
 
     run(body())

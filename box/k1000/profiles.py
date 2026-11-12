@@ -192,13 +192,14 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
     ),
     # MOTU M4: counts/format are assumptions until probed (4-ch capture assumed).
     # Program from line inputs 3-4; out1/2 = tops, out3/4 = subs. io_latency_ms: the M4's
-    # converters + USB, measured through the loop cable on 16 Oct (docs/05-m4-day.md §13).
+    # converters + USB, measured through the loop cable on 12 Nov at chunk 32 to 256 on both
+    # engines (2.3 ms; the 3.8 ms of 16 Oct held a quarter of chunk 256, see latency.io_share_ms).
     "m4": dict(
         capture_device="hw:M4", playback_device="hw:M4",
         capture_channels=4, playback_channels=4,
         capture_format=None, playback_format=None,
         input_map=(2, 3), output_map=(2, 3, 0, 1),
-        audition=False, pinned=True, probe=True, io_latency_ms=3.8,
+        audition=False, pinned=True, probe=True, io_latency_ms=2.3,
     ),
 }
 PROFILE_NAMES: tuple[str, ...] = tuple(_DEFAULTS)

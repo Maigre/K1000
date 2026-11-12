@@ -48,7 +48,7 @@ profiles:
     probe: true
     chunksize: 256               # the default; measured steps down are D-018's work
     target_level: 512            # D-010: margin over USB; to come down by measurement (D-018)
-    io_latency_ms: 3.8           # the M4's share of the delay in to out (D-018 readout)
+    io_latency_ms: 2.3           # the M4's share of the delay in to out (D-018 readout)
 
 controls:
   encoders: [0, 1, 2, 3]
@@ -117,7 +117,7 @@ One section per profile. Every key is optional: a missing key keeps the built-in
 | `probe` | `true` / `false` | `false` (the HiFiBerry is never opened by the probe) | `true` |
 | `chunksize` | Frames: 64, 128, 256, 512 or 1024 | 256 | 256 |
 | `target_level` | Frames, 64 to 6 × `chunksize` (64–1536 at 256) | one chunk (256) | 512 (D-010; the code default is one chunk) |
-| `io_latency_ms` | ms, 0–50, or `null` (not known) | `null`: the delay readout shows the engine's share alone, as `≥` | 3.8 (the M4's converters and USB, loop-measured 16 Oct) |
+| `io_latency_ms` | ms, 0–50, or `null` (not known) | `null`: the delay readout shows the engine's share alone, as `≥` | 2.3 (the M4's converters and USB, loop-measured 12 Nov at chunk 32 to 256; the readout adds a quarter chunk to it, the average by which the buffer level reads low) |
 
 Details:
 
