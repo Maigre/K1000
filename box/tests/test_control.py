@@ -4040,6 +4040,28 @@ def test_a_direct_sub_or_top_delay_write_never_leaves_a_pair(tmp_path: Path, cap
     run(body())
 
 
+def test_common_delay_goes_with_a_profile_switch_at_connect(tmp_path: Path) -> None:
+    """k1000 restarted on another profile while the engine plays the old one with a pair: the
+    switch uploads the state's delays (no common part) under the Main mute, and K1000 knows it.
+    Believing the old pair still there, the hold would put it back on top of the next ALIGN
+    move: a sub delay 40 ms too long in an engine that no longer holds the tops' 40."""
+    async def body() -> None:
+        m4 = load_profile("m4", {}, probe=False)
+        pair = State(sub_delay_ms=45.0, top_delay_ms=40.0)
+        ctl, cl = make(tmp_path, pair, playing=True, cfg=dc.generate(m4, pair))
+        await boot(ctl)
+        assert [e[1]["title"] for e in cl.log if e[0] == "config"] == ["K1000 dev"]
+        assert _engine_delays(cl) == (5.0, 0.0) and _pa_late(ctl) == []
+        n = len(cl.log)
+        ctl.nudge("align_delay_ms", 1)
+        assert await ctl.settle(3.0)
+        assert nomark(cl.log[n:]) == [("mute", 1, True), ("set", SUB_DELAY_PTR, dc.delay_on_grid(5.1)),
+                                      ("mute", 1, False)]
+        await ctl.stop()
+
+    run(body())
+
+
 def test_rebuilt_state_loses_a_common_delay(tmp_path: Path) -> None:
     pair = State(sub_delay_ms=3.0, top_delay_ms=2.0)
     (tmp_path / "active.yml").write_text(dc.to_yaml(dc.generate(DEV, pair)))

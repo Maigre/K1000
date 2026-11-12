@@ -2745,7 +2745,10 @@ class Controller:
             if resume_main and self.status.muted is not True:
                 await self._send([FaderMute(FADER_MAIN, True)])
                 self._applied.muted = True
-            await self._guarded_upload(self._expected(self.state), ramp_after=True, epoch=epoch)
+            ok = await self._guarded_upload(self._expected(self.state), ramp_after=True,
+                                            epoch=epoch)
+            if ok:   # the state's delays went in: the hold must not ride on the old pair
+                self._restored_delays(self.state)
             if resume_main:
                 await self._boot_ramp(self.state, epoch)
             self._applied.profile = self.profile.name
