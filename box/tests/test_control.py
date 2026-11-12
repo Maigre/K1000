@@ -1134,8 +1134,10 @@ def test_external_edits_are_adopted_not_reverted_and_saved(tmp_path: Path) -> No
         await until(lambda: (tmp_path / "state.json").exists()
                     and json.loads((tmp_path / "state.json").read_text())["sys_peq"][2]["gain"] == -3.0,
                     what="adopted edit persisted")
-        active = yaml.safe_load((tmp_path / "active.yml").read_text())
-        assert active["filters"]["sys_peq_3"]["parameters"]["gain"] == -3.0
+        # active.yml is written after state.json (one save, two files): wait for it too
+        await until(lambda: yaml.safe_load((tmp_path / "active.yml").read_text())
+                    ["filters"]["sys_peq_3"]["parameters"]["gain"] == -3.0,
+                    what="adopted edit in active.yml")
         await ctl.stop()
 
     run(body())
@@ -3499,7 +3501,10 @@ def test_edits_toward_silence_are_saved_at_once(tmp_path: Path) -> None:
         # k1000 dying before the save would strip them from the engine on its restart)
         assert ctl.set_choice("deharsh_on", True)
         await until(lambda: saved()["deharsh_on"] is True, timeout=1.0, what="rebuild saved")
-        assert dc.DH_COMP in yaml.safe_load((tmp_path / "active.yml").read_text())["processors"]
+        # active.yml is written after state.json (one save, two files): wait for it too
+        await until(lambda: dc.DH_COMP in (yaml.safe_load((tmp_path / "active.yml").read_text())
+                                           .get("processors") or {}),
+                    timeout=1.0, what="rebuild in active.yml")
         await ctl.stop()                                # ...and saved on the way out
         assert saved()["master_db"] == -13.0
 
