@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The box's test suite on every push and pull request, on the box's own distribution: Debian
+# trixie (Python 3.13) with the Debian packages box/install.sh puts on the box. There is no
+# engine binary here, so the engine tests skip; so do the tests of tools this container lacks
+# (node, shellcheck, systemd-analyze, dnsmasq, nft). docs/manual/08-development.md.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  box:
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:trixie-slim
+      # /tmp in memory, as a Debian trixie system mounts it. On the image's disk-backed /tmp,
+      # three save tests (they read active.yml as soon as state.json appears) failed in every trial.
+      options: --tmpfs /tmp:rw,exec,size=1g
+    timeout-minutes: 20
+    steps:
+      - name: Python and the test dependencies, as on the box
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git python3 python3-numpy python3-websockets python3-yaml \
+            python3-pil python3-qrcode python3-pytest fonts-dejavu-core openssl rsync
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Box tests and system-tool tests
+        working-directory: box
+        run: |
+          # The workspace may belong to the runner's user while the container runs as root: one
+          # test asks git whether box/apk/ is ignored, and git refuses a repository it does not own.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 -m pytest -q -p no:cacheprovider tests tools/tests

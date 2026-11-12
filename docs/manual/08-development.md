@@ -26,6 +26,10 @@ this chapter is the map and the working habits.
 | `box/camillagui/` | CamillaGUI's config for K1000 |
 | `box/tests/` | Unit tests of the package |
 | `box/tools/` | Ops tools (`k1000-lean.sh`, `k1000-soak.sh`, `k1000-m4-bringup.sh`, `k1000-knobtrace.py`) and their tests in `tools/tests/` |
+| `box/tools/bench/` | Measurement scripts run on the box beside the live engine: loop latency, levels, the produced-fault test, the start series, the latency matrix (its `README.md`) |
+| `box/tools/v2lab/` | The phone v2 page's lab: node unit checks, a fake box, headless-browser checks ([`docs/15`](../15-phone-v2-page.md)) |
+| `android/` | The Android app, a WebView shell around the phone page: sources, unit tests, the Docker build, the emulator smoke test ([`android/README.md`](../../android/README.md), [`docs/09`](../09-android.md)) |
+| `.github/workflows/tests.yml` | CI: the box tests on every push and pull request ([below](#in-ci)) |
 
 ### The package `box/k1000/`
 
@@ -96,8 +100,17 @@ cd box
 ~/.venvs/k1000/bin/python -m pytest -q -p no:cacheprovider -m "not engine and not hw" tests tools/tests
 ```
 
-A few tests skip themselves when a tool is missing (a QR decoder, `shellcheck`, a Pi-only timing
+A plain `python -m pytest` in `box/` runs both folders too (`pytest.ini`'s `testpaths`). A few
+tests skip themselves when a tool is missing (a QR decoder, `shellcheck`, a Pi-only timing
 budget).
+
+### In CI
+
+`.github/workflows/tests.yml` runs `tests` and `tools/tests` on every push and pull request, in a
+Debian trixie container (Python 3.13) with the Debian packages `install.sh` puts on the box. It has
+no CamillaDSP binary, so the engine tests skip, as do the tests of tools the container lacks
+(node, `shellcheck`, `systemd-analyze`, dnsmasq, nft). It proves the logic, never the audio
+hardware.
 
 ### On the box
 
