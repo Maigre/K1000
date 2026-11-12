@@ -68,7 +68,7 @@ The order at power-on:
 | `/etc/NetworkManager/dnsmasq-shared.d/k1000.conf`, `/etc/NetworkManager/conf.d/k1000-ap-unmanaged.conf` | the AP's DNS (portal off by default), and `wlan0` left to hostapd |
 | `/var/lib/k1000/phone.json` | SETUP › PHONE › Phone on/off, kept across restarts |
 | `/etc/systemd/system.conf.d/50-k1000-watchdog.conf` | `RuntimeWatchdogSec=15` |
-| `/etc/udev/rules.d/61-k1000-cpu-governor.rules`, `/etc/systemd/system.conf.d/50-k1000-cpu.conf`, `/etc/systemd/system/{camilladsp,k1000,camillagui}.service.d/50-k1000-cpu.conf` | the processor settings, from `cpu/`: governor `performance`, the engine on cores 2-3 and the rest on 0-1, `Nice=5` for k1000 (from the next boot) |
+| `/etc/udev/rules.d/61-k1000-cpu-governor.rules`, `/etc/systemd/system.conf.d/50-k1000-cpu.conf`, `/etc/systemd/system/{camilladsp,k1000,camillagui}.service.d/50-k1000-cpu.conf` | the processor settings, from `cpu/`: governor `performance`, the engine on cores 2-3 and the rest on 0-1, `Nice=5` for k1000 (all of it from the next boot; after `--cpu-off`, a reboot, and `--start` is refused until then) |
 | `/etc/k1000/cpu-tuning` | `off` after `install.sh --cpu-off` (the settings above removed, and kept off by later runs), `on` after `--cpu-on`; absent = on |
 | `/etc/systemd/journald.conf.d/50-k1000-journal.conf` | journal on the SD card, 32 MB cap (applies at the next reboot) |
 | `/etc/modules-load.d/k1000.conf` | `i2c-dev` at boot: `/dev/i2c-1`, the knob board (install.sh `--boot`) |

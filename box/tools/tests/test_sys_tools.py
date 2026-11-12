@@ -719,7 +719,7 @@ def _run_cpu_block(root: Path, do_cpu: str = "") -> tuple[str, dict[str, int]]:
     chowns to root): install when the content differs, report it, set PUT_CHANGED."""
     text = INSTALL.read_text()
     table = re.search(r"^CPU_FILES=\(\n.*?^\)\n", text, re.S | re.M).group(0)
-    choice = re.search(r"^CPU_CHOICE=.*\n", text, re.M).group(0)
+    choice = re.search(r"^CPU_CHOICE=.*\ncpu_choice\(\) .*\n", text, re.M).group(0)
     start = text.index("# --- 6b. processor settings")
     block = text[start:text.index("if [ $RELOAD = 1 ]; then", start)]
     prog = ('set -euo pipefail\nCHANGES=0 RELOAD=0\nnote() { printf "%s\\n" "$*"; }\n'
@@ -743,13 +743,14 @@ def test_install_cpu_settings_on_off_and_remembered(tmp_path):
     assert n == {"CHANGES": len(table), "RELOAD": 1}, out
     for src, p in zip(table, installed):
         assert p.read_text() == (CPU_DIR / src).read_text()
-    assert "processor settings on: from the next boot" in out
+    assert "processor settings on: cores and nice for what starts from now on" in out
     assert _run_cpu_block(tmp_path)[1] == {"CHANGES": 0, "RELOAD": 0}     # idempotent
 
     out, n = _run_cpu_block(tmp_path, "off")                # --cpu-off: all removed, remembered
     assert not [p for p in installed if p.exists()], out
     assert n == {"CHANGES": len(table) + 1, "RELOAD": 1}, out         # + the choice file
-    assert "processor settings off" in out
+    assert "processor settings off: reboot to apply" in out           # not "from the next boot"
+    assert "shares cores 0-1 with everything else" in out
     choice = tmp_path / "etc/k1000/cpu-tuning"
     assert choice.read_text().splitlines()[-1] == "off"
     for unit in ("camilladsp", "k1000", "camillagui"):                 # empty drop-in dirs go too
@@ -768,6 +769,53 @@ def test_install_cpu_settings_on_off_and_remembered(tmp_path):
     assert _run_cpu_block(tmp_path)[1]["CHANGES"] == len(table)
     choice.write_text("# off\nmaybe\n")
     assert _run_cpu_block(tmp_path)[1]["CHANGES"] == len(table)
+
+
+def _run_cpu_start_guard(root: Path, *, start: int, do_cpu: str = "", choice: str | None = None,
+                         pid1: str, online: str = "0-3") -> subprocess.CompletedProcess:
+    """install.sh's --start guard (before step 0) against a fake /etc, /proc/1/status and
+    /sys/devices/system/cpu/online under `root`."""
+    text = INSTALL.read_text()
+    choice_def = re.search(r"^CPU_CHOICE=.*\ncpu_choice\(\) .*\n", text, re.M).group(0)
+    start_at = text.index("# --- the processor settings switched off, and --start")
+    block = text[start_at:text.index("# --- 0. ", start_at)]
+    (root / "proc/1").mkdir(parents=True, exist_ok=True)
+    (root / "proc/1/status").write_text(f"Name:\tsystemd\nCpus_allowed:\t3\nCpus_allowed_list:\t{pid1}\n")
+    (root / "online").write_text(online + "\n")
+    choice_file = root / "etc/k1000/cpu-tuning"
+    choice_file.unlink(missing_ok=True)
+    if choice is not None:
+        choice_file.parent.mkdir(parents=True, exist_ok=True)
+        choice_file.write_text(f"# K1000 processor settings\n{choice}\n")
+    prog = ('set -euo pipefail\ndie() { printf "%s\\n" "$*" >&2; exit 1; }\n'
+            f'DO_START={start} DO_CPU={do_cpu}\n'
+            + (choice_def + block).replace("/etc/", f"{root}/etc/")
+                                  .replace("/proc/1/status", f"{root}/proc/1/status")
+                                  .replace("/sys/devices/system/cpu/online", f"{root}/online")
+            + 'echo passed\n')
+    return subprocess.run(["bash", "-c", prog], capture_output=True, text=True)
+
+
+def test_install_refuses_start_until_the_reboot_that_cpu_off_needs(tmp_path):
+    """systemd keeps cores 0-1 after --cpu-off until the next boot (a daemon-reload gives none
+    back): --start would put the engine there with everything else, so it is refused, before any
+    change, while PID 1 has fewer cores than the box."""
+    def run(**kw):
+        return _run_cpu_start_guard(tmp_path, **kw)
+
+    r = run(start=1, do_cpu="off", pid1="0-1")                       # --cpu-off --start
+    assert r.returncode == 1 and "passed" not in r.stdout, r.stdout
+    assert "cores 0-1 of 0-3" in r.stderr and "run without --start, then reboot" in r.stderr
+    r = run(start=1, choice="off", pid1="0-1")      # --cpu-off earlier, no reboot since, --start
+    assert r.returncode == 1, r.stdout
+    # allowed: rebooted since (PID 1 has every core), no --start, settings on (by flag or file)
+    for kw in (dict(do_cpu="off", pid1="0-3"), dict(choice="off", pid1="0-3"),
+               dict(do_cpu="on", choice="off", pid1="0-1"), dict(choice="on", pid1="0-1"),
+               dict(pid1="0-1")):
+        r = run(start=1, **kw)
+        assert r.returncode == 0 and r.stdout == "passed\n", (kw, r.stderr)
+    r = run(start=0, do_cpu="off", pid1="0-1")
+    assert r.returncode == 0 and r.stdout == "passed\n", r.stderr
 
 
 def test_install_cpu_flags_parse_and_are_documented():

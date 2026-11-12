@@ -167,12 +167,12 @@ After any edit of `k1000.yaml`: `sudo systemctl restart k1000`.
 | Flag | What it adds |
 |---|---|
 | *(none)* | Installs and updates the files, enables the five units (`camilladsp`, `k1000`, `camillagui`, `k1000-console`, `k1000-usbwatch`), and installs the two Laptop access units (`k1000-laptop.path`, `k1000-laptop.service`), never enabled: k1000 brings the watcher. Installs the processor settings unless they were switched off (below). **Starts nothing.** A changed access-point unit is only reported (`not applied; between shows: … --ap`), never copied |
-| `--start` | Then (re)starts those five units. **The audio drops for about a second**, then ramps back in. Never during a show |
+| `--start` | Then (re)starts those five units. **The audio drops for about a second**, then ramps back in. Never during a show. Refused (exit 1, nothing changed) when the processor settings are off but the reboot that applies it has not happened yet (`--cpu-off` below) |
 | `--boot` | Boot-level setup, applied at the next reboot: compiles the screen overlay into `/boot/firmware/overlays/`, adds `dtoverlay=k1000-zynscreen,rotate=270` to `config.txt`, adds `vt.global_cursor_default=0` to `cmdline.txt` (original kept as `cmdline.txt.k1000-orig`), turns I²C on for the knobs (`dtparam=i2c_arm=on`, `i2c-dev` loaded at boot) |
 | `--headless` | Boots to the console instead of a desktop (`multi-user.target`), masks PipeWire/WirePlumber for all users, disables Bluetooth, printing and the NFS client/rpcbind, removes the tty1 auto-login. Applied at the next reboot. It leaves cloud-init alone (see §4) |
 | `--ap` | Runs `net/setup-ap.sh`: the phone's Wi-Fi "K1000" on `wlan0` and its firewall, and installs or updates the access point's units (the only way they are). Takes effect at once. Later runs keep every earlier choice, a no-go included: after `setup-ap.sh --down` the access point stays down until `setup-ap.sh --up`. It refuses (exit 4, nothing changed) while another interface holds a 10.42.0.x address or `wlan0` is a client of another Wi-Fi |
-| `--cpu-off` | Removes the [processor settings](#processor-settings) and keeps them off on every later run (`/etc/k1000/cpu-tuning` says `off`). The OS defaults come back at the next boot |
-| `--cpu-on` | Puts them back and keeps them on (the default) |
+| `--cpu-off` | Removes the [processor settings](#processor-settings) and keeps them off on every later run (`/etc/k1000/cpu-tuning` says `off`). **Reboot to apply (between shows).** Until then systemd keeps cores 0-1 for everything it starts: an engine restarted before the reboot (a USB drop, a `systemctl restart`) shares them with everything else, worse than both on and off. So `--start` is refused until that reboot: run `--cpu-off` alone, then reboot |
+| `--cpu-on` | Puts them back and keeps them on (the default). Cores and nice apply to what starts from then on, the governor at the next boot; a reboot applies all of it |
 | `--deps` | Prints the apt packages it may install, one per line, and exits |
 | `-h`, `--help` | Prints its header |
 
@@ -186,7 +186,7 @@ After any edit of `k1000.yaml`: `sudo systemctl restart k1000`.
 | Exit | Meaning |
 |---|---|
 | 0 | Done |
-| 1 | An error, printed (not root, not a `box/` tree, a bad certificate pair…) |
+| 1 | An error, printed (not root, not a `box/` tree, a bad certificate pair, `--start` before the reboot that `--cpu-off` needs…) |
 | 2 | Unknown option |
 | 3 | CamillaGUI failed. Everything else is installed |
 | 4 | The access point failed. Everything else is installed |
@@ -244,12 +244,13 @@ sudo kill -STOP "$(systemctl show -p MainPID --value k1000)"
 ### Processor settings
 
 `install.sh` installs five small files from `box/cpu/`, listed in one table (`CPU_FILES`), and
-`--cpu-off` takes them all away (each file says why it exists):
+`--cpu-off` takes them all away (each file says why it exists). Switched on, each applies as the
+last column says; switched off, they all leave at the next boot only (see `--cpu-off` above).
 
 | File on the box | What | From |
 |---|---|---|
 | `/etc/udev/rules.d/61-k1000-cpu-governor.rules` | CPU governor `performance`: the clock stays at its maximum. Raspberry Pi OS sets `ondemand` with its own rule (`60-ondemand-governor.rules`); this one runs after it | the next boot |
-| `/etc/systemd/system.conf.d/50-k1000-cpu.conf` | `CPUAffinity=0 1`: every process on cores 0 and 1 unless its unit says otherwise | the next boot |
+| `/etc/systemd/system.conf.d/50-k1000-cpu.conf` | `CPUAffinity=0 1`: every process on cores 0 and 1 unless its unit says otherwise | install.sh's daemon-reload, for what systemd starts from then on; everything at the next boot |
 | `/etc/systemd/system/camilladsp.service.d/50-k1000-cpu.conf` | `CPUAffinity=2 3`: the engine alone on cores 2 and 3 | the engine's next start |
 | `/etc/systemd/system/k1000.service.d/50-k1000-cpu.conf` | `CPUAffinity=0 1`, `Nice=5`: the control service yields to the system's own work under load, and still comes before CamillaGUI | its next start |
 | `/etc/systemd/system/camillagui.service.d/50-k1000-cpu.conf` | `CPUAffinity=0 1` (its unit keeps `Nice=10`) | its next start |
