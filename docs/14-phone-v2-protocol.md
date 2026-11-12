@@ -151,7 +151,8 @@ page                                     box
 | `install` | (2026-11-12, additive: a page that does not know it ignores it) What SETUP › THIS PHONE › *Install K1000* offers: `apk` `{url, file, version, size, sha8}` (the APK the box holds, `/k1000.apk`, size in bytes, the first 8 hex of its SHA-256) or `null` (none on this box); `start` the first-time page a new phone opens once on the Wi-Fi (`http://10.42.0.1/`, `""` when not served). Display only: nothing here changes the sound |
 
 The v2 page also has a web app manifest (`/v2/manifest.webmanifest`, id and scope `/v2/`), so
-Chrome's *Add to Home screen* installs the v2 page itself as an app (2026-11-12).
+Chrome's *Add to Home screen* puts the v2 page there under its own name and icon, separate from v1
+(2026-11-12; without internet, usually a shortcut with a small Chrome badge: docs/06 §3 step 5).
 
 #### 3.1.1 `fields{}`: one entry per editable number
 

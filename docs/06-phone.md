@@ -138,7 +138,9 @@ system EQ, trims, input trim, sub low-pass.
   The state and meters wait while more than 4 kB are still on their way to that phone (kernel's
   send queue included), so a weak link never shows a queue of old states (2026-11-12).
   The box never waits on a phone before reading its next message (a mute behind a stalled
-  downlink is applied at once). A stuck phone is dropped after 2 s. At most **4 phones** at once.
+  downlink is applied at once). A phone that stops reading is dropped by the keepalive, after
+  about 15 s (a ping every 5 s, 10 s to answer); one whose reply cannot be written within 2 s,
+  sooner. At most **4 phones** at once.
 - Nothing a phone sends can raise into the controller or another phone (per-phone error isolation,
   1 KB message limit, JSON only, numbers bounded, Origin checked against the box's own names), and
   a misbehaving phone cannot flood the journal (one traceback per phone, then throttled lines).
@@ -211,8 +213,9 @@ Wi-Fi) offers:
 2. **Any phone: the web app**: whether this phone trusts the K1000 certificate, then **Open the
    web app**, the **v2 page** (`https://10.42.0.1/v2/`, the page the Android app opens; v1 stays
    at `/`, linked at the foot of the page), then *Add to Home screen* (Chrome) or *Share › Add to
-   Home Screen* (Safari). The v2 page has its own manifest (`/v2/manifest.webmanifest`), so Chrome
-   installs it as its own app.
+   Home Screen* (Safari). The v2 page has its own manifest (`/v2/manifest.webmanifest`, id and
+   scope `/v2/`): *Add to Home screen* puts v2 there under its own name and icon, separate from
+   v1 (without internet, usually a shortcut with a small Chrome badge, §3 step 5).
 3. **The certificate, once per phone**, shown only while the check fails: the Android steps, or
    the iPhone steps (Safari › Allow, *Profile Downloaded* › Install, *Certificate Trust Settings*
    › K1000 Local CA) when the page sees an iPhone.

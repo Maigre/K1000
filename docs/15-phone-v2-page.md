@@ -143,7 +143,8 @@ Chrome on Android a *GET THE ANDROID APP* key (`/k1000.apk`, same origin; the fi
 another phone); never in the app (its update waits, D-020) nor on an iPhone; and for another
 phone, the K1000 Wi-Fi code, then the first-time page (`start`; a box that does not serve it:
 the web app, `/v2/`, never an address the box does not answer). The page has a manifest
-(`manifest.webmanifest`, id and scope `/v2/`): Chrome's *Add to Home screen* installs v2 itself.
+(`manifest.webmanifest`, id and scope `/v2/`): Chrome's *Add to Home screen* puts v2 there under
+its own name and icon, separate from v1 (without internet, usually a shortcut with a Chrome badge).
 
 ## 5. Spectrum
 
