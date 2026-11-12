@@ -263,7 +263,7 @@ wrong screen corners = `KNOB_CORNERS` in `box/k1000/ui/input_map.py` (a code cha
 | After an underrun | the playback buffer settles at ~1000 frames (seen after the 11:57 drop): +10 ms latency until the next engine start |
 | MUTE | all four outputs at digital silence, returns at the floor (−116 dBFS): nothing passes the M4's direct monitoring |
 | Knob test | default map right: each button is itself, each knob +1 per click the right way round → `buttons_confirmed: true`; B4 hold mutes/unmutes |
-| Boot (power-on → sound) | firmware 10.4 s before Linux (bootloader 4.5 s, HDMI/camera probing, 11.9 MB initramfs), kernel 3.2 s, engine at +3.8 s, ramp from +5.8 s, screen at +7.5 s: ~22 s to sound, ~25 s to full level |
+| Boot (power-on → sound) | firmware 10.4 s before Linux (bootloader 4.5 s, HDMI/camera probing, 11.9 MB initramfs), kernel 3.2 s, engine at +3.8 s, ramp from +5.8 s, screen at +7.5 s: ~22 s to sound, ~25 s to full level. **12/11**, with the timer and the boot levers (`box/README.md` « Boot to sound »): Linux at 7.9 s, full level 13.5 s, screen 15.0 s (18.8 s full level on that day's baseline) |
 | Not done yet | USB pull and M4 power-switch drills (§8), the 1 h soak with program (§9) |
 
 Tools used (session scratchpad, to land in `box/tools/` after the gig): the loop measurement

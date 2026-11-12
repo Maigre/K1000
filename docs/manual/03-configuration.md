@@ -71,7 +71,7 @@ engine:
   latency_limit_ms: 10.0         # D-018: the delay readout turns orange above it
   url: ws://127.0.0.1:1234
   boot_gain_db: -40.0
-  boot_ramp_s: 3.0
+  boot_ramp_s: 1.5
 
 paths:
   state: /var/lib/k1000/state.json
@@ -100,7 +100,7 @@ phone:
 **Gig rule: `profile: m4`.** If the M4 is missing, the screen shows NO DEVICE. Nothing falls back to
 the HiFiBerry, which is not wired to the speakers.
 
-Changing the profile changes the audio device: about a second of silence, then the 3 s ramp.
+Changing the profile changes the audio device: about a second of silence, then the 1.5 s ramp.
 Bench only.
 
 ## 4. `profiles`
@@ -231,7 +231,7 @@ ui:
 |---|---|---|---|
 | `engine.url` | `ws://…` or `wss://…` | `ws://127.0.0.1:1234` | CamillaDSP's websocket (the engine unit listens there) |
 | `engine.boot_gain_db` | −80 … −20 dB (clamped) | −40 | Where Main is parked, muted, before the ramp to the saved master. The engine itself always starts at −40 dB |
-| `engine.boot_ramp_s` | 0.5 … 30 s (clamped) | 3 | Length of the ramp to the saved master. No step is ever larger than 6 dB |
+| `engine.boot_ramp_s` | 0.5 … 30 s (clamped) | 1.5 | Length of the ramp to the saved master (3 until 12/11). No step is ever larger than 6 dB |
 | `engine.latency_limit_ms` | 1 … 1000 ms (clamped) | 10 (D-018) | Above it, the delay readout in the status bar turns orange ([chapter 6 §1](06-troubleshooting.md#status-bar-top-line-every-page)). It only informs |
 | `paths.state` | a path | `/var/lib/k1000/state.json` | The saved state |
 | `paths.active_config` | a path | `/var/lib/k1000/active.yml` | The engine config K1000 writes. **The engine unit reads this exact path**: change it only for tests |
@@ -305,7 +305,7 @@ touch the engine:
 | Change | Do | What you hear |
 |---|---|---|
 | `controls`, `engine.*`, `spectrum.*`, `ui.*`, `phone.*` | `sudo systemctl restart k1000` | Nothing. `boot_gain_db`/`boot_ramp_s` apply at the next fresh engine start. The screen and knobs pause for a few seconds; an open Laptop access closes |
-| `profile`, or a profile's device or channel counts | Restart k1000 | K1000 switches the engine to the new device: about 1 s of silence, then the 3 s ramp. **Bench only** |
+| `profile`, or a profile's device or channel counts | Restart k1000 | K1000 switches the engine to the new device: about 1 s of silence, then the 1.5 s ramp. **Bench only** |
 | `input_map`, `output_map` | Restart k1000 | K1000 rebuilds the engine's pipeline with Main muted around it. Possible click. **Bench only** |
 | `chunksize`, `target_level`, a format | Restart k1000, then `sudo systemctl restart camilladsp` | k1000 rewrites `active.yml`; the screen may say `DEVICES CHANGED (GUI)` until the engine restarts. The engine restart is about 1 s of silence, then the ramp |
 | The phone certificate | Restart k1000 | Nothing; phones reconnect by themselves |
@@ -344,7 +344,7 @@ sudo nano /var/lib/k1000/state.json
 sudo systemctl start k1000          # starts the engine too; or power-cycle
 ```
 
-Silence while stopped, then the 3 s ramp: between shows only. Every value is clamped to its range
+Silence while stopped, then the 1.5 s ramp: between shows only. Every value is clamped to its range
 on load.
 
 ## 11. `state.json` fields

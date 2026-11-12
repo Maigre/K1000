@@ -24,7 +24,7 @@ phone (D-007) is `docs/06-phone.md`.
 The order at power-on:
 
 1. The engine starts **muted at −40 dB** from `/var/lib/k1000/active.yml`.
-2. k1000 connects to the engine, checks the config and, unless the state was saved muted, unmutes and ramps Main up to the saved level over about 3 s (saved muted: it stays muted, `READY · hold B4 to unmute`).
+2. k1000 connects to the engine, checks the config and, unless the state was saved muted, unmutes and ramps Main up to the saved level over about 1.5 s (`boot_ramp_s`; 3 s until 12/11) (saved muted: it stays muted, `READY · hold B4 to unmute`).
 3. The phone/laptop GUI comes up next to them.
 
 - If `active.yml` is missing or broken, the engine waits for a valid one, with no websocket
@@ -190,7 +190,7 @@ Every step is idempotent: a converged box answers `0 changes`.
 | `timers` | `apt-daily`, `apt-daily-upgrade`, `man-db`, `e2scrub_all` disabled | no apt or man-db work in the middle of a show (and no internet at gigs) |
 | `swap` | `/etc/rpi/swap.conf.d/50-k1000.conf`: `Mechanism=zram` | no 2 GB swap file re-made on the SD card at every boot (1.5 s), no writeback to the SD card hours into a show |
 | `boot` | `cmdline.txt`: `quiet`, `logo.nologo`, no `splash`/`plymouth` arguments; `config.txt`: `disable_splash=1` | a quiet panel and console at boot |
-| `firmware` | **opt-in** (`--only firmware`; a plain run and `bootstrap.sh` leave it out): `config.txt` `auto_initramfs=0`, `camera_auto_detect=0`, `display_auto_detect=0`, each set where it stands or added under `[all]`; **refused**, nothing changed, unless `cmdline.txt`'s `root=` is a `PARTUUID=` or a `/dev` partition and nothing on it needs an initramfs (`boot=overlay`, `cryptdevice=`, a named `initramfs` line). The EEPROM's `DISABLE_HDMI=1` is printed as a command, never applied | the firmware's 10.4 s before Linux (16/10): reading the 11.9 MB initramfs (~1.1 s), camera/display and HDMI probing. The initramfs is still built: the undo is `config.txt` alone (its backup is on the boot partition, readable from a laptop) |
+| `firmware` | **opt-in** (`--only firmware`; a plain run and `bootstrap.sh` leave it out): `config.txt` `auto_initramfs=0`, `camera_auto_detect=0`, `display_auto_detect=0`, each set where it stands or added under `[all]`; **refused**, nothing changed, unless `cmdline.txt`'s `root=` is a `PARTUUID=` or a `/dev` partition and nothing on it needs an initramfs (`boot=overlay`, `cryptdevice=`, a named `initramfs` line). The EEPROM's `DISABLE_HDMI=1` is printed as a command, never applied | the firmware's 10.4 s before Linux (16/10): reading the 11.9 MB initramfs (~1.1 s), camera/display and HDMI probing. The initramfs is still built: the undo is `config.txt` alone (its backup is on the boot partition, readable from a laptop). Measured 12/11: Linux starts at 8.9 s instead of 10.4 s, 7.85 s with `DISABLE_HDMI=1` too (« Boot to sound » below) |
 
 - **The guard.** Every removal is simulated first (`apt-get -s`) and its plan saved in
   `/var/backups/k1000-lean/`. A plan that names a package K1000, the boot, SSH, the network, the
@@ -225,7 +225,7 @@ If the session dropped: `ssh k1000 'ls -t /var/backups/k1000-lean/run-*; systemc
 shows whether it is still running; `tail` its log.
 
 Measured on the first box (2026-10-12, desktop image converged this way, one power cycle per
-step; seconds after power-on, from the boot probe):
+step; seconds on the kernel's clock, from the boot probe):
 
 | | desktop image | Lean (all steps) |
 |---|---|---|
@@ -254,6 +254,37 @@ Left as they are, on purpose:
   path.
 
 Undo: every line the script prints says how. The saved plans list what to `apt-get install` again.
+
+## Boot to sound
+
+Measured with the timer on the first box (2026-11-12, reboots in place of the power switch, two
+boots per step, each lever added to the one above; seconds after power-on):
+
+| Step | Linux start | k1000 started | engine Running | ramp start | Main at level | first screen |
+|---|---|---|---|---|---|---|
+| Baseline (the gig build + the timer, ramp 3 s) | 10.3 | 13.9 | 14.3 | 15.6–15.8 | **18.8–18.9** | 16.0 |
+| Engine first (link retried every 0.25 s, surfaces wait for the first engine sync) | 10.4 | 14.0 | 14.1 | 14.3 | 18.3 | 18.5 |
+| + `k1000-lean.sh --only firmware` (no initramfs, no camera/display probing) | 8.9 | 12.8–13.0 | 13.0–13.9 | 13.2–14.1 | 17.3–18.2 | 17.3–17.5 |
+| + bootloader `DISABLE_HDMI=1` (the command the firmware step prints) | 7.85 | 11.3–12.0 | 11.5–12.3 | 11.7–12.5 | 15.7–16.5 | 15.9–16.5 |
+| + `boot_ramp_s` 1.5 (the default since) | 7.9 | 11.6–11.7 | 11.7–11.9 | 11.9–12.1 | **13.5–13.6** | 15.0–15.1 |
+
+What each lever bought:
+
+- **Firmware step**: Linux starts at 8.9 s instead of 10.4 s. **`DISABLE_HDMI=1`**: 7.85 s. Both
+  kept on the box; it checked out after every boot (SSH, engine Running, Main back at its level).
+- **Engine first**, alone: the ramp starts 1.4 s earlier, but the first screen frame comes 2.5 s
+  later than the baseline; with the whole set, the screen is earlier (15.0 s). The surfaces wait for
+  the engine's first sync, which ends with the ramp: with `boot_ramp_s` set back to 3 s, that wait
+  runs out mid-ramp and the ramp stretches to about 4 s.
+- **Ramp 1.5 s**: full level at 13.5 s instead of 15.7–16.5 s. Still at −40 dB to start, no step
+  above 6 dB.
+- Left over: about 4.5 s pass before the bootloader opens the SD card (16/10); nothing here
+  touches them.
+
+Later that day, on the build that became main (the boot levers plus the processor settings:
+everything but the engine runs on cores 0 and 1): full level 14.5 s, first screen 16.1 s.
+Not proven yet: that a real power-on times like a reboot (one switch cycle, then the timer), and
+the 1.5 s ramp by ear. Details: `docs/17-box-record-and-bench.md` §7.
 
 ## Fresh card (bootstrap)
 
@@ -407,7 +438,7 @@ the Friday rig test; on a no-go the AP goes fully off and the knobs carry the sh
     - Apply to DSP sends the config the page loaded. Every knob move since then (feedback
       notches, Lo-Cut, delay) is undone, and k1000 adopts and saves the undo.
     - Stop processing stops the engine. systemd starts it again about a second later, muted,
-      and k1000 ramps Main back in over 3 s: about 2 s of silence, then the ramp.
+      and k1000 ramps Main back in over 1.5 s: about 2 s of silence, then the ramp.
     - Apply automatically turns every later edit into a whole-config Apply.
 - The GUI's Aux1/Aux2 faders (normal and dashboard views) are k1000's sub and top groups, not
   a balance control: use ALIGN E3. k1000 pulls a raise on them back down to its balance, but keeps a

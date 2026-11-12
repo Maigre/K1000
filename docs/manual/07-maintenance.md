@@ -201,7 +201,7 @@ moment.
 |---|---|
 | A mute, or the master turned down | Saved at once (on disk within a fraction of a second), so the box never comes back louder than it was left |
 | Other edits | Saved 1 s after the last change, at most 5 s after the first. A cut inside that window loses that last edit only |
-| Next power-on | The engine starts muted at −40 dB. Saved muted → stays muted (`READY`). Saved unmuted → ramps back to the saved master over about 3 s (`RAMPS IN BY ITSELF`) |
+| Next power-on | The engine starts muted at −40 dB. Saved muted → stays muted (`READY`). Saved unmuted → ramps back to the saved master over about 1.5 s (`RAMPS IN BY ITSELF`) |
 | A torn `state.json` | Rebuilt from `active.yml`, **muted** (`STATE REBUILT · CHECK MASTER`) |
 | A hung system | The hardware watchdog reboots the box if systemd stops responding for 15 s |
 | The journal | Kept; up to the last 30 s before the cut may be missing (critical messages are written at once). A journal file may be set aside as corrupt (its name ends in `~`): normal |

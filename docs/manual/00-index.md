@@ -62,7 +62,7 @@ Other references in the repository:
 
 ## Safety principles
 
-1. The engine always starts **muted at −40 dB**. K1000 then ramps it to the saved level over about 3 s, and only once audio really flows.
+1. The engine always starts **muted at −40 dB**. K1000 then ramps it to the saved level over about 1.5 s, and only once audio really flows.
 2. The box comes back **the way it was switched off**: muted if it was muted, otherwise it ramps in by itself.
 3. **Hold B4 = mute / unmute**, on every page (the long press fires at 0.8 s). A short press only shows a hint.
 4. K1000 never releases a mute it did not make, and never raises by itself a cut made from outside (CamillaGUI).

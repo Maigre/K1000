@@ -320,6 +320,7 @@ tried.)
 | `timers` | apt-daily, apt-daily-upgrade, man-db and e2scrub_all disabled |
 | `swap` | Swap in RAM only (zram): no swap file on the SD card |
 | `boot` | A quiet boot: `quiet`, `logo.nologo`, no splash |
+| `firmware` | **Opt-in**, only with `--only firmware`: no initramfs, no camera or display probing (`config.txt`). Refused unless the card boots without an initramfs. Prints the bootloader's `DISABLE_HDMI=1` as a command to run by hand, as a power cycle of its own. With both, Linux starts 7.85 s after power-on instead of 10.3 s (box/README.md « Boot to sound ») |
 
 Its guard: every removal is simulated first and its plan saved in `/var/backups/k1000-lean/`. A
 plan that would remove anything K1000, the boot, SSH, the network, the Wi-Fi, systemd, libc, Python
@@ -337,7 +338,7 @@ ssh k1000 "/opt/k1000-src/tools/k1000-lean.sh --check"                 # before 
 
 | Option | Effect |
 |---|---|
-| *(none)* | Every step, in order |
+| *(none)* | Every step but `firmware`, in order |
 | `--only a,b` | Some steps only |
 | `--dry-run` | Prints what would change; removals are still simulated and checked |
 | `--check` | Read-only: is the card safe to power-cycle? Exit 1 = **no**, and it prints what to fix |
@@ -348,8 +349,10 @@ Like `bootstrap.sh`, a real run detaches as a unit (`k1000-lean-<time>`). Its lo
 run, run `--check` before anything else. `K1000_LEAN_FOREGROUND=1` runs in place.
 
 After each power cycle: SSH answers, the engine is Running, Main is back at its saved level, the
-panel shows K1000. Measured on the first box: Main back at its level 12.4 s after power-on (15.5 s
-with the desktop image).
+panel shows K1000. Measured on the first box: Main back at its level 12.4 s on the kernel's clock
+(15.5 s with the desktop image). Counted from power-on, firmware included, with every boot lever
+(box/README.md « Boot to sound »): 13.5 s. `sudo /opt/k1000-src/tools/k1000-boottime.sh` times
+any boot this way.
 
 ## 8. The spare card
 
