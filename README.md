@@ -44,8 +44,8 @@ and a phone on the box's own Wi-Fi.
   HiFiBerry board for the bench.
 - **A phone page** on the box's own Wi-Fi access point, installable over HTTPS through a
   name-constrained local CA, driving the show controls: master, balance, Lo-Cut, the live EQ and
-  mute (setup stays on the box). An Android app wraps it; the app drove the box at the rig the day
-  before the gig ([`docs/06`](docs/06-phone.md), [`docs/09`](docs/09-android.md)).
+  mute; the v2 page also has the SETUP sheets. An Android app wraps the v2 page; the app drove the
+  box at the rig the day before the gig ([`docs/06`](docs/06-phone.md), [`docs/09`](docs/09-android.md)).
 - **The tune from a laptop**: a `/tune` page over the box's Wi-Fi (SETUP › Laptop access, 2 hours)
   that imports a REW filter export into the system EQ, and CamillaGUI there or on the wired
   network.
