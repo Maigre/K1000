@@ -75,7 +75,9 @@ AUX_LIMIT_DB = RANGES["balance_db"].max / 2.0
 MAIN_LIMIT_DB = RANGES["master_db"].max
 # Engine boot level (camilladsp -m -g-40, contract §2) and the ramp to the saved master.
 BOOT_GAIN_DB = -40.0
-BOOT_RAMP_S = 3.0
+# 1.5 s (was 3.0, #t-021): -40 -> 0 dB still takes >= 7 steps of <= 6 dB (BOOT_STEP_MAX_DB),
+# each one VOLUME_RAMP_MS long; a box's k1000.yaml boot_ramp_s overrides it.
+BOOT_RAMP_S = 1.5
 # Aux1 = -Aux2 within this is a balance setting (adopted); anything else is reverted.
 BALANCE_TOL_DB = 0.05
 FADER_TOL_DB = 0.01

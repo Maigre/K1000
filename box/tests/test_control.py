@@ -1221,7 +1221,7 @@ def test_logical_levels_mapping() -> None:
 def test_settings_helpers_clamp_and_default() -> None:
     e = EngineSettings.from_settings({"engine": {"url": "ws://1.2.3.4:5", "boot_gain_db": 0,
                                                  "boot_ramp_s": "fast"}})
-    assert e.url == "ws://1.2.3.4:5" and e.boot_gain_db == -20.0 and e.boot_ramp_s == 3.0
+    assert e.url == "ws://1.2.3.4:5" and e.boot_gain_db == -20.0 and e.boot_ramp_s == 1.5
     assert EngineSettings.from_settings({"engine": "junk"}) == EngineSettings()
     assert EngineSettings.from_settings({}, url="ws://x:1").url == "ws://x:1"
     p = Paths.from_settings({"paths": {"state": "/tmp/s.json"}}, active_config="/tmp/a.yml")

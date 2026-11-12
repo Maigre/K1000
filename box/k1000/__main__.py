@@ -66,6 +66,17 @@ KNOBS_ALARM_S = 1.0      # knobs unhealthy this long -> KNOBS OFFLINE (a retried
 # 45 clicks/s turn (one contact transition every 5.6 ms) lost a quarter of its clicks on the
 # box. At 1 ms: none lost, same CPU (PERF-1, measured on the box).
 GIL_SWITCH_S = 0.001
+# The engine first (#t-021). At boot k1000 usually starts before camilladsp listens (the engine
+# unit checks its config and waits for the M4 first): the link's retry delay doubles from 0.1 s,
+# and with the client's default 2 s cap a just-started engine could wait up to 2 s for k1000.
+# Retrying a refused loopback port 4 times a second costs nothing.
+ENGINE_RETRY_MAX_S = 0.25
+# The phone, the spectrum and the screen import the web server, numpy and PIL IN the event loop
+# (numpy alone: ~0.35 s on dev37, more on the Pi 4), the seconds the controller should spend
+# syncing a just-started engine and ramping it in. They wait for that first sync, at most this
+# long; the knobs (B4 mute) never wait. An absent or stalled engine delays them this much, no more.
+SURFACES_HOLD_S = 3.0
+SURFACES_POLL_S = 0.05
 
 COMMANDS = """\
 nudge <field> <detents> [fine]   set <field> <json value> [confirm]   toggle <field> [confirm]
@@ -542,6 +553,23 @@ def wire_surfaces(ctl: Controller, args: argparse.Namespace) -> None:
     ctl.has_knobs = not args.no_hw
 
 
+async def hold_for_engine(ctl: Controller, stop: asyncio.Event, hold_s: float = SURFACES_HOLD_S,
+                          poll_s: float = SURFACES_POLL_S) -> bool:
+    """Wait until the controller's first connect sync is done (its boot ramp included), at most
+    `hold_s` and never past a stop (see SURFACES_HOLD_S). True = the engine came first."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + hold_s
+    while not ctl.engine_ready:
+        left = deadline - loop.time()
+        if left <= 0 or stop.is_set():
+            if not stop.is_set():
+                log.info("surfaces: engine not synced after %g s, starting them anyway", hold_s)
+            return False
+        await asyncio.sleep(min(poll_s, left))
+    log.info("surfaces: engine synced, starting them")
+    return True
+
+
 # =========================================================================== main
 async def run(args: argparse.Namespace) -> int:
     settings = load_settings(args.settings)
@@ -571,7 +599,7 @@ async def run(args: argparse.Namespace) -> int:
         probe = None    # virtual devices: always present
         log.warning("--test-devices: SignalGenerator -> /dev/null, the ALSA card is not used")
 
-    client = CamillaClient(eng.url, fader_max_db=FADER_CEILING_DB)
+    client = CamillaClient(eng.url, fader_max_db=FADER_CEILING_DB, backoff_max=ENGINE_RETRY_MAX_S)
     ctl = Controller(client, profile, state, paths, settings=settings, profile_choice=choice,
                      boot_gain_db=eng.boot_gain_db, boot_ramp_s=eng.boot_ramp_s,
                      transform=transform, device_probe=probe)
@@ -586,8 +614,14 @@ async def run(args: argparse.Namespace) -> int:
     hw: dict[str, Any] = {"fb": None, "controls": None}
     wire_surfaces(ctl, args)
     await ctl.start()
+    ui: list[asyncio.Task[Any]] = []          # knobs + screen: kept until the controller stopped
+    if not args.no_hw:           # the knobs first: B4 mutes from the first second
+        ui.append(loop.create_task(knobs_task(ctl, settings, hw), name="k1000-knobs"))
+    console = loop.create_task(stdin_loop(ctl, stop), name="k1000-stdin") if args.stdin else None
     laptop = open_laptop(ctl)
     lap_task = loop.create_task(laptop.run(), name="k1000-laptop") if laptop is not None else None
+    if not (args.no_phone and args.headless and not ctl.spectrum_enabled):
+        await hold_for_engine(ctl, stop)     # the heavy imports below wait for the engine
     phone = None if args.no_phone else await open_phone(
         ctl, settings, tune_undo_file=paths.state.with_name("tune-undo.json"))
     ctl.phone = phone
@@ -595,12 +629,8 @@ async def run(args: argparse.Namespace) -> int:
     # The spectrum, screen or not (a headless box shows it on the v2 phones). It connects only
     # while someone looks (spectrum_wanted), so bench/engine runs stay single-link.
     ctl.rta = open_spectrum(ctl, eng.url)
-    ui: list[asyncio.Task[Any]] = []          # screen + knobs: kept until the controller stopped
     if not args.headless:
         ui.append(loop.create_task(screen_task(ctl, hw), name="k1000-screen"))
-    if not args.no_hw:
-        ui.append(loop.create_task(knobs_task(ctl, settings, hw), name="k1000-knobs"))
-    console = loop.create_task(stdin_loop(ctl, stop), name="k1000-stdin") if args.stdin else None
 
     await stop.wait()
     log.info("stopping: saving the state, leaving the audio as it is")

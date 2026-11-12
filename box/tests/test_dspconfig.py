@@ -1015,10 +1015,10 @@ def test_boot_ramp_plan_follows_the_contract():
                              d.FaderMute(2, False), d.Fader(0, -40.0)])        # parked while muted
     assert plan[1] == (d.GUARD_WAIT_S, [d.FaderMute(0, False)])
     steps = [b[0].db for _w, b in plan[2:]]
-    assert len(steps) == 30 and steps[-1] == -10.0                             # 3 s / 0.1 s engine ramps
+    assert len(steps) == 15 and steps[-1] == -10.0                             # 1.5 s / 0.1 s engine ramps
     assert all(b > a for a, b in zip([-40.0] + steps, steps))                  # monotonic up
     assert max(b - a for a, b in zip([-40.0] + steps, steps)) <= 3.0 + 1e-9
-    assert sum(w for w, _b in plan[2:]) == pytest.approx(3.0)
+    assert sum(w for w, _b in plan[2:]) == pytest.approx(1.5)
     assert not any(isinstance(o, d.FaderMute) and o.index == 0 and o.mute is False
                    for _w, b in plan[2:] for o in b)
 
