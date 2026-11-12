@@ -209,7 +209,8 @@ class ScreenStatus:
     latency_ms / latency_io / latency_over / dropouts: the D-018 delay readout (control.Status):
             in to out in ms (None = no reading), whether the interface's share is in it (False:
             the engine's alone, drawn as a floor "≥"), above the limit (orange), and the
-            engine's dropout lines since it started (drawn only above 0; None = unknown).
+            engine's dropout lines since it started (drawn only above 0, and the delay then as
+            a floor "≥"; None = unknown).
     The controller must set engine and device_present explicitly: the defaults are "unknown".
     """
     profile: str = ""
@@ -320,15 +321,17 @@ def engine_unknown(status: Any) -> bool:
 
 def latency_readout(status: Any) -> tuple[str, bool, str] | None:
     """The status bar's delay readout (D-018): (text, above the limit, dropouts text), e.g.
-    ("20.3ms", True, "") or ("≥16.5ms", False, "3 DROP"); None = no reading. "≥": the engine's
-    share alone (the profile does not know its interface's). Dropouts only when above 0."""
+    ("20.3ms", True, "") or ("≥16.5ms", False, "3 DROP"); None = no reading. "≥", a floor: the
+    engine's share alone (the profile does not know its interface's), or the engine logged a
+    dropout (a backlog past the playback buffer is not in the figure, docs/16 §2.2). Dropouts
+    only when above 0."""
     ms = _num(status, "latency_ms", None)
     if ms is None or ms < 0:
         return None
-    floor = _truth(_get(status, "latency_io", True)) is False
     over = bool(_truth(_get(status, "latency_over", False)))
     n = _num(status, "dropouts", None)
     drops = f"{int(n)} DROP" if n is not None and n >= 1 else ""
+    floor = _truth(_get(status, "latency_io", True)) is False or bool(drops)
     return f"{'≥' if floor else ''}{min(ms, 9999.9):.1f}ms", over, drops
 
 
@@ -848,7 +851,8 @@ def _status_bar(c: _Ctx, page: str, state: Any, status: Any, muted: bool) -> Non
 
     The delay in to out (D-018, `latency_readout`) sits beside the engine it belongs to: white,
     orange above the limit (it informs, it is not an alert), a small orange "N DROP" after it
-    once the engine logged a dropout.
+    once the engine logged a dropout. When the pills leave too little room, the DSP load goes
+    first, then the dropout count, then the delay.
 
     A system alert (status.alerts[0]) takes the profile/device place in its level's colour
     (critical red, warning orange, info blue; never amber, which is the hints'), and the right
@@ -892,26 +896,34 @@ def _status_bar(c: _Ctx, page: str, state: Any, status: Any, muted: bool) -> Non
     x = W - 8
     if top is None:
         load = _num(status, "load", None)
-        if load is not None:
-            right = f"{load:.1f}%"
+        right = f"{load:.1f}%" if load is not None else ""
+        lat = latency_readout(status)
+        text, over, drops = lat if lat is not None else ("", False, "")
+        if text:
+            # Only in the room the pills and the engine leave. What gives way first: the DSP
+            # load (of less use at a show), then the dropout count, then the delay itself.
+            load_w = int(d.textlength(right, font=font(17))) + 4 + 38 if right else 0
+            lat_w = int(d.textlength(text, font=font(17))) + 10
+            drops_w = int(d.textlength(drops, font=font(12))) + 4 if drops else 0
+            free = x - lx - 8 - (int(d.textlength(eng, font=_fit(d, eng, 17, 150))) + 20)
+            fits = [(dw, lw) for dw in (drops_w, 0) for lw in (load_w, 0)
+                    if lat_w + dw + lw <= free]
+            if fits:
+                drops_w, load_w = fits[0]
+                drops, right = (drops if drops_w else ""), (right if load_w else "")
+            else:
+                text = ""
+        if right:
             d.text((x, cy), right, font=font(17), fill=FG, anchor="rm")
             x -= int(d.textlength(right, font=font(17))) + 4
             d.text((x, cy + 1), "DSP", font=font(12), fill=DIM, anchor="rm")
             x -= 38
-        lat = latency_readout(status)
-        if lat is not None:   # only in the room the pills and the engine leave: drops go first
-            text, over, drops = lat
-            free = x - lx - 8 - (int(d.textlength(eng, font=_fit(d, eng, 17, 150))) + 20)
-            lat_w = int(d.textlength(text, font=font(17))) + 10
-            drops_w = int(d.textlength(drops, font=font(12))) + 4 if drops else 0
-            if lat_w + drops_w > free:
-                drops = ""
-            if lat_w <= free:
-                if drops:
-                    d.text((x, cy + 1), drops, font=font(12), fill=ORANGE, anchor="rm")
-                    x -= drops_w
-                d.text((x, cy), text, font=font(17), fill=ORANGE if over else FG, anchor="rm")
-                x -= lat_w
+        if text:
+            if drops:
+                d.text((x, cy + 1), drops, font=font(12), fill=ORANGE, anchor="rm")
+                x -= drops_w
+            d.text((x, cy), text, font=font(17), fill=ORANGE if over else FG, anchor="rm")
+            x -= lat_w
     if top is None or eng != "RUNNING":
         fe = _fit(d, eng, 17, 150)
         d.text((x, cy), eng, font=fe, fill=col, anchor="rm")

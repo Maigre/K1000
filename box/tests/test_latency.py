@@ -437,7 +437,7 @@ def test_latency_readout_text() -> None:
     assert pages.latency_readout(S(latency_ms=20.3, latency_over=True)) == ("20.3ms", True, "")
     assert pages.latency_readout(S(latency_ms=16.5, latency_io=False)) == ("≥16.5ms", False, "")
     assert pages.latency_readout(S(latency_ms=8.0, dropouts=0)) == ("8.0ms", False, "")
-    assert pages.latency_readout(S(latency_ms=8.0, dropouts=3)) == ("8.0ms", False, "3 DROP")
+    assert pages.latency_readout(S(latency_ms=8.0, dropouts=3)) == ("≥8.0ms", False, "3 DROP")  # a floor
     for junk in (float("nan"), "x", -1.0):
         assert pages.latency_readout(S(latency_ms=junk)) is None, junk     # type: ignore[arg-type]
     assert pages.latency_readout(S(latency_ms=1e12))[0] == "9999.9ms"
@@ -454,19 +454,49 @@ def test_the_status_bar_shows_the_delay_orange_above_the_limit() -> None:
     assert _bar_has(above, pages.GREEN)                              # the engine state stays
 
 
+def _bar(page: str, s: Any, **kw: Any) -> bytes:
+    return pages.render(page, s, pages.ScreenStatus(**kw), Focus(), now=0.0).crop(
+        (0, 0, pages.W, pages.STATUS_H)).tobytes()
+
+
 @pytest.mark.parametrize("page", ["SHOW", "ALIGN", "SETUP"])
-def test_the_readout_gives_way_to_the_pills_and_to_alerts(page: str) -> None:
+def test_with_two_pills_the_dsp_load_gives_way_to_the_delay(page: str) -> None:
+    """MUTED + CLIP, or IN CLIP + CLIP: the DSP load goes, then the dropout count; the delay
+    stays (a clip latch must not blink it away)."""
+    lat_kw = dict(latency_ms=20.3, latency_over=True, dropouts=3)
+    for pills in (dict(muted=True, clip=(True, False, False, False)),
+                  dict(in_clip=True, clip=(True, False, False, False))):
+        s = st.State()
+        s.muted = bool(pills.get("muted"))
+        crowded = dict(OK, **pills)
+        with_lat = _bar(page, s, **crowded, **lat_kw)
+        assert with_lat != _bar(page, s, **crowded)                          # the delay is drawn
+        assert with_lat == _bar(page, s, **dict(crowded, load=None), **lat_kw)   # the load is not
+        assert with_lat == _bar(page, s, **crowded, latency_ms=20.3, latency_over=True,
+                                latency_io=False)                           # "≥20.3ms", no "3 DROP"
+
+
+def test_with_one_pill_the_dsp_load_goes_first() -> None:
+    s = st.State()
+    lat_kw = dict(latency_ms=20.3, latency_over=True, dropouts=3)
+    one = dict(OK, clip=(True, False, False, False))
+    drops = _bar("SHOW", s, **one, **lat_kw)
+    assert drops == _bar("SHOW", s, **dict(one, load=None), **lat_kw)     # the load is not drawn
+    assert drops != _bar("SHOW", s, **one, latency_ms=20.3, latency_over=True,
+                         latency_io=False)                                  # "3 DROP" is
+    roomy = _bar("SHOW", s, **OK, **lat_kw)
+    assert roomy != _bar("SHOW", s, **dict(OK, load=None), **lat_kw)      # room: the load stays
+
+
+@pytest.mark.parametrize("page", ["SHOW", "ALIGN", "SETUP"])
+def test_the_readout_gives_way_to_three_pills_and_to_alerts(page: str) -> None:
     s = st.State()
     s.muted = True
     lat_kw = dict(latency_ms=41.2, latency_over=True, dropouts=3)
-    crowded = dict(OK, muted=True, clip=(True, False, False, False))
-    with_lat = pages.render(page, s, pages.ScreenStatus(**crowded, **lat_kw), Focus(), now=0.0)
-    without = pages.render(page, s, pages.ScreenStatus(**crowded), Focus(), now=0.0)
-    assert with_lat.tobytes() == without.tobytes()                   # no room: not drawn at all
+    crowded = dict(OK, muted=True, in_clip=True, clip=(True, False, False, False))
+    assert _bar(page, s, **crowded, **lat_kw) == _bar(page, s, **crowded)  # no room: not drawn
     alert = dict(OK, alerts=[("critical", "ENGINE SYNC FAILED (SEE LOG)")])
-    a1 = pages.render(page, st.State(), pages.ScreenStatus(**alert, **lat_kw), Focus(), now=0.0)
-    a0 = pages.render(page, st.State(), pages.ScreenStatus(**alert), Focus(), now=0.0)
-    assert a1.tobytes() == a0.tobytes()
+    assert _bar(page, st.State(), **alert, **lat_kw) == _bar(page, st.State(), **alert)
 
 
 # ======================================================================= the phone
