@@ -819,10 +819,13 @@ def test_install_refuses_start_until_the_reboot_that_cpu_off_needs(tmp_path):
 
 
 def test_install_cpu_flags_parse_and_are_documented():
+    # --deps exits inside the option loop, before the root check: the flag in front of it was
+    # parsed (an unknown one exits 2 first), and nothing is installed even when run as root.
     for flag in ("--cpu-off", "--cpu-on"):
-        r = subprocess.run(["bash", str(INSTALL), flag], capture_output=True, text=True)
-        if os.geteuid() != 0:                    # parsed (exit 2 would be "unknown option")
-            assert r.returncode == 1 and "run as root" in r.stderr, r.stderr
+        r = subprocess.run(["bash", str(INSTALL), flag, "--deps"], capture_output=True, text=True)
+        assert r.returncode == 0 and "rsync" in r.stdout.split(), (flag, r.stderr)
+    r = subprocess.run(["bash", str(INSTALL), "--cpu-of", "--deps"], capture_output=True, text=True)
+    assert r.returncode == 2 and "unknown option '--cpu-of'" in r.stderr, r.stderr
     r = subprocess.run(["bash", str(INSTALL), "--help"], capture_output=True, text=True)
     assert r.returncode == 0 and "--cpu-off" in r.stdout and "--cpu-on" in r.stdout
 
