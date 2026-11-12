@@ -10,6 +10,8 @@ Wiring only; the behaviour lives in `control.Controller`. What this file guarant
   may stop the controller from running, and the audio never waits for the UI.
 - It never mutes on the way out. SIGTERM/SIGINT persist the state and leave the engine exactly as
   it is: audio must survive a k1000 restart (docs/03 §2 "Audio never depends on the UI").
+- Under systemd it says READY=1 once everything above is started, and keeps the unit's watchdog
+  fed from the event loop itself (`sdnotify`): a hung loop is restarted, like a crash.
 - Logs go to stdout without timestamps (journald adds them).
 
 Phone (D-007, docs/06-phone.md): the PWA + captive portal run in this process (`web.PhoneServer`);
@@ -598,7 +600,9 @@ async def run(args: argparse.Namespace) -> int:
         ui.append(loop.create_task(knobs_task(ctl, settings, hw), name="k1000-knobs"))
     console = loop.create_task(stdin_loop(ctl, stop), name="k1000-stdin") if args.stdin else None
 
-    await stop.wait()
+    # Up: READY=1 to systemd, then its watchdog's pings from THIS loop until a stop (sdnotify).
+    from .sdnotify import Notifier
+    await Notifier().serve(stop)
     log.info("stopping: saving the state, leaving the audio as it is")
     await _cancel([console] if console is not None else [])
     if laptop is not None:

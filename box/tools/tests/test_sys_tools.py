@@ -321,6 +321,18 @@ def test_console_unit_script_is_valid_sh():
 
 
 @pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="no systemd-analyze")
+def test_control_unit_verifies_with_systemd():
+    """k1000.service (Type=notify, WatchdogSec=; the contract with k1000/sdnotify.py is
+    tests/test_sdnotify.py)."""
+    unit = BOX / "systemd" / "k1000.service"
+    r = subprocess.run(["systemd-analyze", "verify", str(unit)], capture_output=True, text=True)
+    out = r.stdout + r.stderr
+    assert "escape" not in out.lower() and "unknown" not in out.lower(), out
+    if Path("/opt/k1000/k1000").exists():               # on the box: everything resolves
+        assert r.returncode == 0, out
+
+
+@pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="no systemd-analyze")
 def test_console_unit_verifies_with_systemd():
     r = subprocess.run(["systemd-analyze", "verify", str(CONSOLE_UNIT)], capture_output=True, text=True)
     assert "escape" not in (r.stdout + r.stderr).lower(), r.stdout + r.stderr
