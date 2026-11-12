@@ -74,6 +74,8 @@ import yaml
 from . import dspconfig as dc
 from .cdsp import CdspError, CdspNoConfig, CdspUnavailable
 from .dspconfig import FADER_MAIN, FADER_SUBS, FADER_TOPS, Fader, FaderMute, Op, Rebuild, SetValue
+from .latency import (DROPOUT_READ_S, ENGINE_LOG, LIMIT_MS, DropoutCounter, LatencyWatch,
+                      latency_limit_ms)
 from .profiles import (PROC_ASOUND, PROFILE_NAMES, Profile, ProfileChoice, card_id, card_present,
                        load_profile)
 from .state import (BOOL_FIELDS, CHOICES, DELAY_FIELDS, N_SYS_PEQ, RANGES, REBUILD_FIELDS,
@@ -273,15 +275,19 @@ def decode_marker(vol: Any) -> frozenset[int] | None:
 # =========================================================================== small types
 @dataclass(frozen=True)
 class Paths:
-    """Where the controller persists. Defaults = docs/03 §5."""
+    """Where the controller persists. Defaults = docs/03 §5. `engine_log`: the engine's live log,
+    read for the dropout count (D-018); None here (nothing read: tests), the engine unit's path
+    from `from_settings` (the service)."""
 
     state: Path = Path("/var/lib/k1000/state.json")
     active_config: Path = Path("/var/lib/k1000/active.yml")
+    engine_log: Path | None = None
 
     @classmethod
     def from_settings(cls, settings: Any, *, state: str | Path | None = None,
                       active_config: str | Path | None = None) -> "Paths":
-        """k1000.yaml `paths.{state, active_config}`, overridden by explicit arguments."""
+        """k1000.yaml `paths.{state, active_config, engine_log}`, overridden by explicit
+        arguments."""
         sec = settings.get("paths") if isinstance(settings, dict) else None
         sec = sec if isinstance(sec, dict) else {}
         d = cls()
@@ -292,7 +298,8 @@ class Paths:
             v = sec.get(key)
             return Path(v) if isinstance(v, str) and v.strip() else default
 
-        return cls(pick(state, "state", d.state), pick(active_config, "active_config", d.active_config))
+        return cls(pick(state, "state", d.state), pick(active_config, "active_config", d.active_config),
+                   pick(None, "engine_log", ENGINE_LOG))
 
 
 @dataclass(frozen=True)
@@ -367,6 +374,13 @@ class Status:
     mute_src: str = ""               # B4 | phone N | console | boot | GUI | local; "" = not muted
     in_peak_db: list[float] = field(default_factory=lambda: [METER_FLOOR_DB] * 2)   # capture peaks
                                      # of the program inputs (input_map order), before any gain
+    # ---- D-018 latency readout (latency.py): the status poll and the engine's live log
+    latency_ms: float | None = None  # estimated in to out, 0.1 ms; None = no reading
+    latency_io: bool = True          # the interface's share is in it (False: the engine's only)
+    latency_over: bool = False       # above latency_limit_ms (informs, never acts)
+    latency_limit_ms: float = LIMIT_MS
+    buffer_level: int | None = None  # GetBufferLevel, frames
+    dropouts: int | None = None      # dropout lines since the engine started; None = log unread
 
     def copy(self) -> "Status":
         return dataclasses.replace(self, levels=list(self.levels), clip=list(self.clip),
@@ -915,6 +929,11 @@ class Controller:
         for w in profile.warnings:
             log.warning("profile %s: %s", profile.name, w)
         self._note_profile_routing(profile)
+        # D-018: the delay readout (status poll) and the dropout count (engine log, a thread).
+        self.latency = LatencyWatch(latency_limit_ms(self.settings), clock=self._clock)
+        self.status.latency_limit_ms = self.latency.limit_ms
+        self.dropouts = DropoutCounter(paths.engine_log) if paths.engine_log is not None else None
+        self.dropout_s = DROPOUT_READ_S
 
     # ------------------------------------------------------------------ lifecycle
     @property
@@ -947,7 +966,7 @@ class Controller:
         loop = asyncio.get_running_loop()
         for coro, name in ((self._worker(), "k1000-apply"), (self._poll_loop(), "k1000-poll"),
                            (self._meter_loop(), "k1000-meter"), (self._persist_loop(), "k1000-persist"),
-                           (self._ui_loop(), "k1000-ui")):
+                           (self._ui_loop(), "k1000-ui"), (self._dropout_loop(), "k1000-dropouts")):
             self._tasks.append(loop.create_task(coro, name=name))
         self._refresh_device()
         already = bool(getattr(self.client, "connected", False))
@@ -2631,6 +2650,8 @@ class Controller:
         self.status.muted = None
         self.status.load = None
         self.status.levels = [METER_FLOOR_DB] * 4
+        self.latency.lost()               # the next reading gets a journal line (D-018)
+        self._note_latency(None, None)
         self._changed()
 
     async def _sync(self, epoch: int) -> None:
@@ -2644,6 +2665,7 @@ class Controller:
         except CdspNoConfig:
             live = None
         self._note_engine_chunk(live)
+        self.latency.note_config(live)    # chunksize, samplerate (D-018 readout)
         faders = await self.client.get_faders()
         self._note_engine(await self.client.get_state())
         main_vol, main_mute = _fader(faders, FADER_MAIN)
@@ -3216,6 +3238,10 @@ class Controller:
         est = await self.client.get_state()
         load = await self.client.get_processing_load()
         clipped = await self.client.get_clipped_samples()
+        try:                              # D-018: the readout's one read (latency.py)
+            level = await self.client.command("GetBufferLevel")
+        except CdspError:
+            level = None
         reason = ""
         if est in ENGINE_DOWN_STATES:
             reason = str(await self.client.get_stop_reason())
@@ -3223,6 +3249,7 @@ class Controller:
         if (est, load, reason) != (self.status.engine, self.status.load, self.status.stop_reason):
             self.status.engine, self.status.load, self.status.stop_reason = est, load, reason
             self._changed()
+        self._note_latency(est, level)
         if not self._engine_ready or self._syncing or self._engine_lock.locked():
             if not self._syncing:
                 _v, m = _fader(await self.client.get_faders(), FADER_MAIN)
@@ -3240,6 +3267,7 @@ class Controller:
                 await self._sync(self._epoch)
                 return
             self._note_engine_chunk(live)
+            self.latency.note_config(live)
             faders = await self.client.get_faders()
             self._marker_engine = _fader(faders, MARKER_FADER)[0]
             _v, m = _fader(faders, FADER_MAIN)
@@ -3277,6 +3305,36 @@ class Controller:
         self._last_clipped = clipped
         self.status.clipped_samples = clipped
         self._peak_hold = [METER_FLOOR_DB] * 4
+
+    def _note_latency(self, est: Any, level: Any) -> None:
+        """D-018: the poll's engine state and buffer level -> the readout (and its journal line)."""
+        r = self.latency.note(est, level, getattr(self.profile, "io_latency_ms", None))
+        view = ((None, True, False, None) if r is None
+                else (r.ms, r.io_ms is not None, r.over, r.level))
+        st = self.status
+        if view != (st.latency_ms, st.latency_io, st.latency_over, st.buffer_level):
+            st.latency_ms, st.latency_io, st.latency_over, st.buffer_level = view
+            self._changed()
+
+    async def _dropout_loop(self) -> None:
+        """D-018: dropout lines since the engine started, from its live log. The file is read in
+        a worker thread (never in the event loop), every `dropout_s`."""
+        counter = self.dropouts
+        if counter is None:
+            return
+        while True:
+            try:
+                n = await asyncio.to_thread(counter.read)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:   # noqa: BLE001 - a count must never stop the controller
+                self._log_once(("dropouts", type(e).__name__), logging.WARNING,
+                               "engine log %s not read: %s", counter.path, e)
+                n = None
+            if n != self.status.dropouts:
+                self.status.dropouts = n
+                self._changed()
+            await asyncio.sleep(self.dropout_s)
 
     async def _meter_loop(self) -> None:
         while True:

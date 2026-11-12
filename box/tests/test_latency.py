@@ -192,3 +192,148 @@ def test_an_unreadable_log_shows_nothing(tmp_path: Path) -> None:
         assert DropoutCounter(live).read() is None
     finally:
         live.chmod(0o644)
+
+
+# ======================================================================= the controller
+class LevelClient(FakeClient):
+    """FakeClient that answers GetBufferLevel (and counts every command)."""
+
+    def __init__(self, cfg: dict[str, Any] | None) -> None:
+        super().__init__(cfg)
+        self.level: Any = 536
+        self.commands: list[str] = []
+
+    async def command(self, name: str, timeout: float | None = None, **fields: Any) -> Any:
+        self._need()
+        self.commands.append(name)
+        if name == "GetBufferLevel":
+            if isinstance(self.level, Exception):
+                raise self.level
+            return self.level
+        return await super().command(name, timeout, **fields)
+
+
+def make(tmp_path: Path, *, io: float | None = 3.8, settings: dict[str, Any] | None = None,
+         engine_log: Path | None = None) -> tuple[Controller, LevelClient]:
+    s = st.State()
+    profile = dataclasses.replace(DEV, io_latency_ms=io)
+    client = LevelClient(dc.generate(profile, s))
+    ctl = Controller(client, profile, s, Paths(tmp_path / "state.json", tmp_path / "active.yml",
+                                               engine_log), settings=settings,
+                     sleep=fast_sleep, poll_s=3600, meter_s=3600, persist_debounce_s=0.05,
+                     persist_max_delay_s=0.5, device_probe=lambda d: True)
+    return ctl, client
+
+
+def test_the_poll_reads_the_level_once_and_shows_the_delay(tmp_path: Path, caplog: Any) -> None:
+    caplog.set_level(logging.INFO, logger="k1000.latency")
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path)
+        await boot(ctl)
+        await ctl.poll_once()
+        n, writes = cl.commands.count("GetBufferLevel"), len(cl.log)
+        v = ctl.version
+        await ctl.poll_once()
+        assert cl.commands.count("GetBufferLevel") == n + 1         # one read a poll, no more
+        assert cl.log[writes:] == []                                 # nothing written
+        s = ctl.snapshot()[2]
+        assert (s.latency_ms, s.latency_io, s.latency_over, s.buffer_level, s.latency_limit_ms) \
+            == (20.3, True, True, 536, 10.0)
+        assert ctl.version == v                                      # unchanged: no wake-up
+        cl.level = 540
+        await ctl.poll_once()
+        assert ctl.snapshot()[2].latency_ms == 20.4 and ctl.version > v
+        await ctl.stop()
+
+    run(body())
+    lines = [r.getMessage() for r in caplog.records if r.name == "k1000.latency"]
+    assert lines == ["latency: buffer=536 frames, about 20.3 ms in to out (limit 10.0)"]
+
+
+def test_no_reading_without_a_level_and_never_a_failed_poll(tmp_path: Path) -> None:
+    async def body() -> None:
+        ctl, cl = make(tmp_path, io=None, settings={"engine": {"latency_limit_ms": 20}})
+        await boot(ctl)
+        await ctl.poll_once()
+        s = ctl.snapshot()[2]
+        assert (s.latency_ms, s.latency_io, s.latency_over, s.latency_limit_ms) == (16.5, False, False, 20.0)
+        cl.level = CdspError("GetBufferLevel", "Invalid", "an engine without it")
+        cl.engine_state = "Paused"
+        await ctl.poll_once()                                        # the rest of the poll goes on
+        s = ctl.snapshot()[2]
+        assert s.latency_ms is None and s.buffer_level is None and s.engine == "Paused"
+        cl.level, cl.engine_state = 0, "Running"                     # no average published yet
+        await ctl.poll_once()
+        assert ctl.snapshot()[2].latency_ms is None
+        await ctl.stop()
+
+    run(body())
+
+
+def test_a_lost_link_clears_the_readout_and_the_next_one_is_logged(tmp_path: Path, caplog: Any) -> None:
+    caplog.set_level(logging.INFO, logger="k1000.latency")
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path)
+        await boot(ctl)
+        await ctl.poll_once()
+        assert ctl.status.latency_ms == 20.3
+        await cl.drop()
+        await until(lambda: ctl.status.latency_ms is None, what="readout cleared")
+        assert ctl.status.buffer_level is None
+        await cl.reconnect()
+        await until(lambda: ctl.engine_ready, what="sync")
+        await ctl.poll_once()                                        # devices from the connect sync
+        assert ctl.status.latency_ms == 20.3
+        await ctl.stop()
+
+    run(body())
+    lines = [r.getMessage() for r in caplog.records if r.name == "k1000.latency"]
+    assert len(lines) == 2
+
+
+def test_the_dropout_count_comes_from_a_worker_thread(tmp_path: Path) -> None:
+    live = tmp_path / "camilladsp_rCURRENT.log"
+    _write(live, START + UNDERRUN + UNDERRUN)
+
+    async def body() -> None:
+        ctl, _cl = make(tmp_path, engine_log=live)
+        assert ctl.dropouts is not None
+        threads: list[str] = []
+        read = ctl.dropouts.read
+
+        def spy() -> int | None:
+            threads.append(threading.current_thread().name)
+            return read()
+
+        ctl.dropouts.read = spy                                      # type: ignore[method-assign]
+        ctl.dropout_s = 0.01
+        await boot(ctl)
+        await until(lambda: ctl.status.dropouts == 2, what="first count")
+        v = ctl.version
+        _write(live, OVERRUN)
+        await until(lambda: ctl.status.dropouts == 3, what="the new line")
+        assert ctl.version > v
+        assert threads and threading.main_thread().name not in threads
+        live.unlink()
+        await until(lambda: ctl.status.dropouts is None, what="log gone")
+        await ctl.stop()
+        ctl.dropouts.close()
+
+    run(body())
+
+
+def test_no_engine_log_no_count(tmp_path: Path) -> None:
+    async def body() -> None:
+        ctl, _cl = make(tmp_path)
+        assert ctl.dropouts is None
+        await boot(ctl)
+        await asyncio.sleep(0.05)
+        assert ctl.status.dropouts is None
+        await ctl.stop()
+
+    run(body())
+    assert Paths.from_settings({}).engine_log == lat.ENGINE_LOG
+    assert Paths.from_settings({"paths": {"engine_log": "/tmp/x.log"}}).engine_log == Path("/tmp/x.log")
+    assert Status().latency_limit_ms == 10.0

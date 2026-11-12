@@ -1225,8 +1225,8 @@ def test_settings_helpers_clamp_and_default() -> None:
     assert EngineSettings.from_settings({"engine": "junk"}) == EngineSettings()
     assert EngineSettings.from_settings({}, url="ws://x:1").url == "ws://x:1"
     p = Paths.from_settings({"paths": {"state": "/tmp/s.json"}}, active_config="/tmp/a.yml")
-    assert p == Paths(Path("/tmp/s.json"), Path("/tmp/a.yml"))
-    assert Paths.from_settings({"_error": "x"}) == Paths()
+    assert p == Paths(Path("/tmp/s.json"), Path("/tmp/a.yml"), ctl_mod.ENGINE_LOG)
+    assert Paths.from_settings({"_error": "x"}) == Paths(engine_log=ctl_mod.ENGINE_LOG)
     assert isinstance(Status().copy(), Status)
 
 
