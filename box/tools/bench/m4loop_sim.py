@@ -18,16 +18,21 @@ def cdsp_spectrum(sig, min_f, max_f, n_bins):
     s = math.sqrt(lr)
     fc = min_f * lr ** np.arange(n_bins)
     out = np.empty(n_bins)
-    for i, c in enumerate(fc):
-        lo = min_f if i == 0 else c / s
-        hi = max_f if i == n_bins - 1 else c * s
-        kl, kh = int(math.floor(lo / res)), min(int(math.ceil(hi / res)), len(p) - 1)
-        out[i] = p[kl:kh + 1].max()
+    lo = np.concatenate(([min_f], fc[1:] / s))
+    hi = np.concatenate((fc[:-1] * s, [max_f]))
+    kl = np.floor(lo / res).astype(int)
+    kh = np.minimum(np.ceil(hi / res).astype(int), len(p) - 1)
+    for i in range(n_bins):
+        out[i] = p[kl[i]:kh[i] + 1].max()
     return fc, out
 
 
 rng = np.random.default_rng(1)
-for L_ms, g, pol in ((18.37, 0.30, 1), (16.9, 0.15, 1), (21.02, 0.3, -1)):
+# Short delays (a healthy engine) and long ones (the backlog after dropouts, docs/16 §2.2).
+CASES = ((18.37, 0.30, 1), (16.9, 0.15, 1), (21.02, 0.3, -1), (8.4, 0.3, 1),
+         (45.3, 0.30, 1), (72.6, 0.3, 1), (101.3, 0.3, 1), (139.7, 0.3, -1), (118.0, 0.12, 1))
+bad = 0
+for L_ms, g, pol in CASES:
     n = 12 * FS
     X = np.fft.rfft(rng.standard_normal(n)); f = np.fft.rfftfreq(n, 1 / FS); f[0] = f[1]
     x = np.fft.irfft(X / np.sqrt(f), n); x /= x.std()
@@ -40,7 +45,11 @@ for L_ms, g, pol in ((18.37, 0.30, 1), (16.9, 0.15, 1), (21.02, 0.3, -1)):
     acc = None
     for k in range(8):
         seg = mix[: n - k * 16000]
-        fl, p = cdsp_spectrum(seg, 1.5, 10500.0, 12000)
+        fl, p = cdsp_spectrum(seg, 0.75, 10500.0, 24000)
         acc = p if acc is None else acc + p
     tau, sign, snr = m.comb_latency(fl, acc / 8)
-    print(f"true {L_ms} ms g {g} pol {pol}: found {tau:.3f} ms sign {sign:+.0f} snr {snr:.1f}")
+    ok = abs(tau - L_ms) < 0.02 and sign == pol
+    bad += not ok
+    print(f"true {L_ms} ms g {g} pol {pol}: found {tau:.3f} ms sign {sign:+.0f} snr {snr:.1f}"
+          f"{'' if ok else '  <-- WRONG'}")
+sys.exit(1 if bad else 0)

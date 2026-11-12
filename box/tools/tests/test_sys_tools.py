@@ -757,6 +757,42 @@ def test_soak_summary_clean(tmp_path):
     assert "4 samples" in r.stdout and "clean" in r.stdout
 
 
+def test_soak_summary_flags_a_buffer_that_stays_high(tmp_path):
+    """The engine keeps a backlog after a dropout: the buffer level settles higher and stays."""
+    levels = (0, 536, 540, 531, 536, 538, 534, 1010, 1012, 1008)
+    lines = [_soak_line(f"2026-10-15T23:{i // 6:02d}:{i % 6 * 10:02d}+02:00", buffer=str(v), up=str(100 + 10 * i))
+             for i, v in enumerate(levels)]
+    r = _summary(tmp_path, lines, "2026-10-15T23:01:35+02:00")
+    assert r.returncode == 1, r.stdout
+    assert "buffer: starts at 536 frames, 531 .. 1012" in r.stdout
+    assert "the playback buffer rose to 1012 frames, 9.9 ms above its start (536)" in r.stdout
+    assert "first at 2026-10-15T23:01:10+02:00" in r.stdout
+
+
+def test_soak_summary_accepts_buffer_jitter_and_the_zero_before_the_first_average(tmp_path):
+    levels = (0, 0, 536, 580, 500, 610, 470, 536)
+    lines = [_soak_line(f"2026-10-15T23:{i // 6:02d}:{i % 6 * 10:02d}+02:00", buffer=str(v), up=str(100 + 10 * i))
+             for i, v in enumerate(levels)]
+    r = _summary(tmp_path, lines, "2026-10-15T23:01:15+02:00")
+    assert r.returncode == 0, r.stdout
+    assert "clean" in r.stdout and "no buffer rise" in r.stdout
+
+
+def test_soak_summary_buffer_rise_threshold_is_settable(tmp_path):
+    levels = (128, 130, 126, 128, 129, 127, 200, 204)
+    lines = [_soak_line(f"2026-10-15T23:{i // 6:02d}:{i % 6 * 10:02d}+02:00", buffer=str(v), up=str(100 + 10 * i))
+             for i, v in enumerate(levels)]
+    log = tmp_path / "s.log"
+    log.write_text("\n".join(lines) + "\n")
+    (tmp_path / "cdsp").mkdir()
+    env = dict(os.environ, K1000_SOAK_NOW="2026-10-15T23:01:15+02:00", K1000_SOAK_BUFFER_RISE="64",
+               K1000_CDSP_LOG=str(tmp_path / "cdsp" / "camilladsp.log"))
+    r = subprocess.run(["sh", str(SOAK), "--summary", str(log)], env=env, capture_output=True,
+                       text=True, timeout=20)
+    assert r.returncode == 1, r.stdout
+    assert "the playback buffer rose to 204 frames, 1.6 ms above its start (128)" in r.stdout
+
+
 def test_soak_summary_flags_a_reboot_a_gap_and_a_stale_log(tmp_path):
     lines = [_soak_line("2026-10-15T23:00:00+02:00", up="5000"),
              _soak_line("2026-10-15T23:00:10+02:00", up="5010"),
