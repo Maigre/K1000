@@ -3867,6 +3867,46 @@ def test_fresh_engine_from_an_old_active_yml_loses_the_common_delay_before_the_r
     run(body())
 
 
+def test_common_delay_goes_with_a_pipeline_restore_or_a_device_repair(tmp_path: Path) -> None:
+    """K1000's own uploads on a playing engine, a pipeline restore and a device repair, run with
+    Main muted around them: they put back the engine's view WITHOUT its common delay, never the
+    pair the state has dropped (it would be held again after the unmute)."""
+    def uploaded(log: list[tuple[Any, ...]]) -> list[tuple[float, float]]:
+        return [(e[1]["filters"]["sub_delay"]["parameters"]["delay"],
+                 e[1]["filters"]["top_delay"]["parameters"]["delay"]) for e in log if e[0] == "config"]
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(sub_delay_ms=3.0, top_delay_ms=2.0), playing=True)
+        ctl.same_card = lambda a, b: a == b
+        await boot(ctl)
+        assert _pa_late(ctl) and _engine_delays(cl) == (3.0, 2.0)
+        cl.cfg["pipeline"] = cl.cfg["pipeline"][:-2] + cl.cfg["pipeline"][-1:]    # GUI dropped a step
+        n = len(cl.log)
+        await ctl.poll_once()
+        await ctl.poll_once()                                            # second look: restore
+        assert await ctl.settle(3.0)
+        ops = nomark(cl.log[n:])
+        assert ops[0] == ("mute", 0, True) and uploaded(ops) == [(1.0, 0.0)]
+        assert _engine_delays(cl) == (1.0, 0.0) and _pa_late(ctl) == []
+        assert (ctl._applied.sub_delay_ms, ctl._applied.top_delay_ms) == (1.0, 0.0)
+        assert cl.faders[0]["mute"] is False                             # Main back in
+        await ctl.stop()
+
+        ctl, cl = make(tmp_path, State(sub_delay_ms=3.0, top_delay_ms=2.0), playing=True)
+        ctl.same_card = lambda a, b: a == b            # hw:0 is NOT this profile's card here
+        await boot(ctl)
+        assert _pa_late(ctl)
+        cl.cfg = gui_default_config()                  # a stale CamillaGUI page pressed Apply
+        n = len(cl.log)
+        await ctl.poll_once()
+        await ctl.poll_once()                          # second look: repair
+        assert await ctl.settle(5.0)
+        assert uploaded(cl.log[n:]) == [(1.0, 0.0)] and _pa_late(ctl) == []
+        await ctl.stop()
+
+    run(body())
+
+
 def test_rebuilt_state_loses_a_common_delay(tmp_path: Path) -> None:
     pair = State(sub_delay_ms=3.0, top_delay_ms=2.0)
     (tmp_path / "active.yml").write_text(dc.to_yaml(dc.generate(DEV, pair)))

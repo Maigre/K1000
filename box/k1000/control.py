@@ -2809,7 +2809,7 @@ class Controller:
         wrong = self.wrong_devices(live, expected) if self.status.device_present is True else []
         if not wrong:
             self._device_seen = 0
-        elif not connect and await self._maybe_repair_devices(live, expected, wrong):
+        elif not connect and await self._maybe_repair_devices(live, engine_view, wrong):
             return    # devices + pipeline back from the profile; the next poll re-reconciles
         drift = dc.config_drift(live, expected, skip_pointers=recent_p)
         held: list[str] = list(drift.held)      # AUX routing cuts made outside K1000 (D-016)
@@ -2818,7 +2818,7 @@ class Controller:
             # channel counts differ). The device repair puts both back.
             self._set_message("drift", 2, MSG_PIPELINE_CHANGED)
         elif drift.rebuild:
-            await self._maybe_restore(live, expected, drift.rebuild, connect)
+            await self._maybe_restore(live, engine_view, drift.rebuild, connect)
         else:
             self._rebuild_seen = 0
             self._set_message("drift", 2, None)
@@ -3097,7 +3097,20 @@ class Controller:
                 out.append(f"{side} channels {lv.get('channels')!r} != {ev.get('channels')!r}")
         return out
 
-    async def _maybe_repair_devices(self, live: Any, expected: dict[str, Any],
+    def _restore_view(self, engine_view: State) -> State:
+        """What an upload of K1000's own on a playing engine puts back (a device repair, a
+        pipeline restore): the engine's view, without the common delay the state has already
+        dropped. Main is muted around those uploads, so nothing holds it (`_common_held`)."""
+        view = engine_view.copy()
+        drop_common_delay(view)
+        return view
+
+    def _restored_delays(self, view: State) -> None:
+        """An upload from `_restore_view` went in: the engine holds its delays."""
+        self._applied.sub_delay_ms, self._applied.top_delay_ms = view.sub_delay_ms, view.top_delay_ms
+        self._note_common()
+
+    async def _maybe_repair_devices(self, live: Any, engine_view: State,
                                     wrong: list[str]) -> bool:
         """The engine runs on the wrong card/channels while the profile's card is present: the
         PA plays nothing (or the wrong input) whatever the knobs do, and a pipeline restore
@@ -3114,14 +3127,16 @@ class Controller:
         log.warning("engine is not on the profile's devices (%s): restoring %s's config (device "
                     "restart, Main muted, then the boot ramp)", "; ".join(wrong), self.profile.name)
         self._set_message("devices", 1, "RESTORING ENGINE DEVICES")
-        ok = await self._guarded_upload(_keep_cuts(expected, live), ramp_after=True,
+        view = self._restore_view(engine_view)
+        ok = await self._guarded_upload(_keep_cuts(self._expected(view), live), ramp_after=True,
                                         epoch=self._epoch)
         if ok:   # what was uploaded was generated from the engine view (`_applied`)
             self._device_seen = 0
             self._applied.profile = self.profile.name
+            self._restored_delays(view)
         return True
 
-    async def _maybe_restore(self, live: Any, expected: dict[str, Any], reasons: list[str],
+    async def _maybe_restore(self, live: Any, engine_view: State, reasons: list[str],
                              connect: bool) -> None:
         """The running pipeline is not K1000's (a CamillaGUI structure edit): put it back, Main
         muted around the upload, after a second look and at most once per interval."""
@@ -3135,11 +3150,13 @@ class Controller:
         self._last_restore = now
         log.warning("pipeline differs from K1000's (%s): restoring it (Main muted around the "
                     "upload)", "; ".join(reasons)[:300])
-        cfg = _keep_cuts(dc.with_live_devices(expected, live), live)
+        view = self._restore_view(engine_view)
+        cfg = _keep_cuts(dc.with_live_devices(self._expected(view), live), live)
         ok = await self._guarded_upload(cfg, ramp_after=False, epoch=self._epoch)
         self._set_message("drift", 2, None if ok else MSG_PIPELINE_CHANGED)
         if ok:
             self._rebuild_seen = 0
+            self._restored_delays(view)
 
     # ------------------------------------------------------------------ polling
     async def _poll_loop(self) -> None:
