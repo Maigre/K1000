@@ -316,7 +316,8 @@ rest. Numbers are rounded, never NaN or infinite (`null` instead).
  "spectrum": {"on": true, "src": "PGM", "state": "live"},
  "laptop": {"state": "open", "s": 7140},
  "readonly": {"profile": "PROFILE PINNED IN k1000.yaml", "dev_audition": "AUDITION: DEV PROFILE ONLY"},
- "box_band": 1, "box_page": "SHOW", "knobs_ok": true}
+ "box_band": 1, "box_page": "SHOW", "knobs_ok": true,
+ "latency": {"ms": 20.3, "io": true, "over": true, "limit": 10.0, "buf": 536, "drops": 0}}
 ```
 
 | Key | Meaning |
@@ -344,6 +345,7 @@ rest. Numbers are rounded, never NaN or infinite (`null` instead).
 | `box_band` | The band the knobs are on (the `E` mark). Not the phone's selection: each phone keeps its own |
 | `box_page` | The box screen's page (`SHOW`, `ALIGN`, `SETUP`, `PHONE`, `HWTEST`) |
 | `knobs_ok` | `true` knobs answer, `false` KNOBS OFFLINE, `null` no knobs expected |
+| `latency` | The box's delay readout (D-018, `k1000/latency.py`): `ms` in to out, estimated (`null` = no reading); `io` `false` = the interface's share is not known, `ms` is the engine's alone (a floor); `over` above `limit` ms (it only informs); `buf` the engine's playback buffer level, frames; `drops` the engine's dropout lines since it started (`null` = its log is not read). v2 only: v1's state is unchanged |
 
 Countdowns are the values when the state was built; the box resends when something else changes,
 so the page counts down from the last one it got.

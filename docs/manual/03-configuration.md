@@ -48,6 +48,7 @@ profiles:
     probe: true
     chunksize: 256               # the default; measured steps down are D-018's work
     target_level: 512            # D-010: margin over USB; to come down by measurement (D-018)
+    io_latency_ms: 3.8           # the M4's share of the delay in to out (D-018 readout)
 
 controls:
   encoders: [0, 1, 2, 3]
@@ -67,6 +68,7 @@ ui:
   knob_tags: off                 # dim | off | bright: the E1-E4 tags (Thomas's box: off; built-in dim)
 
 engine:
+  latency_limit_ms: 10.0         # D-018: the delay readout turns orange above it
   url: ws://127.0.0.1:1234
   boot_gain_db: -40.0
   boot_ramp_s: 3.0
@@ -115,6 +117,7 @@ One section per profile. Every key is optional: a missing key keeps the built-in
 | `probe` | `true` / `false` | `false` (the HiFiBerry is never opened by the probe) | `true` |
 | `chunksize` | Frames: 64, 128, 256, 512 or 1024 | 256 | 256 |
 | `target_level` | Frames, 64 to 6 × `chunksize` (64–1536 at 256) | one chunk (256) | 512 (D-010; the code default is one chunk) |
+| `io_latency_ms` | ms, 0–50, or `null` (not known) | `null`: the delay readout shows the engine's share alone, as `≥` | 3.8 (the M4's converters and USB, loop-measured 16 Oct) |
 
 Details:
 
@@ -229,8 +232,10 @@ ui:
 | `engine.url` | `ws://…` or `wss://…` | `ws://127.0.0.1:1234` | CamillaDSP's websocket (the engine unit listens there) |
 | `engine.boot_gain_db` | −80 … −20 dB (clamped) | −40 | Where Main is parked, muted, before the ramp to the saved master. The engine itself always starts at −40 dB |
 | `engine.boot_ramp_s` | 0.5 … 30 s (clamped) | 3 | Length of the ramp to the saved master. No step is ever larger than 6 dB |
+| `engine.latency_limit_ms` | 1 … 1000 ms (clamped) | 10 (D-018) | Above it, the delay readout in the status bar turns orange ([chapter 6 §1](06-troubleshooting.md#status-bar-top-line-every-page)). It only informs |
 | `paths.state` | a path | `/var/lib/k1000/state.json` | The saved state |
 | `paths.active_config` | a path | `/var/lib/k1000/active.yml` | The engine config K1000 writes. **The engine unit reads this exact path**: change it only for tests |
+| `paths.engine_log` | a path | `/var/log/k1000/camilladsp_rCURRENT.log` | The engine's live log, read every 10 s for the dropout count. **The engine unit writes this exact path**: change it only for tests |
 
 ## 7. `spectrum`
 

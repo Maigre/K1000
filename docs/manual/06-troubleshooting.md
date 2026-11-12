@@ -28,7 +28,14 @@ the amber strip for a few seconds (what your own press did), **pills** sit on SH
 | `NO ENGINE` red | No connection to CamillaDSP | See ENGINE DOWN |
 | `ENGINE ?` amber, and the orange alert `STATUS ? engine · device` | K1000 cannot tell yet whether the engine runs or the device is there ([picture](../ui/unknown_status.png)) | Wait. Audio never depends on the screen |
 | `DSP 1.2%` | The engine's processing load | Normal: a few percent |
+| `20.3ms` after the engine state, white | The delay from the inputs to the outputs (D-018), estimated: the engine's playback buffer plus one chunk, plus the interface's own share (`io_latency_ms`, 3.8 ms on the M4). The engine refreshes it about every 10 s. Nothing shown: no reading yet (the first seconds after an engine start), the engine not running, an alert on the bar, or no room beside the pills | — |
+| `20.3ms` orange | Above the limit (`engine.latency_limit_ms`, 10 ms). It only informs: the sound is not changed | After the show: `journalctl -u k1000 \| grep latency:` gives one line at each engine connection, at each move of more than one chunk, and every 10 minutes |
+| `≥16.5ms` | The profile does not know its interface's share (`dev`): the engine's share alone, a floor | — |
+| `3 DROP` small, orange, after the delay | The engine logged that many dropouts (underrun, overrun, stall) since it started. Not shown at 0, nor when its log cannot be read. A delay that grew since the start, with dropouts beside it, matches the backlog described in [`docs/16-post-gig-audit.md`](../16-post-gig-audit.md) §2.2 | Copy `/var/log/k1000/camilladsp_r*.log` aside before the engine restarts |
 | A coloured bar across the top | A system alert | See "Alerts" below |
+
+The phone's STATUS sheet says the same in words, on its `Delay in → out` row, with the dropout
+count even at 0.
 
 ### Full-screen states
 
