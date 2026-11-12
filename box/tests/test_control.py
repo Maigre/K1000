@@ -3916,6 +3916,33 @@ def test_common_delay_goes_with_a_pipeline_restore_or_a_device_repair(tmp_path: 
     run(body())
 
 
+def test_common_delay_read_back_after_a_refused_write_is_dropped(tmp_path: Path, caplog: Any) -> None:
+    """A refused write re-reads the engine (`_resync_from_engine`) and takes its values: a pair
+    made in CamillaGUI since the last poll comes in as the difference only, said once, held in
+    the playing engine with PA LATE, as from a poll."""
+    import logging
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(sub_delay_ms=45.0), playing=True)
+        await boot(ctl)
+        cl.cfg["filters"]["top_delay"]["parameters"]["delay"] = 40.0     # laptop editor, not polled
+        cl.refuse.add("/filters/live_peq_1/parameters/q")
+        n = len(cl.log)
+        with caplog.at_level(logging.WARNING):
+            ctl.nudge("live_peq.0.q", 1)
+            assert await ctl.settle(3.0)
+        assert ctl.focus.hint == "ENGINE REFUSED THE CHANGE"
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (5.0, 0.0)
+        said = [r.getMessage() for r in caplog.records if "were both set" in r.getMessage()]
+        assert len(said) == 1 and said[0].startswith(
+            "adopted from the engine: sub delay 45.000 ms and top delay 40.000 ms"), said
+        assert _pa_late(ctl) == [("warning", "PA LATE 40.00 MS · MUTE TO CLEAR")]
+        assert _config_writes(cl.log[n:]) == [] and _engine_delays(cl) == (45.0, 40.0)
+        await ctl.stop()
+
+    run(body())
+
+
 def test_a_direct_sub_or_top_delay_write_never_leaves_a_pair(tmp_path: Path, caplog: Any) -> None:
     """The stdin console can write sub_delay_ms / top_delay_ms directly (the phone cannot). A
     write that would leave both set keeps their difference only, said in the journal: no PA
