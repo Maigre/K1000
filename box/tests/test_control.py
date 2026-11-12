@@ -1104,8 +1104,9 @@ def test_pipeline_restore_stops_after_three_tries_then_only_alerts(tmp_path: Pat
     """Audit 5.1 #5: a drift that an upload does not cure (the engine refuses K1000's config, or
     something puts the change back at once) was restored, Main muted around it, every
     RESTORE_MIN_INTERVAL_S for as long as it lasted. Now REPAIR_MAX_TRIES dips at most, then
-    only the alert. The count starts again when the drift changes, when it is gone, and when the
-    operator applies a setup action."""
+    only the alert. Another change has its own count; two that take turns keep theirs. The counts
+    are forgotten once the engine has been K1000's for REPAIR_FORGET_S, and when the operator
+    applies a setup action."""
     import logging
 
     async def body() -> None:
@@ -1140,6 +1141,7 @@ def test_pipeline_restore_stops_after_three_tries_then_only_alerts(tmp_path: Pat
 
         cl.set_config_yaml = upload  # type: ignore[method-assign]
         gui_drops_a_step()
+        first_change = copy.deepcopy(cl.cfg["pipeline"])
         n = len(cl.log)
         with caplog.at_level(logging.ERROR, logger="k1000.control"):
             await looks(12)                     # six minutes of a drift that stays
@@ -1150,24 +1152,83 @@ def test_pipeline_restore_stops_after_three_tries_then_only_alerts(tmp_path: Pat
         assert "PIPELINE CHANGED" in ctl.status.message                # the alert stays up
         gave_up = [r for r in caplog.records if "automatic repairs" in r.getMessage()]
         assert len(gave_up) == 1 and "pipeline" in gave_up[0].getMessage()
-        # the drift changes (the GUI drops another step): another drift, three tries again
+        # the drift changes (the GUI drops another step): another drift, three tries of its own
+        first = dict(ctl._repair_tries)
         gui_drops_a_step()
         await looks(8)
-        assert len(tries) == 6
-        # the drift is gone (the GUI's change undone): the count starts again for the next one
+        assert len(tries) == 6 and sorted(ctl._repair_tries.values()) == [3, 3]
+        # the GUI's change undone, then the first change again: it has had its three
         cl.cfg = dc.generate(DEV, ctl.state)
         await looks(1)
-        assert ctl._repair_tries == 0 and "PIPELINE CHANGED" not in ctl.status.message
+        assert "PIPELINE CHANGED" not in ctl.status.message
+        gui_drops_a_step()
+        assert cl.cfg["pipeline"] == first_change
+        await looks(6)
+        assert len(tries) == 6 and len(ctl._repair_tries) == 2
+        assert all(ctl._repair_tries[k] == v for k, v in first.items())
+        assert "PIPELINE CHANGED" in ctl.status.message
+        # K1000's for REPAIR_FORGET_S without a break: the counts are forgotten
+        cl.cfg = dc.generate(DEV, ctl.state)
+        await looks(1)
+        now[0] += ctl_mod.REPAIR_FORGET_S - 1.0
+        await ctl.poll_once()
+        assert len(ctl._repair_tries) == 2
+        now[0] += 2.0
+        await ctl.poll_once()
+        assert ctl._repair_tries == {}
         gui_drops_a_step()
         await looks(2)
         assert len(tries) == 7
         await looks(6)
-        assert len(tries) == 9 and ctl._repair_tries == 3
-        # the operator applies a setup action: the count starts again too
+        assert len(tries) == 9 and list(ctl._repair_tries.values()) == [3]
+        # the operator applies a setup action: the counts are forgotten too
         failing[0] = False
         assert ctl.toggle("mono_subs", confirmed=True)
         assert await ctl.settle(5.0)
-        assert ctl._repair_tries == 0
+        assert ctl._repair_tries == {}
+        await ctl.stop()
+
+    run(body())
+
+
+def test_a_change_put_back_seconds_after_each_restore_is_restored_three_times(
+        tmp_path: Path) -> None:
+    """The same change re-applied a couple of seconds after each restore (a client that keeps
+    applying its config): the restores hold for a look or two each time. Those clean looks do
+    not start the count again, or the PA dipped every cycle (ten cycles, ten dips); only
+    REPAIR_FORGET_S of K1000's pipeline without a break does."""
+    async def body() -> None:
+        now = [1000.0]
+        ctl, cl = make(tmp_path, State(master_db=-20.0), playing=True, clock=lambda: now[0])
+        await boot(ctl)
+        good = copy.deepcopy(cl.cfg)
+        gui = copy.deepcopy(good)
+        gui["pipeline"] = gui["pipeline"][:-2] + gui["pipeline"][-1:]
+        n = len(cl.log)
+        for _cycle in range(10):
+            cl.cfg = copy.deepcopy(gui)              # the change is applied (again)
+            for _second in range(33):                # one look a second
+                now[0] += 1.0
+                await ctl.poll_once()
+                assert await ctl.settle(5.0)
+        uploads = [e for e in cl.log[n:] if e[0] == "config"]
+        dips = [e for e in nomark(cl.log[n:]) if e[:2] == ("mute", 0)]
+        assert len(uploads) == ctl_mod.REPAIR_MAX_TRIES
+        assert dips == [("mute", 0, True), ("mute", 0, False)] * 3
+        assert "PIPELINE CHANGED" in ctl.status.message and cl.cfg["pipeline"] == gui["pipeline"]
+        # the change stops; K1000's pipeline for REPAIR_FORGET_S: the next one is restored again
+        cl.cfg = copy.deepcopy(good)
+        for step in (1.0, ctl_mod.REPAIR_FORGET_S + 1.0):
+            now[0] += step
+            await ctl.poll_once()
+        assert ctl._repair_tries == {}
+        cl.cfg = copy.deepcopy(gui)
+        for _ in range(2):
+            now[0] += 1.0
+            await ctl.poll_once()
+            assert await ctl.settle(5.0)
+        assert len([e for e in cl.log[n:] if e[0] == "config"]) == 4
+        assert cl.cfg["pipeline"] == good["pipeline"]
         await ctl.stop()
 
     run(body())
@@ -3473,7 +3534,8 @@ def test_engine_moved_to_another_card_is_put_back(tmp_path: Path) -> None:
 def test_device_repair_stops_after_three_tries_then_only_alerts(tmp_path: Path) -> None:
     """The same limit as the pipeline restore (audit 5.1 #5): an engine that will not take the
     profile's devices gets REPAIR_MAX_TRIES uploads with Main muted around them, then only
-    DEVICES CHANGED (GUI); once on the profile's devices again, the count starts again."""
+    DEVICES CHANGED (GUI); once on the profile's devices for REPAIR_FORGET_S, the count starts
+    again (a moment back on them is not enough)."""
     async def body() -> None:
         now = [1000.0]
         ctl, cl = make(tmp_path, State(master_db=-12.0), playing=True, clock=lambda: now[0])
@@ -3498,12 +3560,24 @@ def test_device_repair_stops_after_three_tries_then_only_alerts(tmp_path: Path) 
         assert dips == [("mute", 0, True), ("mute", 0, False)] * 3
         assert ctl._messages["devices"][1] == ctl_mod.MSG_DEVICES_CHANGED and ctl.status.drift
         assert ctl.status.message in (ctl_mod.MSG_DEVICES_CHANGED, ctl_mod.MSG_PIPELINE_CHANGED)
-        # back on the profile's devices: the next wrong move is repaired again
+        # back on the profile's devices for a look, then the same wrong move: no upload
         cl.set_config_yaml = real_upload  # type: ignore[method-assign]
         cl.cfg = dc.generate(DEV, ctl.state)
         now[0] += ctl_mod.RESTORE_MIN_INTERVAL_S + 1
         await ctl.poll_once()
-        assert ctl._repair_tries == 0
+        cl.cfg = gui_default_config()
+        k = len(cl.log)
+        for _ in range(3):
+            now[0] += ctl_mod.RESTORE_MIN_INTERVAL_S + 1
+            await ctl.poll_once()
+            assert await ctl.settle(5.0)
+        assert [e[0] for e in cl.log[k:]].count("config") == 0
+        # on them for REPAIR_FORGET_S: the next wrong move is repaired again
+        cl.cfg = dc.generate(DEV, ctl.state)
+        for step in (1.0, ctl_mod.REPAIR_FORGET_S + 1.0):
+            now[0] += step
+            await ctl.poll_once()
+        assert ctl._repair_tries == {}
         cl.cfg = gui_default_config()
         m = len(cl.log)
         for _ in range(2):
