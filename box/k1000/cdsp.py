@@ -33,6 +33,9 @@ Single-argument commands carry it in ``value`` (``GetConfigValue``, ``SetConfig`
 ``SetConfigValue`` takes ``pointer`` + ``value``; fader commands take ``fader`` + ``value``.
 A malformed or unknown command gets ``{"reply": "Invalid", "error": "..."}`` (no ``result``,
 no command name), raised here as ``CdspError(name, "Invalid", error)``.
+Upstream ``next5`` (0930f9b, checked off the box) keeps every shape above, and also answers
+``Invalid`` to a command with a field it does not take (``"unknown field `minimum`, expected
+one of ..."``), where 5.0.0-beta.1 ignored the field: send only the documented fields.
 """
 
 from __future__ import annotations
