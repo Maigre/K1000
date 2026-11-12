@@ -37,6 +37,8 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   holds: **M4**, checked before buying (all 4 outs, scratch-free pots, solid USB-C, firmware version).
 - **Decision**: Thomas, 2026-10-12: the ~€150 M4, picked up Tue 13 with the checks above. Confirmed
   as the Sunday interface in D-010.
+- **Correction 2026-11-12**: the M4 in use was bought new, not the ~€150 unit above, and went live
+  on the box on 2026-10-16 (`docs/05-m4-day.md` §13). The choice of the M4 stands.
 
 ## D-004 — Engine for v0: CamillaDSP v5 beta · decided 2026-10-12
 
@@ -515,7 +517,7 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   go with the phone work.
 
 
-## D-016 — De-harsh, sub loudness and AUX IN, all off by default · proposed 2026-10-16
+## D-016 — De-harsh, sub loudness and AUX IN, all off by default · proposed 2026-10-16 · deployed 2026-10-17
 
 - **Ask** (Thomas, after the first run with the box on the rig, 2026-10-16: "it sound great"):
   (1) "a band compressor would be interessting: some attack are a bit hard, especially around
@@ -590,6 +592,9 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
 - **Gate**: Thomas tries each at the rig (de-harsh against his 2.7 kHz notch, loudness at
   background level, a mic on IN1) and decides to keep, change the defaults, or drop; until then
   they stay off. Deploy, then the printed operator card (still one A4 page).
+- **Status 2026-11-12**: recorded as deployed, on the owner's word. It went on the box on
+  2026-10-17 with all three off by default, and was in the build that played on 2026-10-18
+  (`025b8f8`). Keeping, changing or dropping each feature by ear (the gate above) is still open.
 
 ## D-017 — SETUP: a fixed selected row, E3 the value knob, a confirm popup for risky rows · decided 2026-10-17
 
