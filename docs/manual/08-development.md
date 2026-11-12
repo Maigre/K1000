@@ -63,8 +63,9 @@ camillagui.service   CamillaGUI on :5005, wired network (or the K1000 Wi-Fi duri
 k1000 also opens a **second websocket** to the engine for the SHOW spectrum (`rta.py`), only while
 SHOW is on screen and Spectrum is ON, so a spectrum poll never queues in front of a mute. A
 **third**, always open, carries only Main's mute (`cdsp.py`, `mute_link`): a mute never waits
-behind a config write's read-back or a whole-config upload on the main one. When that link is
-down, the main one carries the mute; an unmute always needs the main one.
+behind a config write's read-back, a whole-config upload or an unmute on the main one. When
+that link is down, the main one carries the mute, behind what holds it; an unmute always needs
+the main one.
 
 - **Audio never depends on the UI.** If k1000 dies, the engine keeps playing as it was. If the
   engine restarts, it comes up muted and k1000 ramps it in once audio flows.

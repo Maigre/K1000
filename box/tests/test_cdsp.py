@@ -132,9 +132,11 @@ class FakeEngine:
         self.drop_config_on_setconfig = False
         self.stop_reason: Any = "None"
         self.latency_s = 0.0
-        # Per command: answer after this long (`slow`), or swallow the next one: never applied,
-        # never answered (`hang_once`). Only the connection that sent it waits.
+        # Per command: apply and answer after this long (`slow`; `slow_once`: the next one only),
+        # or swallow the next one: never applied, never answered (`hang_once`). Only the
+        # connection that sent it waits.
         self.slow: dict[str, float] = {}
+        self.slow_once: dict[str, float] = {}
         self.hang_once: set[str] = set()
         self.conns: list[Any] = []                  # every connection, in order
         self.on_conn: list[tuple[int, str]] = []    # (index in conns, command) as received
@@ -177,6 +179,8 @@ class FakeEngine:
             return []
         if name in self.slow:
             await asyncio.sleep(self.slow[name])
+        if name in self.slow_once:
+            await asyncio.sleep(self.slow_once.pop(name))
         if self.latency_s:
             await asyncio.sleep(self.latency_s)
         allowed = self.FIELDS.get(name)
@@ -935,7 +939,7 @@ def test_main_mute_has_a_link_of_its_own() -> None:
     """Audit 5.1 #6: behind the one lock, a mute waited for the command in flight: up to
     CONFIRM_TIMEOUT_S behind a write's read-back, up to SETUP_TIMEOUT_S behind a whole-config
     upload. With `mute_link`, Main's mute goes out on a second websocket and lands while the
-    upload still holds the main link. Nothing else uses that link."""
+    upload, or a write's read-back, still holds the main link. Nothing else uses that link."""
     async def body() -> None:
         async with rig() as (eng, c):
             assert len(eng.conns) == 1 and not c.mute_connected       # off by default
@@ -958,7 +962,18 @@ def test_main_mute_has_a_link_of_its_own() -> None:
             await c.get_faders()
             assert {i for i, name in eng.on_conn if name != "SetFaderMute"} == {main}
             assert eng.on_conn[-2] == (main, "SetFaderMute")
-            assert c.mute_seq == 2                  # one Main mute: started, ended
+            assert c.main_mute_gen == 2             # one Main mute asked, none on its way
+            # behind a knob write's read-back (the main link held up to CONFIRM_TIMEOUT_S)
+            eng.faders[MAIN]["mute"] = False
+            eng.slow["GetConfigValue"] = 0.4
+            write = asyncio.create_task(c.set_value("/filters/sub_delay/parameters/delay", 1.5))
+            await until(lambda: any(m["command"] == "GetConfigValue" for m in eng.log),
+                        what="read-back in flight")
+            t0 = time.perf_counter()
+            await c.set_fader_mute(MAIN, True)
+            assert time.perf_counter() - t0 < 0.2
+            assert eng.faders[MAIN]["mute"] is True and not write.done()
+            assert await write == 1.5 and c.main_mute_gen == 4
 
     run(body())
 
@@ -990,28 +1005,71 @@ def test_main_mute_falls_back_to_the_main_link() -> None:
     run(body())
 
 
-def test_main_mutes_keep_their_order_across_the_two_links() -> None:
+def test_a_mute_never_waits_for_an_unmute_queued_on_the_main_link() -> None:
     """An unmute asked first, carried by the main link (the mute link was down) and queued there
-    behind an upload, is not overtaken by a mute asked after it on the mute link (back up
-    meanwhile): every Main mute passes one lock, whichever link carries it. Else the engine
-    would end UNMUTED after the mute."""
+    behind an upload: a mute asked after it, the mute link back up meanwhile, goes out at once
+    (it used to wait for that unmute, so for the upload). The unmute, once it holds the main
+    link, finds a later request and is dropped: the engine never sees it and ends muted."""
     async def body() -> None:
         async with rig(mute_link=True) as (eng, c):
             await until(lambda: c.mute_connected, what="mute link up")
             ws = c._mute._ws
             c._mute._ws = None                      # seen as down
-            eng.slow["SetConfig"] = 0.5
+            eng.faders[MAIN]["mute"] = True
+            eng.slow["SetConfig"] = 0.6
             upload = asyncio.create_task(c.set_config_yaml("title: x\n"))
             await _upload_in_flight(eng)
             unmute = asyncio.create_task(c.set_fader_mute(MAIN, False))
             await asyncio.sleep(0.05)
-            assert c.mute_seq % 2 == 1 and not unmute.done()     # in flight, behind the upload
+            assert c.main_mute_gen % 2 == 1 and not unmute.done()  # queued behind the upload
             c._mute._ws = ws                        # back up
+            t0 = time.perf_counter()
             await c.set_fader_mute(MAIN, True)
-            assert unmute.done()
+            assert time.perf_counter() - t0 < 0.2
+            assert eng.main_mutes == [True] and not unmute.done() and not upload.done()
             await upload
-            assert eng.main_mutes == [False, True] and eng.faders[MAIN]["mute"] is True
-            assert c.mute_seq % 2 == 0
+            await unmute
+            assert eng.main_mutes == [True] and eng.faders[MAIN]["mute"] is True
+            assert c.main_mute_gen % 2 == 0
+
+    run(body())
+
+
+def test_a_mute_that_crosses_an_unmute_is_the_engines_last_word() -> None:
+    """An unmute already sent on the main link (the mute link was down), the engine slow to take
+    it; a mute asked meanwhile goes out at once on the mute link and the engine takes it first.
+    The unmute then lands: the PA would end UNMUTED after the mute. Its call sends the mute
+    again before it returns."""
+    async def body() -> None:
+        async with rig(mute_link=True) as (eng, c):
+            await until(lambda: c.mute_connected, what="mute link up")
+            ws = c._mute._ws
+            c._mute._ws = None                      # seen as down
+            eng.faders[MAIN]["mute"] = True
+            eng.slow_once["SetFaderMute"] = 0.4     # the unmute: taken late
+            unmute = asyncio.create_task(c.set_fader_mute(MAIN, False))
+            await until(lambda: any(m["command"] == "SetFaderMute" for m in eng.log),
+                        what="unmute sent")
+            c._mute._ws = ws                        # back up
+            t0 = time.perf_counter()
+            await c.set_fader_mute(MAIN, True)
+            assert time.perf_counter() - t0 < 0.2 and not unmute.done()
+            await unmute
+            assert eng.main_mutes == [True, False, True] and eng.faders[MAIN]["mute"] is True
+            conns = [i for i, name in eng.on_conn if name == "SetFaderMute"]
+            assert conns[0] != conns[1] == conns[2]     # main link, then the mute link twice
+            # one link: the same rules; a mute behind a queued unmute drops it
+            c._mute._ws = None
+            eng.main_mutes.clear()
+            eng.slow["SetConfig"] = 0.3
+            upload = asyncio.create_task(c.set_config_yaml("title: z\n"))
+            await until(lambda: c._lock.locked(), what="upload holds the main link")
+            unmute = asyncio.create_task(c.set_fader_mute(MAIN, False))
+            await asyncio.sleep(0.02)
+            await c.set_fader_mute(MAIN, True)
+            await asyncio.gather(upload, unmute)
+            assert eng.main_mutes == [True] and eng.faders[MAIN]["mute"] is True
+            c._mute._ws = ws
 
     run(body())
 
@@ -1030,7 +1088,7 @@ def test_an_unmute_needs_the_main_link_a_mute_does_not() -> None:
             assert eng.faders[MAIN]["mute"] is True
             with pytest.raises(CdspUnavailable):
                 await c.set_fader_mute(MAIN, False)
-            assert eng.main_mutes == [True] and c.mute_seq % 2 == 0
+            assert eng.main_mutes == [True] and c.main_mute_gen % 2 == 0
 
     run(body())
 
@@ -1366,10 +1424,12 @@ def test_engine_adjust_fader_never_lifts_below_floor(engine: Engine) -> None:
 @pytest.mark.engine
 @pytest.mark.skipif(not os.access(CDSP_BIN, os.X_OK), reason="no camilladsp binary")
 def test_engine_main_mute_on_its_own_link(engine: Engine) -> None:
-    """The real engine serves the mute link while the main link is held (as by an upload's
-    read-back), and the main link reads the mute back."""
-    async def body() -> None:
-        async with CamillaClient(engine.url, mute_link=True) as c:
+    """The real engine answers a Main mute on the mute link at once while the main link is held:
+    by the client alone, then by a real device-changing upload (the engine restarts its devices
+    meanwhile, and the client holds the main link until it has run steadily on them)."""
+    async def body() -> dict[str, float]:
+        out: dict[str, float] = {}
+        async with CamillaClient(engine.url, mute_link=True, settle_s=0.3) as c:
             await until(lambda: c.mute_connected, what="mute link up")
             await _running(c)
             await c.set_fader_mute(MAIN, False)
@@ -1377,12 +1437,28 @@ def test_engine_main_mute_on_its_own_link(engine: Engine) -> None:
             async with c._lock:                     # the main link busy
                 t0 = time.perf_counter()
                 await c.set_fader_mute(MAIN, True)
-                took = time.perf_counter() - t0
-            assert took < 0.1, took
+                out["main link held"] = time.perf_counter() - t0
             assert (await c.get_faders())[MAIN]["mute"] is True
-            assert c.connect_count == 1 and c.mute_seq == 4
+            assert c.connect_count == 1 and c.main_mute_gen == 4
+            # a real upload that changes the devices (chunksize): held >= settle_s
+            await c.set_fader_mute(MAIN, False)
+            upload = asyncio.create_task(
+                c.set_config_yaml(engine_yaml().replace("chunksize: 256", "chunksize: 512")))
+            await until(lambda: c._lock.locked(), what="upload holds the main link")
+            t0 = time.perf_counter()
+            await c.set_fader_mute(MAIN, True)
+            out["during an upload"] = time.perf_counter() - t0
+            assert not upload.done()
+            await upload
+            await _running(c)
+            assert (await c.get_config_json())["devices"]["chunksize"] == 512
+            assert c.connect_count == 1
+        return out
 
-    run(body())
+    took = run(body())
+    print(f"\n[cdsp] Main mute on its own link: {took['main link held'] * 1e3:.1f} ms with the main "
+          f"link held, {took['during an upload'] * 1e3:.1f} ms during a device-changing upload")
+    assert took["main link held"] < 0.1 and took["during an upload"] < 0.1, took
 
 
 def _bad_device_yaml() -> str:

@@ -30,11 +30,15 @@ Why it is shaped like this:
   Behind the one lock, a mute waited for the command in flight: up to ``CONFIRM_TIMEOUT_S``
   behind a write's read-back, up to ``SETUP_TIMEOUT_S`` behind a whole-config upload.
   ``set_fader_mute(MAIN, ...)`` goes out on a second websocket that carries nothing else (the
-  engine serves each connection on its own, as for the spectrum's). Every Main mute and unmute
-  also passes one lock of its own, whichever link carries it, so they reach the engine in the
-  order they were asked for. The mute link down, or silent for ``MUTE_TIMEOUT_S`` (it is then
-  reset): the main link carries it, as before. An unmute needs the main link up, as before;
-  a mute does not. ``mute_seq`` lets a reader tell a fader read that crossed a Main mute.
+  engine serves each connection on its own, as for the spectrum's). The mute link down, or
+  silent for ``MUTE_TIMEOUT_S`` (it is then reset): the main link carries it, as before. An
+  unmute needs the main link up, as before; a mute does not.
+  The last Main request wins, and a mute never waits for an unmute. A mute goes out at once.
+  An unmute waits for the mutes asked before it; it is dropped when a later request comes in
+  before it is sent (checked again once it holds the main link); and when a mute is asked
+  while it is on its way (the two links: the engine may take them in either order), it sends
+  that mute again before it returns. ``main_mute_gen`` lets a reader tell a fader read that
+  crossed a Main mute or unmute.
 
 Protocol facts (``websocket.md`` v5, proven on the box with 5.0.0-beta.1):
 ``{"command": X, ...fields}`` -> ``{"reply": X, "result": "Ok" | <ErrorName>, "value"?, "message"?}``.
@@ -280,14 +284,20 @@ class CamillaClient:
         self._closing = False
         self._hook_task: asyncio.Task[None] | None = None
         self._side_tasks: set[asyncio.Task[None]] = set()
-        # Main's mute (module docstring): its own link (None = off), its own lock, and a counter
-        # that moves when one starts and when it ends (odd while one is in flight).
+        # Main's mute (module docstring): its own link (None = off); the Main requests asked so
+        # far, the last one's value, how many are not finished; the mutes on their way; one
+        # unmute at a time.
         self._mute: CamillaClient | None = (
             CamillaClient(url, timeout=min(timeout, MUTE_TIMEOUT_S), backoff_min=backoff_min,
                           backoff_max=backoff_max, ping_interval=ping_interval)
             if mute_link else None)
-        self._mute_lock = asyncio.Lock()
-        self.mute_seq = 0
+        self._main_asked = 0
+        self._main_last: bool | None = None
+        self._main_open = 0
+        self._mutes_out = 0
+        self._mutes_done = asyncio.Event()
+        self._mutes_done.set()
+        self._unmute_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -299,6 +309,12 @@ class CamillaClient:
     def mute_connected(self) -> bool:
         """The mute link is up (False without one)."""
         return self._mute is not None and self._mute.connected
+
+    @property
+    def main_mute_gen(self) -> int:
+        """Moves each time a Main mute or unmute is asked, odd while one is not finished: a
+        fader read that starts on an even value and ends on the same one crossed none."""
+        return 2 * self._main_asked + (1 if self._main_open else 0)
 
     async def connect(self, timeout: float | None = 5.0) -> bool:
         """Start the (re)connect loop and wait up to ``timeout`` s (None = forever) for a link.
@@ -766,27 +782,69 @@ class CamillaClient:
         return float(value[1])  # [fader_index, new_volume_dB]
 
     async def set_fader_mute(self, idx: int, mute: bool) -> None:
-        """Main's goes out on the mute link when it is up (an unmute: when the main link is up
-        too), else on the main link; one at a time, in the order asked (module docstring). The
-        Aux faders' always go on the main link."""
+        """Main's (module docstring): a mute goes out at once and never waits for an unmute
+        asked before it; an unmute waits for the mutes on their way, is dropped when a later
+        Main request comes in first, and is followed by the mute again when one was asked while
+        it was on its way. The Aux faders' always go on the main link."""
         idx = self._fader_index(idx)
         if idx != MAIN:
             await self.command("SetFaderMute", fader=idx, value=bool(mute))
             return
-        async with self._mute_lock:
-            self.mute_seq += 1
+        self._main_asked += 1
+        asked, self._main_last = self._main_asked, bool(mute)
+        self._main_open += 1
+        try:
+            if mute:
+                self._mutes_out += 1
+                self._mutes_done.clear()
+                try:
+                    await self._send_main_mute(True)
+                finally:
+                    self._mutes_out -= 1
+                    if not self._mutes_out:
+                        self._mutes_done.set()
+            else:
+                await self._main_unmute(asked)
+        finally:
+            self._main_open -= 1
+
+    async def _main_unmute(self, asked: int) -> None:
+        async with self._unmute_lock:
+            while self._mutes_out and asked == self._main_asked:
+                await self._mutes_done.wait()       # the mutes asked before it land first
+            if asked != self._main_asked:
+                return                              # a later request came in: it decides
+            out = True                              # (an error: it may have gone out)
             try:
-                link = self._mute
-                if link is not None and link.connected and (mute or self.connected):
-                    try:
-                        await link.command("SetFaderMute", fader=MAIN, value=bool(mute))
-                        return
-                    except CdspUnavailable as e:    # reset or timed out: not the engine's answer
-                        log.warning("mute link: %s; Main %s sent on the main link", e,
-                                    "mute" if mute else "unmute")
-                await self.command("SetFaderMute", fader=MAIN, value=bool(mute))
+                out = await self._send_main_mute(False, asked)
             finally:
-                self.mute_seq += 1
+                if out and asked != self._main_asked and self._main_last:
+                    # A mute asked while this unmute was on its way went out at once, maybe on
+                    # the other link, and may have reached the engine first: say it again.
+                    try:
+                        await self._send_main_mute(True)
+                    except (CdspError, CdspUnavailable) as e:
+                        log.error("Main mute after a crossed unmute failed: %s", e)
+
+    async def _send_main_mute(self, mute: bool, asked: int | None = None) -> bool:
+        """SetFaderMute on Main: on the mute link when it is up (an unmute: when the main link
+        is up too), else on the main link. An unmute (`asked`) that finds a later Main request
+        once it holds the main link is not sent there. False: it never went out."""
+        link = self._mute
+        tried = False
+        if link is not None and link.connected and (mute or self.connected):
+            tried = True
+            try:
+                await link.command("SetFaderMute", fader=MAIN, value=mute)
+                return True
+            except CdspUnavailable as e:    # reset or timed out: not the engine's answer
+                log.warning("mute link: %s; Main %s sent on the main link", e,
+                            "mute" if mute else "unmute")
+        async with self._lock:
+            if asked is not None and asked != self._main_asked:
+                return tried                # the mute link may have carried it
+            await self._exchange("SetFaderMute", None, {"fader": MAIN, "value": mute})
+            return True
 
     # ------------------------------------------------------------------ status
 

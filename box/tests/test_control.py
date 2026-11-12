@@ -686,14 +686,15 @@ class TwoLinkClient(FakeClient):
     """FakeClient with CamillaClient's two paths for Main's mute (cdsp `mute_link`): the main
     link carries one request at a time (`main_lock`; `hold`, when set, keeps a config write in
     it, like a slow read-back), the mute link (`mute_up`) carries Main's mute; an unmute needs
-    the main link up. `mute_seq` moves as CamillaClient's does."""
+    the main link up. `main_mute_gen` keeps CamillaClient's rule for one request at a time:
+    odd while it is on its way, moved by each one."""
 
     def __init__(self, cfg: dict[str, Any] | None) -> None:
         super().__init__(cfg)
         self.main_lock = asyncio.Lock()
         self.hold: asyncio.Event | None = None
         self.mute_up = True
-        self.mute_seq = 0
+        self.main_mute_gen = 0
 
     @property
     def mute_connected(self) -> bool:
@@ -709,7 +710,7 @@ class TwoLinkClient(FakeClient):
         if idx != 0:
             async with self.main_lock:
                 return await super().set_fader_mute(idx, mute)
-        self.mute_seq += 1
+        self.main_mute_gen += 1
         try:
             if self.mute_up and (mute or self.connected):
                 self.faders[0]["mute"] = bool(mute)
@@ -718,12 +719,13 @@ class TwoLinkClient(FakeClient):
                 async with self.main_lock:
                     await super().set_fader_mute(idx, mute)
         finally:
-            self.mute_seq += 1
+            self.main_mute_gen += 1
 
 
-def make_two_links(tmp_path: Path, state: State) -> tuple[Controller, TwoLinkClient]:
+def make_two_links(tmp_path: Path, state: State, cls: Any = None) -> tuple[Controller, Any]:
+    """A controller over an engine K1000 already brought in, with a TwoLinkClient (or `cls`)."""
     st = state.copy()
-    client = TwoLinkClient(dc.generate(DEV, st))
+    client = (cls or TwoLinkClient)(dc.generate(DEV, st))
     lv = dc.fader_levels(st)
     client.faders[0] = {"volume": lv[0], "mute": st.muted}
     client.faders[1]["volume"], client.faders[2]["volume"] = lv[1], lv[2]
@@ -735,9 +737,10 @@ def make_two_links(tmp_path: Path, state: State) -> tuple[Controller, TwoLinkCli
 
 
 def test_mute_lands_while_a_write_holds_the_main_link(tmp_path: Path) -> None:
-    """Audit 5.1 #6: B4 pressed while a knob write sits in the main link (its read-back) goes
-    out on the mute link at once; with the mute link down it goes on the main link, after the
-    write, as before."""
+    """The controller's half of audit 5.1 #6: B4 pressed while a knob write sits in the main
+    link (its read-back) is handed to the client at once, outside the worker (true before the
+    mute link too); the client's two links are TwoLinkClient's here. That CamillaClient itself
+    sends it at once is test_cdsp's test_main_mute_has_a_link_of_its_own."""
     async def body() -> None:
         ctl, cl = make_two_links(tmp_path, State(master_db=-20.0))
         await boot(ctl)
@@ -849,6 +852,98 @@ def test_a_cut_short_guard_never_unmutes_over_a_mute_pressed_meanwhile(tmp_path:
         assert await ctl._finish_main_guard() is True
         assert await ctl.settle(2.0)
         assert ("mute", 0, False) not in cl.log[n:] and cl.faders[0]["mute"] is True
+        await ctl.stop()
+
+    run(body())
+
+
+class HeldUnmuteClient(FakeClient):
+    """Main's unmute held while `gate` is set and closed, as when it waits for a busy main link
+    (the mute link down or silent); a mute goes out at once. Released, an unmute that a later
+    Main request overtook is dropped, as CamillaClient drops it (test_cdsp)."""
+
+    def __init__(self, cfg: dict[str, Any] | None) -> None:
+        super().__init__(cfg)
+        self.gate: asyncio.Event | None = None
+        self.asked = 0
+        self.held = False
+
+    async def set_fader_mute(self, idx: int, mute: bool) -> None:
+        if idx == 0:
+            self.asked += 1
+        if idx != 0 or mute or self.gate is None:
+            return await super().set_fader_mute(idx, mute)
+        asked, self.held = self.asked, True
+        try:
+            await self.gate.wait()
+        finally:
+            self.held = False
+        if asked == self.asked:
+            await super().set_fader_mute(idx, mute)
+
+
+def _sample_shown(ctl: Controller, shown: list[bool]) -> asyncio.Task[None]:
+    async def sample() -> None:
+        while True:
+            shown.append(ctl.displayed_muted())
+            await asyncio.sleep(0.001)
+    return asyncio.get_running_loop().create_task(sample())
+
+
+def test_b4_never_waits_for_the_operators_unmute_held_on_the_main_link(tmp_path: Path) -> None:
+    """Review of audit 5.1 #6: the operator's unmute fell back to the main link and waits there.
+    B4 then went into the same mute sender, behind that unmute. Now it goes out at once beside
+    it (`_mute_now`); the unmute, released, is dropped by the client, and its return does not
+    show Main unmuted (`_main_mute_after`): the screen says MUTED all along."""
+    async def body() -> None:
+        ctl, cl = make_two_links(tmp_path, State(master_db=-20.0, muted=True), HeldUnmuteClient)
+        await boot(ctl)
+        assert cl.faders[0]["mute"] is True and ctl.displayed_muted() is True
+        cl.gate = asyncio.Event()
+        shown: list[bool] = []
+        sampler = _sample_shown(ctl, shown)
+        n = len(cl.log)
+        ctl.set_mute(False)
+        await until(lambda: cl.held, what="the unmute held")
+        ctl.set_mute(True)
+        await until(lambda: ("mute", 0, True) in cl.log[n:], timeout=0.2, what="mute at once")
+        assert cl.held                              # it did not wait for the unmute
+        cl.gate.set()
+        assert await ctl.settle(2.0)
+        await asyncio.sleep(0.02)
+        sampler.cancel()
+        assert ("mute", 0, False) not in cl.log[n:] and cl.faders[0]["mute"] is True
+        assert ctl.status.muted is True and ctl.state.muted is True and ctl._mute_want is None
+        assert shown and all(shown)                 # never shown unmuted
+        await ctl.stop()
+
+    run(body())
+
+
+def test_a_guard_unmute_crossed_by_b4_never_shows_main_unmuted(tmp_path: Path) -> None:
+    """A setup guard's final unmute waits for the main link; B4 meanwhile goes out at once on
+    the mute link and returns first. The guard's unmute returns after it (dropped by the
+    client): Main is muted, and the screen must keep saying so."""
+    async def body() -> None:
+        ctl, cl = make_two_links(tmp_path, State(master_db=-20.0), HeldUnmuteClient)
+        await boot(ctl)
+        assert cl.faders[0]["mute"] is False
+        cl.gate = asyncio.Event()
+        n = len(cl.log)
+        assert ctl.toggle("mono_subs", confirmed=True)
+        await until(lambda: cl.held, what="the guard's unmute held")
+        ctl.set_mute(True)
+        await until(lambda: ctl.status.muted is True and ctl._mute_want is None,
+                    what="B4's mute in")
+        shown: list[bool] = []
+        sampler = _sample_shown(ctl, shown)
+        cl.gate.set()
+        assert await ctl.settle(3.0)
+        await asyncio.sleep(0.02)
+        sampler.cancel()
+        assert [e for e in nomark(cl.log[n:]) if e[:2] == ("mute", 0)] == [("mute", 0, True)] * 2
+        assert cl.faders[0]["mute"] is True and ctl.status.muted is True
+        assert ctl._applied.muted is True and shown and all(shown)
         await ctl.stop()
 
     run(body())
