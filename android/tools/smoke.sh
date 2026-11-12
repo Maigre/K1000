@@ -74,7 +74,7 @@ docker run --rm --user "$(id -u):$(id -g)" -e HOME=/gradle-home/home -e ANDROID_
   -v k1000-android-sdk:/opt/android-sdk -v k1000-android-gradle:/gradle-home -v "$here":/src -v "$work":/smoke:ro -w /src \
   "$BUILD_IMAGE" ./gradlew --no-daemon --console=plain -q assembleSmoke -Pk1000.smokeCa=/smoke/smoke-ca.pem
 cp "$here/app/build/outputs/apk/smoke/app-smoke.apk" "$work/app-smoke.apk"
-REL=${K1000_RELEASE_APK:-$(ls -t "${K1000_SIGNING_DIR:-$HOME/Bakery/37Projects/secrets/k1000-android}"/out/K1000-*.apk 2>/dev/null | head -n 1)}
+REL=${K1000_RELEASE_APK:-$(ls -t "${K1000_SIGNING_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/k1000-android}"/out/K1000-*.apk 2>/dev/null | head -n 1)}
 REL_ARG=()
 if [ -n "$REL" ] && [ -f "$REL" ]; then cp "$REL" "$work/release.apk"; REL_ARG=(--release-apk /smoke/release.apk); fi
 if [ ${#REL_ARG[@]} -gt 0 ] && [ -n "${K1000_PREVIOUS_APK:-}" ] && [ -f "$K1000_PREVIOUS_APK" ]; then

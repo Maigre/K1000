@@ -3,7 +3,7 @@
 #
 # Test certificates for K1000TrustTest (app/src/test/resources/certs/). Public certificates only:
 # every private key is made in a temporary directory and deleted on exit. Throwaway CAs, never
-# the K1000 CA (its key stays on mgr-ran). Re-run to regenerate; the tests pin "now" to
+# the K1000 CA (its key stays on the owner's machine). Re-run to regenerate; the tests pin "now" to
 # 2026-10-12, inside these validity windows.
 #
 #   wrongca-leaf.pem      a CA with the SAME name and constraints as the K1000 CA (another key):
