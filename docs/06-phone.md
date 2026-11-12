@@ -41,8 +41,8 @@ carry the show.
  k1000.service (python3 -m k1000, the same process as the knobs)
    ├─ https://10.42.0.1/      the K1000 page (installable PWA) + wss://10.42.0.1/ws
    │                          + /api/wifi (the Android app's Wi-Fi settings, §4)
-   ├─ http://10.42.0.1/       first-time page: "Open K1000" + the certificate download
-   │                          + "Get the K1000 app" (/k1000.apk, when deployed, §4)
+   ├─ http://10.42.0.1/       first-time page: "Install the K1000 app" (/k1000.apk, when
+   │                          deployed) or "Open the web app" (/v2/) + the certificate (§4)
    │                          (and the captive portal with --portal on)
    └─ Controller  ◄── the knobs drive the same one: same clamps, same click-safe moves, one state
 ```
@@ -177,8 +177,8 @@ system EQ, trims, input trim, sub low-pass.
    - Android then shows *Network may be monitored*: expected, harmless here (the CA can only
      vouch for the K1000 box).
 5. **Open and install the page:** in Chrome, `http://10.42.0.1/` now says *This phone trusts the
-   K1000 certificate ✓* → **Open K1000** (or the second QR, or type `https://10.42.0.1`). Then the
-   **Install** button in the page's top bar, or ⋮ › *Add to Home screen* › *Install*.
+   K1000 certificate ✓* → **Open the web app** (the v2 page, `https://10.42.0.1/v2/`; since
+   2026-11-12, before: v1 at `/`, still reachable). Then ⋮ › *Add to Home screen* › *Install*.
    What appears depends on Chrome reaching Google's WebAPK server (it cannot from K1000, which
    has no internet): usually a **home-screen shortcut with a small Chrome badge**, not an app in
    the app drawer. That is fine (decided for Thomas's Pixel 4a): it opens full screen,
@@ -193,14 +193,27 @@ steps, and a check whether this phone already trusts the K1000 certificate (an H
 box only succeeds when it does). It also serves the CA at `http://10.42.0.1/k1000-ca.crt`
 (`application/x-x509-ca-cert`).
 
-**Get the K1000 app** (2026-10-13). When the box was deployed with the Android app
-([`docs/09-android.md`](09-android.md)), the first-time page (the PHONE page's third QR,
-**FIRST TIME**) shows a **Get the K1000 app** button under *Open K1000*, with the app's version
-and the first 8 hex digits of its SHA-256, and one line: *Android asks once to allow installing
-from Chrome*. Without an APK on the box the button is not in the page at all. It is hidden in
-Android's *Sign in to network* window (portal on: Chrome installs it) and on a box without HTTPS
-(the app talks to the box over HTTPS only). The captive portal stays **off** (§5): the app is
-offered by the page Thomas already opens once, not by a portal that would cost the automatic
+**Two ways in, one button each** (2026-11-12; the app button since 2026-10-13). The first-time
+page (the PHONE page's third QR, **FIRST TIME**) offers:
+
+1. **Android: the K1000 app** (when the box was deployed with the APK,
+   [`docs/09-android.md`](09-android.md)): **Install the K1000 app**, with its version, size and
+   the first 8 hex digits of its SHA-256, and one line for Android's two asks (*Settings › Allow
+   from this source*, then *Install*). No certificate; the app joins the Wi-Fi by itself. Without
+   an APK on the box the card says *This box holds no copy of the app. Use the web app below.*
+   Hidden on an iPhone, in Android's *Sign in to network* window (portal on: Chrome installs it)
+   and on a box without HTTPS (the app talks to the box over HTTPS only).
+2. **Any phone: the web app**: whether this phone trusts the K1000 certificate, then **Open the
+   web app**, the **v2 page** (`https://10.42.0.1/v2/`, the page the Android app opens; v1 stays
+   at `/`, linked at the foot of the page), then *Add to Home screen* (Chrome) or *Share › Add to
+   Home Screen* (Safari). The v2 page has its own manifest (`/v2/manifest.webmanifest`), so Chrome
+   installs it as its own app.
+3. **The certificate, once per phone**, shown only while the check fails: the Android steps, or
+   the iPhone steps (Safari › Allow, *Profile Downloaded* › Install, *Certificate Trust Settings*
+   › K1000 Local CA) when the page sees an iPhone.
+
+The captive portal stays **off** (§5):
+the app is offered by the page a phone opens once, not by a portal that would cost the automatic
 rejoin.
 
 | Endpoint | What |
@@ -309,7 +322,7 @@ PHONE page's third QR (**FIRST TIME**, `http://10.42.0.1/`). Back to the portal,
 | `setup-ap.sh` exits 4 | It says why: another interface in 10.42.0.0/24, `wlan0` a Wi-Fi client, or hostapd did not stay up (then `--band bg`) |
 | Box screen: password unreadable | `/etc/k1000/ap.psk` must be `root:k1000 0640` (setup-ap.sh fixes it) |
 | New Wi-Fi password wanted | `sudo /opt/k1000/net/setup-ap.sh --new-password` (every phone scans the QR again). After `--new-password --no-up` the AP keeps the old one until the next boot or the next plain `setup-ap.sh` run (`--status`: *password on the air*); the Android app reads the new one only from then on |
-| First-time page has no *Get the K1000 app* | No APK on the box (`ls /opt/k1000/apk`: the deploy puts it there, [manual chapter 7](manual/07-maintenance.md#the-android-app-on-the-box)), or k1000 has not started since it came: between shows `sudo systemctl restart k1000`. `journalctl -u k1000 \| grep 'Android app'` |
+| First-time page says *This box holds no copy of the app* | No APK on the box (`ls /opt/k1000/apk`: the deploy puts it there, [manual chapter 7](manual/07-maintenance.md#the-android-app-on-the-box)), or k1000 has not started since it came: between shows `sudo systemctl restart k1000`. `journalctl -u k1000 \| grep 'Android app'` |
 | Chrome will not install the APK | Chrome may first warn about the file (an APK, over plain HTTP): **Download anyway** / **Keep**. Then Android asks once: *Settings* › **Allow from this source** for Chrome (Settings › Apps › Special app access › Install unknown apps › Chrome). The 8 hex digits on the page = the start of the release's `K1000-<version>.apk.sha256` |
 | SSH to the box over K1000 | Fenced off by default: `sudo /opt/k1000/net/setup-ap.sh --ssh on` (or use `eth0`, not with a laptop sharing on 10.42.0.x: §1) |
 | Certificate expiry | The leaf is valid until **2029-01-14**; the box logs a warning 60 days before. Re-sign it on the laptop that holds the CA key (the README next to that key) |

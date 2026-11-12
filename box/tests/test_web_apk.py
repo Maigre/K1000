@@ -180,21 +180,30 @@ def test_portal_never_serves_the_wifi_settings(tmp_path: Path) -> None:
 
 
 def test_first_time_page_offers_the_app_only_when_there_is_one(tmp_path: Path) -> None:
+    """Two ways in, one button each (2026-11-12): the K1000 app (version, size, the first 8 hex
+    of its SHA-256, Android's two asks in one line) and the web app (the v2 page, the one the
+    app opens); the certificate steps after them. No APK: a plain "no app on this box" card."""
     srv = _portal(tmp_path)
     sha = hashlib.sha256((tmp_path / "apk/K1000-0.2.0.apk").read_bytes()).hexdigest()
     st, _, body = _get(srv, "/")
     text = body.decode()
-    assert st == 200 and "{{" not in text and "<!--APK-->" in text
+    assert st == 200 and "{{" not in text and "<!--APK-->" in text and "NOAPP" not in text
     assert 'href="/k1000.apk"' in text and 'download="K1000-0.2.0.apk"' in text
-    assert "Get the K1000 app" in text and "version 0.2.0" in text and f"sha256 {sha[:8]}" in text
-    assert sha[:9] not in text                                    # the first 8 hex digits only
-    assert "Android asks once to allow installing from Chrome" in text
-    assert text.index('id="open"') < text.index('id="app"') < text.index('id="ca"')
+    assert "Install the K1000 app" in text and "Version 0.2.0 · 0.1 MB" in text
+    assert f"sha256 {sha[:8]}" in text and sha[:9] not in text   # the first 8 hex digits only
+    assert "Android asks twice: <b>Settings › Allow from this source</b>, then <b>Install</b>" in text
+    assert 'id="noapp"' not in text and "holds no copy" not in text
+    assert 'id="open" class="btn" href="https://10.42.0.1/v2/"' in text and "Open the web app" in text
+    assert 'data-web="https://10.42.0.1/v2/"' in text and 'data-app="https://10.42.0.1/"' in text
+    assert text.index('id="app"') < text.index('id="web"') < text.index('id="ca"')
+    assert "Add to Home screen" in text and "Add to Home Screen" in text   # Chrome, and Safari
+    assert "Certificate Trust Settings" in text                          # the iPhone's steps
     srv = _portal(tmp_path / "none", apk=False)
     st, _, body = _get(srv, "/")
     text = body.decode()
-    assert st == 200 and "{{" not in text and "Open K1000" in text and "k1000-ca.crt" in text
-    for gone in ("k1000.apk", "Get the K1000 app", 'id="app"', "Android asks", "APK"):
+    assert st == 200 and "{{" not in text and "Open the web app" in text and "k1000-ca.crt" in text
+    assert 'id="noapp"' in text and "This box holds no copy of the app. Use the web app below." in text
+    for gone in ("k1000.apk", "Install the K1000 app", 'id="app"', "Android asks", "APK"):
         assert gone not in text, gone
     # no portal.html at all (a broken install): the minimal page still links the app
     srv = _portal(tmp_path / "bare")
@@ -202,34 +211,54 @@ def test_first_time_page_offers_the_app_only_when_there_is_one(tmp_path: Path) -
     assert b'href="/k1000.apk"' in _get(srv, "/")[2]
 
 
+def test_apk_size_reads_in_megabytes() -> None:
+    assert [web._size_text(n) for n in (0, 65_536, 480_000, 1_234_567, 12_340_000)] == [
+        "0.1 MB", "0.1 MB", "0.5 MB", "1.2 MB", "12.3 MB"]
+
+
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run portal.js")
-@pytest.mark.parametrize("case", ["chrome", "webview", "no-tls"])
+@pytest.mark.parametrize("case", ["chrome", "chrome-noapk", "iphone", "webview", "no-tls"])
 def test_portal_js_hides_the_app_where_it_cannot_work(case: str) -> None:
-    """The card is shown in Chrome; hidden in Android's sign-in WebView (Chrome installs the APK)
-    and on a box without HTTPS (the app only talks HTTPS)."""
-    ua = ("Mozilla/5.0 (Linux; Android 13; Pixel 4a; wv) AppleWebKit/537.36" if case == "webview"
-          else "Mozilla/5.0 (Linux; Android 13; Pixel 4a) AppleWebKit/537.36 Chrome/130")
-    data = {"app": "https://10.42.0.1/", "ping": "" if case == "no-tls" else "https://10.42.0.1/ping",
+    """The app card is shown in Chrome on Android; hidden on an iPhone (an APK is Android's), in
+    Android's sign-in WebView (Chrome installs the APK) and on a box without HTTPS (the app only
+    talks HTTPS). The web app's button is there except in the sign-in window."""
+    ua = {"webview": "Mozilla/5.0 (Linux; Android 13; Pixel 4a; wv) AppleWebKit/537.36",
+          "iphone": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Version/17.5 Mobile/15E148 Safari/604.1",
+          }.get(case, "Mozilla/5.0 (Linux; Android 13; Pixel 4a) AppleWebKit/537.36 Chrome/130")
+    data = {"app": "https://10.42.0.1/", "web": "https://10.42.0.1/v2/",
+            "ping": "" if case == "no-tls" else "https://10.42.0.1/ping",
             "ca": "1", "tls": "" if case == "no-tls" else "1", "on": "1"}
     harness = r"""
 const els = {};
 const el = (id) => els[id] || (els[id] = { id, hidden: false, className: "", textContent: "",
-  classList: { remove() {} }, replaceWith() {} });
-globalThis.document = { body: { dataset: %(data)s }, getElementById: el };
-Object.defineProperty(globalThis, "navigator", { value: { userAgent: %(ua)s }, configurable: true });
+  classes: new Set(), classList: { remove(c) { this._o.classes.delete(c); }, add(c) { this._o.classes.add(c); } },
+  replaceWith() {} });
+const mk = (id) => { const e = el(id); e.classList._o = e; return e; };
+const body = { dataset: %(data)s, classes: new Set() };
+body.classList = { add: (c) => body.classes.add(c) };
+globalThis.document = { body, getElementById: (id) => (%(absent)s.includes(id) ? null : mk(id)),
+  createTextNode: (t) => t };
+Object.defineProperty(globalThis, "navigator", { value: { userAgent: %(ua)s, maxTouchPoints: 5 }, configurable: true });
 globalThis.location = { origin: "http://10.42.0.1" };
 globalThis.fetch = () => new Promise(() => {});
 globalThis.AbortController = class { abort() {} get signal() { return null; } };
 globalThis.setTimeout = () => 0; globalThis.clearTimeout = () => {};
-el("app");
 %(src)s
-console.log(JSON.stringify({ app: els.app.hidden, open: els.open.hidden }));
+const app = els.app || els.noapp;
+console.log(JSON.stringify({ app: app.hidden, open: els.open.hidden, web: els.web ? els.web.hidden : false,
+  signin: els.signin ? els.signin.hidden : true, body: [...body.classes],
+  primary: els.open.classes.has("primary") }));
 """ % {"data": json.dumps(data), "ua": json.dumps(ua),
+       "absent": json.dumps(["app"] if case == "chrome-noapk" else ["noapp"]),
        "src": (web.STATIC_DIR / "portal.js").read_text()}
     r = subprocess.run(["node", "-e", harness], capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, r.stderr
     out = json.loads(r.stdout.strip().splitlines()[-1])
-    assert out["app"] is (case != "chrome")
+    assert out["app"] is (case not in ("chrome", "chrome-noapk"))
+    assert out["open"] is (case == "webview") and out["web"] is (case == "webview")
+    assert out["signin"] is (case != "webview")
+    assert out["body"] == (["ios"] if case == "iphone" else ["android"])
+    assert out["primary"] is (case == "no-tls")       # elsewhere: once the certificate check passes
 
 
 def test_portal_sends_a_large_apk_over_tcp(tmp_path: Path) -> None:

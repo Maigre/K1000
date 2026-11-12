@@ -167,6 +167,8 @@ APK_NAME_RE = re.compile(r"K1000-([0-9][0-9A-Za-z.\-]{0,31})\.apk")   # install.
 APK_MAX = 64 * 1024 * 1024        # bytes; the release APK is ~0.5 MB, held in memory
 APK_SEND_S = 30.0                 # how long one APK download may take (the portal; HTTPS: < 10 s)
 APK_PORTAL_MARK = re.compile(r"<!--APK-->.*?<!--/APK-->", re.S)   # portal.html: only with an APK
+NOAPP_PORTAL_MARK = re.compile(r"<!--NOAPP-->.*?<!--/NOAPP-->", re.S)   # ...and only without one
+NOAPP_MARKS = re.compile(r"<!--/?NOAPP-->")
 WIFI_API = "/api/wifi"            # the app reads the K1000 Wi-Fi from here (HTTPS, AP only)
 WIFI_API_VERSION = 1
 # Per device address and endpoint: (requests per second, burst). The Wi-Fi settings are read once
@@ -1678,6 +1680,11 @@ class _Apk:
         return f'"{self.sha256}"'
 
 
+def _size_text(n: int) -> str:
+    """An APK's size as the first-time page says it: '0.5 MB', '12.3 MB' (never '0.0 MB')."""
+    return f"{max(n, 50_000) / 1e6:.1f} MB"
+
+
 def _version_key(version: str) -> tuple[tuple[int, str], ...]:
     """'0.10.1' > '0.2.0' (numbers compare as numbers), like install.sh's `sort -V`."""
     return tuple((int(p), "") if p.isdigit() else (-1, p) for p in re.split(r"[.\-]", version))
@@ -1945,6 +1952,11 @@ class PhoneServer:
         if "http" not in self.ports:
             return ""
         return _origin("http", self.cfg.address, self.ports["http"], 80) + "/"
+
+    @property
+    def web_url(self) -> str:
+        """The web app the first-time page opens: the v2 page, the one the Android app opens."""
+        return self.url.rstrip("/") + V2_PREFIX
 
     def screen_info(self) -> PhoneScreenInfo:
         """Cached presence + settings for the PHONE page (cheap: called by the render path)."""
@@ -2521,6 +2533,7 @@ class PhoneServer:
         ping = self._ping_origin()
         vals = {
             "APP_URL": self.url,
+            "WEB_URL": self.web_url,
             "PING_URL": (ping + "/ping") if ping else "",
             "CA": "1" if self._ca_pem else "",
             "TLS": "1" if "https" in self.ports else "",
@@ -2529,11 +2542,14 @@ class PhoneServer:
             "APK_URL": APK_PATH,
             "APK_FILE": apk.filename if apk else "",
             "APK_VERSION": apk.version if apk else "",
+            "APK_SIZE": _size_text(len(apk.body)) if apk else "",
             "APK_SHA8": apk.sha256[:8] if apk else "",
         }
         text = asset.body.decode("utf-8")
-        if apk is None:            # no app on this box: no button, nothing that names one
-            text = APK_PORTAL_MARK.sub("", text)
+        if apk is None:            # no app on this box: no button, a plain "no app" card instead
+            text = NOAPP_MARKS.sub("", APK_PORTAL_MARK.sub("", text))
+        else:
+            text = NOAPP_PORTAL_MARK.sub("", text)
         for k, v in vals.items():
             text = text.replace("{{" + k + "}}", html.escape(v, quote=True))
         return text.encode("utf-8")

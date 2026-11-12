@@ -1,0 +1,19 @@
+{
+  "id": "/v2/",
+  "name": "K1000",
+  "short_name": "K1000",
+  "description": "K1000 live DSP: master, mute, the live EQ, ALIGN and SETUP from the phone",
+  "start_url": "/v2/",
+  "scope": "/v2/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "categories": ["music", "utilities"],
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

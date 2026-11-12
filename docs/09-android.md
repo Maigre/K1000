@@ -56,8 +56,8 @@ On the Pixel 4a (Android 13), with the box up, SETUP › PHONE on its screen:
    Network & internet › Internet › the **⊞ QR icon** › scan › *Join*. *K1000 has no internet
    access — Stay connected?* › **Yes** (`06-phone.md` §3 step 3).
 2. **The first-time page.** E1 turn to the **third** code, FIRST TIME (`http://10.42.0.1/`), scan
-   it, open it in **Chrome**. Tap **Get the K1000 app** (it shows the version and the first 8 hex
-   of the APK's SHA-256; no button = this box has no APK: §6).
+   it, open it in **Chrome**. Tap **Install the K1000 app** (it shows the version, the size and
+   the first 8 hex of the APK's SHA-256; *This box holds no copy of the app* = no APK: §6).
 3. **Install.** Chrome may warn about the download (an APK, over plain http on the box's own Wi-Fi):
    **Download anyway** / **Keep**. Tap the download, then, once per phone: *Your phone is not allowed
    to install unknown apps from this source* › **Settings** › **Allow from this source** › Back ›
@@ -342,7 +342,7 @@ release is the intended way to hand it out (not done: publishing is Thomas's cal
 carry `K1000-<version>.LICENSES.txt` next to the APK (GitHub adds the source archive itself).
 
 **The box hands it out too (0.2.1):** its first-time page (`http://10.42.0.1/`, the PHONE page's
-third QR) offers *Get the K1000 app* when the box was deployed with an APK: `install.sh` installs
+third QR) offers *Install the K1000 app* when the box was deployed with an APK: `install.sh` installs
 the newest `box/apk/K1000-<version>.apk` (never in git) to `/opt/k1000/apk/`, and the deploy drops
 the signed release APK there before copying the tree (`06-phone.md`, first-time page). The page
 shows the version and the first 8 hex of the APK's SHA-256: compare them with

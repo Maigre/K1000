@@ -1605,3 +1605,30 @@ def test_d016_switches_choose_and_rebuild_from_the_phone(tmp_path: Path) -> None
         assert msg["setup"]["deharsh_on"] is True and msg["setup"]["loud_on"] is True
         await ctl.stop()
     run(go())
+
+
+# ============================================================================ installing K1000
+def test_the_v2_page_installs_as_its_own_app(tmp_path: Path) -> None:
+    """Chrome's Add to Home screen on /v2/ installs the v2 page (the first-time page's web app),
+    not a bookmark: a manifest with id and scope /v2/, the box's icons, cached by v2's worker."""
+    async def go() -> None:
+        ctl, _ = make_ctl(tmp_path)
+        await boot(ctl)
+        srv = PhoneServer(ctl, settings(tmp_path))
+        await srv.start()
+        port = srv.ports["plain"]
+        html = (await http_get(port, "/v2/"))[2].decode()
+        assert '<link rel="manifest" href="manifest.webmanifest">' in html
+        st, h, body = await http_get(port, "/v2/manifest.webmanifest")
+        assert st == 200 and h["content-type"] == "application/manifest+json"
+        man = json.loads(body)
+        assert man["id"] == man["start_url"] == man["scope"] == "/v2/" and man["display"] == "standalone"
+        sizes = set()
+        for icon in man["icons"]:
+            st, h, _ = await http_get(port, icon["src"])
+            assert st == 200 and h["content-type"] == "image/png", icon
+            sizes.add(icon["sizes"])
+        assert {"192x192", "512x512"} <= sizes
+        await srv.stop()
+        await ctl.stop()
+    run(go())

@@ -40,7 +40,7 @@ Then a short program run, and a soak before the next show if the update was more
 
 ### The Android app on the box
 
-The box offers the Android app on its first-time page (`http://10.42.0.1/`, *Get the K1000 app*;
+The box offers the Android app on its first-time page (`http://10.42.0.1/`, *Install the K1000 app*;
 [`docs/06-phone.md`](../06-phone.md) §4). The APK is never in the repository (`box/apk/` is
 gitignored): the deploy puts the **signed release APK** there before the rsync, and `install.sh`
 does the rest.
