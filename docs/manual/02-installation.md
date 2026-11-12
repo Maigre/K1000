@@ -54,7 +54,7 @@ a public-key login of `k1000` since the boot.
 ## 3. Run `bootstrap.sh`
 
 ```sh
-rsync -a --delete --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
+rsync -a --delete --filter='P apk/' --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
 ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/bootstrap.sh"
 ```
 
@@ -328,7 +328,7 @@ or ALSA needs is **refused** (exit 1, nothing removed). Boot files are backed up
 **One change set per power cycle**, and the check before each one:
 
 ```sh
-rsync -a --delete --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
+rsync -a --delete --filter='P apk/' --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
 ssh k1000 "sudo /opt/k1000-src/tools/k1000-lean.sh --dry-run"          # what would change (~1 min)
 ssh k1000 "sudo /opt/k1000-src/tools/k1000-lean.sh --only desktop"     # runs as a unit, ends with the check
 ssh k1000 "/opt/k1000-src/tools/k1000-lean.sh --check"                 # before ANY power cycle

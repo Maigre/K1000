@@ -9,7 +9,7 @@ From the repository on the laptop (`ssh k1000` set up as in [chapter 2](02-insta
 
 ```sh
 git pull
-rsync -a --delete --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
+rsync -a --delete --filter='P apk/' --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
 ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/install.sh"
 ```
 
@@ -47,7 +47,7 @@ does the rest.
 
 ```sh
 mkdir -p box/apk && cp <signing dir>/out/K1000-0.2.0.apk box/apk/   # android/README.md › Sign
-rsync -a --delete --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
+rsync -a --delete --filter='P apk/' --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
 ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/install.sh"
 ```
 
@@ -55,8 +55,10 @@ ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/i
   `/opt/k1000/apk/` (root, 0644) and removes any other file there: the box offers one version.
   Other names (`app-bench.apk`, the `.sha256`) are ignored; a file that is not a zip, or is over
   64 MB, is refused with a warning.
-- A deploy **without** `box/apk/` leaves the box's APK as it is (it says so). To take the app off
-  the first-time page: `ssh k1000 'sudo rm /opt/k1000/apk/*'`, then restart k1000.
+- A deploy **without** `box/apk/` leaves the box's APK as it is (it says so). The rsync's
+  `--filter='P apk/'` keeps its `--delete` off the copy in `/opt/k1000-src/apk/`. To take the app
+  off the first-time page: `ssh k1000 'sudo rm -f /opt/k1000/apk/* /opt/k1000-src/apk/*'`, then
+  restart k1000.
 - k1000 loads it at its start: between shows `sudo systemctl restart k1000` (or `--start`). Then
   `journalctl -u k1000 | grep 'Android app'` names the file and its SHA-256.
 - A rollback (below) puts back the APK of the version rolled back to.

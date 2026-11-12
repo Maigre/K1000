@@ -80,7 +80,7 @@ as `k1000`, from the laptop:
 
 ```sh
 git clone https://github.com/Maigre/K1000 && cd K1000
-rsync -a --delete --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
+rsync -a --delete --filter='P apk/' --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
 ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/bootstrap.sh"
 # power-cycle, run the bootstrap line once more, power-cycle again
 ssh k1000 'systemctl is-active camilladsp k1000 camillagui'

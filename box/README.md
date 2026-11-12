@@ -81,7 +81,7 @@ The order at power-on:
 From the repo checkout on the laptop, with the `k1000` host in your SSH config:
 
 ```sh
-rsync -a --delete --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
+rsync -a --delete --filter='P apk/' --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
 ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/install.sh"
 ```
 
@@ -260,7 +260,7 @@ A spare or replacement gig card from nothing (D-006, step 3):
 2. From the repo on the laptop:
 
    ```sh
-   rsync -a --delete --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
+   rsync -a --delete --filter='P apk/' --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
    ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/bootstrap.sh"
    ```
 
