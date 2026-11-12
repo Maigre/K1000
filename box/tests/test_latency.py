@@ -337,3 +337,63 @@ def test_no_engine_log_no_count(tmp_path: Path) -> None:
     assert Paths.from_settings({}).engine_log == lat.ENGINE_LOG
     assert Paths.from_settings({"paths": {"engine_log": "/tmp/x.log"}}).engine_log == Path("/tmp/x.log")
     assert Status().latency_limit_ms == 10.0
+
+
+# ======================================================================= the screen
+OK = dict(device_present=True, engine="Running", load=2.0, profile="m4", device="MOTU M4")
+
+
+def _bar_has(img: Any, colour: Any) -> bool:
+    return any(img.getpixel((x, y)) == colour for x in range(0, 480)
+               for y in range(6, pages.STATUS_H - 6, 3))
+
+
+def test_latency_readout_text() -> None:
+    S = pages.ScreenStatus
+    assert pages.latency_readout(S()) is None and pages.latency_readout(None) is None
+    assert pages.latency_readout(S(latency_ms=20.3, latency_over=True)) == ("20.3ms", True, "")
+    assert pages.latency_readout(S(latency_ms=16.5, latency_io=False)) == ("≥16.5ms", False, "")
+    assert pages.latency_readout(S(latency_ms=8.0, dropouts=0)) == ("8.0ms", False, "")
+    assert pages.latency_readout(S(latency_ms=8.0, dropouts=3)) == ("8.0ms", False, "3 DROP")
+    for junk in (float("nan"), "x", -1.0):
+        assert pages.latency_readout(S(latency_ms=junk)) is None, junk     # type: ignore[arg-type]
+    assert pages.latency_readout(S(latency_ms=1e12))[0] == "9999.9ms"
+
+
+def test_the_status_bar_shows_the_delay_orange_above_the_limit() -> None:
+    s = st.State()
+    plain = pages.render("SHOW", s, pages.ScreenStatus(**OK), Focus(), now=0.0)
+    within = pages.render("SHOW", s, pages.ScreenStatus(**OK, latency_ms=8.4), Focus(), now=0.0)
+    above = pages.render("SHOW", s, pages.ScreenStatus(**OK, latency_ms=20.3, latency_over=True),
+                         Focus(), now=0.0)
+    assert within.tobytes() != plain.tobytes()                       # shown
+    assert not _bar_has(within, pages.ORANGE) and _bar_has(above, pages.ORANGE)
+    assert _bar_has(above, pages.GREEN)                              # the engine state stays
+
+
+@pytest.mark.parametrize("page", ["SHOW", "ALIGN", "SETUP"])
+def test_the_readout_gives_way_to_the_pills_and_to_alerts(page: str) -> None:
+    s = st.State()
+    s.muted = True
+    lat_kw = dict(latency_ms=41.2, latency_over=True, dropouts=3)
+    crowded = dict(OK, muted=True, clip=(True, False, False, False))
+    with_lat = pages.render(page, s, pages.ScreenStatus(**crowded, **lat_kw), Focus(), now=0.0)
+    without = pages.render(page, s, pages.ScreenStatus(**crowded), Focus(), now=0.0)
+    assert with_lat.tobytes() == without.tobytes()                   # no room: not drawn at all
+    alert = dict(OK, alerts=[("critical", "ENGINE SYNC FAILED (SEE LOG)")])
+    a1 = pages.render(page, st.State(), pages.ScreenStatus(**alert, **lat_kw), Focus(), now=0.0)
+    a0 = pages.render(page, st.State(), pages.ScreenStatus(**alert), Focus(), now=0.0)
+    assert a1.tobytes() == a0.tobytes()
+
+
+# ======================================================================= the phone
+def test_protocol_2_carries_the_readout_and_protocol_1_does_not() -> None:
+    status = Status(engine="Running", latency_ms=20.3, latency_io=True, latency_over=True,
+                    latency_limit_ms=10.0, buffer_level=536, dropouts=0)
+    snap = ("SHOW", st.State(), status, Focus())
+    v2 = PhoneBridge.state_message2(snap, phone_on=True, phones=1)
+    assert v2["latency"] == {"ms": 20.3, "io": True, "over": True, "limit": 10.0, "buf": 536, "drops": 0}
+    assert "latency" not in PhoneBridge.state_message(snap, phone_on=True, phones=1)
+    odd = Status(latency_ms=float("nan"), latency_io=False, buffer_level=True, dropouts=None)  # type: ignore[arg-type]
+    assert PhoneBridge.state_message2(("SHOW", st.State(), odd, Focus()), phone_on=True, phones=1)[
+        "latency"] == {"ms": None, "io": False, "over": False, "limit": 10.0, "buf": None, "drops": None}

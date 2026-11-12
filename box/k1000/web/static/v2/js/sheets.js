@@ -589,6 +589,22 @@ function rowGestures() {
 }
 
 // ------------------------------------------------------------------ STATUS
+// D-018: the box's delay readout (docs/14 §3.2 `latency`): "20.3 ms · ABOVE 10 ms · 0 dropouts";
+// "at least …" when the box knows only the engine's share; no dropout count when it cannot read
+// the engine's log.
+function latencyWords(L) {
+  L = L || {};
+  const parts = [];
+  if (num(L.ms)) {
+    parts.push((L.io === false ? "at least " : "") + L.ms.toFixed(1) + " ms" + (L.io === false ? " (engine only)" : ""));
+    if (num(L.limit)) parts.push((L.over ? "ABOVE " : "limit ") + L.limit + " ms");
+  } else {
+    parts.push("--");
+  }
+  if (num(L.drops)) parts.push(L.drops + (L.drops === 1 ? " dropout" : " dropouts"));
+  return parts.join(" · ");
+}
+
 function buildStatus() {
   const body = $("#shBody");
   const box = h("div", "");
@@ -608,11 +624,14 @@ function buildStatus() {
     setText(r.firstChild, k);
     body.append(r);
     upd.push(() => setText(r.lastChild, v()));
+    return r;
   };
   const S = () => K.state || {};
   grp("AUDIO");
   kv("Mute", () => (S().muted ? "MUTED" + (muteWho() ? " · " + muteWho() : "") + (S().mute_band && S().mute_band.text ? " · " + S().mute_band.text : "") : "open") + (S().mute_known === false ? " (unknown: saved value)" : ""));
   kv("Engine", () => (linked() ? String(S().engine || "--") + " · load " + (num(S().load) ? S().load.toFixed(1) + " %" : "--") + (S().ready ? "" : " · syncing") : "— (no link)"));
+  const lat = kv("Delay in → out", () => (linked() ? latencyWords(S().latency) : "— (no link)"));
+  upd.push(() => lat.classList.toggle("warn", linked() && !!S().latency && S().latency.over === true));
   kv("Device", () => String(S().device || "--") + (S().device_present === false ? " · NOT FOUND" : ""));
   kv("Profile", () => String(S().profile || "--") + (S().readonly && S().readonly.profile ? " · " + S().readonly.profile : ""));
   kv("Input clip", () => (S().in_clip ? "CLIPPED (latched 3 s)" : "none"));

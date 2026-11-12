@@ -1431,7 +1431,15 @@
   },
   "box_band": 0,
   "box_page": "SHOW",
-  "knobs_ok": null
+  "knobs_ok": null,
+  "latency": {
+   "ms": null,
+   "io": true,
+   "over": false,
+   "limit": 10.0,
+   "buf": null,
+   "drops": null
+  }
  },
  "m": {
   "t": "m",

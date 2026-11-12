@@ -587,6 +587,22 @@ def _mute_band(st: Any, status: Any) -> dict[str, str]:
     return {"kind": "wait", "text": ""}
 
 
+def _latency(status: Any) -> dict[str, Any]:
+    """state.latency (docs/14 §3.2, D-018): the box's delay readout. `ms` in to out (None = no
+    reading), `io` the interface's share is in it (false: the engine's alone, a floor), `over`
+    above `limit` ms, `buf` the playback buffer level (frames), `drops` the engine's dropout
+    lines since it started (None = its log is not read)."""
+    def whole(v: Any) -> int | None:
+        return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+    return {"ms": _f(getattr(status, "latency_ms", None), 1),
+            "io": getattr(status, "latency_io", True) is not False,
+            "over": getattr(status, "latency_over", False) is True,
+            "limit": _f(getattr(status, "latency_limit_ms", None), 1),
+            "buf": whole(getattr(status, "buffer_level", None)),
+            "drops": whole(getattr(status, "dropouts", None))}
+
+
 def _sys_eq_id(st: Any) -> str | None:
     """state.sys_eq (docs/14 §3.2): an opaque 8-hex digest of the system EQ (the tune's PEQ
     bands, set from the laptop's /tune page). It changes when what the PA plays changes there,
@@ -1216,8 +1232,9 @@ class PhoneBridge:
                        mute: tuple[bool, int] | None = None, knobs: bool = True) -> dict[str, Any]:
         """The v2 state (docs/14 §3.2): every v1 key, plus the alerts, pills, ALIGN and SETUP
         values, the system EQ's digest (`sys_eq`), the box's countdowns (whole seconds), who
-        muted and what the box's MUTED band says. `knobs`: the box has knobs (not --no-hw): the
-        mute fallback names B4 then."""
+        muted, what the box's MUTED band says and the delay readout (`latency`, D-018; not in
+        v1, which stays byte for byte). `knobs`: the box has knobs (not --no-hw): the mute
+        fallback names B4 then."""
         out = PhoneBridge.state_message(snap, phone_on=phone_on, phones=phones, mute=mute)
         _page, st, status, focus = snap
         alerts = []
@@ -1281,6 +1298,7 @@ class PhoneBridge:
             "box_band": band if isinstance(band, int) and not isinstance(band, bool) else 0,
             "box_page": str(getattr(status, "page", "") or ""),
             "knobs_ok": knobs_ok if isinstance(knobs_ok, bool) else None,
+            "latency": _latency(status),
         })
         return out
 
