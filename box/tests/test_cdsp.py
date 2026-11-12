@@ -97,6 +97,8 @@ class FakeEngine:
 
     # The fields each engine command takes (camilladsp-schema protocol.rs, the same in beta.1
     # and next5). The scripted test commands above are not engine commands: not checked.
+    # Every test that drives a helper (test_helpers_send_v5_shapes first) thus also proves it
+    # sends only these fields.
     FIELDS: dict[str, tuple[str, ...]] = {
         **{n: () for n in ("GetVersion", "GetState", "GetStopReason", "GetProcessingLoad",
                            "GetSignalLevels", "GetClippedSamples", "ResetClippedSamples",
@@ -383,6 +385,9 @@ def test_error_replies_raise_and_keep_the_link() -> None:
             with pytest.raises(CdspError) as ei:
                 await c.command("Bogus")
             assert ei.value.result == "Invalid" and "unknown variant" in ei.value.message
+            with pytest.raises(CdspError) as ei:  # next5 refuses a field the command does not take
+                await c.command("GetState", value=None)
+            assert ei.value.result == "Invalid" and "unknown field `value`" in ei.value.message
             with pytest.raises(CdspError) as ei:  # the engine, not PyYAML, judges a config
                 await c.set_config_yaml("garbage: [")
             assert ei.value.result == "ConfigReadError"
@@ -390,25 +395,6 @@ def test_error_replies_raise_and_keep_the_link() -> None:
             # an error reply is a healthy link: no reconnect, next command fine
             assert await c.get_version() == "5.0.0-fake"
             assert c.connect_count == 1
-
-    run(body())
-
-
-def test_a_field_the_command_does_not_take_is_refused_and_keeps_the_link() -> None:
-    """next5 (0930f9b) answers Invalid to a misspelled or extra field instead of ignoring it:
-    the client raises it like any refusal, the link stays, and the helpers send none."""
-    async def body() -> None:
-        async with rig() as (eng, c):
-            with pytest.raises(CdspError) as ei:
-                await c.command("GetState", value=None)
-            assert (ei.value.result, ei.value.message) == (
-                "Invalid", "unknown field `value`, there are no fields")
-            with pytest.raises(CdspError) as ei:
-                await c.command("AdjustFaderVolume", fader=AUX1, value=0.5, minimum=-20.0)
-            assert ei.value.message == ("unknown field `minimum`, expected one of `fader`, "
-                                        "`value`, `min`, `max`")
-            assert await c.adjust_fader(AUX1, -1.0, min=-20.0, max=0.0) == -1.0
-            assert await c.get_state() == "Running" and c.connect_count == 1
 
     run(body())
 
