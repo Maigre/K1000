@@ -1187,6 +1187,9 @@ class M4Box:
         _bin(fb, "vcgencmd", 'echo "throttled=0x0"\n')
         _bin(fb, "lsusb", "exit 0\n")
         _bin(fb, "dmesg", 'echo "[ 3.1] usb 1-1.3: New USB device found, idVendor=07fd, idProduct=000b"\n')
+        # The tool's python3 = the one running these tests: the box's has numpy (k1000-lean keeps
+        # python3-numpy), a dev machine's /usr/bin/python3 may not, and --tone builds its tone with it.
+        _bin(fb, "python3", f'exec "{sys.executable}" "$@"\n')
         self.settings = tmp / "k1000.yaml"
         self.settings.write_text(settings if settings is not None else (BOX / "etc" / "k1000.yaml").read_text())
         self.tty = tmp / "tty"
