@@ -170,7 +170,9 @@ class Profile:
     probe: bool = False
     present: bool | None = None
     warnings: list[str] = field(default_factory=list)
-    target_level: int = TARGET_LEVEL
+    # None = one chunk (`dspconfig.engine_buffer`), so a Profile built by hand with another
+    # chunksize gets the same target as `load_profile`, which always sets both.
+    target_level: int | None = None
     chunksize: int = CHUNKSIZE
 
 

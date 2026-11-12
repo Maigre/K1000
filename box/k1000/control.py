@@ -107,9 +107,8 @@ AUX_FLOOR_DB = -150.0        # the engine's own fader floor
 ENGINE_START_DB = dc.BOOT_GAIN_DB
 FRESH_TOL_DB = 0.05
 # The engine applies fader changes made while it is not processing as a step on resume: ramps
-# and guard unmutes wait for Running, read twice this far apart (> 2 chunks of 256 @ 48 kHz).
-# With another chunk size: `Controller._two_chunks_s` (dspconfig.two_chunks_s, never less).
-RUN_CHECK_S = 0.012
+# and guard unmutes wait for Running, read twice more than 2 chunks apart
+# (`Controller._two_chunks_s`: dspconfig.two_chunks_s of the running chunk, 12 ms at 256).
 RUN_WAIT_S = 0.05            # GetState poll while holding Main muted for the engine to run
 BOOT_STEP_MAX_DB = 6.0       # no boot-ramp step above this, whatever boot_ramp_s says
 MAX_DETENTS = 1000.0         # a sane encoder move (input_map acceleration stays far below)
@@ -2068,9 +2067,9 @@ class Controller:
             self._changed()
 
     async def _engine_running(self, epoch: int, *, held: bool = False) -> bool:
-        """GetState reads Running (with `held`: twice, more than 2 chunks apart: RUN_CHECK_S at
-        chunk 256, `_two_chunks_s`). Anything else means a fader change now would be applied as
-        a step when audio resumes."""
+        """GetState reads Running (with `held`: twice, more than 2 chunks apart: `_two_chunks_s`,
+        12 ms at chunk 256). Anything else means a fader change now would be applied as a step
+        when audio resumes."""
         for k in range(2 if held else 1):
             if k:
                 await self._sleep(self._two_chunks_s())

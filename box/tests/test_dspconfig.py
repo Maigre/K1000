@@ -9,6 +9,7 @@ Port: $K1000_DSPCONFIG_PORT (default 12341).
 """
 import contextlib
 import copy
+import dataclasses
 import json
 import math
 import os
@@ -200,6 +201,13 @@ def test_engine_buffer_never_writes_what_the_engine_refuses():
         assert d.engine_buffer(p) == want, (cs, tl)
         dv = d.generate(p, State())["devices"]
         assert (dv["chunksize"], dv["target_level"]) == want
+    # the dataclass default: no target given is one chunk, as load_profile gives
+    kw = {f.name: getattr(base, f.name) for f in dataclasses.fields(pf.Profile)
+          if f.name not in ("target_level", "chunksize")}
+    for cs in pf.CHUNKSIZES:
+        loaded = pf.load_profile("dev", {"profiles": {"dev": {"chunksize": cs}}}, probe=False)
+        assert d.engine_buffer(pf.Profile(**kw, chunksize=cs)) == (cs, cs) \
+            == d.engine_buffer(loaded), cs
 
 
 def _fake_prober(probe):
