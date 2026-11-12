@@ -301,8 +301,8 @@ Progress:
      (OSM is GPL-3, so its approach and code are compatible with K1000's licence).
 - **Steps 1 and 2 pulled in for the rig test** (Thomas, Wed 14): the phone mic line (PGM ▾ PHONE
   MIC · BOTH, its own PEAK) and ≋ MEASURE › RESPONSE on the v2 page, the box's `pgm` windows
-  (docs/14 §3.6), app 0.2.2. On the box since `6a537bb` (Wed 14, 12:26); first real-music run at
-  Thursday's soak. Use and limits: `docs/11-phone-mic.md`. Steps 3-5 stay after the gig.
+  (docs/14 §3.6), app 0.2.2. On the box since `6a537bb` (Wed 14, 12:26); ~~first real-music run at
+  Thursday's soak~~ (that soak has no record, see Gates). Use and limits: `docs/11-phone-mic.md`. Steps 3-5 stay after the gig.
 
 ## Phase 5 — Road-proofing
 
