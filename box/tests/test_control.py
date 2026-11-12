@@ -3907,6 +3907,35 @@ def test_common_delay_goes_with_a_pipeline_restore_or_a_device_repair(tmp_path: 
     run(body())
 
 
+def test_a_direct_sub_or_top_delay_write_never_leaves_a_pair(tmp_path: Path, caplog: Any) -> None:
+    """The stdin console can write sub_delay_ms / top_delay_ms directly (the phone cannot). A
+    write that would leave both set keeps their difference only, said in the journal: no PA
+    LATE alert that a mute could never clear, one group dipped as for an ALIGN move."""
+    import logging
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(sub_delay_ms=5.0), playing=True)
+        await boot(ctl)
+        n = len(cl.log)
+        with caplog.at_level(logging.WARNING):
+            assert ctl.set_value("top_delay_ms", 2.0, source="console") == 0.0
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (3.0, 0.0)
+        assert "console set top_delay_ms: sub delay 5.000 ms and top delay 2.000 ms" in caplog.text
+        assert await ctl.settle(3.0)
+        assert nomark(cl.log[n:]) == [("mute", 1, True), ("set", SUB_DELAY_PTR, 3.0), ("mute", 1, False)]
+        assert _pa_late(ctl) == []
+        assert ctl.nudge("top_delay_ms", 10, source="console") == 0.0    # +1.0 ms: the same
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (2.0, 0.0)
+        ctl.set_value("sub_delay_ms", 0.0)
+        assert ctl.set_value("top_delay_ms", 4.0) == 4.0                 # one side: as written
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (0.0, 4.0)
+        assert await ctl.settle(3.0)
+        assert _engine_delays(cl) == (0.0, 4.0) and _pa_late(ctl) == []
+        await ctl.stop()
+
+    run(body())
+
+
 def test_rebuilt_state_loses_a_common_delay(tmp_path: Path) -> None:
     pair = State(sub_delay_ms=3.0, top_delay_ms=2.0)
     (tmp_path / "active.yml").write_text(dc.to_yaml(dc.generate(DEV, pair)))

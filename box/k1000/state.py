@@ -206,9 +206,10 @@ RANGES: dict[str, Range] = {
 # Both non-zero (a hand-written or old state.json, a CamillaGUI edit) delays the WHOLE PA by the
 # smaller one, and ALIGN shows only the difference: sub 45 / top 40 reads 5 ms and plays every
 # speaker 40 ms late (docs/16 §5.1 finding 1). So that common part is removed wherever a state
-# comes in: `load_state` here, `control` for a rebuilt state and for what it adopts from the
-# engine (`drop_common_delay`). `from_dict` / `clamped` keep both: they are the pure parse that
-# `dspconfig` runs on every state, including the engine's own view.
+# comes in: `load_state` here, `control` for a rebuilt state, for what it adopts from the engine
+# and after a direct write of one of the two fields (the console's `set`: `drop_common_delay`).
+# `from_dict` / `clamped` keep both: they are the pure parse that `dspconfig` runs on every
+# state, including the engine's own view.
 ALIGN_DELAY = "align_delay_ms"
 DELAY_FIELDS: tuple[str, str] = ("sub_delay_ms", "top_delay_ms")
 VIRTUAL_RANGES: dict[str, Range] = {

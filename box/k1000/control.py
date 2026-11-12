@@ -1172,6 +1172,8 @@ class Controller:
         except (KeyError, ValueError, TypeError, ArithmeticError) as e:
             log.warning("nudge %r refused: %s", field, e)
             return None
+        if field in DELAY_FIELDS and drop_common_delay(self.state, f"{source} nudged {field}"):
+            new = self.state.get(field)      # never a pair in the state (`_common_held`)
         if new != old or pair != (self.state.sub_delay_ms, self.state.top_delay_ms):
             if field == "master_db":
                 if new > old:
@@ -1222,6 +1224,8 @@ class Controller:
         except (KeyError, ValueError, TypeError) as e:
             log.warning("set %r=%r refused: %s", field, value, e)
             return None
+        if field in DELAY_FIELDS and drop_common_delay(self.state, f"{source} set {field}"):
+            new = self.state.get(field)      # see nudge
         if new != old or pair != (self.state.sub_delay_ms, self.state.top_delay_ms):
             if field == "master_db":
                 _log_master(old, new, source)
