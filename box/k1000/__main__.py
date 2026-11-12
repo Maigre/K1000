@@ -194,6 +194,7 @@ async def render_loop(ctl: Controller, fb: Any) -> None:
     stream_dt = 1.0 / max(RENDER_STREAM_FPS, 0.1)
     last = 0.0
     failed = False
+    drawn = False
     wait = 0.0
     forced = loop.time()
     seen_input = getattr(ctl, "last_input", None)
@@ -224,6 +225,9 @@ async def render_loop(ctl: Controller, fb: Any) -> None:
             info = phone.screen_info() if (phone is not None and page == "PHONE") else None
             await asyncio.to_thread(_draw, fb, page, st, status, focus, info)
             failed = False
+            if not drawn:
+                drawn = True
+                log.info("screen: first frame")   # tools/k1000-boottime.sh reads this line
         except Exception as e:   # noqa: BLE001 - the screen must never stop the controller
             if not failed:
                 log.exception("render failed: %s", e)

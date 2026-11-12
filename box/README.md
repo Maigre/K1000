@@ -213,6 +213,12 @@ step; seconds after power-on, from the boot probe):
 The panel now registers at ~2.0 s (7.0 s before: the smaller initramfs), so k1000 always starts
 after it; `k1000-console.service` still logs `console unbound 1 time(s)` at every boot.
 
+Those figures start at the kernel, not at power-on: the firmware's ~10.4 s before Linux (measured
+2026-10-16) are not in them. **Boot timer**: `ssh k1000 "sudo /opt/k1000-src/tools/k1000-boottime.sh"`
+prints this boot from power-on (the firmware's `vclog --msg` + the journal): Linux start, userspace
+start, k1000 started, engine Running, ramp start, Main at level, first screen frame. Read-only;
+`--save DIR` keeps the two raw logs. Run it after each power cycle when you change a boot setting.
+
 Left as they are, on purpose:
 
 - avahi-daemon: `k1000.local` on a network whose addresses nobody knows; it is not on the

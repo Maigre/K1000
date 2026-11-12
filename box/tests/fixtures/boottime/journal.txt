@@ -1,0 +1,12 @@
+[    0.000000] k1000 kernel: Booting Linux on physical CPU 0x0000000000 [0x410fd083]
+[    0.000000] k1000 kernel: Linux version 6.12.47+rpt-rpi-v8
+[    3.214502] k1000 systemd[1]: systemd 257.8-1~deb13u2 running in system mode
+[    3.520011] k1000 systemd[1]: Detected architecture arm64.
+[    5.402200] k1000 python3[612]: INFO k1000: k1000 0.9.0: profile m4 (card M4 present), engine ws://127.0.0.1:1234, state /var/lib/k1000/state.json
+[    6.110340] k1000 python3[612]: INFO k1000.control: engine freshly started (Main -100.0 dB muted, no K1000 marker): pushing the state, ramping in
+[    7.012004] k1000 python3[612]: INFO k1000.control: engine Running
+[    7.205118] k1000 python3[612]: INFO k1000.control: boot ramp: start, Main -40.0 -> -19.0 dB
+[    9.611250] k1000 python3[612]: INFO k1000: screen on /dev/fb0
+[   10.300990] k1000 python3[612]: INFO k1000.control: boot ramp: done, Main at -19.0 dB
+[   10.702113] k1000 python3[612]: INFO k1000: screen: first frame
+[   11.000000] k1000 python3[612]: INFO k1000.control: engine Running

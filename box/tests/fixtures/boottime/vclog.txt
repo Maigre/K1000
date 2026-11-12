@@ -1,0 +1,6 @@
+004512.118: brfs: File read: /mfs/sd/config.txt
+004513.020: brfs: File read: 1342 bytes
+010398.457: arm_loader: Starting ARM
+005217.774: HDMI0:EDID error reading EDID block 0 attempt 0
+008811.302: Loaded 'kernel8.img' to 0x200000 size 0x9a1e00
+009204.660: Device tree loaded to 0x2eff2a00 (size 0xd5de)

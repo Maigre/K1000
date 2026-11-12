@@ -833,6 +833,7 @@ class Controller:
         self.mute_src = "boot" if s.muted else ""
 
         self._engine_ready = False        # connect sync done on the current link
+        self._running_logged = False      # "engine Running" logged on this link (boot timer)
         self._syncing = False
         self._ramping = False
         self._busy = False                # the worker is running a plan
@@ -2030,6 +2031,9 @@ class Controller:
 
     def _note_engine(self, est: Any) -> None:
         est = str(est)
+        if est == "Running" and not self._running_logged:
+            self._running_logged = True    # once per engine link (tools/k1000-boottime.sh)
+            log.info("engine Running")
         if est != self.status.engine:
             self.status.engine = est
             self._changed()
@@ -2434,12 +2438,16 @@ class Controller:
                     await self._wait_running(epoch)
                     i = 0
                     continue
+                if i == 0:
+                    log.info("boot ramp: start, Main %.1f -> %.1f dB", start,
+                             _clamp_fader(FADER_MAIN, target.master_db))
                 ops = self._ramp_ops(batch)
                 await self._send(ops)
                 self._note_main(ops)
                 i += 1
             self._applied.balance_db = target.balance_db
             done = True
+            log.info("boot ramp: done, Main at %s dB", self._applied.master_db)
         finally:
             self._ramping = False
             self.status.ramping = False
@@ -2454,6 +2462,7 @@ class Controller:
         self._epoch += 1
         epoch = self._epoch
         self._engine_ready = False
+        self._running_logged = False
         self.status.connected = True
         self._changed()
         while epoch == self._epoch and not self._stopping:
