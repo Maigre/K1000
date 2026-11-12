@@ -9,7 +9,9 @@ The app ↔ page contract: [`android/BRIDGE.md`](../android/BRIDGE.md).
 handshake (`native.code`, so the v2 page reports the app version to the box: `hi.app` /
 `hello.min_app`), and the phone mic on the v2 page checked end to end on the emulators: Android's
 microphone dialog only when the page asks, the microphone for the box's page only, and released
-when K1000 leaves the screen (§3b, §8). Install it over 0.2.1 (same key). Not yet on a phone.**
+when K1000 leaves the screen (§3b, §8). Install it over 0.2.1 (same key). ~~Not yet on a phone.~~
+On a phone since: 0.2.2 drove the box at the rig on 2026-10-17, from a Pixel (correction of
+2026-11-12).**
 v0.2.1 (2026-10-13): v0.2.0 plus the K1000 Wi-Fi taken from the box. A phone that
 joined K1000 with the camera's Wi-Fi QR code needs no scan in the app: on its Connect screen the app
 reads the Wi-Fi from the box over the pinned TLS and joins it itself from then on (§2, §3). The box
