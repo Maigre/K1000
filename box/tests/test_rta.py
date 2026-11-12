@@ -837,9 +837,9 @@ def test_engine_spectrum_of_a_sine_has_its_peak(tmp_path: Path):
     from k1000.cdsp import CamillaClient
     from k1000.profiles import load_profile
     from k1000.state import State
-    from test_control import Engine
+    from test_control import CDSP_BIN, Engine
 
-    if not os.access("/usr/local/bin/camilladsp", os.X_OK):
+    if not os.access(CDSP_BIN, os.X_OK):    # the engine on PATH first, like the other engine tests
         pytest.skip("no camilladsp binary")
     cfg = dc.signal_generator_variant(dc.generate(load_profile("dev", {}), State()), level_db=-20.0,
                                       freq=1000.0)

@@ -30,17 +30,19 @@ how far it generalises.
 [`DECISIONS.md`](../../DECISIONS.md)), with the live UI v1 (D-009), the knob fixes and the phone
 page built and accepted on the author's box. The buttons and SETUP follow D-013 (B1 PAGE · B2
 BAND/UNLOCK · B3 NOTCH · B4 MUTE; SETUP by speaker floor), built on 2026-10-13: a box not yet
-updated still runs D-009's buttons (B2 mute, B3 band and unlock, B4 notch). It has not yet played a
-show; the MOTU M4 and the phone are being proven on the real rig. Where this manual points to a
-numbered doc (`docs/0X`), that doc holds the design detail and the history; this manual says how the
-box works today.
+updated still runs D-009's buttons (B2 mute, B3 band and unlock, B4 notch). It played its first
+gig on 18 October 2026 with the MOTU M4 (`025b8f8`). Beatmatching against the speakers was
+impossible there; the latency is being reworked (D-018 to D-020,
+[`docs/16-post-gig-audit.md`](../16-post-gig-audit.md)), so the engine settings in this manual may
+change. Where this manual points to a numbered doc (`docs/0X`), that doc holds the design detail
+and the history; this manual says how the box works today.
 
 ## Chapters
 
 | # | Chapter | What is in it |
 |---|---|---|
 | 1 | [Requirements](01-requirements.md) | Hardware, cables, speakers, software versions, network |
-| 2 | [Installation](02-installation.md) | A fresh card with `bootstrap.sh`, `install.sh` flags, converting a desktop card, the spare card, rollback |
+| 2 | [Installation](02-installation.md) | A fresh card with `bootstrap.sh`, `install.sh` flags, the control service's watchdog, the processor settings, converting a desktop card, the spare card, rollback |
 | 3 | [Configuration](03-configuration.md) | Every key of `/etc/k1000/k1000.yaml` (profiles, knobs, spectrum, phone), what needs a restart, the state files |
 | 4 | [Usage](04-usage.md) | Power on to sound, SHOW (master, live EQ, notching, spectrum), ALIGN, SETUP (by speaker floor, E3 turn = change, a popup and an E3 push for the risky rows, incl. Laptop access and `/tune`), mute, alerts, the phone, end of night, bypass |
 | 5 | [Tuning a Meyer rig](05-tuning.md) | Power order, gain structure, sub alignment, Lo-Cut, system EQ with a mic, live notching |

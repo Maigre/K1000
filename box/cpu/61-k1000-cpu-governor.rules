@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# K1000 processor settings (box/cpu/, installed by box/install.sh to /etc/udev/rules.d/; off with
+# `install.sh --cpu-off`): the CPU clock stays at its maximum from boot, governor "performance".
+#
+# Why it looks like this:
+# - Raspberry Pi OS sets "ondemand" with this same kind of rule (raspberrypi-sys-mods:
+#   /usr/lib/udev/rules.d/60-ondemand-governor.rules, plus its tunables in tmpfiles.d: up 50 %,
+#   sampled every 100 ms). This file sorts after it and runs on the same event, at the same moment
+#   of the boot, so its value is the last one written. Nothing to order, no unit, no race with
+#   udev; deleting the file gives the OS default back at the next boot.
+# - ondemand drops the clock between bursts of load and raises it only after a 100 ms sample:
+#   the audio engine's work per chunk takes longer at a low clock, and the margin before a
+#   dropout is what lets the buffer shrink (docs/16 §3.3, §5.1).
+# - The Pi 4's cpufreq driver is built into the kernel, so the policy exists when the CPUs'
+#   events are handled at boot. The firmware still lowers the clock on heat or under-voltage
+#   (`vcgencmd get_throttled`): this sets the governor, it does not overclock.
+KERNEL=="cpu*", SUBSYSTEM=="cpu", ATTR{cpufreq/scaling_governor}="performance"

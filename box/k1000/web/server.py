@@ -158,7 +158,7 @@ CA_CONTENT_TYPE = "application/x-x509-ca-cert"
 BUILD_MARK = b"__K1000_BUILD__"
 BUILD_STAMPED = frozenset({"/sw.js", "/app.js"})
 PORTAL_ONLY = frozenset({"/portal.html"})
-QR_CYCLE = ("wifi", "url", "setup")   # E1 on the PHONE page steps through these
+QR_CYCLE = ("wifi", "setup", "url")   # E1 on the PHONE page steps through these
 
 # The Android app, offered by the box (docs/06-phone.md §4; the app: docs/09-android.md).
 APK_PATH = "/k1000.apk"
@@ -167,6 +167,8 @@ APK_NAME_RE = re.compile(r"K1000-([0-9][0-9A-Za-z.\-]{0,31})\.apk")   # install.
 APK_MAX = 64 * 1024 * 1024        # bytes; the release APK is ~0.5 MB, held in memory
 APK_SEND_S = 30.0                 # how long one APK download may take (the portal; HTTPS: < 10 s)
 APK_PORTAL_MARK = re.compile(r"<!--APK-->.*?<!--/APK-->", re.S)   # portal.html: only with an APK
+NOAPP_PORTAL_MARK = re.compile(r"<!--NOAPP-->.*?<!--/NOAPP-->", re.S)   # ...and only without one
+NOAPP_MARKS = re.compile(r"<!--/?NOAPP-->")
 WIFI_API = "/api/wifi"            # the app reads the K1000 Wi-Fi from here (HTTPS, AP only)
 WIFI_API_VERSION = 1
 # Per device address and endpoint: (requests per second, burst). The Wi-Fi settings are read once
@@ -218,6 +220,9 @@ MUTE_FALLBACK_NONE = "turn the source down · bypass"
 RTA_MIN_INTERVAL_S = 0.1              # <= 10 frames a second per phone
 RTA_MAX_BUFFERED = 4096               # bytes still on their way to a phone (asyncio, TLS and the
                                       # kernel's send queue): above this an rta frame is dropped
+LATEST_MAX_BUFFERED = 4096            # the same for a state or meters frame: above this it waits
+                                      # (never queued behind older ones) and the latest goes once
+                                      # the backlog is under it; a reply (a mute ack) never waits
 RTA_SUB_IDLE_S = 10.0                 # a subscription lapses after this long without a message
                                       # from the phone (its pings stop when the page is frozen)
 RTA_STEP_DB = 0.5
@@ -585,6 +590,22 @@ def _mute_band(st: Any, status: Any) -> dict[str, str]:
     if running and getattr(status, "ready", None) is not False:
         return {"kind": "ready", "text": "READY"}
     return {"kind": "wait", "text": ""}
+
+
+def _latency(status: Any) -> dict[str, Any]:
+    """state.latency (docs/14 §3.2, D-018): the box's delay readout. `ms` in to out (None = no
+    reading), `io` the interface's share is in it (false: the engine's alone, a floor), `over`
+    above `limit` ms, `buf` the playback buffer level (frames), `drops` the engine's dropout
+    lines since it started (None = its log is not read)."""
+    def whole(v: Any) -> int | None:
+        return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+    return {"ms": _f(getattr(status, "latency_ms", None), 1),
+            "io": getattr(status, "latency_io", True) is not False,
+            "over": getattr(status, "latency_over", False) is True,
+            "limit": _f(getattr(status, "latency_limit_ms", None), 1),
+            "buf": whole(getattr(status, "buffer_level", None)),
+            "drops": whole(getattr(status, "dropouts", None))}
 
 
 def _sys_eq_id(st: Any) -> str | None:
@@ -1216,8 +1237,9 @@ class PhoneBridge:
                        mute: tuple[bool, int] | None = None, knobs: bool = True) -> dict[str, Any]:
         """The v2 state (docs/14 §3.2): every v1 key, plus the alerts, pills, ALIGN and SETUP
         values, the system EQ's digest (`sys_eq`), the box's countdowns (whole seconds), who
-        muted and what the box's MUTED band says. `knobs`: the box has knobs (not --no-hw): the
-        mute fallback names B4 then."""
+        muted, what the box's MUTED band says and the delay readout (`latency`, D-018; not in
+        v1, which stays byte for byte). `knobs`: the box has knobs (not --no-hw): the mute
+        fallback names B4 then."""
         out = PhoneBridge.state_message(snap, phone_on=phone_on, phones=phones, mute=mute)
         _page, st, status, focus = snap
         alerts = []
@@ -1281,6 +1303,7 @@ class PhoneBridge:
             "box_band": band if isinstance(band, int) and not isinstance(band, bool) else 0,
             "box_page": str(getattr(status, "page", "") or ""),
             "knobs_ok": knobs_ok if isinstance(knobs_ok, bool) else None,
+            "latency": _latency(status),
         })
         return out
 
@@ -1657,6 +1680,11 @@ class _Apk:
         return f'"{self.sha256}"'
 
 
+def _size_text(n: int) -> str:
+    """An APK's size as the first-time page says it: '0.5 MB', '12.3 MB' (never '0.0 MB')."""
+    return f"{max(n, 50_000) / 1e6:.1f} MB"
+
+
 def _version_key(version: str) -> tuple[tuple[int, str], ...]:
     """'0.10.1' > '0.2.0' (numbers compare as numbers), like install.sh's `sort -V`."""
     return tuple((int(p), "") if p.isdigit() else (-1, p) for p in re.split(r"[.\-]", version))
@@ -1847,7 +1875,7 @@ class PhoneServer:
                                       "dropped": 0, "dropped_replies": 0, "rta_sent": 0,
                                       "rta_dropped": 0, "pgm_sent": 0, "pgm_dropped": 0,
                                       "http_limited": 0, "wifi_sent": 0,
-                                      "wifi_refused": 0, "wifi_held": 0, "apk_sent": 0}
+                                      "wifi_refused": 0, "wifi_held": 0, "apk_sent": 0, "held": 0}
         self.rx: dict[str, int] = {}
 
     # ------------------------------------------------------------------ public
@@ -1899,9 +1927,9 @@ class PhoneServer:
         return self.set_enabled(not self._on)
 
     def select_qr(self, delta: int = 1) -> str:
-        """E1 on the PHONE page: step through the codes (Wi-Fi -> URL -> first-time setup page,
-        the last one only when the portal port is served) for QR_OVERRIDE_S, then back to the
-        automatic choice (Wi-Fi until a phone is on the AP, then the URL). Returns it."""
+        """E1 on the PHONE page: step through the codes (Wi-Fi -> first-time page, only when the
+        portal port is served -> URL) for QR_OVERRIDE_S, then back to the automatic choice (Wi-Fi
+        until a phone is on the AP, then the first-time page, else the URL). Returns it."""
         cycle = [q for q in QR_CYCLE if q != "setup" or self.setup_url]
         shown = self.screen_info().qr
         i = cycle.index(shown) if shown in cycle else 0
@@ -1925,11 +1953,28 @@ class PhoneServer:
             return ""
         return _origin("http", self.cfg.address, self.ports["http"], 80) + "/"
 
+    @property
+    def web_url(self) -> str:
+        """The web app the first-time page opens: the v2 page, the one the Android app opens."""
+        return self.url.rstrip("/") + V2_PREFIX
+
+    def install_info(self) -> dict[str, Any]:
+        """v2 hello.install (docs/14 §3.1): what SETUP › THIS PHONE offers to install K1000 on a
+        phone, this one or the next: the APK the box holds (null: none) and the first-time page
+        a new phone opens once it is on the Wi-Fi ("" when the box does not serve it)."""
+        apk = self._apk
+        return {"apk": None if apk is None else {
+                    "url": APK_PATH, "file": apk.filename, "version": apk.version,
+                    "size": len(apk.body), "sha8": apk.sha256[:8]},
+                "start": self.setup_url}
+
     def screen_info(self) -> PhoneScreenInfo:
         """Cached presence + settings for the PHONE page (cheap: called by the render path)."""
         psk, why = self._psk
         setup_url = self.setup_url
-        qr = "url" if self._stations or self._clients else "wifi"
+        # once a phone is on the AP: the first-time page (http, so a fresh phone gets no
+        # certificate warning: the app or the web app, step by step), else the URL
+        qr = ("setup" if setup_url else "url") if self._stations or self._clients else "wifi"
         if (self._qr_force is not None and self._clock() < self._qr_until
                 and (self._qr_force != "setup" or setup_url)):
             qr = self._qr_force
@@ -2500,6 +2545,7 @@ class PhoneServer:
         ping = self._ping_origin()
         vals = {
             "APP_URL": self.url,
+            "WEB_URL": self.web_url,
             "PING_URL": (ping + "/ping") if ping else "",
             "CA": "1" if self._ca_pem else "",
             "TLS": "1" if "https" in self.ports else "",
@@ -2508,11 +2554,14 @@ class PhoneServer:
             "APK_URL": APK_PATH,
             "APK_FILE": apk.filename if apk else "",
             "APK_VERSION": apk.version if apk else "",
+            "APK_SIZE": _size_text(len(apk.body)) if apk else "",
             "APK_SHA8": apk.sha256[:8] if apk else "",
         }
         text = asset.body.decode("utf-8")
-        if apk is None:            # no app on this box: no button, nothing that names one
-            text = APK_PORTAL_MARK.sub("", text)
+        if apk is None:            # no app on this box: no button, a plain "no app" card instead
+            text = NOAPP_MARKS.sub("", APK_PORTAL_MARK.sub("", text))
+        else:
+            text = NOAPP_PORTAL_MARK.sub("", text)
         for k, v in vals.items():
             text = text.replace("{{" + k + "}}", html.escape(v, quote=True))
         return text.encode("utf-8")
@@ -2543,6 +2592,7 @@ class PhoneServer:
             c.sess = PhoneSession(n=c.n, seen=self._clock())
             log.info("phone %s connected (%d, v2, %s)", peer, len(self._clients), c.name)
             hello = self.bridge.hello2(self._on, self.build_v2, you=c.n, limits=self._limits())
+            hello["install"] = self.install_info()
         else:
             log.info("phone %s connected (%d)", peer, len(self._clients))
             hello = self.bridge.hello(self._on, self.build)
@@ -3058,19 +3108,26 @@ class PhoneServer:
         a reply (a mute ack) queued meanwhile goes before anything else; a RESPONSE window or a
         spectrum frame is dropped, never queued, while more than RTA_MAX_BUFFERED bytes are
         still on their way to the phone, kernel included (_backlog): it never makes a later
-        send wait."""
+        send wait. The state and the meters wait while more than LATEST_MAX_BUFFERED bytes are
+        (_held): a slow link then gets the latest one once it has room, never a queue of old
+        ones that would show the past for seconds."""
         try:
+            held = False
             while True:
-                await c.kick.wait()
-                c.kick.clear()
+                await self._wake(c, held)
+                held = False
                 while True:
                     if c.out:
                         await self._send(c, c.out.popleft())
                     elif c.sent_state != self._state2_seq and self._state2_json:
+                        if held := self._held(c):
+                            break
                         seq, text = self._state2_seq, self._state2_json
                         await self._send(c, text)
                         c.sent_state = seq
                     elif c.sent_meter != self._meter2_seq and self._meter2_json:
+                        if held := self._held(c):
+                            break
                         seq, text = self._meter2_seq, self._meter2_json
                         await self._send(c, text)
                         c.sent_meter = seq
@@ -3101,6 +3158,25 @@ class PhoneServer:
             with contextlib.suppress(Exception):
                 c.ws.transport.abort()
 
+    async def _wake(self, c: _Client, held: bool) -> None:
+        """Until the pump or a reply kicks this phone's sender; with a state or meters frame
+        held back (_held), at most one tick: the backlog is looked at again then."""
+        if held:
+            with contextlib.suppress(TimeoutError, asyncio.TimeoutError):
+                await asyncio.wait_for(c.kick.wait(), self.tick_s)
+        else:
+            await c.kick.wait()
+        c.kick.clear()
+
+    def _held(self, c: _Client) -> bool:
+        """A state or meters frame waits: more than LATEST_MAX_BUFFERED bytes are still on their
+        way to this phone (_backlog). Sent now, it would queue behind them and reach the phone
+        late; waiting, the phone gets the newest one as soon as the link has room."""
+        if self._backlog(c) <= LATEST_MAX_BUFFERED:
+            return False
+        self.stats["held"] += 1
+        return True
+
     async def _send(self, c: _Client, text: str) -> None:
         async with c.lock:
             try:
@@ -3114,18 +3190,24 @@ class PhoneServer:
 
     async def _sender(self, c: _Client) -> None:
         """Replies in order, then only ever the LATEST state/meters: a slow phone skips states,
-        never queues them. The only task that writes to this phone (besides the final 'bye')."""
+        never queues them, not even in the kernel's send queue (_held). The only task that writes
+        to this phone (besides the final 'bye')."""
         try:
+            held = False
             while True:
-                await c.kick.wait()
-                c.kick.clear()
+                await self._wake(c, held)
                 while c.out:
                     await self._send(c, c.out.popleft())
+                held = False
                 if c.sent_state != self._state_seq and self._state_json:
+                    if held := self._held(c):
+                        continue
                     seq, text = self._state_seq, self._state_json
                     await self._send(c, text)
                     c.sent_state = seq
                 if c.sent_meter != self._meter_seq and self._meter_json:
+                    if held := self._held(c):
+                        continue
                     seq, text = self._meter_seq, self._meter_json
                     await self._send(c, text)
                     c.sent_meter = seq

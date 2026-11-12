@@ -37,6 +37,8 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   holds: **M4**, checked before buying (all 4 outs, scratch-free pots, solid USB-C, firmware version).
 - **Decision**: Thomas, 2026-10-12: the ~€150 M4, picked up Tue 13 with the checks above. Confirmed
   as the Sunday interface in D-010.
+- **Correction 2026-11-12**: the M4 in use was bought new, not the ~€150 unit above, and went live
+  on the box on 2026-10-16 (`docs/05-m4-day.md` §13). The choice of the M4 stands.
 
 ## D-004 — Engine for v0: CamillaDSP v5 beta · decided 2026-10-12
 
@@ -515,7 +517,7 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   go with the phone work.
 
 
-## D-016 — De-harsh, sub loudness and AUX IN, all off by default · proposed 2026-10-16
+## D-016 — De-harsh, sub loudness and AUX IN, all off by default · proposed 2026-10-16 · deployed 2026-10-17
 
 - **Ask** (Thomas, after the first run with the box on the rig, 2026-10-16: "it sound great"):
   (1) "a band compressor would be interessting: some attack are a bit hard, especially around
@@ -590,6 +592,9 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
 - **Gate**: Thomas tries each at the rig (de-harsh against his 2.7 kHz notch, loudness at
   background level, a mic on IN1) and decides to keep, change the defaults, or drop; until then
   they stay off. Deploy, then the printed operator card (still one A4 page).
+- **Status 2026-11-12**: recorded as deployed, on the owner's word. It went on the box on
+  2026-10-17 with all three off by default, and was in the build that played on 2026-10-18
+  (`025b8f8`). Keeping, changing or dropping each feature by ear (the gate above) is still open.
 
 ## D-017 — SETUP: a fixed selected row, E3 the value knob, a confirm popup for risky rows · decided 2026-10-17
 
@@ -716,3 +721,20 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   Loudness and De-harsh overlays on the spectrum wait. The faster-boot work, agreed earlier the
   same day, continues and can share the desk time.
 - **Closed means**: D-018 holds on the box after a night run, and Thomas has beatmatched on it.
+
+## D-021 — Output clipping: a limiter as the last stage, no gain after the master, clipping shown on the phone · proposed 2026-11-12
+
+- **Context**: the engine's log of the gig night holds 5,718 output-clipping warnings, peaks up to
+  +5.67 dBFS, mostly on the two sub outputs (`docs/17-box-record-and-bench.md` §5). At the worst
+  moment the master was at −5 dB and the input was not clipping: the chain after the master had
+  at least about 11 dB of gain at the clipping frequencies (the +6 dB output trims set at the rig,
+  the EQ, the sub balance). Only the box's screen showed it, 3 s at a time; the phone never did.
+- **Options**:
+  - A. A limiter as the last stage of every output: the engine's clipper or its compressor with a
+    clip limit (no delay), or its look-ahead limiter (delay = its attack, 1 ms).
+  - B. No fixed gain after the master: the output trims move in front of it or into the input trim.
+  - C. Clipping shown on the phone too, latched until acknowledged, with the dB to take off.
+  - D. EQ, balance and delay edits written to the journal, so a gig's record can be read whole.
+- **Proposed** (Claude): A with no delay, B, C and D together. Thomas decides, and decides by ear
+  between the limiter kinds. Nothing is built.
+- **Constraint**: D-018's 10 ms. A look-ahead limiter costs 1 ms of it; the others cost none.

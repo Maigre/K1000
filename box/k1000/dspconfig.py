@@ -49,7 +49,7 @@ from typing import Any, Callable, Iterable, NamedTuple, Union
 
 import yaml
 
-from .profiles import LOGICAL_NAMES, Profile
+from .profiles import CHUNKSIZE, CHUNKSIZES, LOGICAL_NAMES, Profile, target_level_range
 from .state import (
     AUX_MIC_HP_HZ, AUX_MIC_HP_Q, AUX_MIC_PAN_DB, DEHARSH_ATTACK_MS, DEHARSH_Q, DEHARSH_RATIO,
     DEHARSH_RELEASE_MS, LOUD_HIGH_BOOST_DB, LOUD_LOW_FREQ_HZ, LOWCUT_OFF_HZ, LOWCUT_Q, N_LIVE_PEQ,
@@ -57,8 +57,9 @@ from .state import (
     ShelfBand, State, delay_samples, effective_gain,
 )
 
-CHUNKSIZE = 256
-TARGET_LEVEL = 256
+# devices.chunksize / target_level come from the profile (profiles.CHUNKSIZE, default 256, and
+# `engine_buffer`); the waits that depend on the chunk follow it (`two_chunks_s`).
+TARGET_LEVEL = CHUNKSIZE
 # Engine fader ramp (devices.volume_ramp_time_ms for Main, ramp_time_ms of the Aux1/Aux2 Volume
 # filters). The engine restarts the whole ramp on every new target, so a turning knob trails
 # the hand by about one ramp: 100 ms (was 300 ms) lets master and balance answer the hand and
@@ -393,7 +394,12 @@ def _input_mixer(profile: Profile, aux: tuple[int, ...] = ()) -> dict[str, Any]:
     (adds exactly nothing): CamillaDSP leaves a channel no mixer source uses empty, and
     5.0.0-beta.1's spectrum ring buffer then indexes that empty channel and panics the capture
     thread (the M4's mic inputs 1-2, 2026-10-16: the engine restarted every 2 s). Only the FIRST
-    mixer counts for that, so it is this one that must name every capture channel.
+    mixer counts for that, so it is this one that must name every capture channel. Fixed
+    upstream in 9dacca3 (2026-10-18: an unused channel is kept as silence), in v5.0.0-beta.2 and
+    `next5`; the pad is harmless there and is needed only while beta.1 can be installed. Its
+    guard is test_every_capture_channel_is_used_and_adds_nothing (no engine needed);
+    test_engine_capture_spectrum_of_every_channel_keeps_the_engine_up shows the crash itself,
+    and only when beta.1 is the engine on PATH.
 
     `aux` (`aux_inputs`): those capture channels become outputs 2[, 3] (A1, A2) at 0 dB instead
     of being padded; the others still pad. Without `aux` the mixer is exactly f2671b0's."""
@@ -493,15 +499,32 @@ def _output_mixer(profile: Profile, audition: str) -> dict[str, Any]:
     return {"description": desc, "labels": labels, "channels": {"in": 4, "out": n}, "mapping": mapping}
 
 
+def engine_buffer(profile: Any) -> tuple[int, int]:
+    """(chunksize, target_level) for the `devices` block: the profile's, checked again so a
+    Profile built by hand never yields a config the engine refuses (`load_profile` has already
+    said what it refused or clamped): a chunk outside profiles.CHUNKSIZES is the default 256, a
+    missing target is one chunk, and the target stays in `target_level_range(chunksize)`."""
+    cs = getattr(profile, "chunksize", CHUNKSIZE)
+    if isinstance(cs, bool) or not isinstance(cs, int) or cs not in CHUNKSIZES:
+        cs = CHUNKSIZE
+    tl = getattr(profile, "target_level", None)
+    if isinstance(tl, bool) or not isinstance(tl, int) or tl <= 0:
+        tl = cs
+    lo, hi = target_level_range(cs)
+    return cs, min(hi, max(lo, tl))
+
+
 def generate(profile: Profile, state: State) -> dict[str, Any]:
     """The full CamillaDSP v5 config (a dict ready for `to_yaml` / `json.dumps`).
 
-    With aux_mode "off", loud_on and deharsh_on False it is byte for byte f2671b0's config (key
-    order included: the optional filters, mixers and steps are inserted, never reordered).
+    With aux_mode "off", loud_on and deharsh_on False, and the profile's chunksize at its
+    default 256, it is byte for byte f2671b0's config (key order included: the optional filters,
+    mixers and steps are inserted, never reordered).
     """
     s = state.clamped()
     pm = param_map(s)
     aux = aux_inputs(profile, s.aux_mode)
+    chunksize, target_level = engine_buffer(profile)
 
     def v(name: str, key: str) -> Any:
         return pm[_pp(name, key)]
@@ -592,8 +615,8 @@ def generate(profile: Profile, state: State) -> dict[str, Any]:
                        "in CamillaGUI are adopted; structure changes are overwritten.",
         "devices": {
             "samplerate": SAMPLERATE,
-            "chunksize": CHUNKSIZE,
-            "target_level": int(getattr(profile, "target_level", TARGET_LEVEL) or TARGET_LEVEL),
+            "chunksize": chunksize,
+            "target_level": target_level,
             "enable_rate_adjust": False,
             "volume_ramp_time_ms": VOLUME_RAMP_MS,
             "volume_limit": MAIN_LIMIT_DB,
@@ -685,7 +708,22 @@ def diff_ops(old_state: State, new_state: State) -> list[Op]:
 # polarity flip clicks (the delay line is rebuilt; the sign flips at once). So big moves are
 # split into detent-sized steps, and delay/polarity changes are done under a muted group fader.
 STEP_WAIT_S = 0.012          # > 2 chunks of 256 @ 48 kHz: each step reaches the audio before the next
-GUARD_WAIT_S = VOLUME_RAMP_MS / 1000.0 + 0.05   # Aux fader mute ramp + margin
+# Aux fader mute ramp + margin. The margin also spans more than 2 chunks at the largest chunk
+# (1024: 43 ms), so it needs no per-chunk value (tested).
+GUARD_WAIT_S = VOLUME_RAMP_MS / 1000.0 + 0.05
+
+
+def two_chunks_s(chunksize: Any = CHUNKSIZE) -> float:
+    """A wait spanning more than two chunks of `chunksize` at 48 kHz (2.25 chunks), never less
+    than STEP_WAIT_S, the 12 ms measured clean at chunk 256: the pace of click-safe steps (each
+    one reaches the audio before the next) and of the controller's two Running reads. 12 ms up
+    to chunk 256, then 24 ms at 512 and 48 ms at 1024. A smaller chunk keeps 12 ms: the steps
+    stay as fast as measured, never faster."""
+    try:
+        cs = int(chunksize)
+    except (TypeError, ValueError, OverflowError):
+        cs = CHUNKSIZE
+    return max(STEP_WAIT_S, round(2.25 * max(cs, 0) / SAMPLERATE, 6))
 
 Plan = list[tuple[float, list[Op]]]
 
@@ -712,7 +750,7 @@ def _is_trim(ptr: str) -> bool:
 
 def smooth_ops(old_state: State, new_state: State, *, max_db_step: float = 0.5,
                max_trim_step: float = 0.1, max_oct_step: float = 1.0 / 12.0,
-               max_steps: int = 100) -> Plan:
+               max_steps: int = 100, step_wait_s: float = STEP_WAIT_S) -> Plan:
     """`diff_ops`, re-planned so no single engine write is big enough to click.
 
     Returns [(wait_before_s, ops), ...]: sleep, then send that batch (one PatchConfig when it
@@ -720,8 +758,9 @@ def smooth_ops(old_state: State, new_state: State, *, max_db_step: float = 0.5,
     dB / `max_oct_step` octave (the engine smooths each Biquad switch); Gain-filter trims, which
     the engine applies as an instant step, use `max_trim_step`, and so do the AUX level and the
     sub loudness boost (`_is_trim`). The loudness reference and the de-harsh threshold (dB) move
-    like a Biquad gain, the de-harsh frequency like any frequency. Steps are `STEP_WAIT_S` apart,
-    at most `max_steps` of them. Delay and polarity changes are wrapped in a mute
+    like a Biquad gain, the de-harsh frequency like any frequency. Steps are `step_wait_s` apart
+    (STEP_WAIT_S at chunk 256; the controller passes `two_chunks_s` of the running chunk), at
+    most `max_steps` of them. Delay and polarity changes are wrapped in a mute
     of their group fader (Aux1 subs / Aux2 tops): mute, wait the ramp, write, unmute. Fader ops
     go first (the engine ramps them). A Rebuild is returned as-is (a setup action: mute Main
     around it). Typical use: SETUP › Lo-Cut on/off, SETUP › Reset live EQ (and its undo), and
@@ -769,13 +808,13 @@ def smooth_ops(old_state: State, new_state: State, *, max_db_step: float = 0.5,
                 else:
                     v = round(a + (b - a) * t, 3)
                 batch.append(SetValue(ptr, v))
-            plan.append((STEP_WAIT_S if plan else 0.0, batch))
+            plan.append((step_wait_s if plan else 0.0, batch))
 
     groups = sorted({_guard_group(o.pointer) for o in guarded})  # type: ignore[type-var]
     if groups:
-        plan.append((STEP_WAIT_S if plan else 0.0, [FaderMute(g, True) for g in groups if g is not None]))
+        plan.append((step_wait_s if plan else 0.0, [FaderMute(g, True) for g in groups if g is not None]))
         plan.append((GUARD_WAIT_S, list(guarded)))
-        plan.append((STEP_WAIT_S, [FaderMute(g, False) for g in groups if g is not None]))
+        plan.append((step_wait_s, [FaderMute(g, False) for g in groups if g is not None]))
     return plan
 
 

@@ -150,17 +150,17 @@ public class ShellRulesTest {
         // Never another origin: plain http, another port, another host, look-alikes, opaque ones.
         for (String o : new String[] {"http://10.42.0.1/", "https://10.42.0.1:8443/", "https://10.42.0.2/",
                 "https://10.42.0.1.evil.example/", "https://evil.example/", "https://k1000.home.arpa.evil.example/",
-                "https://user@10.42.0.1/", "https://192.168.8.54/", "null", "", "data:text/html,x", "file:///",
+                "https://user@10.42.0.1/", "https://192.0.2.54/", "null", "", "data:text/html,x", "file:///",
                 "about:blank", "https://10.42.0.1/?x", null}) {
             assertFalse(String.valueOf(o), ShellRules.grantMic(o, audio));
         }
         // A bench build: its development host too (and still the box).
-        K1000Hosts.setBenchHost("192.168.8.54");
+        K1000Hosts.setBenchHost("192.0.2.54");
         try {
-            assertTrue(ShellRules.grantMic("https://192.168.8.54/", audio));
+            assertTrue(ShellRules.grantMic("https://192.0.2.54/", audio));
             assertTrue(ShellRules.grantMic("https://10.42.0.1/", audio));
-            assertFalse(ShellRules.grantMic("https://192.168.8.55/", audio));
-            assertFalse(ShellRules.grantMic("https://192.168.8.54/", new String[] {cam}));
+            assertFalse(ShellRules.grantMic("https://192.0.2.55/", audio));
+            assertFalse(ShellRules.grantMic("https://192.0.2.54/", new String[] {cam}));
         } finally {
             K1000Hosts.setBenchHost("");
         }

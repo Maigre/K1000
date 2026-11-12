@@ -43,7 +43,7 @@ Version **0.2.2** (versionCode 5).
 | `…/BoxWifi.java` | The K1000 Wi-Fi taken from the box (0.2.1): `/api/wifi`'s URLs, the answer validated, what each answer means, when to ask and how often (pure, JVM-tested) |
 | `…/BoxWifiProbe.java` | Watches the Wi-Fi networks while the Connect screen is up, and asks the box over the one on `10.42.0.0/24`: HTTPS, the network security config then `K1000Trust`, no redirect, no cache |
 | `…/K1000Hosts.java` | The only hosts the WebView may load: `10.42.0.1` and `k1000.home.arpa`, HTTPS |
-| `app/src/main/res/raw/k1000_ca.pem` | The K1000 CA **certificate** (public; its key never leaves mgr-ran) |
+| `app/src/main/res/raw/k1000_ca.pem` | The K1000 CA **certificate** (public; its key stays on the owner's machine, never in this repository) |
 | `app/src/main/res/xml/network_security_config.xml` | That CA, for the two box names only; no CA at all for any other host |
 | `app/src/main/assets/licenses/` | NOTICE (K1000's GPL notice + source address, ZXing's notices), `GPL-3.0.txt` (= the repo's `LICENSE`), `Apache-2.0.txt` |
 | `gradle/verification-metadata.xml` | The sha256 of every Maven artifact the build may use (plugin, tools, libraries) |
@@ -82,15 +82,24 @@ cd android
 
 **Bench build** (debug only, debug-signed, never distributed): package `gr.trentesept.k1000.bench`
 (it installs beside the release app), WebView debuggable (`chrome://inspect` from the laptop),
-and ONE development host trusted besides the box, so Thomas's bench box can be driven over the LAN:
+and ONE development host trusted besides the box, so a bench box can be driven over the LAN:
 
 ```sh
-./build.sh gradle assembleBench -Pk1000.benchHost=192.168.8.54 -Pk1000.benchCa=/src/bench-ca.pem
+./build.sh gradle assembleBench -Pk1000.benchHost=<bench box address> -Pk1000.benchCa=/src/bench-ca.pem
 # -> app/build/outputs/apk/bench/app-bench.apk
 ```
 
-- `k1000.benchHost` (default `192.168.8.54`) is loaded first, then `10.42.0.1`; the fallback mode
-  also follows a Wi-Fi on the bench host's /24.
+Or keep both values on the machine that builds, in `android/local.properties` (gitignored, so the
+LAN address never reaches the repository), and run `./build.sh gradle assembleBench`:
+
+```properties
+k1000.benchHost=<bench box address>
+k1000.benchCa=/src/bench-ca.pem
+```
+
+- `k1000.benchHost` (no default: a bench build without it stops and says so) is loaded first,
+  then `10.42.0.1`; the fallback mode also follows a Wi-Fi on the bench host's /24. A `-P` option
+  wins over `local.properties`.
 - `k1000.benchCa` is a PEM path inside the build container, i.e. under `android/` (`/src/...`);
   default: the K1000 CA. It is trusted **for that host only**, by a network security config
   generated for the bench variant; release, debug and smoke keep `res/xml/network_security_config.xml`.
@@ -118,14 +127,18 @@ The release key is made **once** and never enters this repo:
 ```
 
 It writes `k1000-release.jks` (PKCS12, RSA 4096, valid 50 years) and `keystore.properties`
-(random password) to `K1000_SIGNING_DIR`, by default the 37Projects hub's gitignored
-`secrets/k1000-android/` (directory 700, files 600). Gradle reads it through
+(random password) to `K1000_SIGNING_DIR` (directory 700, files 600), a folder outside this
+repository. Set it on the machine that builds, for example in your shell profile:
+`export K1000_SIGNING_DIR=<the folder that holds the key>`; `build.sh` and `tools/smoke.sh` read
+it. Without it they use `~/.local/share/k1000-android/`, a neutral place for a first key only. A
+release build that finds no key stops and asks for the folder: a new key is for a first release
+only (below: why). Gradle reads it through
 `K1000_KEYSTORE_PROPERTIES`; without it, a release build comes out unsigned. `./build.sh` copies
 the signed APK to `$K1000_SIGNING_DIR/out/K1000-<versionName>.apk`, with its `.sha256` and
 `apksigner verify` output.
 
-**Keep the keystore safe** (it is a binary file: the hub's secrets sync does not carry it, so it
-belongs in the USB escrow). A K1000 update must be signed with the same key to install over the
+**Keep the keystore safe** (it is a binary file: keep a second copy off the build machine, for
+example on a USB stick). A K1000 update must be signed with the same key to install over the
 previous version; with another key, Android refuses it and the old app must be uninstalled first
 (which also forgets the stored Wi-Fi password).
 

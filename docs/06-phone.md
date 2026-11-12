@@ -14,8 +14,9 @@ carry the show.
   wpa_supplicant AP on the Pi's chip drops Apple/older-Android clients ~6 s after the handshake.
   `--backend nm` stays available.
 - **Captive portal off** (the AP's DNS answers `k1000.home.arpa` only): Android then offers *Stay
-  connected* and keeps auto-joining K1000 after a dropout (§5). The PHONE page's third QR,
-  **FIRST TIME** (`http://10.42.0.1/`), covers the one-time certificate install.
+  connected* and keeps auto-joining K1000 after a dropout (§5). The PHONE page's second QR,
+  **2 · OPEN K1000** (`http://10.42.0.1/`, the first-time page), covers the app or the one-time
+  certificate install.
 - **5 GHz channel 36, country FR**; 2.4 GHz (`--band bg`, channel 6) is the documented fallback.
   Thomas stands up to ~10 m from the box.
 - **The phone may unmute**, with the stale-unmute protection (`mute_seq`, §2). **SSH and
@@ -41,8 +42,8 @@ carry the show.
  k1000.service (python3 -m k1000, the same process as the knobs)
    ├─ https://10.42.0.1/      the K1000 page (installable PWA) + wss://10.42.0.1/ws
    │                          + /api/wifi (the Android app's Wi-Fi settings, §4)
-   ├─ http://10.42.0.1/       first-time page: "Open K1000" + the certificate download
-   │                          + "Get the K1000 app" (/k1000.apk, when deployed, §4)
+   ├─ http://10.42.0.1/       first-time page: "Install the K1000 app" (/k1000.apk, when
+   │                          deployed) or "Open the web app" (/v2/) + the certificate (§4)
    │                          (and the captive portal with --portal on)
    └─ Controller  ◄── the knobs drive the same one: same clamps, same click-safe moves, one state
 ```
@@ -76,9 +77,12 @@ carry the show.
   set up with Wi-Fi in Raspberry Pi Imager), `setup-ap.sh` refuses (exit 4) instead of cutting
   that link. Leave Wi-Fi empty in Imager.
 - **QR codes on the box screen** (SETUP › PHONE › Phone): first the Wi-Fi code (Android 10+ joins in one
-  tap; the password is also printed, easy to type). Once a phone is on the AP the screen shows the
-  page's URL. E1 turn steps through the codes: Wi-Fi → URL → **first time** (http://10.42.0.1/,
-  the certificate page).
+  tap; the password is also printed, easy to type). Once a phone is on the AP the screen shows
+  step 2, the first-time page (`http://10.42.0.1/`: the app or the web app; plain HTTP, so a fresh
+  phone gets no certificate warning; since 2026-11-12, before: the page's https URL, and the
+  first-time page was the third code). E1 turn steps through the codes: Wi-Fi → first-time page →
+  **DIRECT LINK** (`https://10.42.0.1/`, for a phone already set up). A box that does not serve
+  the first-time page shows the URL as step 2.
 - **The page is K1000's own**, served by the k1000 process (python3-websockets already on the box;
   the new packages are python3-qrcode for the screen codes and hostapd for the AP). It drives the **same Controller
   as the knobs**. It is not CamillaGUI, which POSTs whole configs and can undo knob work.
@@ -93,8 +97,8 @@ carry the show.
   the browser (`/k1000.apk`, `/api/wifi`, `/tune`, the CA) goes to the box untouched and is never
   kept as the page.
 
-Screens: `docs/ui/phone_wifi.png` (step 1), `phone_url.png` (step 2), `phone_setup.png` (first
-time), `phone_connected.png` (muted box, one phone connected), `phone_off.png`, `phone_ap_down.png`,
+Screens: `docs/ui/phone_wifi.png` (step 1), `phone_setup.png` (step 2, the first-time page),
+`phone_url.png` (the direct link), `phone_connected.png` (muted box, one phone connected), `phone_off.png`, `phone_ap_down.png`,
 `phone_no_tls.png`; with SETUP › PHONE › Laptop access open, `phone_laptop.png` (the password as text, §11).
 
 ## 2. What the phone does (v0)
@@ -131,8 +135,12 @@ system EQ, trims, input trim, sub low-pass.
 - A **mute is never rate-limited**; everything else is limited per phone (30 msg/s, burst 40).
 - Drags are coalesced on the phone (one message per 50 ms, the last value always sent) and the box
   only ever sends each phone its **latest** state: a slow phone skips states, never stalls the box.
+  The state and meters wait while more than 4 kB are still on their way to that phone (kernel's
+  send queue included), so a weak link never shows a queue of old states (2026-11-12).
   The box never waits on a phone before reading its next message (a mute behind a stalled
-  downlink is applied at once). A stuck phone is dropped after 2 s. At most **4 phones** at once.
+  downlink is applied at once). A phone that stops reading is dropped by the keepalive, after
+  about 15 s (a ping every 5 s, 10 s to answer); one whose reply cannot be written within 2 s,
+  sooner. At most **4 phones** at once.
 - Nothing a phone sends can raise into the controller or another phone (per-phone error isolation,
   1 KB message limit, JSON only, numbers bounded, Origin checked against the box's own names), and
   a misbehaving phone cannot flood the journal (one traceback per phone, then throttled lines).
@@ -164,7 +172,7 @@ system EQ, trims, input trim, sub low-pass.
    - Portal **on** (`--portal on`): Android shows *Sign in to network* instead (§5).
 4. **Install the K1000 certificate (once):**
    - The phone needs a **screen lock** (PIN/pattern): Android refuses certificates without one.
-   - If it is not on the phone yet: on the box, E1 turn to the **FIRST TIME** QR (or open
+   - If it is not on the phone yet: on the box, the second QR, **2 · OPEN K1000** (or open
      `http://10.42.0.1/` in **Chrome**), tap *Download the K1000 certificate*; Chrome may say it
      *can't be downloaded securely*: tap **Keep**.
    - Do **not** tap the downloaded file (Android 11+ answers *Can't install CA certificates*).
@@ -175,8 +183,8 @@ system EQ, trims, input trim, sub low-pass.
    - Android then shows *Network may be monitored*: expected, harmless here (the CA can only
      vouch for the K1000 box).
 5. **Open and install the page:** in Chrome, `http://10.42.0.1/` now says *This phone trusts the
-   K1000 certificate ✓* → **Open K1000** (or the second QR, or type `https://10.42.0.1`). Then the
-   **Install** button in the page's top bar, or ⋮ › *Add to Home screen* › *Install*.
+   K1000 certificate ✓* → **Open the web app** (the v2 page, `https://10.42.0.1/v2/`; since
+   2026-11-12, before: v1 at `/`, still reachable). Then ⋮ › *Add to Home screen* › *Install*.
    What appears depends on Chrome reaching Google's WebAPK server (it cannot from K1000, which
    has no internet): usually a **home-screen shortcut with a small Chrome badge**, not an app in
    the app drawer. That is fine (decided for Thomas's Pixel 4a): it opens full screen,
@@ -191,14 +199,32 @@ steps, and a check whether this phone already trusts the K1000 certificate (an H
 box only succeeds when it does). It also serves the CA at `http://10.42.0.1/k1000-ca.crt`
 (`application/x-x509-ca-cert`).
 
-**Get the K1000 app** (2026-10-13). When the box was deployed with the Android app
-([`docs/09-android.md`](09-android.md)), the first-time page (the PHONE page's third QR,
-**FIRST TIME**) shows a **Get the K1000 app** button under *Open K1000*, with the app's version
-and the first 8 hex digits of its SHA-256, and one line: *Android asks once to allow installing
-from Chrome*. Without an APK on the box the button is not in the page at all. It is hidden in
-Android's *Sign in to network* window (portal on: Chrome installs it) and on a box without HTTPS
-(the app talks to the box over HTTPS only). The captive portal stays **off** (§5): the app is
-offered by the page Thomas already opens once, not by a portal that would cost the automatic
+**Two ways in, one button each** (2026-11-12; the app button since 2026-10-13). The first-time
+page (the PHONE page's second QR, **2 · OPEN K1000**, shown by itself once a phone is on the
+Wi-Fi) offers:
+
+1. **Android: the K1000 app** (when the box was deployed with the APK,
+   [`docs/09-android.md`](09-android.md)): **Install the K1000 app**, with its version, size and
+   the first 8 hex digits of its SHA-256, and one line for Android's two asks (*Settings › Allow
+   from this source*, then *Install*). No certificate; the app joins the Wi-Fi by itself. Without
+   an APK on the box the card says *This box holds no copy of the app. Use the web app below.*
+   Hidden on an iPhone, in Android's *Sign in to network* window (portal on: Chrome installs it)
+   and on a box without HTTPS (the app talks to the box over HTTPS only).
+2. **Any phone: the web app**: whether this phone trusts the K1000 certificate, then **Open the
+   web app**, the **v2 page** (`https://10.42.0.1/v2/`, the page the Android app opens; v1 stays
+   at `/`, linked at the foot of the page), then *Add to Home screen* (Chrome) or *Share › Add to
+   Home Screen* (Safari). The v2 page has its own manifest (`/v2/manifest.webmanifest`, id and
+   scope `/v2/`): *Add to Home screen* puts v2 there under its own name and icon, separate from
+   v1 (without internet, usually a shortcut with a small Chrome badge, §3 step 5).
+3. **The certificate, once per phone**, shown only while the check fails: the Android steps, or
+   the iPhone steps (Safari › Allow, *Profile Downloaded* › Install, *Certificate Trust Settings*
+   › K1000 Local CA) when the page sees an iPhone.
+
+A phone already on K1000 finds the same in the v2 page: SETUP › THIS PHONE › **Install K1000**
+(the APK's version and size; in Chrome on Android a *GET THE ANDROID APP* key, whose file can
+also be sent to another phone; and, for another phone, the Wi-Fi code then the first-time page).
+Not inside the Android app: its own update waits (D-020). The captive portal stays **off** (§5):
+the app is offered by the page a phone opens once, not by a portal that would cost the automatic
 rejoin.
 
 | Endpoint | What |
@@ -249,11 +275,11 @@ has no "Open in browser".
 | DNS | every name → 10.42.0.1 | only `k1000.home.arpa`; everything else "no such domain", at once |
 | On joining | *Sign in to network* (the first-time page in the WebView) | *No internet — Stay connected?* (joined from Settings) |
 | Afterwards | Android sees a portal that never validates: no "Don't ask again" possible; after each **automatic** join it pauses auto-joining K1000 for up to 10 min (Android 13 code). After a dropout mid-show the phone does not come back by itself: Wi-Fi tile off/on, or tap K1000 in Settings | With *Don't ask again*, K1000 is kept and auto-joined like any network, including after a dropout |
-| First-time certificate | via the sign-in window → Chrome | the FIRST TIME QR on the box, or the CA put on the phone beforehand |
+| First-time certificate | via the sign-in window → Chrome | the box's second QR (the first-time page), or the CA put on the phone beforehand |
 
 The portal was the D-007 "bonus"; it costs the main path its automatic reconnection, so it is
 **off by default** (2026-10-12). The one thing it gave, the certificate page on joining, is the
-PHONE page's third QR (**FIRST TIME**, `http://10.42.0.1/`). Back to the portal, one command:
+PHONE page's second QR (**2 · OPEN K1000**, `http://10.42.0.1/`). Back to the portal, one command:
 `sudo /opt/k1000/net/setup-ap.sh --portal on` (and `--portal off` again).
 
 ## 6. Range, band, plan B
@@ -307,7 +333,7 @@ PHONE page's third QR (**FIRST TIME**, `http://10.42.0.1/`). Back to the portal,
 | `setup-ap.sh` exits 4 | It says why: another interface in 10.42.0.0/24, `wlan0` a Wi-Fi client, or hostapd did not stay up (then `--band bg`) |
 | Box screen: password unreadable | `/etc/k1000/ap.psk` must be `root:k1000 0640` (setup-ap.sh fixes it) |
 | New Wi-Fi password wanted | `sudo /opt/k1000/net/setup-ap.sh --new-password` (every phone scans the QR again). After `--new-password --no-up` the AP keeps the old one until the next boot or the next plain `setup-ap.sh` run (`--status`: *password on the air*); the Android app reads the new one only from then on |
-| First-time page has no *Get the K1000 app* | No APK on the box (`ls /opt/k1000/apk`: the deploy puts it there, [manual chapter 7](manual/07-maintenance.md#the-android-app-on-the-box)), or k1000 has not started since it came: between shows `sudo systemctl restart k1000`. `journalctl -u k1000 \| grep 'Android app'` |
+| First-time page says *This box holds no copy of the app* | No APK on the box (`ls /opt/k1000/apk`: the deploy puts it there, [manual chapter 7](manual/07-maintenance.md#the-android-app-on-the-box)), or k1000 has not started since it came: between shows `sudo systemctl restart k1000`. `journalctl -u k1000 \| grep 'Android app'` |
 | Chrome will not install the APK | Chrome may first warn about the file (an APK, over plain HTTP): **Download anyway** / **Keep**. Then Android asks once: *Settings* › **Allow from this source** for Chrome (Settings › Apps › Special app access › Install unknown apps › Chrome). The 8 hex digits on the page = the start of the release's `K1000-<version>.apk.sha256` |
 | SSH to the box over K1000 | Fenced off by default: `sudo /opt/k1000/net/setup-ap.sh --ssh on` (or use `eth0`, not with a laptop sharing on 10.42.0.x: §1) |
 | Certificate expiry | The leaf is valid until **2029-01-14**; the box logs a warning 60 days before. Re-sign it on the laptop that holds the CA key (the README next to that key) |
@@ -348,7 +374,8 @@ socket, `/tune/ws` (§11).
 ## 9. Friday rig-test checklist (go/no-go for Sunday)
 
 1. The phone joins **K1000** from the QR, gets an IP (Settings › K1000 › IP address) and **stays
-   connected for more than 30 s**; the box screen switches to the URL QR. (Fails → §6 plan B.)
+   connected for more than 30 s**; the box screen switches to its second QR, the first-time
+   page. (Fails → §6 plan B.)
 2. Rejoin: Wi-Fi off/on, then walk out of range and back: the phone rejoins K1000 **by itself**
    within 30 s. (With portal on it may not: note it; §5.)
 3. In airplane mode + Wi-Fi, the **K1000 icon** opens in < 2 s and shows LINK + RUNNING. Note what

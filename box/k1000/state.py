@@ -201,10 +201,17 @@ RANGES: dict[str, Range] = {
 # > 0: the subs are delayed (subs in front of the tops); < 0: the tops are delayed. Not a stored
 # field (state.json, dspconfig, CamillaGUI keep sub_delay_ms and top_delay_ms): `State.get`
 # computes it, and `State.set`/`State.nudge` write sub = max(v, 0), top = max(-v, 0), so after
-# any move at most one of them is non-zero (a saved state with both set shows the net value and
-# is normalised by its first move, never at load). A move never jumps across zero: it stops at
-# exactly 0 (ALIGNED), and the next detent goes to the other side.
+# any move at most one of them is non-zero. A move never jumps across zero: it stops at exactly 0
+# (ALIGNED), and the next detent goes to the other side.
+# Both non-zero (a hand-written or old state.json, a CamillaGUI edit) delays the WHOLE PA by the
+# smaller one, and ALIGN shows only the difference: sub 45 / top 40 reads 5 ms and plays every
+# speaker 40 ms late (docs/16 §5.1 finding 1). So that common part is removed wherever a state
+# comes in: `load_state` here, `control` for a rebuilt state, for what it adopts from the engine
+# and after a direct write of one of the two fields (the console's `set`: `drop_common_delay`).
+# `from_dict` / `clamped` keep both: they are the pure parse that `dspconfig` runs on every
+# state, including the engine's own view.
 ALIGN_DELAY = "align_delay_ms"
+DELAY_FIELDS: tuple[str, str] = ("sub_delay_ms", "top_delay_ms")
 VIRTUAL_RANGES: dict[str, Range] = {
     ALIGN_DELAY: Range(-50.0, 50.0, 0.1, fine=SAMPLE_MS, default=0.0, digits=6, unit="ms"),
 }
@@ -458,6 +465,30 @@ def split_align_delay(v: Any) -> tuple[float, float]:
     return (v if v > 0 else 0.0), (-v if v < 0 else 0.0)
 
 
+def common_delay_ms(s: Any) -> float:
+    """The part of the two stored delays that delays the whole PA, subs and tops alike:
+    min(sub_delay_ms, top_delay_ms). ALIGN never shows it (see ALIGN_DELAY above)."""
+    sub = RANGES["sub_delay_ms"].clamp(getattr(s, "sub_delay_ms", 0.0))
+    top = RANGES["top_delay_ms"].clamp(getattr(s, "top_delay_ms", 0.0))
+    return round(min(sub, top), 6) + 0.0
+
+
+def drop_common_delay(s: State, where: str = "") -> float:
+    """Remove the common delay from `s`, in place: the later side keeps the difference and the
+    other goes to 0, so ALIGN's value does not change and the whole PA is earlier by the part
+    removed. Returns the ms removed (0.0 = there was none). `where` set: one journal line."""
+    common = common_delay_ms(s)
+    if common <= 0.0:
+        return 0.0
+    sub, top = s.sub_delay_ms, s.top_delay_ms
+    s.sub_delay_ms, s.top_delay_ms = split_align_delay(align_delay_ms(s))
+    if where:
+        log.warning("%s: sub delay %.3f ms and top delay %.3f ms were both set, so the whole PA "
+                    "was %.3f ms late with nothing on the screen; that common part is removed "
+                    "(ALIGN keeps %+.3f ms)", where, sub, top, common, align_delay_ms(s))
+    return common
+
+
 def nudge_align_delay(value: Any, detents: int | float, fine: bool = False) -> float:
     """The signed delay moved by `detents` (0.1 ms, fine = one sample), stopping at exactly 0
     when the move would cross it: the operator feels the zero (ALIGNED) before the other side."""
@@ -559,6 +590,7 @@ def load_state(path: str | os.PathLike[str]) -> State:
 
     Missing -> defaults. Unreadable/corrupt/not-an-object -> defaults, and the file is copied to
     `<path>.bad` so the evidence survives the next save. Old/partial -> upgraded field by field.
+    A sub and a top delay both set lose their common part (`drop_common_delay`, journal line).
     """
     p = Path(path)
     try:
@@ -577,7 +609,9 @@ def load_state(path: str | os.PathLike[str]) -> State:
         schema = data.get("schema")
         if schema != SCHEMA_VERSION:
             log.info("state schema %r != %d, upgrading tolerantly", schema, SCHEMA_VERSION)
-        return State.from_dict(data)
+        st = State.from_dict(data)
+        drop_common_delay(st, f"state {p}")
+        return st
     except Exception as e:  # noqa: BLE001 - boot must never crash-loop on a bad file
         # ValueError (bad JSON), RecursionError (deeply nested), OverflowError, anything else a
         # hostile/corrupt file can provoke: defaults + keep the evidence.

@@ -13,8 +13,14 @@ Why it is shaped like this:
   around it, and are refused unless the operator confirmed them (SETUP: proposed by an E3 turn,
   applied by an E3 push, D-017; chosen with E2 and set by a push under D-013) or the box is muted.
 - **Mute never waits.** B4 is the emergency gesture: `set_mute` sends the Main mute at once,
-  outside the worker and its lock. Nothing else ever UNMUTES Main except the operator, a boot ramp,
-  or a setup guard, and the last two re-check the operator's mute right before unmuting.
+  outside the worker and its lock (beside the mute sender when that one is busy: `_mute_now`),
+  and the client carries it on a connection of its own (cdsp `mute_link`), never behind a
+  write's read-back, an upload or an unmute; also while the main link is down (an unmute is
+  not: it needs the main link). The mute link down or silent: the main link carries the mute,
+  behind what holds it, as before. A fader read on the main link that crossed a Main mute is
+  not trusted for Main (`_main_mute_read_ok`), nor is an unmute's return that a mute crossed
+  (`_main_mute_after`). Nothing else ever UNMUTES Main except the operator, a boot ramp, or a
+  setup guard, and the last two re-check the operator's mute right before unmuting.
 - **No ramp into an engine that is not processing.** CamillaDSP applies a fader change made while
   it is Stalled/Paused/Starting at once when audio resumes (README, Volume control), so a ramp
   run "into" a stalled capture is no ramp at all. The boot ramp and the setup guard unmute only
@@ -74,10 +80,13 @@ import yaml
 from . import dspconfig as dc
 from .cdsp import CdspError, CdspNoConfig, CdspUnavailable
 from .dspconfig import FADER_MAIN, FADER_SUBS, FADER_TOPS, Fader, FaderMute, Op, Rebuild, SetValue
+from .latency import (DROPOUT_READ_S, ENGINE_LOG, LIMIT_MS, DropoutCounter, LatencyWatch,
+                      latency_limit_ms)
 from .profiles import (PROC_ASOUND, PROFILE_NAMES, Profile, ProfileChoice, card_id, card_present,
                        load_profile)
-from .state import (BOOL_FIELDS, CHOICES, N_SYS_PEQ, RANGES, REBUILD_FIELDS, State, atomic_write,
-                    effective_gain, is_band_on_path, load_state)
+from .state import (BOOL_FIELDS, CHOICES, DELAY_FIELDS, N_SYS_PEQ, RANGES, REBUILD_FIELDS,
+                    SAMPLE_MS, State, atomic_write, common_delay_ms, delay_samples,
+                    drop_common_delay, effective_gain, is_band_on_path, load_state)
 from .ui.input_map import (
     A_LAPTOP, ALL_PAGES, AUTO_HOME_PAGES, BELL_SLOTS, EDIT_HIGHLIGHT_S, F_AUX_GAIN, F_AUX_MODE,
     F_LOWCUT_ON, F_SPECTRUM_ON,
@@ -106,8 +115,8 @@ AUX_FLOOR_DB = -150.0        # the engine's own fader floor
 ENGINE_START_DB = dc.BOOT_GAIN_DB
 FRESH_TOL_DB = 0.05
 # The engine applies fader changes made while it is not processing as a step on resume: ramps
-# and guard unmutes wait for Running, read twice this far apart (> 2 chunks of 256 @ 48 kHz).
-RUN_CHECK_S = 0.012
+# and guard unmutes wait for Running, read twice more than 2 chunks apart
+# (`Controller._two_chunks_s`: dspconfig.two_chunks_s of the running chunk, 12 ms at 256).
 RUN_WAIT_S = 0.05            # GetState poll while holding Main muted for the engine to run
 BOOT_STEP_MAX_DB = 6.0       # no boot-ramp step above this, whatever boot_ramp_s says
 MAX_DETENTS = 1000.0         # a sane encoder move (input_map acceleration stays far below)
@@ -124,6 +133,11 @@ GUARD_SETTLE_S = 0.15
 GUARD_SETTLE_MAX_S = 0.6
 RESTORE_MIN_INTERVAL_S = 30.0   # at most one automatic pipeline restore per interval
 FIX_MAX_REPEATS = 3             # identical drift fixes re-sent at most this often in a row
+# Automatic whole-config repairs (a pipeline restore, a device repair: each one mutes Main around
+# its upload) for one drift, at most; then the alert only (`Controller._repair_allowed`). The
+# counts are forgotten once the engine's devices and pipeline have stayed K1000's this long.
+REPAIR_MAX_TRIES = 3
+REPAIR_FORGET_S = 600.0
 CLIP_DBFS = -0.1                # a playback peak at/above this lights the clip box
 CLIP_HOLD_S = 3.0
 IN_CLIP_DBFS = -0.5             # a capture (ADC) peak at/above this lights IN CLIP
@@ -219,9 +233,16 @@ MSG_PROFILE_ROUTING = "k1000.yaml ROUTING FIXED UP (SEE LOG)"
 # short, so the status bar shows them whole at a readable size (UX-5; docs/03 §3 has the table).
 MSG_PIPELINE_CHANGED = "PIPELINE CHANGED (GUI)"
 MSG_DEVICES_CHANGED = "DEVICES CHANGED (GUI)"
+# The engine on the wrong card/channels and the device repair has given up (REPAIR_MAX_TRIES):
+# the PA plays nothing or the wrong input. Critical, above the drift messages.
+MSG_WRONG_DEVICES = "ENGINE ON WRONG DEVICES (SEE LOG)"
 OUTSIDE = "(GUI)"
 NOTE_REBUILT = "STATE REBUILT · CHECK MASTER"
 NOTE_MISSING = "NO SAVED STATE · CHECK MASTER"
+# The engine still plays a common sub + top delay (the whole PA late) that the state no longer
+# has: kept while Main may be heard (ALIGN moves ride on top of it), written out at the next
+# mute (Controller._common_held).
+MSG_COMMON_DELAY = "PA LATE {ms:.2f} MS · MUTE TO CLEAR"
 # Messages at/above this priority are alerts: also shown inside the MUTED band and on SETUP.
 ALERT_PRIO = 4
 
@@ -231,8 +252,10 @@ ALERT_PRIO = 4
 ALERT_CRITICAL, ALERT_WARNING, ALERT_INFO = "critical", "warning", "info"
 MESSAGE_LEVELS = {
     "knobs": ALERT_CRITICAL, "save": ALERT_CRITICAL, "engine": ALERT_CRITICAL,
+    "wrongdev": ALERT_CRITICAL,
     "settings": ALERT_WARNING, "profile": ALERT_WARNING, "wait": ALERT_WARNING,
     "drift": ALERT_WARNING, "devices": ALERT_WARNING, "held": ALERT_WARNING,
+    "common": ALERT_WARNING,
     "setup": ALERT_INFO, "ramp": ALERT_INFO,
 }
 # Status-bar ranks of the conditions the controller does not hold as messages (the body shows
@@ -267,15 +290,19 @@ def decode_marker(vol: Any) -> frozenset[int] | None:
 # =========================================================================== small types
 @dataclass(frozen=True)
 class Paths:
-    """Where the controller persists. Defaults = docs/03 §5."""
+    """Where the controller persists. Defaults = docs/03 §5. `engine_log`: the engine's live log,
+    read for the dropout count (D-018); None here (nothing read: tests), the engine unit's path
+    from `from_settings` (the service)."""
 
     state: Path = Path("/var/lib/k1000/state.json")
     active_config: Path = Path("/var/lib/k1000/active.yml")
+    engine_log: Path | None = None
 
     @classmethod
     def from_settings(cls, settings: Any, *, state: str | Path | None = None,
                       active_config: str | Path | None = None) -> "Paths":
-        """k1000.yaml `paths.{state, active_config}`, overridden by explicit arguments."""
+        """k1000.yaml `paths.{state, active_config, engine_log}`, overridden by explicit
+        arguments."""
         sec = settings.get("paths") if isinstance(settings, dict) else None
         sec = sec if isinstance(sec, dict) else {}
         d = cls()
@@ -286,7 +313,8 @@ class Paths:
             v = sec.get(key)
             return Path(v) if isinstance(v, str) and v.strip() else default
 
-        return cls(pick(state, "state", d.state), pick(active_config, "active_config", d.active_config))
+        return cls(pick(state, "state", d.state), pick(active_config, "active_config", d.active_config),
+                   pick(None, "engine_log", ENGINE_LOG))
 
 
 @dataclass(frozen=True)
@@ -361,6 +389,13 @@ class Status:
     mute_src: str = ""               # B4 | phone N | console | boot | GUI | local; "" = not muted
     in_peak_db: list[float] = field(default_factory=lambda: [METER_FLOOR_DB] * 2)   # capture peaks
                                      # of the program inputs (input_map order), before any gain
+    # ---- D-018 latency readout (latency.py): the status poll and the engine's live log
+    latency_ms: float | None = None  # estimated in to out, 0.1 ms; None = no reading
+    latency_io: bool = True          # the interface's share is in it (False: the engine's only)
+    latency_over: bool = False       # above latency_limit_ms (informs, never acts)
+    latency_limit_ms: float = LIMIT_MS
+    buffer_level: int | None = None  # GetBufferLevel, frames
+    dropouts: int | None = None      # dropout lines since the engine started; None = log unread
 
     def copy(self) -> "Status":
         return dataclasses.replace(self, levels=list(self.levels), clip=list(self.clip),
@@ -575,6 +610,17 @@ def _no_mute(s: State) -> State:
     return c
 
 
+# The two delay pointers are adopted as a pair or not at all. One side alone (our own recent
+# write, a pending edit) would mix the engine's pair with the state's difference: with a held
+# common delay (`Controller._common_held`) the engine plays sub 45.1 / top 40 for an ALIGN of 5.1,
+# and sub 5.1 (the state's) with top 40 (the engine's) would come in as ALIGN -34.9.
+DELAY_PTRS = frozenset({dc._pp("sub_delay", "delay"), dc._pp("top_delay", "delay")})
+
+
+def _pair_delays(ptrs: set[str]) -> set[str]:
+    return ptrs | DELAY_PTRS if ptrs & DELAY_PTRS else ptrs
+
+
 def _num(v: Any) -> float | None:
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return None
@@ -710,6 +756,7 @@ def recover_state(paths: Paths) -> tuple[State, str]:
     # blocks are what ran (a rebuilt state without them would strip them from the engine).
     for f, v in dc.feature_switches(cfg).items():
         setattr(rebuilt, f, v)
+    drop_common_delay(rebuilt, f"state rebuilt from {paths.active_config}")
     rebuilt.muted = True
     log.warning("state.json %s: state rebuilt from %s (the tune the engine boots from); "
                 "master/balance are defaults, MUTED until the operator checks the master", why,
@@ -768,6 +815,7 @@ class Controller:
 
         s = state.clamped()
         s.profile = profile.name          # the state always names the running profile
+        drop_common_delay(s, "k1000 start")   # load_state did it already for state.json
         self.state: State = s
         self._applied: State = s.copy()   # what the engine is believed to hold
         self.page = HOME_PAGE
@@ -843,6 +891,7 @@ class Controller:
         self._kick = asyncio.Event()
         self._mute_want: bool | None = None
         self._mute_task: asyncio.Task[None] | None = None
+        self._mute_now_task: asyncio.Task[None] | None = None    # B4 beside a busy sender
         self._own_ptr: dict[str, float] = {}
         self._own_fader: dict[int, float] = {}
         self._dirty_since: float | None = None
@@ -866,6 +915,13 @@ class Controller:
         # Faders K1000 may have left in a guard/ramp on the engine (mirrored in the marker):
         # set before the guard's mute, removed once its unmute is confirmed.
         self._guards: set[int] = set()
+        # A common sub + top delay the engine holds (`_note_common`, `_common_held`): its size
+        # in samples as last noted, and as last said in the journal by an adoption.
+        self._common_seen = 0
+        self._common_logged: int | None = None
+        # devices.chunksize of the running engine, as last read (None: not read yet). It differs
+        # from the profile's after a k1000.yaml change until the engine restarts (`_two_chunks_s`).
+        self._engine_chunk: int | None = None
         self._marker_engine: float | None = None       # Aux4 as last read or written
         # Aux groups lowered (offset <= 0 dB under the balance macro) or muted outside K1000:
         # kept, shown, never raised or released by K1000.
@@ -878,6 +934,10 @@ class Controller:
         self._meter_key: Any = None
         self._device_seen = 0             # polls in a row with the engine on the wrong card
         self._last_repair = -math.inf
+        # The automatic whole-config repairs made for each drift, and since when the engine's
+        # devices and pipeline have been K1000's (None: not now) (`_repair_allowed`).
+        self._repair_tries: dict[Any, int] = {}
+        self._repair_clean_since: float | None = None
         # Is `a` the same ALSA card as `b`? (/proc/asound/<id> -> cardN). Injectable for tests.
         self.same_card: Callable[[str, str], bool | None] = _same_card
         self._logged: set[Any] = set()
@@ -890,6 +950,11 @@ class Controller:
         for w in profile.warnings:
             log.warning("profile %s: %s", profile.name, w)
         self._note_profile_routing(profile)
+        # D-018: the delay readout (status poll) and the dropout count (engine log, a thread).
+        self.latency = LatencyWatch(latency_limit_ms(self.settings), clock=self._clock)
+        self.status.latency_limit_ms = self.latency.limit_ms
+        self.dropouts = DropoutCounter(paths.engine_log) if paths.engine_log is not None else None
+        self.dropout_s = DROPOUT_READ_S
 
     # ------------------------------------------------------------------ lifecycle
     @property
@@ -922,7 +987,7 @@ class Controller:
         loop = asyncio.get_running_loop()
         for coro, name in ((self._worker(), "k1000-apply"), (self._poll_loop(), "k1000-poll"),
                            (self._meter_loop(), "k1000-meter"), (self._persist_loop(), "k1000-persist"),
-                           (self._ui_loop(), "k1000-ui")):
+                           (self._ui_loop(), "k1000-ui"), (self._dropout_loop(), "k1000-dropouts")):
             self._tasks.append(loop.create_task(coro, name=name))
         self._refresh_device()
         already = bool(getattr(self.client, "connected", False))
@@ -955,11 +1020,12 @@ class Controller:
             log.warning("engine work still running after %.1f s: cancelling it (a guard it leaves "
                         "is recorded on the engine and finished by the next k1000)", STOP_LOCK_S)
         try:
-            if self._mute_task is not None and not self._mute_task.done():
-                try:
-                    await asyncio.wait_for(asyncio.shield(self._mute_task), 0.5)
-                except BaseException:
-                    pass
+            for mute_task in (self._mute_task, self._mute_now_task):
+                if mute_task is not None and not mute_task.done():
+                    try:
+                        await asyncio.wait_for(asyncio.shield(mute_task), 0.5)
+                    except BaseException:
+                        pass
             if getattr(self.client, "on_connect", None) == self._on_connect:
                 self.client.on_connect = None
             if getattr(self.client, "on_disconnect", None) == self._on_disconnect:
@@ -1157,6 +1223,8 @@ class Controller:
         except (KeyError, ValueError, TypeError, ArithmeticError) as e:
             log.warning("nudge %r refused: %s", field, e)
             return None
+        if field in DELAY_FIELDS and drop_common_delay(self.state, f"{source} nudged {field}"):
+            new = self.state.get(field)      # never a pair in the state (`_common_held`)
         if new != old or pair != (self.state.sub_delay_ms, self.state.top_delay_ms):
             if field == "master_db":
                 if new > old:
@@ -1207,6 +1275,8 @@ class Controller:
         except (KeyError, ValueError, TypeError) as e:
             log.warning("set %r=%r refused: %s", field, value, e)
             return None
+        if field in DELAY_FIELDS and drop_common_delay(self.state, f"{source} set {field}"):
+            new = self.state.get(field)      # see nudge
         if new != old or pair != (self.state.sub_delay_ms, self.state.top_delay_ms):
             if field == "master_db":
                 _log_master(old, new, source)
@@ -1620,6 +1690,12 @@ class Controller:
                                                                          name="k1000-mute")
             except RuntimeError:   # no loop (sync test): the next connect sync sends it
                 pass
+        elif on and (self._mute_now_task is None or self._mute_now_task.done()):
+            try:
+                self._mute_now_task = asyncio.get_running_loop().create_task(
+                    self._mute_now(), name="k1000-mute-now")
+            except RuntimeError:   # no loop: the sender sends it when its unmute returns
+                pass
         return on
 
     def next_page(self) -> str:
@@ -1930,20 +2006,35 @@ class Controller:
         cfg = dc.generate(profile or self.profile, state)
         return self._transform(cfg) if self._transform else cfg
 
+    def _note_engine_chunk(self, live: Any) -> None:
+        dev = live.get("devices") if isinstance(live, dict) else None
+        cs = dev.get("chunksize") if isinstance(dev, dict) else None
+        self._engine_chunk = cs if isinstance(cs, int) and not isinstance(cs, bool) and cs > 0 \
+            else None
+
+    def _two_chunks_s(self) -> float:
+        """The step and Running-check wait (dspconfig.two_chunks_s) for the larger of the
+        profile's chunk and the running engine's: a k1000.yaml chunk change waits for the next
+        engine start (a devices change), and until then the engine runs the old one."""
+        chunk = max(dc.engine_buffer(self.profile)[0], self._engine_chunk or 0)
+        return dc.two_chunks_s(chunk)
+
     def _pending_ops(self) -> list[Op]:
         """What the worker still has to send (mute excluded: it has its own path)."""
-        return dc.diff_ops(_no_mute(self._applied), _no_mute(self.state))
+        return dc.diff_ops(_no_mute(self._applied), _no_mute(self._worker_target(self._applied)))
 
     def _pending_keys(self) -> tuple[set[str], set[int]]:
-        """Pointers and faders with local edits not sent yet (protected from adoption)."""
-        pa, ps = dc.param_map(self._applied), dc.param_map(self.state)
+        """Pointers and faders with local edits not sent yet (protected from adoption; the two
+        delays as a pair, `_pair_delays`)."""
+        pa, ps = dc.param_map(self._applied), dc.param_map(self._worker_target(self._applied))
         ptrs = {k for k, v in ps.items() if pa.get(k) != v}
         fa, fs = dc.fader_levels(self._applied), dc.fader_levels(self.state)
-        return ptrs, {i for i in fs if fa.get(i) != fs[i]}
+        return _pair_delays(ptrs), {i for i in fs if fa.get(i) != fs[i]}
 
     def _recent_own(self) -> tuple[set[str], set[int]]:
+        """Pointers and faders K1000 wrote within OWN_WRITE_S (the delays as a pair)."""
         now = self._clock()
-        return ({p for p, t in self._own_ptr.items() if now - t < OWN_WRITE_S},
+        return (_pair_delays({p for p, t in self._own_ptr.items() if now - t < OWN_WRITE_S}),
                 {i for i, t in self._own_fader.items() if now - t < OWN_WRITE_S})
 
     async def _send(self, ops: Iterable[Op]) -> None:
@@ -1975,7 +2066,7 @@ class Controller:
                 await self.client.set_fader_mute(op.index, op.mute)
                 self._own_fader[op.index] = self._clock()
                 if op.index == FADER_MAIN:
-                    self.status.muted = op.mute
+                    self.status.muted = self._main_mute_after(op.mute)
                     self._changed()
             elif isinstance(op, Rebuild):
                 raise ValueError("a Rebuild cannot be sent as a batch")
@@ -2039,11 +2130,12 @@ class Controller:
             self._changed()
 
     async def _engine_running(self, epoch: int, *, held: bool = False) -> bool:
-        """GetState reads Running (with `held`: twice, RUN_CHECK_S apart). Anything else means
-        a fader change now would be applied as a step when audio resumes."""
+        """GetState reads Running (with `held`: twice, more than 2 chunks apart: `_two_chunks_s`,
+        12 ms at chunk 256). Anything else means a fader change now would be applied as a step
+        when audio resumes."""
         for k in range(2 if held else 1):
             if k:
-                await self._sleep(RUN_CHECK_S)
+                await self._sleep(self._two_chunks_s())
                 self._check_link(epoch)
             est = await self.client.get_state()
             self._note_engine(est)
@@ -2079,12 +2171,51 @@ class Controller:
             raise _LinkChanged("engine link changed")
 
     # ------------------------------------------------------------------ mute path
+    def _mute_link_up(self) -> bool:
+        """The client's mute link is up (cdsp `mute_link`): a mute goes out without the main link."""
+        return bool(getattr(self.client, "mute_connected", False))
+
+    def _main_mute_gen(self) -> int:
+        """The client's Main mute generation (cdsp `main_mute_gen`; odd while one is on its way)."""
+        return int(getattr(self.client, "main_mute_gen", 0))
+
+    def _main_mute_read_ok(self, seq: int) -> bool:
+        """Does a fader read started at `_main_mute_gen()` == `seq` show Main's mute as it is? Not
+        if a Main mute or unmute was on its way then or was asked since: on its own link it can
+        land while the read is on its way back on the main link, which then shows it undone."""
+        return seq % 2 == 0 and self._main_mute_gen() == seq
+
+    def _main_mute_after(self, mute: bool) -> bool:
+        """Main's mute once a SetFaderMute(Main, `mute`) has returned. Every unmute is sent only
+        when the operator wants sound; if they muted while it was on its way, the client made
+        that mute the engine's last word (cdsp `set_fader_mute`), and on two links the mute
+        can return first: this unmute's return must not show Main unmuted."""
+        return bool(mute) or self._operator_muted()
+
+    async def _mute_now(self) -> None:
+        """B4 while the sender is busy (it may sit in an unmute that waits for the main link):
+        this mute goes out now, beside it. Failed: the sender, else the connect sync, sends it."""
+        if not self._operator_muted():
+            return              # unmuted again before this ran: the sender has the last word
+        try:
+            await self.client.set_fader_mute(FADER_MAIN, True)
+        except (CdspError, CdspUnavailable) as e:
+            log.warning("mute: %s; sent again by the mute sender", e)
+            return
+        self._own_fader[FADER_MAIN] = self._clock()
+        if self._operator_muted():               # not unmuted again meanwhile
+            self._applied.muted = True
+            self.status.muted = True
+            if self._mute_want is True:
+                self._mute_want = None
+            self._changed()
+
     async def _mute_sender(self) -> None:
         """Send the latest operator mute until it is in the engine (or the link is down: the
         next connect sync takes it from there)."""
         while self._mute_want is not None:
             want = self._mute_want
-            if not self.client.connected:
+            if not self.client.connected and not (want and self._mute_link_up()):
                 return
             if want is False and self._main_guard_holds():
                 # A setup guard holds Main muted AT THE SHOW LEVEL until the engine runs: an
@@ -2106,15 +2237,100 @@ class Controller:
                     self._mute_want = None
                 return
             self._own_fader[FADER_MAIN] = self._clock()
-            self._applied.muted = want
-            self.status.muted = want
+            self._applied.muted = self._main_mute_after(want)
+            self.status.muted = self._applied.muted
             if self._mute_want == want:
                 self._mute_want = None
+            if want:
+                self._kick.set()    # a common delay held while audible can go now (_common_held)
             self._changed()
 
     def _main_guard_holds(self) -> bool:
         """A setup guard (not a boot ramp: Main is parked low there) holds Main muted."""
         return FADER_MAIN in self._guards and not self._ramping
+
+    # ------------------------------------------------------------------ the common delay
+    def _common_held(self, base: State) -> float:
+        """The common delay (ms) the engine (`base`) keeps for now, 0.0 = none or written out
+        now. The state never holds one (docs/16 §5.1 finding 1: dropped when it is loaded or
+        adopted, `state.drop_common_delay`); the engine keeps the one it plays while Main may be
+        heard. Main counts as muted only when the engine has it muted AND the operator wants it
+        so: an unmute on its way to the engine counts as heard.
+
+        Why not write it at once: every Delay write rebuilds the delay line and clicks, so K1000
+        writes delays under a mute of the groups whose delay changes, and here both change: the
+        whole PA dips for about 0.3 s. Made on K1000's own decision in the middle of the music,
+        that is a dropout nobody asked for. So the engine plays on as it was, the screen says how
+        late the PA is (MSG_COMMON_DELAY, `_note_common`), ALIGN moves ride on top of it
+        (`_worker_target`), and the write goes at the first moment it is inaudible: Main muted
+        (B4, the phone), a setup change (rebuilt under a Main mute), or the next engine start (a
+        fresh engine is set up muted, before its ramp). Decided when the worker plans: an unmute
+        that reaches the engine in the few ms between that and the group mutes still gets the
+        write (the PA comes in about 0.1 s later)."""
+        if (base.muted or self.status.muted is True) and self._operator_muted():
+            return 0.0
+        if min(delay_samples(base.sub_delay_ms), delay_samples(base.top_delay_ms)) <= 0:
+            return 0.0
+        return common_delay_ms(base)
+
+    def _worker_target(self, base: State) -> State:
+        """A copy of the state, as the worker takes the engine to it from `base`. While
+        `_common_held`, the held part rides on both delays: a side the state has not moved since
+        keeps `base`'s value as it is, a moved side is the state's value plus the held part. So
+        an ALIGN move changes only the late side and dips only its group, as any ALIGN move, and
+        the PA stays as late as it was until the mute. Not in a setup rebuild (Main is muted
+        around it), nor when a side would pass its range: that move writes the state's pair, and
+        both groups dip (both delays change)."""
+        target = self.state.copy()
+        common = self._common_held(base)
+        if not common or any(isinstance(op, Rebuild) for op in dc.diff_ops(base, target)):
+            return target
+        dropped = base.copy()
+        drop_common_delay(dropped)
+        held: list[float] = []
+        for f in DELAY_FIELDS:
+            want = getattr(target, f)
+            if delay_samples(want) == delay_samples(getattr(dropped, f)):
+                held.append(getattr(base, f))          # not moved: exactly what the engine holds
+            elif (v := round(want + common, 6)) <= RANGES[f].max:
+                held.append(v)
+            else:
+                return target
+        target.sub_delay_ms, target.top_delay_ms = held
+        return target
+
+    def _drop_adopted_common(self, new: State) -> None:
+        """`new`, about to replace the state, is adopted from the engine: it keeps no common
+        delay (`state.drop_common_delay`). A side that lands on the samples the state already
+        has keeps the state's own value: a held pair reads back on the sample grid (45.104167 /
+        40 for the 5.1 ALIGN set), and the operator's 5.1 stays 5.1. The journal says it once
+        per common part the engine holds, not after every ALIGN move made on top of it."""
+        common = min(delay_samples(new.sub_delay_ms), delay_samples(new.top_delay_ms))
+        if not drop_common_delay(new, "" if common == self._common_logged
+                                 else "adopted from the engine"):
+            return
+        self._common_logged = common
+        for f in DELAY_FIELDS:
+            if delay_samples(getattr(new, f)) == delay_samples(getattr(self.state, f)):
+                setattr(new, f, getattr(self.state, f))
+
+    def _note_common(self) -> None:
+        """The screen and the journal follow the common delay the engine holds (`_applied`)."""
+        a = self._applied
+        common = min(delay_samples(a.sub_delay_ms), delay_samples(a.top_delay_ms))
+        if common > 0:
+            self._set_message("common", 4, MSG_COMMON_DELAY.format(ms=common * SAMPLE_MS))
+            if common != self._common_seen:
+                log.warning("the engine plays the whole PA %.3f ms late (sub delay %.3f ms, top "
+                            "delay %.3f ms): written out at the next mute, setup change or "
+                            "engine start, never while the PA plays (the write dips both "
+                            "groups)", common * SAMPLE_MS, a.sub_delay_ms, a.top_delay_ms)
+        elif self._common_seen:
+            log.info("the common delay of %.3f ms is out of the engine",
+                     self._common_seen * SAMPLE_MS)
+            self._set_message("common", 4, None)
+            self._common_logged = None
+        self._common_seen = common
 
     # ------------------------------------------------------------------ apply worker
     async def _worker(self) -> None:
@@ -2154,10 +2370,10 @@ class Controller:
     async def _apply_once(self) -> bool:
         """One plan from `_applied` to the state. False when it failed (no busy retry loop)."""
         base = self._applied.copy()
-        target = self.state.copy()
+        target = self._worker_target(base)
         target.muted = base.muted
         epoch = self._epoch
-        plan = dc.smooth_ops(base, target)
+        plan = dc.smooth_ops(base, target, step_wait_s=self._two_chunks_s())
         rebuild = next((op for _w, b in plan for op in b if isinstance(op, Rebuild)), None)
         self._busy = True
         try:
@@ -2189,6 +2405,7 @@ class Controller:
             return False
         finally:
             self._busy = False
+            self._note_common()
             self._changed()
 
     async def _run_plan(self, plan: dc.Plan, epoch: int) -> None:
@@ -2210,6 +2427,7 @@ class Controller:
 
     async def _resync_from_engine(self) -> None:
         """After a refused write: the engine's values win (the refused edit is dropped)."""
+        seq = self._main_mute_gen()
         try:
             live = await self.client.get_config_json()
             faders = await self.client.get_faders()
@@ -2220,9 +2438,16 @@ class Controller:
         except CdspError as e:
             log.warning("cannot re-read the engine (%s); the next poll adopts", e)
             return
+        if not self._main_mute_read_ok(seq):
+            # A Main mute crossed this read (`_main_mute_read_ok`): its Main is not the engine's.
+            # An empty entry keeps each view's own Main (`dc.state_from_config`).
+            faders = [{} if i == FADER_MAIN else f for i, f in enumerate(faders)]
         skip = {FADER_MAIN} if self._mute_want is not None else set()
         self._applied = dc.state_from_config(live, faders, self._applied)
-        self.state = dc.state_from_config(live, faders, self.state, skip_faders=skip)
+        new = dc.state_from_config(live, faders, self.state, skip_faders=skip)
+        self._drop_adopted_common(new)
+        self.state = new
+        self._note_common()
         self._mark_dirty()
         self._changed()
 
@@ -2245,6 +2470,9 @@ class Controller:
         cfg = expected if (profile_change or live is None) else dc.with_live_devices(expected, live)
         log.warning("setup action: %s -> pipeline rebuild%s", reason,
                     " + device restart" if profile_change else "")
+        # The upload takes the common delay out (`target` is the state's, never held): PA LATE
+        # would hide APPLYING SETUP… (same priority); `_apply_once` puts it back if it failed.
+        self._set_message("common", 4, None)
         self._set_message("setup", 4, "APPLYING SETUP…")
         try:
             ok = await self._guarded_upload(cfg, ramp_after=profile_change, epoch=epoch)
@@ -2253,6 +2481,7 @@ class Controller:
         if not ok:
             self._revert_setup(base, "SETUP FAILED")
             return
+        self._repair_reset()     # the operator acted: the automatic repairs may try again
         if profile_change:
             self.profile = new_profile
             self.status.profile = new_profile.name
@@ -2321,8 +2550,8 @@ class Controller:
                     if not self._operator_muted():
                         await self.client.set_fader_mute(FADER_MAIN, False)
                         self._own_fader[FADER_MAIN] = self._clock()
-                        self._applied.muted = False
-                        self.status.muted = False
+                        self._applied.muted = self._main_mute_after(False)
+                        self.status.muted = self._applied.muted
                     finished = True
         except BaseException:
             if audible and not finished and not handed:
@@ -2347,10 +2576,12 @@ class Controller:
         async def go() -> bool:
             if str(await self.client.get_state()) != "Running":
                 return False
+            if self._operator_muted():   # B4 pressed during that round trip: it wins
+                return True
             await self.client.set_fader_mute(FADER_MAIN, False)
             self._own_fader[FADER_MAIN] = self._clock()
-            self._applied.muted = False
-            self.status.muted = False
+            self._applied.muted = self._main_mute_after(False)
+            self.status.muted = self._applied.muted
             return True
 
         try:
@@ -2376,7 +2607,7 @@ class Controller:
             if isinstance(op, Fader) and op.index == FADER_MAIN:
                 self._applied.master_db = op.db
             elif isinstance(op, FaderMute) and op.index == FADER_MAIN:
-                self._applied.muted = op.mute
+                self._applied.muted = self._main_mute_after(op.mute)
 
     def boot_ramp_s_for(self, master_db: float, start_db: float | None = None) -> float:
         """boot_ramp_s, lengthened so that no ramp step exceeds BOOT_STEP_MAX_DB (a k1000.yaml
@@ -2502,6 +2733,8 @@ class Controller:
         self.status.muted = None
         self.status.load = None
         self.status.levels = [METER_FLOOR_DB] * 4
+        self.latency.lost()               # the next reading gets a journal line (D-018)
+        self._note_latency(None, None)
         self._changed()
 
     async def _sync(self, epoch: int) -> None:
@@ -2510,14 +2743,18 @@ class Controller:
         if not str(version).startswith("5."):
             self._log_once(("version", version), logging.WARNING,
                            "engine version %s: K1000 v0 is built for CamillaDSP 5.0.0-beta.1", version)
+        seq = self._main_mute_gen()
         try:
             live: Any = await self.client.get_config_json()
         except CdspNoConfig:
             live = None
+        self._note_engine_chunk(live)
+        self.latency.note_config(live)    # chunksize, samplerate (D-018 readout)
         faders = await self.client.get_faders()
         self._note_engine(await self.client.get_state())
         main_vol, main_mute = _fader(faders, FADER_MAIN)
-        self.status.muted = main_mute
+        if self._main_mute_read_ok(seq):
+            self.status.muted = main_mute
         marker, _ = _fader(faders, MARKER_FADER)
         self._marker_engine = marker
         guards = decode_marker(marker)
@@ -2550,6 +2787,7 @@ class Controller:
                          " muted" if main_mute else "", "" if managed else ", not brought in by K1000")
             await self._sync_running(live, faders, epoch, managed=managed)
         self._check_link(epoch)
+        self._note_common()
         await self._write_marker()
 
     async def _sync_fresh(self, live: Any, faders: Any, epoch: int) -> None:
@@ -2614,7 +2852,10 @@ class Controller:
             if resume_main and self.status.muted is not True:
                 await self._send([FaderMute(FADER_MAIN, True)])
                 self._applied.muted = True
-            await self._guarded_upload(self._expected(self.state), ramp_after=True, epoch=epoch)
+            ok = await self._guarded_upload(self._expected(self.state), ramp_after=True,
+                                            epoch=epoch)
+            if ok:   # the state's delays went in: the hold must not ride on the old pair
+                self._restored_delays(self.state)
             if resume_main:
                 await self._boot_ramp(self.state, epoch)
             self._applied.profile = self.profile.name
@@ -2653,6 +2894,9 @@ class Controller:
         for f in STRUCTURE_FIELDS:                  # a setup edit not applied yet also wins
             if getattr(self.state, f) != getattr(self._applied, f):
                 setattr(new, f, getattr(self.state, f))
+        # Never a common sub + top delay in the state; the engine keeps one while the PA plays
+        # (`_common_held`): the engine view below holds both, the state their difference.
+        self._drop_adopted_common(new)
         _vol, engine_muted = _fader(faders, FADER_MAIN)
         if connect and self._mute_want is False:
             if FADER_MAIN in extra_skip or engine_muted is False:
@@ -2676,6 +2920,7 @@ class Controller:
             self._mark_dirty()
             self._changed()
         self._applied = engine_view
+        self._note_common()
         return engine_view
 
     async def _reconcile(self, live: Any, faders: Any, *, connect: bool,
@@ -2702,16 +2947,19 @@ class Controller:
         wrong = self.wrong_devices(live, expected) if self.status.device_present is True else []
         if not wrong:
             self._device_seen = 0
-        elif not connect and await self._maybe_repair_devices(live, expected, wrong):
+        elif not connect and await self._maybe_repair_devices(live, engine_view, wrong):
             return    # devices + pipeline back from the profile; the next poll re-reconciles
         drift = dc.config_drift(live, expected, skip_pointers=recent_p)
+        self._repair_look(clean=not wrong and not drift.rebuild)
+        if not wrong:
+            self._set_message("wrongdev", 6, None)
         held: list[str] = list(drift.held)      # AUX routing cuts made outside K1000 (D-016)
         if drift.rebuild and wrong:
             # A pipeline restore keeps the live devices: useless there (and refused when the
             # channel counts differ). The device repair puts both back.
             self._set_message("drift", 2, MSG_PIPELINE_CHANGED)
         elif drift.rebuild:
-            await self._maybe_restore(live, expected, drift.rebuild, connect)
+            await self._maybe_restore(live, engine_view, drift.rebuild, connect)
         else:
             self._rebuild_seen = 0
             self._set_message("drift", 2, None)
@@ -2861,6 +3109,7 @@ class Controller:
                         continue
                 direct.append(f)
         plan: dc.Plan = []
+        step_s = self._two_chunks_s()            # dspconfig.STEP_WAIT_S at chunk 256
         if tracks:
             n = 1
             for _p, a, b, is_log, step in tracks:
@@ -2873,16 +3122,16 @@ class Controller:
                 for ptr, a, b, is_log, _s in tracks:
                     v = b if k == n else round(a * (b / a) ** t if is_log else a + (b - a) * t, 3)
                     batch.append(SetValue(ptr, v))
-                plan.append((dc.STEP_WAIT_S if plan else 0.0, batch))
+                plan.append((step_s if plan else 0.0, batch))
         plain = [f for f in direct if dc._guard_group(f.pointer) is None]
         guarded = [f for f in direct if dc._guard_group(f.pointer) is not None]
         if plain:
-            plan.append((dc.STEP_WAIT_S if plan else 0.0, list(plain)))
+            plan.append((step_s if plan else 0.0, list(plain)))
         if guarded:
             groups = sorted({g for g in (dc._guard_group(f.pointer) for f in guarded) if g is not None})
-            plan.append((dc.STEP_WAIT_S if plan else 0.0, [FaderMute(g, True) for g in groups]))
+            plan.append((step_s if plan else 0.0, [FaderMute(g, True) for g in groups]))
             plan.append((dc.GUARD_WAIT_S, list(guarded)))
-            plan.append((dc.STEP_WAIT_S, [FaderMute(g, False) for g in groups]))
+            plan.append((step_s, [FaderMute(g, False) for g in groups]))
         return plan, pushed, held
 
     @staticmethod
@@ -2942,6 +3191,58 @@ class Controller:
         await self._run_plan(plan, self._epoch)
         return held
 
+    def _repair_allowed(self, key: tuple[str, tuple[str, ...], str]) -> bool:
+        """May the poll make one more automatic whole-config upload for the drift `key`
+        ("pipeline" or "devices", what differs, the running pipeline or "")?
+
+        Each one mutes Main around its upload: unlimited, a drift that an upload does not cure
+        (the engine refuses K1000's config, or something puts the change back, at once or a few
+        seconds later) would mute the PA every RESTORE_MIN_INTERVAL_S for as long as it goes on.
+        So at most REPAIR_MAX_TRIES uploads per drift, then no upload: an alert (PIPELINE
+        CHANGED (GUI), the drift's own; ENGINE ON WRONG DEVICES, `_maybe_repair_devices`) and
+        one log line.
+        Each drift (`key`) has its own count: another change gets its tries, and two changes
+        that take turns cannot reset each other's. The counts are forgotten when:
+        - the engine's devices and pipeline have stayed K1000's for REPAIR_FORGET_S without a
+          break (`_repair_look`): one clean look between two returns of a change is not enough;
+        - the operator applies a setup action (`_rebuild`), which uploads K1000's config itself;
+        - k1000 restarts (the counts live in memory only).
+        Value fixes have their own limit (FIX_MAX_REPEATS); a fresh engine's upload at connect
+        (`_sync_fresh`, the engine muted already) is not counted."""
+        tries = self._repair_tries.get(key, 0)
+        if tries < REPAIR_MAX_TRIES:
+            return True
+        self._log_once(("repair", key), logging.ERROR,
+                       "engine %s: still not K1000's after %d automatic repairs (%s); no more "
+                       "uploads for this until the engine has been K1000's for %.0f min or the "
+                       "operator applies a setup action (alert only)", key[0], tries,
+                       "; ".join(key[1])[:300], REPAIR_FORGET_S / 60.0)
+        return False
+
+    def _repair_count(self, key: tuple[str, tuple[str, ...], str]) -> None:
+        """One more automatic repair upload for `key` (`_repair_allowed`)."""
+        self._repair_tries[key] = self._repair_tries.get(key, 0) + 1
+        self._repair_clean_since = None
+
+    def _repair_look(self, clean: bool) -> None:
+        """A look at the engine (`_reconcile`): are its devices and pipeline K1000's? The repair
+        counts are forgotten once they have been for REPAIR_FORGET_S, every look in between."""
+        if not clean:
+            self._repair_clean_since = None
+            return
+        now = self._clock()
+        if self._repair_clean_since is None:
+            self._repair_clean_since = now
+        elif self._repair_tries and now - self._repair_clean_since >= REPAIR_FORGET_S:
+            log.info("engine devices and pipeline K1000's for %.0f s: the automatic repairs "
+                     "may run again", now - self._repair_clean_since)
+            self._repair_reset()
+
+    def _repair_reset(self) -> None:
+        for key in self._repair_tries:
+            self._logged.discard(("repair", key))
+        self._repair_tries.clear()
+
     def _report_drift(self, devices: list[str], held: list[str]) -> None:
         drift = list(devices) + list(held)
         if drift != self.status.drift:
@@ -2989,49 +3290,81 @@ class Controller:
                 out.append(f"{side} channels {lv.get('channels')!r} != {ev.get('channels')!r}")
         return out
 
-    async def _maybe_repair_devices(self, live: Any, expected: dict[str, Any],
+    def _restore_view(self, engine_view: State) -> State:
+        """What an upload of K1000's own on a playing engine puts back (a device repair, a
+        pipeline restore): the engine's view, without the common delay the state has already
+        dropped. Main is muted around those uploads, so nothing holds it (`_common_held`)."""
+        view = engine_view.copy()
+        drop_common_delay(view)
+        return view
+
+    def _restored_delays(self, view: State) -> None:
+        """An upload from `_restore_view` went in: the engine holds its delays."""
+        self._applied.sub_delay_ms, self._applied.top_delay_ms = view.sub_delay_ms, view.top_delay_ms
+        self._note_common()
+
+    async def _maybe_repair_devices(self, live: Any, engine_view: State,
                                     wrong: list[str]) -> bool:
         """The engine runs on the wrong card/channels while the profile's card is present: the
         PA plays nothing (or the wrong input) whatever the knobs do, and a pipeline restore
         keeps the live devices, so it cannot help. Put the profile's whole config back (device
         restart, Main muted around it, then the boot ramp): already silent, so this is the safe
-        direction. Second look first, at most once per RESTORE_MIN_INTERVAL_S. True = done."""
+        direction. Second look first, at most once per RESTORE_MIN_INTERVAL_S and
+        REPAIR_MAX_TRIES times for the same wrong devices (`_repair_allowed`); after that, no
+        upload and MSG_WRONG_DEVICES (critical) until the devices are right. True = done."""
         self._device_seen += 1
+        key = ("devices", tuple(wrong), "")
         if self._device_seen < 2:
             return False
+        if not self._repair_allowed(key):
+            self._set_message("wrongdev", 6, MSG_WRONG_DEVICES)
+            return False
+        self._set_message("wrongdev", 6, None)
         now = self._clock()
         if now - self._last_repair < RESTORE_MIN_INTERVAL_S:
             return False
         self._last_repair = now
+        self._repair_count(key)
         log.warning("engine is not on the profile's devices (%s): restoring %s's config (device "
                     "restart, Main muted, then the boot ramp)", "; ".join(wrong), self.profile.name)
         self._set_message("devices", 1, "RESTORING ENGINE DEVICES")
-        ok = await self._guarded_upload(_keep_cuts(expected, live), ramp_after=True,
+        view = self._restore_view(engine_view)
+        ok = await self._guarded_upload(_keep_cuts(self._expected(view), live), ramp_after=True,
                                         epoch=self._epoch)
         if ok:   # what was uploaded was generated from the engine view (`_applied`)
             self._device_seen = 0
             self._applied.profile = self.profile.name
+            self._restored_delays(view)
         return True
 
-    async def _maybe_restore(self, live: Any, expected: dict[str, Any], reasons: list[str],
+    async def _maybe_restore(self, live: Any, engine_view: State, reasons: list[str],
                              connect: bool) -> None:
         """The running pipeline is not K1000's (a CamillaGUI structure edit): put it back, Main
-        muted around the upload, after a second look and at most once per interval."""
+        muted around the upload, after a second look, at most once per interval and
+        REPAIR_MAX_TRIES times for the same differences (`_repair_allowed`)."""
         self._rebuild_seen += 1
         if not connect and self._rebuild_seen < 2:
             return
         now = self._clock()
-        if now - self._last_restore < RESTORE_MIN_INTERVAL_S:
+        # The reasons name WHAT differs ("pipeline differs"); the running pipeline tells one
+        # pipeline edit from the next.
+        key = ("pipeline", tuple(reasons),
+               json.dumps(dc._as_cfg(live).get("pipeline"), sort_keys=True, default=str))
+        if (not self._repair_allowed(key)
+                or now - self._last_restore < RESTORE_MIN_INTERVAL_S):
             self._set_message("drift", 2, MSG_PIPELINE_CHANGED)
             return
         self._last_restore = now
+        self._repair_count(key)
         log.warning("pipeline differs from K1000's (%s): restoring it (Main muted around the "
                     "upload)", "; ".join(reasons)[:300])
-        cfg = _keep_cuts(dc.with_live_devices(expected, live), live)
+        view = self._restore_view(engine_view)
+        cfg = _keep_cuts(dc.with_live_devices(self._expected(view), live), live)
         ok = await self._guarded_upload(cfg, ramp_after=False, epoch=self._epoch)
         self._set_message("drift", 2, None if ok else MSG_PIPELINE_CHANGED)
         if ok:
             self._rebuild_seen = 0
+            self._restored_delays(view)
 
     # ------------------------------------------------------------------ polling
     async def _poll_loop(self) -> None:
@@ -3060,6 +3393,10 @@ class Controller:
         est = await self.client.get_state()
         load = await self.client.get_processing_load()
         clipped = await self.client.get_clipped_samples()
+        try:                              # D-018: the readout's one read (latency.py)
+            level = await self.client.command("GetBufferLevel")
+        except CdspError:
+            level = None
         reason = ""
         if est in ENGINE_DOWN_STATES:
             reason = str(await self.client.get_stop_reason())
@@ -3067,29 +3404,36 @@ class Controller:
         if (est, load, reason) != (self.status.engine, self.status.load, self.status.stop_reason):
             self.status.engine, self.status.load, self.status.stop_reason = est, load, reason
             self._changed()
+        self._note_latency(est, level)
         if not self._engine_ready or self._syncing or self._engine_lock.locked():
             if not self._syncing:
+                seq = self._main_mute_gen()
                 _v, m = _fader(await self.client.get_faders(), FADER_MAIN)
-                if m != self.status.muted and not self._ramping:
+                if m != self.status.muted and not self._ramping and self._main_mute_read_ok(seq):
                     self.status.muted = m
                     self._changed()
             return
         async with self._engine_lock:     # settle()/stop() wait for this work too
             if not self._engine_ready or self._stopping:
                 return
+            seq = self._main_mute_gen()
             try:
                 live = await self.client.get_config_json()
             except CdspNoConfig:
                 log.warning("engine lost its config: uploading K1000's")
                 await self._sync(self._epoch)
                 return
+            self._note_engine_chunk(live)
+            self.latency.note_config(live)
             faders = await self.client.get_faders()
             self._marker_engine = _fader(faders, MARKER_FADER)[0]
             _v, m = _fader(faders, FADER_MAIN)
-            if self._mute_want is None and m != self.status.muted:
+            crossed = frozenset() if self._main_mute_read_ok(seq) else frozenset({FADER_MAIN})
+            if self._mute_want is None and m != self.status.muted and not crossed:
                 self.status.muted = m
                 self._changed()
-            await self._reconcile(live, faders, connect=False)
+            await self._reconcile(live, faders, connect=False, adopt_skip=crossed,
+                                  drift_skip=crossed)
             await self._write_marker()
 
     def _refresh_device(self) -> None:
@@ -3120,6 +3464,37 @@ class Controller:
         self._last_clipped = clipped
         self.status.clipped_samples = clipped
         self._peak_hold = [METER_FLOOR_DB] * 4
+
+    def _note_latency(self, est: Any, level: Any) -> None:
+        """D-018: the poll's engine state and buffer level -> the readout (and its journal line)."""
+        r = self.latency.note(est, level,
+                              self.latency.io_share(getattr(self.profile, "io_latency_ms", None)))
+        view = ((None, True, False, None) if r is None
+                else (r.ms, r.io_ms is not None, r.over, r.level))
+        st = self.status
+        if view != (st.latency_ms, st.latency_io, st.latency_over, st.buffer_level):
+            st.latency_ms, st.latency_io, st.latency_over, st.buffer_level = view
+            self._changed()
+
+    async def _dropout_loop(self) -> None:
+        """D-018: dropout lines since the engine started, from its live log. The file is read in
+        a worker thread (never in the event loop), every `dropout_s`."""
+        counter = self.dropouts
+        if counter is None:
+            return
+        while True:
+            try:
+                n = await asyncio.to_thread(counter.read)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:   # noqa: BLE001 - a count must never stop the controller
+                self._log_once(("dropouts", type(e).__name__), logging.WARNING,
+                               "engine log %s not read: %s", counter.path, e)
+                n = None
+            if n != self.status.dropouts:
+                self.status.dropouts = n
+                self._changed()
+            await asyncio.sleep(self.dropout_s)
 
     async def _meter_loop(self) -> None:
         while True:

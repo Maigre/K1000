@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import hashlib
 import json
 import math
 import os
@@ -1175,6 +1176,83 @@ def test_rta_is_dropped_first_and_never_ahead_of_a_reply(tmp_path: Path) -> None
     run(go())
 
 
+@pytest.mark.parametrize("v", [1, 2])
+def test_a_slow_link_gets_the_latest_state_not_a_queue(tmp_path: Path, v: int) -> None:
+    """Measured before the fix (a phone behind a 16 kB/s downlink, knob-like changes every 50 ms
+    for 6 s): the final value reached it 6.6 s after it was set, behind 88 kB of older states in
+    the box's send queue. Now a state or meters frame waits while more than LATEST_MAX_BUFFERED
+    bytes are on their way, the latest one goes once there is room, and a reply never waits."""
+    async def go() -> None:
+        ctl, _ = make_ctl(tmp_path)
+        await boot(ctl)
+        srv = PhoneServer(ctl, settings(tmp_path), tick_s=0.02)
+        ws = _RecWS()
+        c = web._Client(ws, "10.42.0.9", web._Bucket(30.0, 40, time.monotonic), v=v, n=1,
+                        sess=PhoneSession(n=1) if v == 2 else None)
+        srv._clients.add(c)
+        task = asyncio.get_running_loop().create_task(srv._sender2(c) if v == 2 else srv._sender(c))
+        srv._refresh(force=True)
+        c.kick.set()
+        await until(lambda: any(m["t"] == "state" for m in ws.sent), what="first state")
+        ws.backlog = web.LATEST_MAX_BUFFERED + 1          # the link is behind
+        n0 = len(ws.sent)
+        for d in (1, -1) * 10 + (1,):
+            ctl.nudge("balance_db", d)
+            srv._refresh()
+            await asyncio.sleep(0.01)
+        final = ctl.state.balance_db
+        await asyncio.sleep(0.1)
+        assert len(ws.sent) == n0 and srv.stats["held"] > 0           # nothing queued behind it
+        srv._queue(c, {"t": "ack", "id": "mute", "v": True})            # ...but a reply goes at once
+        await until(lambda: len(ws.sent) == n0 + 1, timeout=0.5, what="reply sent")
+        assert ws.sent[-1]["t"] == "ack"
+        ws.backlog = 0                                    # room again: the latest state, once
+        await until(lambda: any(m["t"] == "state" for m in ws.sent[n0 + 1:]), timeout=0.5,
+                    what="latest state")
+        await asyncio.sleep(0.1)
+        states = [m for m in ws.sent[n0 + 1:] if m["t"] == "state"]
+        assert len(states) == 1 and states[-1]["balance_db"] == final
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await ctl.stop()
+    run(go())
+
+
+def test_a_phone_that_stops_reading_is_not_sent_every_state(tmp_path: Path) -> None:
+    """Over the real server and a real socket: a v2 phone stops reading (its receive buffer is
+    tiny), the box changes 40 times; when it reads again it gets a few frames and the latest
+    state, not the 40 states in between (before: every one, ~65 kB, from the box's queue)."""
+    async def go() -> None:
+        ctl, _ = make_ctl(tmp_path)
+        await boot(ctl)
+        srv = PhoneServer(ctl, settings(tmp_path), tick_s=0.02)
+        await srv.start()
+        raw = socket.socket()
+        raw.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2048)
+        raw.setblocking(False)
+        await asyncio.get_running_loop().sock_connect(raw, ("127.0.0.1", srv.ports["plain"]))
+        async with ws_connect(v2url(srv), origin=origin(srv), sock=raw, max_queue=1,
+                              max_size=2 ** 20) as ws:
+            await recv_until(ws, lambda m: m["t"] == "state")
+            for d in (1, -1) * 20:                       # the phone reads nothing meanwhile
+                ctl.nudge("balance_db", d)
+                await asyncio.sleep(0.03)
+            ctl.nudge("balance_db", 2)
+            final = ctl.state.balance_db
+            await asyncio.sleep(0.2)
+            states: list[float] = []
+            with contextlib.suppress(AssertionError):
+                while True:
+                    m = await recv_until(ws, lambda m: m["t"] == "state", timeout=0.5)
+                    states.append(m["balance_db"])
+            assert states and states[-1] == final, states
+            assert len(states) <= 6, states
+            assert srv.stats["held"] > 0
+        await srv.stop()
+        await ctl.stop()
+    run(go())
+
+
 def _masked(text: str) -> bytes:
     """One client text frame (masked, as a browser sends it)."""
     data = text.encode()
@@ -1526,5 +1604,63 @@ def test_d016_switches_choose_and_rebuild_from_the_phone(tmp_path: Path) -> None
         msg = PhoneBridge.state_message2(ctl.snapshot(), phone_on=True, phones=1)
         assert msg["pills"] == ["LOUDNESS", "DE-HARSH"]
         assert msg["setup"]["deharsh_on"] is True and msg["setup"]["loud_on"] is True
+        await ctl.stop()
+    run(go())
+
+
+# ============================================================================ installing K1000
+def test_hello_says_what_a_phone_can_install(tmp_path: Path) -> None:
+    """2026-11-12: v2's hello carries `install` (docs/14 §3.1), additive, display only: the APK
+    the box holds (or null) and the first-time page for the next phone. v1's hello is pinned
+    above and does not get it."""
+    from test_web_apk import _put_apk
+
+    async def go() -> None:
+        ctl, _ = make_ctl(tmp_path)
+        await boot(ctl)
+        for apk in (False, True):
+            folder = tmp_path / ("apk" if apk else "none")
+            body = _put_apk(folder, "0.2.2") if apk else b""
+            srv = PhoneServer(ctl, settings(tmp_path, apk_dir=folder, http_port=free_port()))
+            await srv.start()
+            async with ws_connect(v2url(srv), origin=origin(srv)) as ws:
+                hello = json.loads(await ws.recv())
+            async with ws_connect(v1url(srv), origin=origin(srv)) as ws:
+                assert "install" not in json.loads(await ws.recv())
+            start = f"http://127.0.0.1:{srv.ports['http']}/"
+            if apk:
+                assert hello["install"] == {"apk": {"url": "/k1000.apk", "file": "K1000-0.2.2.apk",
+                                                    "version": "0.2.2", "size": len(body),
+                                                    "sha8": hashlib.sha256(body).hexdigest()[:8]},
+                                            "start": start}
+            else:
+                assert hello["install"] == {"apk": None, "start": start}
+            await srv.stop()
+        await ctl.stop()
+    run(go())
+
+
+def test_the_v2_page_installs_as_its_own_app(tmp_path: Path) -> None:
+    """Chrome's Add to Home screen on /v2/ installs the v2 page (the first-time page's web app),
+    not a bookmark: a manifest with id and scope /v2/, the box's icons, cached by v2's worker."""
+    async def go() -> None:
+        ctl, _ = make_ctl(tmp_path)
+        await boot(ctl)
+        srv = PhoneServer(ctl, settings(tmp_path))
+        await srv.start()
+        port = srv.ports["plain"]
+        html = (await http_get(port, "/v2/"))[2].decode()
+        assert '<link rel="manifest" href="manifest.webmanifest">' in html
+        st, h, body = await http_get(port, "/v2/manifest.webmanifest")
+        assert st == 200 and h["content-type"] == "application/manifest+json"
+        man = json.loads(body)
+        assert man["id"] == man["start_url"] == man["scope"] == "/v2/" and man["display"] == "standalone"
+        sizes = set()
+        for icon in man["icons"]:
+            st, h, _ = await http_get(port, icon["src"])
+            assert st == 200 and h["content-type"] == "image/png", icon
+            sizes.add(icon["sizes"])
+        assert {"192x192", "512x512"} <= sizes
+        await srv.stop()
         await ctl.stop()
     run(go())

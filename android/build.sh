@@ -10,13 +10,14 @@
 #   ./build.sh gradle <args>   any Gradle command, e.g. ./build.sh gradle assembleDebug
 #   ./build.sh keystore        create the release keystore ONCE (refuses to overwrite)
 #
-# Signing: K1000_SIGNING_DIR (default: the 37Projects hub's secrets/k1000-android) holds
-# k1000-release.jks and keystore.properties (mode 600, never in this repo). The release APK goes
+# Signing: K1000_SIGNING_DIR holds k1000-release.jks and keystore.properties (mode 600, never in
+# this repo). Set it to wherever your key lives (export it in your shell profile); the default,
+# ~/.local/share/k1000-android, is only a neutral place for a first key. The release APK goes
 # to $K1000_SIGNING_DIR/out/K1000-<versionName>.apk with its .sha256 and apksigner's verdict.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 IMAGE=k1000-android-build:2
-SIGNING_DIR=${K1000_SIGNING_DIR:-$HOME/Bakery/37Projects/secrets/k1000-android}
+SIGNING_DIR=${K1000_SIGNING_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/k1000-android}
 BUILD_TOOLS=36.0.0
 # Versioned packages only (sdkmanager serves platform-tools and the emulator at their latest
 # revision only: tools/smoke.sh installs those, for the emulator test, never for the build).
@@ -77,7 +78,12 @@ keystore() {
 }
 
 release() {
-  [ -f "$SIGNING_DIR/keystore.properties" ] || { echo "no keystore: ./build.sh keystore first" >&2; exit 1; }
+  if [ ! -f "$SIGNING_DIR/keystore.properties" ]; then
+    echo "no keystore in $SIGNING_DIR: set K1000_SIGNING_DIR to the folder that holds the release key." >&2
+    echo "A new key (./build.sh keystore) is for a first release only: an APK signed with another key" >&2
+    echo "does not install over the app already on a phone." >&2
+    exit 1
+  fi
   gradle lint test assembleRelease
   local name apk out
   name=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' "$here/app/build.gradle.kts" | head -n 1)

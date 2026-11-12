@@ -27,7 +27,7 @@ import { can, hasNative, nativeSend, refused as refusedNative, requestDiag } fro
 import { syncSub } from "./rta.js";
 import { M as MIC, allowFromSetup, allowed as micAllowed, running as micRunning, setMic } from "./mic.js";
 import { closePop } from "./graph.js";
-import { $, $$, clamp, fmtDb, fmtHz, h, mmss, now, num, setText } from "./util.js";
+import { $, $$, clamp, fmtDb, fmtHz, h, latencyWords, mmss, now, num, setText } from "./util.js";
 
 const SET_GUARD_MS = 400;
 const ME = "THIS PHONE";
@@ -520,6 +520,40 @@ function buildMe() {
     p.append(a);
   }
   setText(note(p), "The escape hatch for the field test: the v1 page at https://10.42.0.1/ (MUTE, master, balance, the live EQ).");
+  rowInstall();
+}
+
+// THIS PHONE › Install K1000 (hello.install, docs/14 §3.1): the Android app the box holds, for
+// this phone in Chrome or as a file to send to the next one, and how another phone gets in (the
+// box's first-time page). Never the download inside the app: its own update waits (D-020), and
+// its WebView does not download. An iPhone gets the web app only.
+const isIos = () => /iPhone|iPad|iPod/.test(navigator.userAgent || "") ||
+  (/Macintosh/.test(navigator.userAgent || "") && navigator.maxTouchPoints > 1);
+const mb = (n) => (Math.max(num(n) ? n : 0, 50000) / 1e6).toFixed(1) + " MB";
+function rowInstall() {
+  const ins = K.hello && K.hello.install;
+  if (!ins || typeof ins !== "object") return;           // an older box: no row
+  const apk = ins.apk && typeof ins.apk === "object" && typeof ins.apk.url === "string" ? ins.apk : null;
+  const start = typeof ins.start === "string" ? ins.start : "";
+  const r = srow("install");
+  const rv = head(r, "Install K1000");
+  setText(rv, apk ? "app " + String(apk.version || "?") + " · " + mb(apk.size) : "no app on this box");
+  const inApp = hasNative() || /K1000-Android\//.test(navigator.userAgent || "");   // the app's WebView, before its handshake too
+  if (apk && !inApp && !isIos()) {
+    const a = h("a", "act go linkbtn");
+    a.href = apk.url;
+    a.setAttribute("download", String(apk.file || "K1000.apk"));
+    a.textContent = "GET THE ANDROID APP";
+    r.append(a);
+    setText(note(r), "Version " + String(apk.version || "?") + " · " + mb(apk.size) + " · sha256 " + String(apk.sha8 || "--") +
+      ". On this phone: open the download, Android asks Settings › Allow from this source, then Install. The file can also be sent to another phone.");
+  } else if (!apk) {
+    setText(note(r), "This box holds no copy of the Android app: another phone uses the web app.");
+  }
+  // no first-time page on this box (start ""): the web app itself, never an address it does not serve
+  setText(note(r), "Another phone: join the K1000 Wi-Fi (the code on the box screen), then open " + (start
+    ? start + " in its browser: the app or the web app, step by step."
+    : location.origin + "/v2/ in its browser: the web app (it needs the K1000 certificate once)."));
 }
 
 // THIS PHONE › Phone mic: the ONE place the page asks for the mic (DESIGN §7, §9.15: a system
@@ -608,11 +642,14 @@ function buildStatus() {
     setText(r.firstChild, k);
     body.append(r);
     upd.push(() => setText(r.lastChild, v()));
+    return r;
   };
   const S = () => K.state || {};
   grp("AUDIO");
   kv("Mute", () => (S().muted ? "MUTED" + (muteWho() ? " · " + muteWho() : "") + (S().mute_band && S().mute_band.text ? " · " + S().mute_band.text : "") : "open") + (S().mute_known === false ? " (unknown: saved value)" : ""));
   kv("Engine", () => (linked() ? String(S().engine || "--") + " · load " + (num(S().load) ? S().load.toFixed(1) + " %" : "--") + (S().ready ? "" : " · syncing") : "— (no link)"));
+  const lat = kv("Delay in → out", () => (linked() ? latencyWords(S().latency) : "— (no link)"));
+  upd.push(() => lat.classList.toggle("warn", linked() && !!S().latency && S().latency.over === true));
   kv("Device", () => String(S().device || "--") + (S().device_present === false ? " · NOT FOUND" : ""));
   kv("Profile", () => String(S().profile || "--") + (S().readonly && S().readonly.profile ? " · " + S().readonly.profile : ""));
   kv("Input clip", () => (S().in_clip ? "CLIPPED (latched 3 s)" : "none"));

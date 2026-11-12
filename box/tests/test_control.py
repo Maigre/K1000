@@ -682,6 +682,304 @@ def test_mute_is_sent_at_once_even_while_a_plan_runs(tmp_path: Path) -> None:
     run(body())
 
 
+class TwoLinkClient(FakeClient):
+    """FakeClient with CamillaClient's two paths for Main's mute (cdsp `mute_link`): the main
+    link carries one request at a time (`main_lock`; `hold`, when set, keeps a config write in
+    it, like a slow read-back), the mute link (`mute_up`) carries Main's mute; an unmute needs
+    the main link up. `main_mute_gen` keeps CamillaClient's rule for one request at a time:
+    odd while it is on its way, moved by each one."""
+
+    def __init__(self, cfg: dict[str, Any] | None) -> None:
+        super().__init__(cfg)
+        self.main_lock = asyncio.Lock()
+        self.hold: asyncio.Event | None = None
+        self.mute_up = True
+        self.main_mute_gen = 0
+
+    @property
+    def mute_connected(self) -> bool:
+        return self.mute_up
+
+    async def set_value(self, pointer: str, value: Any, clamp: Any = None) -> Any:
+        async with self.main_lock:
+            if self.hold is not None:
+                await self.hold.wait()
+            return await super().set_value(pointer, value, clamp)
+
+    async def set_fader_mute(self, idx: int, mute: bool) -> None:
+        if idx != 0:
+            async with self.main_lock:
+                return await super().set_fader_mute(idx, mute)
+        self.main_mute_gen += 1
+        try:
+            if self.mute_up and (mute or self.connected):
+                self.faders[0]["mute"] = bool(mute)
+                await self._logged(("mute", 0, bool(mute)))
+            else:
+                async with self.main_lock:
+                    await super().set_fader_mute(idx, mute)
+        finally:
+            self.main_mute_gen += 1
+
+
+def make_two_links(tmp_path: Path, state: State, cls: Any = None) -> tuple[Controller, Any]:
+    """A controller over an engine K1000 already brought in, with a TwoLinkClient (or `cls`)."""
+    st = state.copy()
+    client = (cls or TwoLinkClient)(dc.generate(DEV, st))
+    lv = dc.fader_levels(st)
+    client.faders[0] = {"volume": lv[0], "mute": st.muted}
+    client.faders[1]["volume"], client.faders[2]["volume"] = lv[1], lv[2]
+    client.faders[MARKER_FADER]["volume"] = MARKER_DB
+    ctl = Controller(client, DEV, st, Paths(tmp_path / "state.json", tmp_path / "active.yml"),
+                     sleep=fast_sleep, poll_s=3600, meter_s=3600, persist_debounce_s=0.05,
+                     persist_max_delay_s=0.5, device_probe=lambda d: True)
+    return ctl, client
+
+
+def test_mute_lands_while_a_write_holds_the_main_link(tmp_path: Path) -> None:
+    """The controller's half of audit 5.1 #6: B4 pressed while a knob write sits in the main
+    link (its read-back) is handed to the client at once, outside the worker (true before the
+    mute link too); the client's two links are TwoLinkClient's here. That CamillaClient itself
+    sends it at once is test_cdsp's test_main_mute_has_a_link_of_its_own."""
+    async def body() -> None:
+        ctl, cl = make_two_links(tmp_path, State(master_db=-20.0))
+        await boot(ctl)
+        cl.hold = asyncio.Event()
+        ctl.nudge("live_peq.0.gain", 2)
+        await until(lambda: cl.main_lock.locked() and ctl._busy, what="write in the main link")
+        ctl.set_mute(True)
+        await until(lambda: cl.faders[0]["mute"] is True, timeout=0.5, what="mute at once")
+        assert ctl.status.muted is True and ctl.displayed_muted() and not cl.hold.is_set()
+        cl.hold.set()
+        assert await ctl.settle(3.0)
+        ctl.set_mute(False)
+        assert await ctl.settle(3.0) and cl.faders[0]["mute"] is False
+        cl.mute_up = False                      # the mute link down: the main link carries it
+        cl.hold = asyncio.Event()
+        ctl.nudge("live_peq.0.gain", 2)
+        await until(lambda: cl.main_lock.locked() and ctl._busy, what="write in the main link")
+        ctl.set_mute(True)
+        await asyncio.sleep(0.1)
+        assert cl.faders[0]["mute"] is False    # behind the write
+        cl.hold.set()
+        await until(lambda: cl.faders[0]["mute"] is True, what="mute after the write")
+        assert await ctl.settle(3.0) and ctl.state.muted is True and ctl.status.muted is True
+        await ctl.stop()
+
+    run(body())
+
+
+def test_mute_goes_out_while_the_main_link_is_down_an_unmute_does_not(tmp_path: Path) -> None:
+    """The main link down, the mute link up: a mute reaches the engine at once (before, it waited
+    for the reconnect). An unmute is never sent that way: it is dropped on reconnect as before."""
+    async def body() -> None:
+        ctl, cl = make_two_links(tmp_path, State(master_db=-10.0))
+        await boot(ctl)
+        await cl.drop()
+        ctl.set_mute(True)
+        await until(lambda: cl.faders[0]["mute"] is True, timeout=0.5, what="mute, main link down")
+        assert ctl.status.muted is True and ctl._mute_want is None
+        ctl.set_mute(False)
+        await asyncio.sleep(0.05)
+        assert cl.faders[0]["mute"] is True and ("mute", 0, False) not in cl.log
+        await cl.reconnect()
+        await until(lambda: ctl.engine_ready, what="resync")
+        assert await ctl.settle(2.0)
+        assert ("mute", 0, False) not in cl.log
+        assert ctl.state.muted is True and cl.faders[0]["mute"] is True
+        assert ctl.focus.hint == ctl_mod.HINT_STILL_MUTED
+        await ctl.stop()
+
+    run(body())
+
+
+def test_a_fader_read_that_crossed_a_mute_never_shows_it_undone(tmp_path: Path) -> None:
+    """On two links a poll's GetFaders (main link) can be answered before a mute (mute link)
+    lands and read after it: it shows Main unmuted. Neither the screen nor the state may take
+    that for the truth; the next read does."""
+    async def body() -> None:
+        ctl, cl = make_two_links(tmp_path, State(master_db=-20.0))
+        await boot(ctl)
+        real_get_faders = cl.get_faders
+        crossing = [True]
+
+        async def get_faders() -> list[dict[str, Any]]:
+            got = await real_get_faders()           # Main unmuted: answered before the mute
+            if crossing[0]:
+                crossing[0] = False
+                ctl.set_mute(True)                  # B4, on the mute link, lands meanwhile
+                await until(lambda: cl.faders[0]["mute"] is True and ctl._mute_want is None,
+                            what="mute landed")
+            return got
+
+        cl.get_faders = get_faders  # type: ignore[method-assign]
+        for locked in (False, True):                # the adopting poll; the poll beside engine work
+            crossing[0] = True
+            if locked:
+                ctl.set_mute(False)
+                assert await ctl.settle(2.0) and cl.faders[0]["mute"] is False
+                await ctl._engine_lock.acquire()
+            try:
+                ctl._own_fader.clear()              # not shielded by the own-write window
+                await ctl.poll_once()
+            finally:
+                if locked:
+                    ctl._engine_lock.release()
+            assert ctl.status.muted is True and ctl.displayed_muted() is True
+            assert ctl.state.muted is True
+            await ctl.poll_once()                   # a clean read: muted, as it is
+            assert ctl.status.muted is True and ctl.state.muted is True
+        await ctl.stop()
+
+    run(body())
+
+
+def test_the_re_read_after_a_refused_write_never_undoes_a_crossed_mute(tmp_path: Path) -> None:
+    """The re-read after a refused write (the engine's values win) takes the faders too: a Main
+    mute landing on its own link while that read is on its way must not be undone by it, in
+    the state nor in K1000's view of the engine."""
+    async def body() -> None:
+        ctl, cl = make_two_links(tmp_path, State(master_db=-20.0))
+        await boot(ctl)
+        real_get_faders = cl.get_faders
+        crossing = [True]
+
+        async def get_faders() -> list[dict[str, Any]]:
+            got = await real_get_faders()           # Main unmuted: answered before the mute
+            if crossing[0]:
+                crossing[0] = False
+                ctl.set_mute(True)
+                await until(lambda: cl.faders[0]["mute"] is True and ctl._mute_want is None,
+                            what="mute landed")
+            return got
+
+        cl.get_faders = get_faders  # type: ignore[method-assign]
+        cl.refuse.add("/filters/live_peq_1/parameters/q")
+        ctl.nudge("live_peq.0.q", 1)
+        assert await ctl.settle(3.0)
+        assert ctl.focus.hint == "ENGINE REFUSED THE CHANGE" and not crossing[0]
+        assert ctl.state.muted is True and ctl._applied.muted is True
+        assert ctl.status.muted is True and cl.faders[0]["mute"] is True
+        await ctl.stop()
+
+    run(body())
+
+
+def test_a_cut_short_guard_never_unmutes_over_a_mute_pressed_meanwhile(tmp_path: Path) -> None:
+    """`_finish_main_guard` asks the engine whether it runs before it unmutes: B4 pressed during
+    that round trip must win (the unmute is dropped), on one link or two."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-20.0), playing=True)
+        await boot(ctl)
+        cl.faders[0]["mute"] = True                 # the guard's mute
+        real_get_state = cl.get_state
+
+        async def get_state() -> str:
+            ctl.set_mute(True)
+            return await real_get_state()
+
+        cl.get_state = get_state  # type: ignore[method-assign]
+        n = len(cl.log)
+        assert await ctl._finish_main_guard() is True
+        assert await ctl.settle(2.0)
+        assert ("mute", 0, False) not in cl.log[n:] and cl.faders[0]["mute"] is True
+        await ctl.stop()
+
+    run(body())
+
+
+class HeldUnmuteClient(FakeClient):
+    """Main's unmute held while `gate` is set and closed, as when it waits for a busy main link
+    (the mute link down or silent); a mute goes out at once. Released, an unmute that a later
+    Main request overtook is dropped, as CamillaClient drops it (test_cdsp)."""
+
+    def __init__(self, cfg: dict[str, Any] | None) -> None:
+        super().__init__(cfg)
+        self.gate: asyncio.Event | None = None
+        self.asked = 0
+        self.held = False
+
+    async def set_fader_mute(self, idx: int, mute: bool) -> None:
+        if idx == 0:
+            self.asked += 1
+        if idx != 0 or mute or self.gate is None:
+            return await super().set_fader_mute(idx, mute)
+        asked, self.held = self.asked, True
+        try:
+            await self.gate.wait()
+        finally:
+            self.held = False
+        if asked == self.asked:
+            await super().set_fader_mute(idx, mute)
+
+
+def _sample_shown(ctl: Controller, shown: list[bool]) -> asyncio.Task[None]:
+    async def sample() -> None:
+        while True:
+            shown.append(ctl.displayed_muted())
+            await asyncio.sleep(0.001)
+    return asyncio.get_running_loop().create_task(sample())
+
+
+def test_b4_never_waits_for_the_operators_unmute_held_on_the_main_link(tmp_path: Path) -> None:
+    """Review of audit 5.1 #6: the operator's unmute fell back to the main link and waits there.
+    B4 then went into the same mute sender, behind that unmute. Now it goes out at once beside
+    it (`_mute_now`); the unmute, released, is dropped by the client, and its return does not
+    show Main unmuted (`_main_mute_after`): the screen says MUTED all along."""
+    async def body() -> None:
+        ctl, cl = make_two_links(tmp_path, State(master_db=-20.0, muted=True), HeldUnmuteClient)
+        await boot(ctl)
+        assert cl.faders[0]["mute"] is True and ctl.displayed_muted() is True
+        cl.gate = asyncio.Event()
+        shown: list[bool] = []
+        sampler = _sample_shown(ctl, shown)
+        n = len(cl.log)
+        ctl.set_mute(False)
+        await until(lambda: cl.held, what="the unmute held")
+        ctl.set_mute(True)
+        await until(lambda: ("mute", 0, True) in cl.log[n:], timeout=0.2, what="mute at once")
+        assert cl.held                              # it did not wait for the unmute
+        cl.gate.set()
+        assert await ctl.settle(2.0)
+        await asyncio.sleep(0.02)
+        sampler.cancel()
+        assert ("mute", 0, False) not in cl.log[n:] and cl.faders[0]["mute"] is True
+        assert ctl.status.muted is True and ctl.state.muted is True and ctl._mute_want is None
+        assert shown and all(shown)                 # never shown unmuted
+        await ctl.stop()
+
+    run(body())
+
+
+def test_a_guard_unmute_crossed_by_b4_never_shows_main_unmuted(tmp_path: Path) -> None:
+    """A setup guard's final unmute waits for the main link; B4 meanwhile goes out at once on
+    the mute link and returns first. The guard's unmute returns after it (dropped by the
+    client): Main is muted, and the screen must keep saying so."""
+    async def body() -> None:
+        ctl, cl = make_two_links(tmp_path, State(master_db=-20.0), HeldUnmuteClient)
+        await boot(ctl)
+        assert cl.faders[0]["mute"] is False
+        cl.gate = asyncio.Event()
+        n = len(cl.log)
+        assert ctl.toggle("mono_subs", confirmed=True)
+        await until(lambda: cl.held, what="the guard's unmute held")
+        ctl.set_mute(True)
+        await until(lambda: ctl.status.muted is True and ctl._mute_want is None,
+                    what="B4's mute in")
+        shown: list[bool] = []
+        sampler = _sample_shown(ctl, shown)
+        cl.gate.set()
+        assert await ctl.settle(3.0)
+        await asyncio.sleep(0.02)
+        sampler.cancel()
+        assert [e for e in nomark(cl.log[n:]) if e[:2] == ("mute", 0)] == [("mute", 0, True)] * 2
+        assert cl.faders[0]["mute"] is True and ctl.status.muted is True
+        assert ctl._applied.muted is True and shown and all(shown)
+        await ctl.stop()
+
+    run(body())
+
+
 def test_mute_pressed_during_the_boot_ramp_cancels_its_unmute(tmp_path: Path) -> None:
     async def body() -> None:
         gate = asyncio.Event()
@@ -836,8 +1134,10 @@ def test_external_edits_are_adopted_not_reverted_and_saved(tmp_path: Path) -> No
         await until(lambda: (tmp_path / "state.json").exists()
                     and json.loads((tmp_path / "state.json").read_text())["sys_peq"][2]["gain"] == -3.0,
                     what="adopted edit persisted")
-        active = yaml.safe_load((tmp_path / "active.yml").read_text())
-        assert active["filters"]["sys_peq_3"]["parameters"]["gain"] == -3.0
+        # active.yml is written after state.json (one save, two files): wait for it too
+        await until(lambda: yaml.safe_load((tmp_path / "active.yml").read_text())
+                    ["filters"]["sys_peq_3"]["parameters"]["gain"] == -3.0,
+                    what="adopted edit in active.yml")
         await ctl.stop()
 
     run(body())
@@ -921,6 +1221,142 @@ def test_pipeline_change_is_restored_under_a_mute_after_a_second_look(tmp_path: 
         await ctl.poll_once()                                       # next look: shown, kept
         assert {"out_trim_2 MUTED", "top_trim -6.0 dB"} <= set(ctl.status.drift)
         assert not any(e[0] in ("config", "set", "patch") for e in cl.log[n:])
+        await ctl.stop()
+
+    run(body())
+
+
+@pytest.mark.parametrize("cure", ["refused", "put_back"])
+def test_pipeline_restore_stops_after_three_tries_then_only_alerts(tmp_path: Path, caplog: Any,
+                                                                   cure: str) -> None:
+    """Audit 5.1 #5: a drift that an upload does not cure (the engine refuses K1000's config, or
+    something puts the change back at once) was restored, Main muted around it, every
+    RESTORE_MIN_INTERVAL_S for as long as it lasted. Now REPAIR_MAX_TRIES dips at most, then
+    only the alert. Another change has its own count; two that take turns keep theirs. The counts
+    are forgotten once the engine has been K1000's for REPAIR_FORGET_S, and when the operator
+    applies a setup action."""
+    import logging
+
+    async def body() -> None:
+        now = [1000.0]
+        ctl, cl = make(tmp_path, State(master_db=-20.0), playing=True, clock=lambda: now[0])
+        await boot(ctl)
+        real_upload = cl.set_config_yaml
+        tries: list[str] = []
+        failing = [True]
+        gui: list[dict[str, Any]] = []
+
+        def gui_drops_a_step() -> None:          # a CamillaGUI Apply: the engine runs this
+            cfg = copy.deepcopy(cl.cfg)
+            cfg["pipeline"] = cfg["pipeline"][:-2] + cfg["pipeline"][-1:]
+            gui[:] = [cfg]
+            cl.cfg = copy.deepcopy(cfg)
+
+        async def upload(text: str, timeout: float = 10.0) -> None:
+            if not failing[0]:
+                return await real_upload(text, timeout)
+            tries.append(text)
+            if cure == "refused":
+                raise CdspError("SetConfig", "ConfigValidationError", "fake")
+            await real_upload(text, timeout)    # accepted, and the GUI's config is straight back
+            cl.cfg = copy.deepcopy(gui[0])
+
+        async def looks(k: int) -> None:
+            for _ in range(k):
+                now[0] += ctl_mod.RESTORE_MIN_INTERVAL_S + 1
+                await ctl.poll_once()
+                assert await ctl.settle(5.0)
+
+        cl.set_config_yaml = upload  # type: ignore[method-assign]
+        gui_drops_a_step()
+        first_change = copy.deepcopy(cl.cfg["pipeline"])
+        n = len(cl.log)
+        with caplog.at_level(logging.ERROR, logger="k1000.control"):
+            await looks(12)                     # six minutes of a drift that stays
+        assert len(tries) == ctl_mod.REPAIR_MAX_TRIES == 3
+        dips = [e for e in nomark(cl.log[n:]) if e[:2] == ("mute", 0)]
+        assert dips == [("mute", 0, True), ("mute", 0, False)] * 3    # one dip per try, no more
+        assert cl.faders[0] == {"volume": -20.0, "mute": False}       # playing on
+        assert "PIPELINE CHANGED" in ctl.status.message                # the alert stays up
+        gave_up = [r for r in caplog.records if "automatic repairs" in r.getMessage()]
+        assert len(gave_up) == 1 and "pipeline" in gave_up[0].getMessage()
+        # the drift changes (the GUI drops another step): another drift, three tries of its own
+        first = dict(ctl._repair_tries)
+        gui_drops_a_step()
+        await looks(8)
+        assert len(tries) == 6 and sorted(ctl._repair_tries.values()) == [3, 3]
+        # the GUI's change undone, then the first change again: it has had its three
+        cl.cfg = dc.generate(DEV, ctl.state)
+        await looks(1)
+        assert "PIPELINE CHANGED" not in ctl.status.message
+        gui_drops_a_step()
+        assert cl.cfg["pipeline"] == first_change
+        await looks(6)
+        assert len(tries) == 6 and len(ctl._repair_tries) == 2
+        assert all(ctl._repair_tries[k] == v for k, v in first.items())
+        assert "PIPELINE CHANGED" in ctl.status.message
+        # K1000's for REPAIR_FORGET_S without a break: the counts are forgotten
+        cl.cfg = dc.generate(DEV, ctl.state)
+        await looks(1)
+        now[0] += ctl_mod.REPAIR_FORGET_S - 1.0
+        await ctl.poll_once()
+        assert len(ctl._repair_tries) == 2
+        now[0] += 2.0
+        await ctl.poll_once()
+        assert ctl._repair_tries == {}
+        gui_drops_a_step()
+        await looks(2)
+        assert len(tries) == 7
+        await looks(6)
+        assert len(tries) == 9 and list(ctl._repair_tries.values()) == [3]
+        # the operator applies a setup action: the counts are forgotten too
+        failing[0] = False
+        assert ctl.toggle("mono_subs", confirmed=True)
+        assert await ctl.settle(5.0)
+        assert ctl._repair_tries == {}
+        await ctl.stop()
+
+    run(body())
+
+
+def test_a_change_put_back_seconds_after_each_restore_is_restored_three_times(
+        tmp_path: Path) -> None:
+    """The same change re-applied a couple of seconds after each restore (a client that keeps
+    applying its config): the restores hold for a look or two each time. Those clean looks do
+    not start the count again, or the PA dipped every cycle (ten cycles, ten dips); only
+    REPAIR_FORGET_S of K1000's pipeline without a break does."""
+    async def body() -> None:
+        now = [1000.0]
+        ctl, cl = make(tmp_path, State(master_db=-20.0), playing=True, clock=lambda: now[0])
+        await boot(ctl)
+        good = copy.deepcopy(cl.cfg)
+        gui = copy.deepcopy(good)
+        gui["pipeline"] = gui["pipeline"][:-2] + gui["pipeline"][-1:]
+        n = len(cl.log)
+        for _cycle in range(10):
+            cl.cfg = copy.deepcopy(gui)              # the change is applied (again)
+            for _second in range(33):                # one look a second
+                now[0] += 1.0
+                await ctl.poll_once()
+                assert await ctl.settle(5.0)
+        uploads = [e for e in cl.log[n:] if e[0] == "config"]
+        dips = [e for e in nomark(cl.log[n:]) if e[:2] == ("mute", 0)]
+        assert len(uploads) == ctl_mod.REPAIR_MAX_TRIES
+        assert dips == [("mute", 0, True), ("mute", 0, False)] * 3
+        assert "PIPELINE CHANGED" in ctl.status.message and cl.cfg["pipeline"] == gui["pipeline"]
+        # the change stops; K1000's pipeline for REPAIR_FORGET_S: the next one is restored again
+        cl.cfg = copy.deepcopy(good)
+        for step in (1.0, ctl_mod.REPAIR_FORGET_S + 1.0):
+            now[0] += step
+            await ctl.poll_once()
+        assert ctl._repair_tries == {}
+        cl.cfg = copy.deepcopy(gui)
+        for _ in range(2):
+            now[0] += 1.0
+            await ctl.poll_once()
+            assert await ctl.settle(5.0)
+        assert len([e for e in cl.log[n:] if e[0] == "config"]) == 4
+        assert cl.cfg["pipeline"] == good["pipeline"]
         await ctl.stop()
 
     run(body())
@@ -1225,8 +1661,8 @@ def test_settings_helpers_clamp_and_default() -> None:
     assert EngineSettings.from_settings({"engine": "junk"}) == EngineSettings()
     assert EngineSettings.from_settings({}, url="ws://x:1").url == "ws://x:1"
     p = Paths.from_settings({"paths": {"state": "/tmp/s.json"}}, active_config="/tmp/a.yml")
-    assert p == Paths(Path("/tmp/s.json"), Path("/tmp/a.yml"))
-    assert Paths.from_settings({"_error": "x"}) == Paths()
+    assert p == Paths(Path("/tmp/s.json"), Path("/tmp/a.yml"), ctl_mod.ENGINE_LOG)
+    assert Paths.from_settings({"_error": "x"}) == Paths(engine_log=ctl_mod.ENGINE_LOG)
     assert isinstance(Status().copy(), Status)
 
 
@@ -2538,7 +2974,7 @@ def test_engine_controller_follows_a_scripted_show(tmp_path: Path) -> None:
         paths = Paths(tmp_path / "state.json", tmp_path / "active.yml")
         st = State(master_db=-12.0)
         client = CamillaClient(f"ws://127.0.0.1:{ENGINE_PORT}", backoff_min=0.05, backoff_max=0.3,
-                               fader_max_db=ctl_mod.FADER_CEILING_DB)
+                               fader_max_db=ctl_mod.FADER_CEILING_DB, mute_link=True)  # as run
         ctl = Controller(client, DEV, st, paths, transform=_test_transform, device_probe=None,
                          poll_s=0.2, meter_s=0.1, persist_debounce_s=0.2, boot_ramp_s=3.0)
         ctl.save_now()                                   # the engine unit waits for this file
@@ -3065,7 +3501,10 @@ def test_edits_toward_silence_are_saved_at_once(tmp_path: Path) -> None:
         # k1000 dying before the save would strip them from the engine on its restart)
         assert ctl.set_choice("deharsh_on", True)
         await until(lambda: saved()["deharsh_on"] is True, timeout=1.0, what="rebuild saved")
-        assert dc.DH_COMP in yaml.safe_load((tmp_path / "active.yml").read_text())["processors"]
+        # active.yml is written after state.json (one save, two files): wait for it too
+        await until(lambda: dc.DH_COMP in (yaml.safe_load((tmp_path / "active.yml").read_text())
+                                           .get("processors") or {}),
+                    timeout=1.0, what="rebuild in active.yml")
         await ctl.stop()                                # ...and saved on the way out
         assert saved()["master_db"] == -13.0
 
@@ -3218,6 +3657,71 @@ def test_engine_moved_to_another_card_is_put_back(tmp_path: Path) -> None:
         await ctl.poll_once()
         assert not any(e[0] == "config" for e in cl.log[m:])
         assert "PIPELINE CHANGED" in ctl.status.message or "DEVICES" in ctl.status.message
+        await ctl.stop()
+
+    run(body())
+
+
+def test_device_repair_stops_after_three_tries_then_only_alerts(tmp_path: Path) -> None:
+    """The same limit as the pipeline restore (audit 5.1 #5): an engine that will not take the
+    profile's devices gets REPAIR_MAX_TRIES uploads with Main muted around them, then only an
+    alert of its own (the PA plays nothing); once on the profile's devices for REPAIR_FORGET_S,
+    the count starts again (a moment back on them is not enough)."""
+    async def body() -> None:
+        now = [1000.0]
+        ctl, cl = make(tmp_path, State(master_db=-12.0), playing=True, clock=lambda: now[0])
+        ctl.same_card = lambda a, b: a == b
+        await boot(ctl)
+        real_upload = cl.set_config_yaml
+        tries: list[str] = []
+
+        async def refuse(text: str, timeout: float = 10.0) -> None:
+            tries.append(text)
+            raise CdspError("SetConfig", "NotRunning", "fake: the device did not open")
+
+        cl.set_config_yaml = refuse  # type: ignore[method-assign]
+        cl.cfg = gui_default_config()
+        n = len(cl.log)
+        for _ in range(12):
+            now[0] += ctl_mod.RESTORE_MIN_INTERVAL_S + 1
+            await ctl.poll_once()
+            assert await ctl.settle(5.0)
+        assert len(tries) == ctl_mod.REPAIR_MAX_TRIES
+        dips = [e for e in nomark(cl.log[n:]) if e[:2] == ("mute", 0)]
+        assert dips == [("mute", 0, True), ("mute", 0, False)] * 3
+        # the PA plays nothing: said in red, above PIPELINE CHANGED (GUI) (the GUI's pipeline
+        # differs too) and DEVICES CHANGED (GUI)
+        assert ctl._messages["drift"][1] == ctl_mod.MSG_PIPELINE_CHANGED and ctl.status.drift
+        assert ctl.status.message == ctl.status.alert == ctl_mod.MSG_WRONG_DEVICES
+        assert ctl.alerts()[0] == ("critical", ctl_mod.MSG_WRONG_DEVICES)
+        # back on the profile's devices for a look, then the same wrong move: no upload
+        cl.set_config_yaml = real_upload  # type: ignore[method-assign]
+        cl.cfg = dc.generate(DEV, ctl.state)
+        now[0] += ctl_mod.RESTORE_MIN_INTERVAL_S + 1
+        await ctl.poll_once()
+        assert "wrongdev" not in ctl._messages and ctl.status.alert == ""
+        cl.cfg = gui_default_config()
+        k = len(cl.log)
+        for _ in range(3):
+            now[0] += ctl_mod.RESTORE_MIN_INTERVAL_S + 1
+            await ctl.poll_once()
+            assert await ctl.settle(5.0)
+        assert [e[0] for e in cl.log[k:]].count("config") == 0
+        assert ctl.status.alert == ctl_mod.MSG_WRONG_DEVICES
+        # on them for REPAIR_FORGET_S: the next wrong move is repaired again
+        cl.cfg = dc.generate(DEV, ctl.state)
+        for step in (1.0, ctl_mod.REPAIR_FORGET_S + 1.0):
+            now[0] += step
+            await ctl.poll_once()
+        assert ctl._repair_tries == {}
+        cl.cfg = gui_default_config()
+        m = len(cl.log)
+        for _ in range(2):
+            now[0] += ctl_mod.RESTORE_MIN_INTERVAL_S + 1
+            await ctl.poll_once()
+            assert await ctl.settle(5.0)
+        assert [e[0] for e in cl.log[m:]].count("config") == 1
+        assert cl.cfg["devices"] == dc.generate(DEV, ctl.state)["devices"]
         await ctl.stop()
 
     run(body())
@@ -3659,22 +4163,453 @@ def test_signed_delay_crossing_in_one_update_dips_both_groups(tmp_path: Path) ->
     run(body())
 
 
-def test_signed_delay_normalises_a_saved_pair_on_its_first_move_never_at_boot(tmp_path: Path) -> None:
+PA_LATE = ctl_mod.MSG_COMMON_DELAY.split("{")[0]          # "PA LATE "
+
+
+def _pa_late(ctl: Controller) -> list[tuple[str, str]]:
+    return [(lv, t) for lv, t in ctl.alerts() if t.startswith(PA_LATE)]
+
+
+def test_signed_delay_saved_pair_loses_its_common_part_the_playing_engine_waits(tmp_path: Path) -> None:
+    """docs/16 §5.1 finding 1. A saved sub 1.0 / top 0.5 plays the whole PA 0.5 ms late behind
+    an ALIGN reading of 0.50. At start the state keeps the difference only (saved so); the
+    engine, already playing, is not written (both groups would dip): the screen says how late
+    the PA is. An ALIGN move changes only the late side, on top of the held part (one group
+    dips, as any ALIGN move); the mute writes the pair out."""
     async def body() -> None:
         ctl, cl = make(tmp_path, State(sub_delay_ms=1.0, top_delay_ms=0.5), playing=True)
         await boot(ctl)
-        assert _config_writes(cl.log) == []                              # boot changes nothing
+        assert _config_writes(cl.log) == []                              # the music is untouched
+        assert _engine_delays(cl) == (1.0, 0.5)
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (0.5, 0.0)
         assert ctl.state.get("align_delay_ms") == 0.5
         assert pages_align_value(ctl) == ("0.50", "SUBS LATER · 0.17 m")
+        assert _pa_late(ctl) == [("warning", "PA LATE 0.50 MS · MUTE TO CLEAR")]
+        saved = json.loads((tmp_path / "state.json").read_text())
+        assert (saved["sub_delay_ms"], saved["top_delay_ms"]) == (0.5, 0.0)
+        active = yaml.safe_load((tmp_path / "active.yml").read_text())["filters"]
+        assert (active["sub_delay"]["parameters"]["delay"], active["top_delay"]["parameters"]["delay"]) \
+            == (0.5, 0.0)                                                # a restart comes back without it
         n = len(cl.log)
         ctl.nudge("align_delay_ms", 1)
         assert await ctl.settle(3.0)
-        ops = nomark(cl.log[n:])
-        assert len(_config_writes(ops)) == 1                             # both values, one patch
+        assert nomark(cl.log[n:]) == [("mute", 1, True), ("set", SUB_DELAY_PTR, dc.delay_on_grid(1.1)),
+                                      ("mute", 1, False)]                # the subs only
+        assert _engine_delays(cl) == (dc.delay_on_grid(1.1), 0.5)
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (0.6, 0.0)
+        assert _pa_late(ctl) == [("warning", "PA LATE 0.50 MS · MUTE TO CLEAR")]
+        n = len(cl.log)
+        ctl.set_mute(True)
+        await until(lambda: _engine_delays(cl) == (dc.delay_on_grid(0.6), 0.0), what="pair out")
+        assert await ctl.settle(3.0)
+        assert len(_config_writes(cl.log[n:])) == 1 and cl.faders[0]["mute"] is True
+        assert _pa_late(ctl) == []
+        await ctl.stop()
+
+    run(body())
+
+
+def test_common_delay_held_align_moves_dip_only_the_late_side(tmp_path: Path) -> None:
+    """While the engine plays a CamillaGUI pair (sub 45 / top 40), ALIGN moves ride on top of the
+    held 40 ms: each one changes one delay and dips one group, never the whole PA, and the PA
+    does not jump 40 ms earlier under the DJ. Through ALIGNED to the tops side the same way. A
+    move that would take a side past 50 ms cannot carry it: that one writes the state's pair,
+    both groups dipped, and the alert goes."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(sub_delay_ms=45.0), playing=True)
+        await boot(ctl)
+        cl.cfg["filters"]["top_delay"]["parameters"]["delay"] = 40.0     # laptop editor
+        await ctl.poll_once()
+        assert await ctl.settle(2.0)
+        assert _engine_delays(cl) == (45.0, 40.0) and ctl.state.get("align_delay_ms") == 5.0
+
+        async def move(v: float) -> list[tuple[Any, ...]]:
+            n = len(cl.log)
+            ctl.set_value("align_delay_ms", v)
+            assert await ctl.settle(3.0)
+            return nomark(cl.log[n:])
+
+        ctl.nudge("align_delay_ms", 1)
+        assert await ctl.settle(3.0)
+        assert _engine_delays(cl) == (dc.delay_on_grid(45.1), 40.0)
+        assert await move(0.0) == [("mute", 1, True), ("set", SUB_DELAY_PTR, 40.0), ("mute", 1, False)]
+        assert await move(-0.1) == [("mute", 2, True), ("set", TOP_DELAY_PTR, dc.delay_on_grid(40.1)),
+                                    ("mute", 2, False)]
+        assert _engine_delays(cl) == (40.0, dc.delay_on_grid(40.1))
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (0.0, 0.1)
+        assert _pa_late(ctl) == [("warning", "PA LATE 40.00 MS · MUTE TO CLEAR")]
+        assert cl.faders[0]["mute"] is False                             # the PA played on
+
+        ops = await move(-15.0)                                          # tops 55 ms: past the range
+        writes = _config_writes(ops)
+        assert len(writes) == 1 and writes[0][0] == "patch", ops
         assert sorted(op for op in ops if op[0] == "mute") == [
             ("mute", 1, False), ("mute", 1, True), ("mute", 2, False), ("mute", 2, True)]
-        assert _engine_delays(cl) == (dc.delay_on_grid(0.6), 0.0)
-        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (0.6, 0.0)
+        assert _engine_delays(cl) == (0.0, 15.0) and _pa_late(ctl) == []
+        await ctl.stop()
+
+    run(body())
+
+
+def test_common_delay_adopted_while_playing_is_shown_and_waits_for_the_mute(
+        tmp_path: Path, caplog: Any) -> None:
+    """A CamillaGUI edit gives the tops 40 ms while the subs have 45: ALIGN would read 5 ms and
+    the whole PA play 40 ms late. Adopted: the state keeps 5 / 0, said once in the journal; the
+    engine is not written while the PA plays (it would dip both groups), the screen says PA
+    LATE. The operator's mute is the moment: both delays in one write under the group guard,
+    Main left muted (K1000 never unmutes on its own), the alert gone."""
+    import logging
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(sub_delay_ms=45.0), playing=True)
+        await boot(ctl)
+        n = len(cl.log)
+        cl.cfg["filters"]["top_delay"]["parameters"]["delay"] = 40.0     # laptop editor
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            await ctl.poll_once()
+            assert await ctl.settle(2.0)
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (5.0, 0.0)
+        assert _engine_delays(cl) == (45.0, 40.0) and nomark(cl.log[n:]) == []
+        assert _pa_late(ctl) == [("warning", "PA LATE 40.00 MS · MUTE TO CLEAR")]
+        said = " | ".join(r.getMessage() for r in caplog.records)
+        assert "adopted from the engine: sub delay 45.000 ms and top delay 40.000 ms" in said, said
+        assert "plays the whole PA 40.000 ms late" in said, said
+        caplog.clear()
+        with caplog.at_level(logging.INFO):                              # the next polls: quiet
+            await ctl.poll_once()
+            await ctl.poll_once()
+            assert await ctl.settle(2.0)
+        assert nomark(cl.log[n:]) == [] and _engine_delays(cl) == (45.0, 40.0)
+        assert not [r for r in caplog.records if "40.000" in r.getMessage()]
+        assert json.loads((tmp_path / "state.json").read_text())["top_delay_ms"] == 0.0
+
+        n = len(cl.log)
+        ctl.set_mute(True)                                               # B4
+        await until(lambda: _engine_delays(cl) == (5.0, 0.0), what="common delay written out")
+        assert await ctl.settle(3.0)
+        ops = nomark(cl.log[n:])
+        writes = _config_writes(ops)
+        assert len(writes) == 1, ops
+        i = ops.index(writes[0])
+        assert ops[0] == ("mute", 0, True)                               # Main first, then the guard
+        assert sorted(ops[1:i]) == [("mute", 1, True), ("mute", 2, True)]
+        assert sorted(ops[i + 1:]) == [("mute", 1, False), ("mute", 2, False)]
+        assert cl.faders[0]["mute"] is True and ctl.state.muted is True
+        assert _pa_late(ctl) == []
+        await ctl.poll_once()
+        assert await ctl.settle(2.0)
+        assert _config_writes(cl.log[n + len(ops):]) == []
+        await ctl.stop()
+
+    run(body())
+
+
+def test_common_delay_held_pair_is_adopted_as_a_pair(tmp_path: Path, caplog: Any) -> None:
+    """Regression (found in review): after an ALIGN move on top of a held 45/40, the next poll
+    skips our own write of the sub delay for OWN_WRITE_S and read the top alone: sub 5.1 (the
+    state's) with top 40 (the engine's) came in as ALIGN -34.9, and was written out. The two
+    delays are adopted together or not at all, our own write or a pending edit alike. Read back
+    later, the operator's 5.1 stays 5.1 (not the grid's 5.104167) and the journal stays quiet."""
+    import logging
+
+    async def body() -> None:
+        now = {"t": 1000.0}
+        ctl, cl = make(tmp_path, State(sub_delay_ms=45.0), playing=True, clock=lambda: now["t"])
+        await boot(ctl)
+        cl.cfg["filters"]["top_delay"]["parameters"]["delay"] = 40.0     # laptop editor
+        await ctl.poll_once()
+        assert await ctl.settle(2.0)
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            ctl.nudge("align_delay_ms", 1)
+            assert await ctl.settle(3.0)
+            await ctl.poll_once()                                        # within OWN_WRITE_S
+            assert await ctl.settle(2.0)
+            assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (5.1, 0.0)
+            now["t"] += 2 * ctl_mod.OWN_WRITE_S
+            await ctl.poll_once()                                        # read back whole
+            assert await ctl.settle(2.0)
+            assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (5.1, 0.0)
+            assert _engine_delays(cl) == (dc.delay_on_grid(45.1), 40.0)
+            ctl.state.set("align_delay_ms", 5.2)                         # an edit not sent yet
+            await ctl.poll_once()
+            assert await ctl.settle(2.0)
+            assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (5.2, 0.0)
+            assert _engine_delays(cl) == (dc.delay_on_grid(45.2), 40.0)
+        assert not [r for r in caplog.records if "were both set" in r.getMessage()]
+        assert _pa_late(ctl) == [("warning", "PA LATE 40.00 MS · MUTE TO CLEAR")]
+        await ctl.stop()
+
+    run(body())
+
+
+def test_a_gui_delay_edit_inside_our_own_write_window_waits_and_is_not_pushed_back(
+        tmp_path: Path) -> None:
+    """The pair rule also holds for the drift check: CamillaGUI gives the subs 0.5 ms right after
+    K1000 wrote the tops' delay. Within OWN_WRITE_S neither delay is adopted nor pushed back;
+    the next poll takes the pair whole (ALIGN -0.6, the 0.5 held with PA LATE)."""
+    async def body() -> None:
+        now = {"t": 1000.0}
+        ctl, cl = make(tmp_path, State(top_delay_ms=1.0), playing=True, clock=lambda: now["t"])
+        await boot(ctl)
+        ctl.nudge("align_delay_ms", -1)                                  # tops 1.1
+        assert await ctl.settle(3.0)
+        cl.cfg["filters"]["sub_delay"]["parameters"]["delay"] = 0.5      # laptop editor, at once
+        n = len(cl.log)
+        await ctl.poll_once()
+        assert await ctl.settle(2.0)
+        assert _config_writes(cl.log[n:]) == []
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (0.0, 1.1)
+        now["t"] += 2 * ctl_mod.OWN_WRITE_S
+        await ctl.poll_once()
+        assert await ctl.settle(2.0)
+        assert _config_writes(cl.log[n:]) == []
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (0.0, 0.6)
+        assert _engine_delays(cl) == (0.5, dc.delay_on_grid(1.1))
+        assert _pa_late(ctl) == [("warning", "PA LATE 0.50 MS · MUTE TO CLEAR")]
+        await ctl.stop()
+
+    run(body())
+
+
+def test_common_delay_unmuted_before_the_write_stays_held(tmp_path: Path) -> None:
+    """The hold is decided when the worker plans, from the operator's wish as well as the
+    engine's mute: Main muted lets the pair go; an unmute pressed since, still on its way (the
+    engine reads muted), keeps it, so the PA is not dipped right after it comes in."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(sub_delay_ms=3.0, top_delay_ms=2.0), playing=True)
+        await boot(ctl)
+        assert _pa_late(ctl) == [("warning", "PA LATE 2.00 MS · MUTE TO CLEAR")]
+        assert ctl._pending_ops() == []
+        ctl.state.muted = ctl.status.muted = True                        # muted, a poll read it
+        assert {o.pointer for o in ctl._pending_ops() if isinstance(o, dc.SetValue)} \
+            == {SUB_DELAY_PTR, TOP_DELAY_PTR}
+        ctl.state.muted = False                                          # unmute pressed, not there yet
+        assert ctl._pending_ops() == []
+        ctl.status.muted = False                                         # and in the engine
+        assert ctl._pending_ops() == []
+        n = len(cl.log)
+        ctl._kick.set()
+        assert await ctl.settle(2.0)
+        assert _config_writes(cl.log[n:]) == [] and _engine_delays(cl) == (3.0, 2.0)
+        await ctl.stop()
+
+    run(body())
+
+
+def test_common_delay_goes_with_a_setup_rebuild_under_the_main_guard(tmp_path: Path) -> None:
+    """A setup change rebuilds the pipeline with Main muted around it: the common delay goes in
+    that upload, not in a write of its own, and PA LATE (same priority) makes way for APPLYING
+    SETUP… while it runs."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(sub_delay_ms=1.0, top_delay_ms=1.5), playing=True)
+        await boot(ctl)
+        assert _pa_late(ctl) == [("warning", "PA LATE 1.00 MS · MUTE TO CLEAR")]
+        shown: list[tuple[str, str]] = []
+
+        async def at_upload(entry: tuple[Any, ...]) -> None:
+            if entry[0] == "config":
+                shown.append((ctl.status.message, ctl.status.alert))
+
+        cl.on_write = at_upload
+        n = len(cl.log)
+        assert ctl.toggle("mono_subs", confirmed=True)
+        assert await ctl.settle(3.0)
+        assert shown == [("APPLYING SETUP…", "APPLYING SETUP…")]
+        ops = nomark(cl.log[n:])
+        uploads = [e for e in ops if e[0] == "config"]
+        assert len(uploads) == 1 and len(_config_writes(ops)) == 1, ops
+        i = ops.index(uploads[0])
+        assert ("mute", 0, True) in ops[:i] and ("mute", 0, False) in ops[i + 1:]
+        assert _engine_delays(cl) == (0.0, 0.5) and _pa_late(ctl) == []
+        await ctl.stop()
+
+    run(body())
+
+
+def test_fresh_engine_from_an_old_active_yml_loses_the_common_delay_before_the_ramp(
+        tmp_path: Path) -> None:
+    """The engine started from an active.yml written with both delays (before this build, or
+    by hand), muted as every fresh engine: the delays are set right while it is muted, before
+    the ramp brings Main in; no group guard is needed and no alert shows."""
+    async def body() -> None:
+        pair = State(sub_delay_ms=2.0, top_delay_ms=12.0)
+        ctl, cl = make(tmp_path, pair)                                   # fresh: Main muted at -40
+        await boot(ctl)
+        assert _engine_delays(cl) == (0.0, 10.0)
+        ops = nomark(cl.log)
+        first_write = next(i for i, e in enumerate(ops) if e[0] in ("set", "patch", "config"))
+        assert first_write < ops.index(("mute", 0, False))
+        assert not [e for e in ops if e[0] == "mute" and e[1] in (1, 2) and e[2] is True]
+        assert _pa_late(ctl) == []
+        await ctl.stop()
+
+    run(body())
+
+
+def test_common_delay_goes_with_a_pipeline_restore_or_a_device_repair(tmp_path: Path) -> None:
+    """K1000's own uploads on a playing engine, a pipeline restore and a device repair, run with
+    Main muted around them: they put back the engine's view WITHOUT its common delay, never the
+    pair the state has dropped (it would be held again after the unmute)."""
+    def uploaded(log: list[tuple[Any, ...]]) -> list[tuple[float, float]]:
+        return [(e[1]["filters"]["sub_delay"]["parameters"]["delay"],
+                 e[1]["filters"]["top_delay"]["parameters"]["delay"]) for e in log if e[0] == "config"]
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(sub_delay_ms=3.0, top_delay_ms=2.0), playing=True)
+        ctl.same_card = lambda a, b: a == b
+        await boot(ctl)
+        assert _pa_late(ctl) and _engine_delays(cl) == (3.0, 2.0)
+        cl.cfg["pipeline"] = cl.cfg["pipeline"][:-2] + cl.cfg["pipeline"][-1:]    # GUI dropped a step
+        n = len(cl.log)
+        await ctl.poll_once()
+        await ctl.poll_once()                                            # second look: restore
+        assert await ctl.settle(3.0)
+        ops = nomark(cl.log[n:])
+        assert ops[0] == ("mute", 0, True) and uploaded(ops) == [(1.0, 0.0)]
+        assert _engine_delays(cl) == (1.0, 0.0) and _pa_late(ctl) == []
+        assert (ctl._applied.sub_delay_ms, ctl._applied.top_delay_ms) == (1.0, 0.0)
+        assert cl.faders[0]["mute"] is False                             # Main back in
+        await ctl.stop()
+
+        ctl, cl = make(tmp_path, State(sub_delay_ms=3.0, top_delay_ms=2.0), playing=True)
+        ctl.same_card = lambda a, b: a == b            # hw:0 is NOT this profile's card here
+        await boot(ctl)
+        assert _pa_late(ctl)
+        cl.cfg = gui_default_config()                  # a stale CamillaGUI page pressed Apply
+        n = len(cl.log)
+        await ctl.poll_once()
+        await ctl.poll_once()                          # second look: repair
+        assert await ctl.settle(5.0)
+        assert uploaded(cl.log[n:]) == [(1.0, 0.0)] and _pa_late(ctl) == []
+        await ctl.stop()
+
+    run(body())
+
+
+def test_common_delay_read_back_after_a_refused_write_is_dropped(tmp_path: Path, caplog: Any) -> None:
+    """A refused write re-reads the engine (`_resync_from_engine`) and takes its values: a pair
+    made in CamillaGUI since the last poll comes in as the difference only, said once, held in
+    the playing engine with PA LATE, as from a poll."""
+    import logging
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(sub_delay_ms=45.0), playing=True)
+        await boot(ctl)
+        cl.cfg["filters"]["top_delay"]["parameters"]["delay"] = 40.0     # laptop editor, not polled
+        cl.refuse.add("/filters/live_peq_1/parameters/q")
+        n = len(cl.log)
+        with caplog.at_level(logging.WARNING):
+            ctl.nudge("live_peq.0.q", 1)
+            assert await ctl.settle(3.0)
+        assert ctl.focus.hint == "ENGINE REFUSED THE CHANGE"
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (5.0, 0.0)
+        said = [r.getMessage() for r in caplog.records if "were both set" in r.getMessage()]
+        assert len(said) == 1 and said[0].startswith(
+            "adopted from the engine: sub delay 45.000 ms and top delay 40.000 ms"), said
+        assert _pa_late(ctl) == [("warning", "PA LATE 40.00 MS · MUTE TO CLEAR")]
+        assert _config_writes(cl.log[n:]) == [] and _engine_delays(cl) == (45.0, 40.0)
+        await ctl.stop()
+
+    run(body())
+
+
+def test_a_direct_sub_or_top_delay_write_never_leaves_a_pair(tmp_path: Path, caplog: Any) -> None:
+    """The stdin console can write sub_delay_ms / top_delay_ms directly (the phone cannot). A
+    write that would leave both set keeps their difference only, said in the journal: no PA
+    LATE alert that a mute could never clear, one group dipped as for an ALIGN move."""
+    import logging
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(sub_delay_ms=5.0), playing=True)
+        await boot(ctl)
+        n = len(cl.log)
+        with caplog.at_level(logging.WARNING):
+            assert ctl.set_value("top_delay_ms", 2.0, source="console") == 0.0
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (3.0, 0.0)
+        assert "console set top_delay_ms: sub delay 5.000 ms and top delay 2.000 ms" in caplog.text
+        assert await ctl.settle(3.0)
+        assert nomark(cl.log[n:]) == [("mute", 1, True), ("set", SUB_DELAY_PTR, 3.0), ("mute", 1, False)]
+        assert _pa_late(ctl) == []
+        assert ctl.nudge("top_delay_ms", 10, source="console") == 0.0    # +1.0 ms: the same
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (2.0, 0.0)
+        ctl.set_value("sub_delay_ms", 0.0)
+        assert ctl.set_value("top_delay_ms", 4.0) == 4.0                 # one side: as written
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (0.0, 4.0)
+        assert await ctl.settle(3.0)
+        assert _engine_delays(cl) == (0.0, 4.0) and _pa_late(ctl) == []
+        await ctl.stop()
+
+    run(body())
+
+
+def test_common_delay_goes_with_a_profile_switch_at_connect(tmp_path: Path) -> None:
+    """k1000 restarted on another profile while the engine plays the old one with a pair: the
+    switch uploads the state's delays (no common part) under the Main mute, and K1000 knows it.
+    Believing the old pair still there, the hold would put it back on top of the next ALIGN
+    move: a sub delay 40 ms too long in an engine that no longer holds the tops' 40."""
+    async def body() -> None:
+        m4 = load_profile("m4", {}, probe=False)
+        pair = State(sub_delay_ms=45.0, top_delay_ms=40.0)
+        ctl, cl = make(tmp_path, pair, playing=True, cfg=dc.generate(m4, pair))
+        await boot(ctl)
+        assert [e[1]["title"] for e in cl.log if e[0] == "config"] == ["K1000 dev"]
+        assert _engine_delays(cl) == (5.0, 0.0) and _pa_late(ctl) == []
+        n = len(cl.log)
+        ctl.nudge("align_delay_ms", 1)
+        assert await ctl.settle(3.0)
+        assert nomark(cl.log[n:]) == [("mute", 1, True), ("set", SUB_DELAY_PTR, dc.delay_on_grid(5.1)),
+                                      ("mute", 1, False)]
+        await ctl.stop()
+
+    run(body())
+
+
+def test_rebuilt_state_loses_a_common_delay(tmp_path: Path) -> None:
+    pair = State(sub_delay_ms=3.0, top_delay_ms=2.0)
+    (tmp_path / "active.yml").write_text(dc.to_yaml(dc.generate(DEV, pair)))
+    (tmp_path / "state.json").write_text('{"schema": 1, "master_db": -10.0, "sys_peq": [{"fr')
+    st, note = recover_state(Paths(tmp_path / "state.json", tmp_path / "active.yml"))
+    assert note == ctl_mod.NOTE_REBUILT and st.muted is True
+    assert (st.sub_delay_ms, st.top_delay_ms) == (1.0, 0.0)
+
+
+# ======================================================================= chunk size (docs/16 §3.3)
+def test_step_and_running_check_waits_follow_the_running_chunk(tmp_path: Path) -> None:
+    """A 1024-frame chunk is 21 ms: steps 12 ms apart could reach the engine twice within one
+    chunk (one skipped: a bigger jump), and two Running reads 12 ms apart could fall in the same
+    chunk. The waits follow the larger of the profile's chunk and the running engine's (a
+    k1000.yaml change waits for the next engine start, so the two can differ)."""
+    big = load_profile("dev", {"profiles": {"dev": {"chunksize": 1024}}}, probe=False)
+    paths = Paths(tmp_path / "x" / "state.json", tmp_path / "x" / "active.yml")
+    assert Controller(FakeClient(None), DEV, State(), paths)._two_chunks_s() == 0.012
+    assert Controller(FakeClient(None), big, State(), paths)._two_chunks_s() == 0.048
+
+    async def body() -> None:
+        slept: list[float] = []
+
+        async def rec(s: float) -> None:
+            slept.append(s)
+            await asyncio.sleep(0)
+
+        # the profile says 256, the engine still runs 1024 (started before the yaml change)
+        ctl, cl = make(tmp_path, State(), playing=True, cfg=dc.generate(big, State()), sleep=rec)
+        await boot(ctl)
+        assert ctl.profile.chunksize == 256 and ctl._engine_chunk == 1024
+        slept.clear()
+        ctl.nudge("lowcut_hz", 20)                                       # 100 -> 140 Hz, stepped
+        assert await ctl.settle(3.0)
+        assert len(sets_for(cl.log, LOWCUT_PTR)) > 2
+        assert 0.048 in slept and 0.012 not in slept, slept
+        slept.clear()
+        assert await ctl._engine_running(ctl._epoch, held=True)
+        assert slept == [0.048]
+        plan, _pushed, _held = ctl._fix_plan(cl.cfg, [dc.SetValue(LOWCUT_PTR, 100.0)])
+        assert [w for w, _b in plan[1:]] and all(w == 0.048 for w, _b in plan[1:])
+        cl.cfg["devices"]["chunksize"] = 256                             # the engine restarted
+        await ctl.poll_once()
+        assert ctl._engine_chunk == 256 and ctl._two_chunks_s() == 0.012
         await ctl.stop()
 
     run(body())

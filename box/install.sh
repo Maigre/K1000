@@ -24,6 +24,12 @@
 #                                 portal off, SSH fenced off; later runs keep its choices, a no-go
 #                                 `setup-ap.sh --down` included). eth0 is never touched. Takes
 #                                 effect at once; the only way the AP's units are installed/updated
+#   sudo ./install.sh --cpu-off   ... and take the processor settings (box/cpu/: governor
+#                                 "performance", the engine alone on cores 2-3, the rest on 0-1,
+#                                 Nice for k1000) off the box; later runs keep them off. Only a
+#                                 reboot applies it (between shows): --start is refused until then.
+#                                 `--cpu-on` puts them back (the default; when each part applies:
+#                                 step 6b)
 #   ./install.sh --deps           print the apt packages it may install, one per line (bootstrap.sh
 #                                 runs apt-get update only when one is missing)
 #
@@ -53,6 +59,17 @@ UNITS=(camilladsp k1000 camillagui k1000-console k1000-usbwatch)
 # it starts on the box's request. Installed here, never enabled (nothing starts them at boot).
 LAPTOP_UNITS=(k1000-laptop.path k1000-laptop.service)
 AP_UNITS=(k1000-ap-fence k1000-ap-hostapd k1000-ap-dnsmasq)   # net/: set up by net/setup-ap.sh
+# Processor settings (docs/16 §5.1, each file says why): "<file in cpu/> <where it goes>". All on
+# or all off, in this one place: --cpu-off/--cpu-on, remembered in CPU_CHOICE (step 6b).
+CPU_FILES=(
+  "61-k1000-cpu-governor.rules /etc/udev/rules.d/61-k1000-cpu-governor.rules"
+  "system.conf /etc/systemd/system.conf.d/50-k1000-cpu.conf"
+  "camilladsp.conf /etc/systemd/system/camilladsp.service.d/50-k1000-cpu.conf"
+  "k1000.conf /etc/systemd/system/k1000.service.d/50-k1000-cpu.conf"
+  "camillagui.conf /etc/systemd/system/camillagui.service.d/50-k1000-cpu.conf"
+)
+CPU_CHOICE=/etc/k1000/cpu-tuning
+cpu_choice() { grep -v '^[[:space:]]*#' "$CPU_CHOICE" 2>/dev/null | tr -d '[:space:]'; }   # off = off
 # smbus2 for the knob board (D-008: python3-smbus is GPL-2.0-only), qrcode for the PHONE page's
 # join codes and hostapd for the phone's access point (D-007, net/setup-ap.sh; installed even
 # without --ap, because a venue has no internet. Inert until then: Debian's own hostapd.service
@@ -68,10 +85,12 @@ GUI_URL=https://github.com/HEnquist/camillagui-backend/releases/download/v5.0.0-
 GUI_TGZ_SHA256=854552f3e74a156d25117a1ecca2df44c94aefbeb62e1c47ff23b19d6b0cc8a2
 GUI_BIN_SHA256=d993616caf6c67dc09b11a337d484ca2eca6c21c517305dc9d95df2f2e7bf14e
 
-DO_START=0 DO_BOOT=0 DO_HEADLESS=0 DO_AP=0
+DO_START=0 DO_BOOT=0 DO_HEADLESS=0 DO_AP=0 DO_CPU=
 for arg in "$@"; do
   case $arg in
     --ap) DO_AP=1 ;;
+    --cpu-off) DO_CPU=off ;;
+    --cpu-on) DO_CPU=on ;;
     --start) DO_START=1 ;;
     --boot) DO_BOOT=1 ;;
     --headless) DO_HEADLESS=1 ;;
@@ -137,6 +156,20 @@ case $SRC in
   "$PREV"|"$PREV"/*) die "do not run from $PREV (it is rewritten by this script); copy it first: sudo rm -rf /tmp/k1000-rollback && sudo cp -a $PREV /tmp/k1000-rollback && sudo /tmp/k1000-rollback/install.sh" ;;
 esac
 [ -d "$SRC/k1000" ] && [ -d "$SRC/systemd" ] || die "$SRC does not look like box/ (no k1000/ or systemd/)"
+
+# --- the processor settings switched off, and --start (checked before anything changes) --------
+# Switched off (step 6b), the settings leave only at the next boot. systemd (PID 1) keeps the cores
+# it was given at boot, 0-1 while they were on: a daemon-reload re-reads system.conf.d, but with
+# CPUAffinity= gone it applies nothing (systemd 257, src/core/main.c), and every unit it starts
+# inherits PID 1's cores. An engine restarted by --start before that reboot would share cores 0-1
+# with everything else, worse than both on and off, so --start is refused until PID 1 has them all.
+if [ $DO_START = 1 ] && [ "${DO_CPU:-$(cpu_choice)}" = off ]; then
+  pid1_cpus=$(sed -n 's/^Cpus_allowed_list:[[:space:]]*//p' /proc/1/status)
+  online=$(cat /sys/devices/system/cpu/online)
+  if [ "$pid1_cpus" != "$online" ]; then
+    die "processor settings off, but systemd still runs on cores $pid1_cpus of $online until the next boot, and an engine restarted now would share them with everything else: run without --start, then reboot (between shows)"
+  fi
+fi
 
 # --- 0. the phone certificate (K1000_TLS_DIR), checked before anything changes -----------------
 # All three files present and the key matching the certificate, or nothing is installed at all: a
@@ -389,6 +422,44 @@ put "$TMP/journald.conf" /etc/systemd/journald.conf.d/50-k1000-journal.conf 644
 if [ $PUT_CHANGED = 1 ]; then
   note "persistent journal: applies at the next reboot (or now: sudo systemctl restart systemd-journald)"
 fi
+
+# --- 6b. processor settings (CPU_FILES, box/cpu/) ------------------------------------------------
+# On unless CPU_CHOICE says off: --cpu-off writes it, --cpu-on rewrites it, so a later plain run
+# (every deploy) keeps the choice. When each part applies:
+# - on: the system-wide cores at the daemon-reload below (PID 1 re-reads system.conf.d), for what
+#   systemd starts from then on; a unit's cores and nice at its next start; the governor at the
+#   next boot. A reboot applies all of it to everything.
+# - off: the files go, but only a reboot brings the OS defaults back (ondemand, every core for
+#   every process). Until then PID 1 keeps cores 0-1 and passes them on, to the engine too if it
+#   restarts: hence the note below, and --start refused (before step 0).
+if [ -n "$DO_CPU" ]; then
+  printf '# K1000 processor settings (box/cpu/): on or off. Set by install.sh --cpu-on / --cpu-off.\n%s\n' "$DO_CPU" > "$TMP/cpu-tuning"
+  put "$TMP/cpu-tuning" "$CPU_CHOICE" 644
+fi
+cpu_on=1
+if [ "$(cpu_choice)" = off ]; then cpu_on=0; fi
+CPU_CHANGED=0
+for e in "${CPU_FILES[@]}"; do
+  src=${e%% *} dst=${e#* }
+  if [ $cpu_on = 1 ]; then
+    put "$SRC/cpu/$src" "$dst" 644
+    if [ $PUT_CHANGED = 1 ]; then CPU_CHANGED=1; fi
+  elif [ -e "$dst" ]; then
+    rm -f "$dst"
+    changed "removed $dst (processor settings off)"
+    CPU_CHANGED=1
+    case $dst in */*.service.d/*) rmdir "${dst%/*}" 2>/dev/null || true ;; esac   # if now empty
+  fi
+done
+if [ $CPU_CHANGED = 1 ]; then
+  RELOAD=1
+  if [ $cpu_on = 1 ]; then
+    note "processor settings on: cores and nice for what starts from now on, the governor from the next boot (a reboot, between shows, applies all of it)"
+  else
+    note "processor settings off: reboot to apply (between shows). Until then systemd keeps the cores it has, and an engine restarted before the reboot shares cores 0-1 with everything else"
+  fi
+fi
+
 if [ $RELOAD = 1 ]; then
   systemctl daemon-reload
   note "systemd reloaded"

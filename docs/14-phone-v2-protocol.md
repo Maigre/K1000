@@ -122,7 +122,9 @@ page                                     box
  "limits": {"max_message": 1024, "rate_per_s": 30.0, "burst": 40, "max_phones": 4,
             "master_up_db_per_s": 6.0, "master_up_burst_db": 3.0,
             "guard_db": 6.0, "guard_window_s": 2.0},
- "nudge": {"master_db": [-12, 2], "balance_db": [-4, 4], "lowcut_hz": [-12, 12], "...": "every path"}}
+ "nudge": {"master_db": [-12, 2], "balance_db": [-4, 4], "lowcut_hz": [-12, 12], "...": "every path"},
+ "install": {"apk": {"url": "/k1000.apk", "file": "K1000-0.2.2.apk", "version": "0.2.2",
+                     "size": 524288, "sha8": "44b75423"}, "start": "http://10.42.0.1/"}}
 ```
 
 | Key | Meaning |
@@ -146,6 +148,11 @@ page                                     box
 | `pgm` | RESPONSE (§3.6): how the box computes the program side, so the page computes its mic side the same way. `v` 1; `n`, `f0`, `f1` the grid (the `rta` bins); `rate` the engine's sample rate in Hz (= `fs`); `fft` the engine's FFT length at that rate (the next power of two ≥ `rate / f0`: 8192 at 48 kHz); `est` `peak` (Hann window; each bin is the loudest FFT bin of its band); `win_s` the window (0.5 s). **`null`: the box cannot serve RESPONSE** (`spectrum.enabled: false`, or no spectrum task): hide it |
 | `limits` | The box's limits, for display and for the page's own mirror of the PA-up bucket (master, the trims, D-016's AUX level and loudness): §6 |
 | `nudge` | The `nudge` allowlist: path → `[most negative, most positive]` detents in one message. Anything else is `err BAD` |
+| `install` | (2026-11-12, additive: a page that does not know it ignores it) What SETUP › THIS PHONE › *Install K1000* offers: `apk` `{url, file, version, size, sha8}` (the APK the box holds, `/k1000.apk`, size in bytes, the first 8 hex of its SHA-256) or `null` (none on this box); `start` the first-time page a new phone opens once on the Wi-Fi (`http://10.42.0.1/`, `""` when not served). Display only: nothing here changes the sound |
+
+The v2 page also has a web app manifest (`/v2/manifest.webmanifest`, id and scope `/v2/`), so
+Chrome's *Add to Home screen* puts the v2 page there under its own name and icon, separate from v1
+(2026-11-12; without internet, usually a shortcut with a small Chrome badge: docs/06 §3 step 5).
 
 #### 3.1.1 `fields{}`: one entry per editable number
 
@@ -290,8 +297,11 @@ after it when that row's label starts with the switch's (`Low-pass` + `Low-pass 
 
 ### 3.2 `state` (every change; latest only)
 
-A slow phone skips states, it never queues them. Every v1 key keeps its v1 meaning; v2 adds the
-rest. Numbers are rounded, never NaN or infinite (`null` instead).
+A slow phone skips states, it never queues them: while more than 4 kB are still on their way to
+the phone (counted as for `rta`, §3.4, kernel included) the state and the meters wait, and the
+latest one goes once there is room (2026-11-12: before, a 16 kB/s link got every state from the
+box's send queue and showed a change 6.6 s late). A reply never waits. Every v1 key keeps its v1
+meaning; v2 adds the rest. Numbers are rounded, never NaN or infinite (`null` instead).
 
 ```json
 {"t": "state",
@@ -316,7 +326,8 @@ rest. Numbers are rounded, never NaN or infinite (`null` instead).
  "spectrum": {"on": true, "src": "PGM", "state": "live"},
  "laptop": {"state": "open", "s": 7140},
  "readonly": {"profile": "PROFILE PINNED IN k1000.yaml", "dev_audition": "AUDITION: DEV PROFILE ONLY"},
- "box_band": 1, "box_page": "SHOW", "knobs_ok": true}
+ "box_band": 1, "box_page": "SHOW", "knobs_ok": true,
+ "latency": {"ms": 20.3, "io": true, "over": true, "limit": 10.0, "buf": 536, "drops": 0}}
 ```
 
 | Key | Meaning |
@@ -344,6 +355,7 @@ rest. Numbers are rounded, never NaN or infinite (`null` instead).
 | `box_band` | The band the knobs are on (the `E` mark). Not the phone's selection: each phone keeps its own |
 | `box_page` | The box screen's page (`SHOW`, `ALIGN`, `SETUP`, `PHONE`, `HWTEST`) |
 | `knobs_ok` | `true` knobs answer, `false` KNOBS OFFLINE, `null` no knobs expected |
+| `latency` | The box's delay readout (D-018, `k1000/latency.py`): `ms` in to out, estimated (`null` = no reading); `io` `false` = the interface's share is not known, `ms` is the engine's alone (a floor); `over` above `limit` ms (it only informs); `buf` the engine's playback buffer level, frames; `drops` the engine's dropout lines since it started (`null` = its log is not read). `ms` is a floor too once `drops` is above 0; the page then says `at least`, and shows `drops` only beside a figure. v2 only: v1's state is unchanged |
 
 Countdowns are the values when the state was built; the box resends when something else changes,
 so the page counts down from the last one it got.

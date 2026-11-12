@@ -104,16 +104,16 @@ public class K1000HostsTest {
     /** Bench builds only: one development host joins the box's two names; release has none. */
     @Test
     public void benchHost() {
-        assertFalse(K1000Hosts.isBoxUrl("https://192.168.8.54/v2/"));
-        K1000Hosts.setBenchHost("192.168.8.54");
-        assertTrue(K1000Hosts.isBoxUrl("https://192.168.8.54/v2/"));
-        assertTrue(K1000Hosts.isBoxOrigin("https://192.168.8.54/"));
+        assertFalse(K1000Hosts.isBoxUrl("https://192.0.2.54/v2/"));
+        K1000Hosts.setBenchHost("192.0.2.54");
+        assertTrue(K1000Hosts.isBoxUrl("https://192.0.2.54/v2/"));
+        assertTrue(K1000Hosts.isBoxOrigin("https://192.0.2.54/"));
         assertTrue(K1000Hosts.isBoxUrl("https://10.42.0.1/"));               // the box stays the box
-        assertFalse(K1000Hosts.isBoxUrl("https://192.168.8.55/"));
-        assertEquals("192.168.8.54", K1000Hosts.primaryHost());
+        assertFalse(K1000Hosts.isBoxUrl("https://192.0.2.55/"));
+        assertEquals("192.0.2.54", K1000Hosts.primaryHost());
         assertEquals("10.42.0.1", K1000Hosts.fallbackHost());
-        assertEquals("https://192.168.8.54", K1000Hosts.originOf("https://192.168.8.54/v2/"));
-        assertEquals(List.of(K1000Hosts.SUBNET, "192.168.8.0/24"), K1000Hosts.linkSubnets());
+        assertEquals("https://192.0.2.54", K1000Hosts.originOf("https://192.0.2.54/v2/"));
+        assertEquals(List.of(K1000Hosts.SUBNET, "192.0.2.0/24"), K1000Hosts.linkSubnets());
         K1000Hosts.setBenchHost("Bench.Lan.");
         assertEquals("bench.lan", K1000Hosts.benchHost());
         assertEquals(List.of(K1000Hosts.SUBNET), K1000Hosts.linkSubnets());  // a name: no subnet to follow

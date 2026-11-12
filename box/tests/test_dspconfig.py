@@ -9,6 +9,7 @@ Port: $K1000_DSPCONFIG_PORT (default 12341).
 """
 import contextlib
 import copy
+import dataclasses
 import json
 import math
 import os
@@ -118,6 +119,95 @@ def test_target_level_per_profile():
     for bad, want in ((5000, 1536), (10, 64), ("768", 256), (512.5, 256), (True, 256)):
         q = pf.load_profile("m4", {"profiles": {"m4": {"target_level": bad}}}, probe=False)
         assert q.target_level == want and any("target_level" in w for w in q.warnings), bad
+
+
+def _chunk(chunk, **more):
+    return pf.load_profile("m4", {"profiles": {"m4": {"chunksize": chunk, **more}}}, probe=False)
+
+
+def test_chunksize_per_profile_refuses_what_the_engine_should_not_get():
+    """docs/16 §3.3: the chunk becomes a per-profile setting like target_level. Absent or null:
+    256. Anything but 64, 128, 256, 512, 1024 is refused with a message, and 256 is used."""
+    assert pf.load_profile("m4", {}, probe=False).chunksize == 256
+    assert pf.CHUNKSIZES == (64, 128, 256, 512, 1024) and pf.CHUNKSIZE == 256
+    p = _chunk(None)
+    assert p.chunksize == 256 and p.target_level == 256 and not p.warnings
+    for bad in (100, 2048, 32, 0, -256, "256", 256.0, True, [256]):
+        q = _chunk(bad)
+        assert q.chunksize == 256 and q.target_level == 256, bad
+        assert any(f"chunksize {bad!r} refused" in w and "64, 128, 256, 512, 1024" in w
+                   for w in q.warnings), (bad, q.warnings)
+        assert d.generate(q, State())["devices"]["chunksize"] == 256
+    # a refused chunk still clamps the target to the 256 range, with its own message
+    q = _chunk(2048, target_level=4000)
+    assert (q.chunksize, q.target_level) == (256, 1536) and len(q.warnings) == 2
+
+
+@pytest.mark.parametrize("chunk", [64, 128, 256, 512, 1024])
+def test_one_config_per_chunk_size_and_what_follows_from_it(chunk):
+    """Each allowed chunk: the devices block carries it (an int: the engine refuses 256.0), the
+    target defaults to one chunk and stays in 64 .. 6 x chunk ((2 + queuelimit 4) x chunk, the
+    engine's documented usable maximum, under its own refusal at (4 + 4) x chunk), the step and
+    Running-check wait spans more than 2 chunks and never drops under 12 ms, and nothing else in
+    the config moves."""
+    p = _chunk(chunk)
+    assert p.chunksize == chunk and not p.warnings
+    cfg = d.generate(p, State(profile="m4"))
+    dv = cfg["devices"]
+    assert (dv["chunksize"], dv["target_level"]) == (chunk, chunk)
+    assert type(dv["chunksize"]) is int and type(dv["target_level"]) is int
+    assert f"chunksize: {chunk}\n" in d.to_yaml(cfg)
+    lo, hi = pf.target_level_range(chunk)
+    assert (lo, hi) == (64, 6 * chunk) and hi < (4 + pf.QUEUELIMIT) * chunk
+    assert pf.device_buffer_frames(chunk) == 4 * chunk        # the power of two >= 3 chunks
+    top = _chunk(chunk, target_level=hi)
+    assert top.target_level == hi and not top.warnings
+    assert d.generate(top, State())["devices"]["target_level"] == hi
+    over = _chunk(chunk, target_level=hi + 1)
+    assert over.target_level == hi
+    assert any(f"outside 64..{hi}" in w and f"chunksize {chunk}" in w for w in over.warnings)
+    under = _chunk(chunk, target_level=63)
+    assert under.target_level == 64 and under.warnings
+    wait = {64: 0.012, 128: 0.012, 256: 0.012, 512: 0.024, 1024: 0.048}[chunk]
+    assert d.two_chunks_s(chunk) == wait and wait > 2 * chunk / 48000
+    plan = d.smooth_ops(State(), State(lowcut_hz=150.0), step_wait_s=d.two_chunks_s(chunk))
+    assert len(plan) > 2 and plan[0][0] == 0.0 and all(w == wait for w, _ in plan[1:])
+    assert d.GUARD_WAIT_S - d.VOLUME_RAMP_MS / 1000.0 > 2 * chunk / 48000   # its margin too
+    base = d.generate(pf.load_profile("m4", {}, probe=False), State(profile="m4"))
+    dv["chunksize"] = dv["target_level"] = 256
+    assert cfg == base
+
+
+@pytest.mark.parametrize("profile_key", list(golden.PROFILES))
+def test_chunksize_256_written_out_is_still_the_golden_config(profile_key):
+    """The default chunk named in k1000.yaml changes nothing: f2671b0's bytes, every state."""
+    name, ov = golden.PROFILES[profile_key]
+    sec = {**((ov or {}).get("profiles", {}).get(name, {})), "chunksize": 256}
+    prof = pf.load_profile(name, {"profiles": {name: sec}}, probe=False)
+    assert not prof.warnings
+    for state_key in golden.STATES:
+        want = golden.golden_path(profile_key, state_key).read_text(encoding="utf-8")
+        assert d.to_yaml(d.generate(prof, golden.STATES[state_key](State))) == want, state_key
+
+
+def test_engine_buffer_never_writes_what_the_engine_refuses():
+    """A Profile built by hand (not through load_profile) is checked again at generate."""
+    base = dev()
+    for cs, tl, want in ((100, 256, (256, 256)), (256.0, 256, (256, 256)), (True, 256, (256, 256)),
+                         (64, 5000, (64, 384)), (1024, 10, (1024, 64)), (512, 0, (512, 512)),
+                         (128, None, (128, 128)), (256, 512.0, (256, 256))):
+        p = copy.copy(base)
+        p.chunksize, p.target_level = cs, tl
+        assert d.engine_buffer(p) == want, (cs, tl)
+        dv = d.generate(p, State())["devices"]
+        assert (dv["chunksize"], dv["target_level"]) == want
+    # the dataclass default: no target given is one chunk, as load_profile gives
+    kw = {f.name: getattr(base, f.name) for f in dataclasses.fields(pf.Profile)
+          if f.name not in ("target_level", "chunksize")}
+    for cs in pf.CHUNKSIZES:
+        loaded = pf.load_profile("dev", {"profiles": {"dev": {"chunksize": cs}}}, probe=False)
+        assert d.engine_buffer(pf.Profile(**kw, chunksize=cs)) == (cs, cs) \
+            == d.engine_buffer(loaded), cs
 
 
 def _fake_prober(probe):
@@ -701,6 +791,17 @@ def test_camilladsp_accepts_generated_config(tmp_path, name):
 
 @engine
 @needs_cdsp
+@pytest.mark.parametrize("chunk", [64, 128, 256, 512, 1024])
+def test_camilladsp_accepts_every_chunk_at_both_ends_of_its_target_range(tmp_path, chunk):
+    for tl in pf.target_level_range(chunk):
+        path = tmp_path / f"m4_{chunk}_{tl}.yml"
+        path.write_text(d.to_yaml(d.generate(m4(chunksize=chunk, target_level=tl), State())))
+        r = subprocess.run([CDSP, "-c", str(path)], capture_output=True, text=True, timeout=20)
+        assert "Config is valid" in r.stdout + r.stderr, (chunk, tl, r.stdout + r.stderr)
+
+
+@engine
+@needs_cdsp
 def test_camilladsp_rejects_bad_config(tmp_path):
     """Negative control: `-c` really validates (so the positive test means something)."""
     cfg = d.generate(dev(), State())
@@ -1245,6 +1346,43 @@ def test_engine_alsa_auto_format_is_not_device_drift(tmp_path):
         drift = d.config_drift(live, expected)
         assert drift.devices == [], drift.devices                     # incl. no non-null extra Alsa keys
         assert drift.clean
+
+
+@engine
+@pytest.mark.parametrize("settings,aux", [({}, "off"), ({"capture_channels": 6}, "off"),
+                                          ({"capture_channels": 6}, "line")])   # AUX on 0, 1: 4, 5 padded
+def test_engine_capture_spectrum_of_every_channel_keeps_the_engine_up(tmp_path, settings, aux):
+    """The capture pad of `_input_mixer` on the real engine and its ALSA capture path (the ALSA
+    `null` PCM: software, no hardware): the spectrum of every capture channel, the M4's mic
+    inputs included, answers and the engine runs on. Without the pad, 5.0.0-beta.1 panics its
+    capture thread on the first request ("index out of bounds: the len is 0", reproduced here
+    with the `null` PCM, as on the box on 2026-10-16). Fixed upstream in 9dacca3 (2026-10-18),
+    in v5.0.0-beta.2 and `next5`; the pad is needed only while beta.1 can be installed.
+    This test can fail only when beta.1 is the camilladsp on PATH: on a later engine it passes
+    with or without the pad, which test_every_capture_channel_is_used_and_adds_nothing guards."""
+    from k1000.rta import spectrum_request
+    prof = pf.load_profile("m4", {"capture_device": "null", "playback_device": "null", **settings},
+                           probe=False)
+    cfg = d.generate(prof, State(profile="m4", aux_mode=aux))
+    cfg["devices"]["playback"] = {"type": "File", "channels": prof.playback_channels,
+                                  "filename": "/dev/null", "format": "S32_LE"}
+    with _engine(tmp_path, cfg) as (cmd, _log):
+        t = time.monotonic()
+        while cmd("GetState")["value"] != "Running" and time.monotonic() - t < 3:
+            time.sleep(0.1)
+        if cmd("GetState")["value"] != "Running":
+            pytest.skip("ALSA null capture did not start here")
+        for ch in range(prof.capture_channels):
+            t = time.monotonic()
+            while True:      # a fresh analyser answers "No audio data" / "Insufficient data" first
+                r = cmd("GetSpectrum", value=spectrum_request(ch))
+                if r["result"] == "Ok" or time.monotonic() - t > 3:
+                    break
+                time.sleep(0.05)
+            assert r["result"] == "Ok", (ch, r)
+            assert len(r["value"]["magnitudes"]) == len(r["value"]["frequencies"]) > 2
+        time.sleep(0.2)
+        assert cmd("GetState")["value"] == "Running"                   # a panic closes the link
 
 
 def test_with_live_devices_keeps_running_devices_only():

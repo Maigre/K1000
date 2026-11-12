@@ -169,7 +169,7 @@ public class BoxWifiTest {
     @Test
     public void onlyTheBoxOverHttps() {
         assertEquals(List.of("https://10.42.0.1/api/wifi", "https://k1000.home.arpa/api/wifi"), BoxWifi.urls());
-        K1000Hosts.setBenchHost("192.168.8.54");
+        K1000Hosts.setBenchHost("192.0.2.54");
         try {
             assertEquals(List.of("https://10.42.0.1/api/wifi", "https://k1000.home.arpa/api/wifi"), BoxWifi.urls());
         } finally {

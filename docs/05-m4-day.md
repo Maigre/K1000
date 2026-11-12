@@ -249,7 +249,7 @@ wrong screen corners = `KNOB_CORNERS` in `box/k1000/ui/input_map.py` (a code cha
 
 | Fact | Result |
 |---|---|
-| Unit | MOTU M4, new (Thomann), USB `07fd:000b` (second revision), `bcdDevice` 2.07, serial M4MA0C5D43; enumerates ~1.9 s into a boot |
+| Unit | MOTU M4, new (Thomann), USB `07fd:000b` (second revision), `bcdDevice` 2.07, serial number left out of this public repository; enumerates ~1.9 s into a boot |
 | `stream0` | playback and capture: S32_LE, 4 channels, 24 bits, 44.1–192 kHz, async, implicit feedback (one clock both ways) |
 | Mixer | no volume control at all (only channel maps and "Internal Validity"): nothing can sit between K1000 and the outputs |
 | Check tool | 0 FAIL; the controls WARN ended with the Knob test |

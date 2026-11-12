@@ -1,35 +1,37 @@
 # K1000 — roadmap
 
-Where K1000 stands, what comes next and in which order, and the gates that decide what plays on
-Sunday 18 October. Decisions live in `DECISIONS.md`. Each phase below keeps its own dated progress
-lines.
+Where K1000 stands, what comes next and in which order, and the gates that were set for the first
+gig (Sunday 18 October) with what became of each. Decisions live in `DECISIONS.md`. Each phase
+below keeps its own dated progress lines.
 
-*Status as of Tue 2026-10-13, morning.* Live UI v1 (D-009) is accepted on the box and deployed
-(`167776b`, with the polish `8e86ddb`; 979 tests): SHOW/ALIGN/SETUP, the spectrum and the notch
-helper, the knob fixes, laptop access and the `/tune` page. The phone PWA and the K1000 Wi-Fi are
-wired into main (`f7aa58b`) and the access point is up on the box, not yet proven with a real phone.
-The box runs Raspberry Pi OS Lite (D-006, cloud-init off). Power-cut drill done at 06:00: the
-state files came back byte-identical, boot 10.4 s; the clock came back 3.5 min behind (no battery
-clock, no time server at a gig). The user manual is written (`docs/manual`). An overnight soak
-runs until the morning. The MOTU M4 is picked up today; the rig test is Fri 16 and the gig Sun 18.
-*Afternoon:* D-011 is on the box (`24cba65`, knob tags off since 13:39). D-013 is on the box
-since 14:31 (`dd740ce`): buttons B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE, SETUP grouped by
-speaker floor, choose-then-set. Thomas, 14:2x: "push the timing": Sunday is also a field test for
-the phone v2 (APK, one merged page, SETUP and RTA on the phone); the knobs are the fallback.
-*(Mon 2026-10-12, evening: v0 ran on the box after the integration round, `ca742e7`, 502 tests.)*
+*Status as of Thu 2026-11-12.* **The box played its first gig on Sun 18 Oct**, running `025b8f8`
+(live UI v1 with D-015 to D-017; D-016's features off by default) on CamillaDSP 5.0.0-beta.1,
+chunk 256, `target_level` 512. The owner's report: **beatmatching against the speakers was
+impossible.** The review is [`docs/16-post-gig-audit.md`](docs/16-post-gig-audit.md). Its §2
+theory, a delay that grows after each engine dropout, was checked against the box on 12 Nov and
+is **not confirmed for that night**: the engine logged no dropout, and the box ran at its base
+delay of about 20 ms. The logs also show heavy output clipping. The decisions of 12 Nov: D-018
+(10 ms or less in to out, never growing, shown on the box), D-019 (an engine built from upstream's
+fixed branch, pinned once it passes on the desk box) and D-020 (no new features until the latency
+is closed). The bench results are in `docs/17-box-record-and-bench.md`: the new engine reaches 5 to 8 ms where the current one never gets under 12.5. Two gates have no record of
+having run before the gig: the overnight soak on the M4 at the show setting, and the USB drills.
 
 ## At a glance
 
 | Phase | Goal | State | Gate |
 |---|---|---|---|
 | 0 — Frame | Questions answered, lead picked | **done** 12/10 | — |
-| 1 — v0 for the gig | A trustworthy, bypassable head for Sunday | **in progress**: code done and deployed, Lite done, power-cut drill done; M4 live 16/10 (loop-tested: routing, levels, 20.3 ms), buttons confirmed, 3 A PSU; USB drills and gig soak still to do | Fri 16 rig test |
-| 2 — Live UI v1 | Every live control on one page, EQ curve over a spectrum; phone PWA | **pulled forward in part** (Thomas, 12/10): UI v1 accepted on the box 13/10; phone wired, AP up, real phone still to prove | Wed 14 freeze, Fri go/no-go |
-| 3 — Field trial | The gig is the first outing; debrief | Sun 18 | debrief Mon 19 |
-| 4 — Assist & measurement | Spectrum tools, suggest-notch, phone mic as a measurement input | steps 1-2 pulled in for the tests (Thomas, 14/10): on the box `6a537bb`; the rest after the gig | Fri 16 rig test |
+| 1 — v0 for the gig | A trustworthy, bypassable head for Sunday | **played the gig** 18/10 (`025b8f8`): code, Lite, power-cut drill; M4 live 16/10 (loop-tested: routing, levels, 20.3 ms), buttons confirmed, 3 A PSU. **Skipped**: the USB drills and the M4 soak (no record of either before the gig) | ~~Fri 16 rig test~~ held 16–17/10 |
+| 2 — Live UI v1 | Every live control on one page, EQ curve over a spectrum; phone PWA | **played the gig**: UI v1 accepted on the box 13/10, D-017 in the build that played; the Android app 0.2.2 drove the box at the rig 17/10 (a Pixel) | ~~Wed 14 freeze~~ not held (D-016, D-017 went in on 17/10); ~~Fri go/no-go~~ no per-item record |
+| 3 — Field trial | The gig is the first outing; debrief | **played** Sun 18/10; beatmatching on the speakers impossible (the owner's report) | ~~debrief Mon 19~~ the review is `docs/16` (12/11); bench results in `docs/17` (forthcoming) |
+| Now — Latency | D-018: 10 ms or less in to out, never growing, shown on the box | **open** (12/11): D-018 to D-020 decided; bench tools on main (`box/tools/bench/`); D-019's engine build to test on the desk box | D-020: met on the box after a night run, and beatmatched on it |
+| 4 — Assist & measurement | Spectrum tools, suggest-notch, phone mic as a measurement input | steps 1-2 pulled in for the tests (Thomas, 14/10): on the box `6a537bb`; the rest waits until the latency is closed (D-020) | — |
 | 5 — Road-proofing | Read-only root, enclosure, power, spare surface | after the gig | — |
 
 ## The week to the gig
+
+The plan as it stood on 12–13 October, kept as written. What became of each gate is under
+[Gates](#gates).
 
 ```mermaid
 gantt
@@ -65,30 +67,45 @@ gantt
 
 ### Gates
 
-1. **Wed 14 evening — code freeze.** Thursday's soak and Friday's test must run the build that
-   plays on Sunday, so after this point only fixes for Friday's findings go in.
-2. **Thu 15 night — soak.** `k1000-soak.sh --summary` must be clean (no xrun, no restart, no
-   throttling) on the M4 with the gig `target_level`, PSU and closed case.
-3. **Fri 16 — rig test go/no-go**, item by item:
-   - K1000 in the chain at all. If no-go, the bypass, which is the old direct cabling.
+1. ~~**Wed 14 evening — code freeze.** Thursday's soak and Friday's test must run the build that
+   plays on Sunday, so after this point only fixes for Friday's findings go in.~~
+   **Not held.** The M4 fixes of 16 Oct (`87fe783`, `5518f26`) fit the rule; two features did
+   not: D-016 (deployed 17 Oct) and D-017 (`025b8f8`, 17 Oct), the build that played.
+2. ~~**Thu 15 night — soak.** `k1000-soak.sh --summary` must be clean (no xrun, no restart, no
+   throttling) on the M4 with the gig `target_level`, PSU and closed case.~~
+   **Skipped.** The M4 arrived on 16 Oct, and no record says the soak at the show setting ran
+   before the gig. Nor did the USB pull and M4 power-switch drills: `docs/05-m4-day.md` §13 lists
+   both as not done, and nothing records them later.
+3. **Fri 16 — rig test go/no-go**, item by item. **Held on 16 and 17 Oct** (D-016's and D-017's
+   asks come from it); no pass or fail line per item was recorded:
+   - K1000 in the chain at all. If no-go, the bypass, which is the old direct cabling. → In the
+     chain at the gig.
    - Live UI v1. If no-go, the bypass: it is the only fallback (D-010); no software fallback to
-     the v0 UI. `/opt/k1000.prev` is the rollback for a bad deploy only.
-   - The phone. If no-go, the AP goes fully off and the knobs carry the show.
-4. **Sun 18 — gig.** Afterwards, note what was touched, missed or failed.
+     the v0 UI. `/opt/k1000.prev` is the rollback for a bad deploy only. → Played the gig.
+   - The phone. If no-go, the AP goes fully off and the knobs carry the show. → The Android app
+     (0.2.2, on a Pixel) drove the box at the rig on 17 Oct.
+   - Not in the protocol: a listening check with a DJ source (`docs/16` §2.5).
+4. **Sun 18 — gig.** Afterwards, note what was touched, missed or failed. → **Played.** The
+   owner's report: beatmatching against the speakers was impossible. No debrief is in the
+   repository; the review is `docs/16-post-gig-audit.md` (12 Nov), and the bench results are in
+   `docs/17-box-record-and-bench.md`.
 
 ## Workstreams now
 
+As of 2026-11-12. D-020 holds new features until the latency is closed.
+
 | Stream | State | Next |
 |---|---|---|
-| v0 control service | done (`ca742e7`); on the box it is now UI v1 (`c49f006`) | no software fallback: the bypass (D-010) |
-| Integration round | done: drills, five-lens review, 42 fixes, re-accepted; power-cut drill done Tue 13 (no sync: state files byte-identical, boot 10.4 s) | Friday: Thomas pulls the plug once at show level (item 11) |
-| Lite OS (D-006) | done: the box converged to Lite (`k1000-lean.sh`, 972 desktop packages out), console guard, cloud-init off; `bootstrap.sh` checked on a fresh-card container | the spare card (Thu) |
-| Phone (D-007) | wired into main (`f7aa58b`); AP up on the box on **hostapd** with PMF off (NetworkManager's AP on the Pi's chip drops older Android clients), captive DNS off, 5 GHz | Thomas: CA, join by QR, PWA install (`docs/06-phone.md`); go/no-go Friday |
-| Live UI v1 (Thomas, 12/10) | accepted on the box Tue 13 (D-009) and deployed: `167776b` + polish `8e86ddb`; D-011 on the box (`24cba65`); **D-013 on the box** since 14:31 (`dd740ce`: buttons B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE, SETUP by speaker floor, choose-then-set); D-017 (SETUP's knobs, Sat 17: E3 value, a fixed row, a popup for the risky rows) built, not on the box | Thomas at the bench today; D-013 on the box before the freeze, Wed evening; spectrum ON for Sunday (D-010), checked Friday |
-| Knobs | corners confirmed; a click counts exactly one step (10 clicks = +10); fast-turn fix in UI v1 | the buttons: Knob test → `controls:` (the box still holds the defaults), which also confirms where B1–B4 sit for D-013's labels |
+| Latency (D-018, D-019) | the gig's delay felt like 50 to 200 ms; the box ran at its base of about 20 ms that night (checked 12/11). Bench tools on main: loop latency up to 150 ms, a produced-fault test, the soak judging the buffer level, a start series and a latency matrix (`box/tools/bench/`) | the desk-box sittings of `docs/16` §7; D-019's engine build; results in `docs/17` |
+| v0 control service | done (`ca742e7`); on the box it is UI v1 | no software fallback: the bypass (D-010) |
+| Integration round | done: drills, five-lens review, 42 fixes, re-accepted; power-cut drill done Tue 13 (no sync: state files byte-identical, boot 10.4 s) | the pull at show level (item 11): no record that it ran |
+| Lite OS (D-006) | done: the box converged to Lite (`k1000-lean.sh`, 972 desktop packages out), console guard, cloud-init off; `bootstrap.sh` checked on a fresh-card container | the spare card: no record that it was made |
+| Phone (D-007) | wired into main (`f7aa58b`); AP up on the box on **hostapd** with PMF off (NetworkManager's AP on the Pi's chip drops older Android clients), captive DNS off, 5 GHz; the Android app 0.2.2 drove the box at the rig on 17 Oct (a Pixel) | — |
+| Live UI v1 (Thomas, 12/10) | accepted on the box Tue 13 (D-009) and deployed: `167776b` + polish `8e86ddb`; D-011 (`24cba65`), D-013 (`dd740ce`), D-015 (`6a537bb`), D-016 (17 Oct, all off) and D-017 (`025b8f8`) on the box; `025b8f8` played the gig | D-016: keep or drop each feature by ear (its gate) |
+| Knobs | corners confirmed; a click counts exactly one step (10 clicks = +10); fast-turn fix in UI v1; Knob test 16 Oct: the default map is right (`buttons_confirmed: true`) | — |
 | Licence (D-008) | GPL-3.0-or-later, `LICENSE` in the repo; smbus2 and SPDX headers done | — |
-| User documentation (Thomas, 12/10) | written: `docs/manual` 00–09, quick start, operator card; claim-checked against the code | Thomas fills in the card's Where line and the bypass patch, then prints |
-| Interface (D-003) | MOTU M4 live on the box since 2026-10-16: 4/4 pinned, `target_level` 512, loop-tested (`docs/05-m4-day.md` §13) | USB drills, overnight soak at 512 |
+| User documentation (Thomas, 12/10) | written: `docs/manual` 00–09, quick start, operator card; claim-checked against the code | the card's Where line and bypass patch, and the print: no record |
+| Interface (D-003) | MOTU M4 live on the box since 2026-10-16: 4/4 pinned, `target_level` 512, loop-tested (`docs/05-m4-day.md` §13) | ~~USB drills, overnight soak at 512~~ skipped before the gig; proposed as desk-box bench tests now (`docs/16` §5.2) |
 
 ## Phase 0 — Frame · *done 2026-10-12*
 
@@ -98,10 +115,12 @@ Answer the open questions (`docs/requirements.md` §5), pick the lead(s) (D-002)
   (proposed lead: CamillaDSP on a Pi, prototyped on the owned Zynthian V4 + a 4-out USB interface).
 - 2026-10-12 — Thomas's answers → requirements draft 1; plan with a date: `docs/02-plan-to-sunday.md`
   (test Fri 16 / gig Sun 18 → v0 minimal, stable, bypassable). D-002..D-004 proposed.
-- 2026-10-12 — D-002, D-004, D-005, D-006, D-007 and D-008 decided. D-003 (MOTU M4) is still open in
-  the log; the M4 is picked up Tue 13.
+- 2026-10-12 — D-002, D-004, D-005, D-006, D-007 and D-008 decided. ~~D-003 (MOTU M4) is still
+  open in the log; the M4 is picked up Tue 13.~~ D-003 is decided (the M4, confirmed in D-010);
+  the M4 in use was bought new and went live on 16 Oct (D-003's correction, `docs/05-m4-day.md`
+  §13).
 
-## Phase 1 — v0 for the 2026-10-18 gig · *in progress* — plan: `docs/02-plan-to-sunday.md`
+## Phase 1 — v0 for the 2026-10-18 gig · *played* — plan: `docs/02-plan-to-sunday.md`
 
 - Zynthian V4 + class-compliant USB interface (MOTU M4) + CamillaDSP **5.0.0-beta.1** (D-004).
 - Fixed-slot pipeline: Lo-Cut, system PEQ, live notch slots, delay, polarity, Aux faders per group.
@@ -136,6 +155,14 @@ Progress:
   yet: the permission system refused an agent's reboot; Thomas gave the go the same evening.
 - 2026-10-12 — Thomas at the box: knob corners right, a click = one step, fast turns inaccurate;
   he set Lo-Cut on, mono subs on and master −19 dB himself.
+- 2026-10-16 — M4 day (`docs/05-m4-day.md` §13): profile `m4` live, 4/4 pinned, chunk 256,
+  `target_level` 512; 20.28 ms in to out, loop-measured just after an engine start; the engine's
+  crash loop on the M4 fixed (`87fe783`); an official 3 A supply after two USB drop bursts; a
+  USB hub reset when the M4 stays missing (`5518f26`). Not done: the USB pull and M4
+  power-switch drills, the 1 h soak.
+- 2026-10-17 — D-016 deployed, all off by default; D-017 (`025b8f8`).
+- 2026-10-18 — **The gig**, on `025b8f8` (Phase 3). The overnight soak at the show setting and the
+  USB drills have no record of having run before it.
 
 ### What the box has now (UI v1, Tue 13)
 
@@ -152,17 +179,17 @@ Progress:
 | # | What | When |
 |---|---|---|
 | 1 | ~~Deploy the fix round; full suite; new start script; persistent journal cost~~ — done 2026-10-12 evening | ~~before Tue 13~~ |
-| 2 | M4 day, `docs/05-m4-day.md`: detect, check tool, tone identification, profile `m4`, loop and leak tests, levels, presence drills, 1 h soak, report back | Tue 13 |
-| 3 | Knob test → `controls:` in k1000.yaml; label the shell B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE (D-013); fill in "Where" on the operator card (the corners are confirmed; buttons still to label) | Tue–Thu |
-| 4 | Thomas's calls: output mapping (keep tops on outs 1-2), M4 `target_level` (256 vs 512/768), power-on mute policy (today: the saved mute), Sunday source and cables, PSU | by Thu 15 |
-| 5 | Pin the M4 channel counts (4/4) in k1000.yaml after the probe; set the chosen `target_level` (next engine start) | Tue–Thu |
-| 6 | Overnight soak at the gig `target_level`; `--summary` clean | Thu 15 night |
+| 2 | ~~M4 day, `docs/05-m4-day.md`: detect, check tool, tone identification, profile `m4`, loop and leak tests, levels, report back~~ — done Fri 16 (§13). **Skipped**: the presence drills (USB pull, M4 power switch) and the 1 h soak: not done that day, no record later | ~~Tue 13~~ |
+| 3 | ~~Knob test → `controls:` in k1000.yaml~~ — done Fri 16, the default map is right; label the shell B1 PAGE · B2 BAND/UNLOCK · B3 NOTCH · B4 MUTE (D-013); fill in "Where" on the operator card: no record | Tue–Thu |
+| 4 | Thomas's calls: ~~output mapping (keep tops on outs 1-2), M4 `target_level` (256 vs 512/768)~~ — D-012, D-010 (512); ~~PSU~~ — an official 3 A supply (16 Oct); ~~Sunday source and cables~~ — the owner's own (`docs/05` "Decisions"); power-on mute policy (today: the saved mute): no record | by Thu 15 |
+| 5 | ~~Pin the M4 channel counts (4/4) in k1000.yaml after the probe; set the chosen `target_level` (next engine start)~~ — done Fri 16: 4/4, 512 | ~~Tue–Thu~~ |
+| 6 | Overnight soak at the gig `target_level`; `--summary` clean — **skipped**: no record that it ran before the gig | Thu 15 night |
 | 7 | ~~Boot race fbcon vs k1000 (console guard) and cloud-init off: proven by the Lite conversion's reboots~~ — done: cloud-init off on the box; the Tue 13 power-cut drill came back to SHOW | ~~Tue 13~~ |
 | 8 | ~~Owner edits: `docs/02` §3/§6, D-003 wording, README "Sound state"~~ — done 2026-10-12 | ~~before Fri~~ |
-| 9 | Phone: wire, AP up, Thomas installs the CA and the PWA; go/no-go at the rig test, else the AP goes off | Tue–Fri |
+| 9 | Phone: wire, AP up, Thomas installs the CA and the PWA; go/no-go at the rig test, else the AP goes off — the Android app 0.2.2 drove the box at the rig on 17 Oct (a Pixel); no go/no-go line recorded | Tue–Fri |
 | 10 | ~~Live UI v1 accepted on the box by Wed evening, else Sunday runs v0~~ — accepted Tue 13 (D-009); the Friday go/no-go still applies (gate 3) | ~~Wed 14~~ |
-| 11 | Power-cut check: pull the plug at show level, then power on again; the state file survives and the box comes back as it should | Fri 16 |
-| 12 | Print the operator card and the quick start (D-013's buttons); pack the bypass kit, labelled, its patch written on the card | Sat 17 |
+| 11 | Power-cut check: pull the plug at show level, then power on again; the state file survives and the box comes back as it should — no record that it ran | Fri 16 |
+| 12 | Print the operator card and the quick start (D-013's buttons); pack the bypass kit, labelled, its patch written on the card — no record | Sat 17 |
 
 Friday itself is `docs/02` §6: thump check, gain structure (Meyer limit LEDs, then the phone's
 ceiling = show level + 6 dB), sub alignment, Lo-Cut at 100 Hz (D-010; 160 only if the tops limit early), system EQ, live drill,
@@ -199,11 +226,14 @@ parametric bands + the spectrum serve live notching better on 4 knobs).
     screen and the phone. Built and tested off the box (the engine config byte for byte f2671b0's
     with all three off); not deployed yet. Thomas tries each at the rig and decides; how to set them
     by ear: `docs/manual/05-tuning.md` §9. His USB-stick player ask goes after the gig (below).
+    → Deployed Sat 17, all off, and in the build that played; keeping or dropping each by ear is
+    still open (D-016, status of 2026-11-12).
   - Thomas at the rig, Sat 17 (D-017, decided): SETUP's knobs. E1 ITEM · E2 GROUP · **E3 VALUE**
     (turn = change, an everyday ON/off right ON / left off), the selected row fixed on the 4th
     screen row, and for the risky rows (every rebuild, both polarities, Lo-Cut: Claude's list, his
     to change) a popup `now → proposed` applied only by an E3 push. Built and tested off the box;
-    not deployed yet (his call: before the gig or after it).
+    not deployed yet (his call: before the gig or after it). → In `025b8f8`, the build that
+    played the gig.
   - Knob fast-turn fix.
   - Design: `docs/07-live-ui-v1.md` + `docs/ui/v1/`. Knob analysis: `docs/08-knob-precision.md`.
 - **Phone PWA on the box's own AP** (D-007): live EQ curve with draggable bands, "notch here",
@@ -228,10 +258,25 @@ parametric bands + the spectrum serve live notching better on 4 knobs).
 
   Cost ~1–2 days with real-phone testing; the signing key stays out of the repository.
 
-## Phase 3 — Field trial
+  → Built before the gig after all (0.2.0 on 13 Oct, 0.2.2 on 14 Oct: `docs/09-android.md`); 0.2.2
+  drove the box at the rig on 17 Oct from a Pixel. Its in-app update waits (D-020).
+
+## Phase 3 — Field trial · *played 2026-10-18; the review is open*
 
 - The 18/10 gig is the first outing; log what was touched, what was missing, whether Wi‑Fi held.
 - Decide the final hardware shape (Zynthian shell kept / Pi 5 + Stream Deck+ / Pi 5 + DAC8x).
+
+Progress:
+
+- 2026-10-18 — The gig, on `025b8f8` (CamillaDSP 5.0.0-beta.1, chunk 256, `target_level` 512).
+  The owner's report: beatmatching against the speakers was impossible. The repository holds no
+  note of what was touched, missed or failed that night.
+- 2026-11-12 — Review: [`docs/16-post-gig-audit.md`](docs/16-post-gig-audit.md). Its §2 theory
+  (a delay that grows after each engine dropout) was checked against the box the same day and is
+  not confirmed for the gig night: the engine logged no dropout, and the box ran at its base delay
+  of about 20 ms. The logs also show heavy output clipping. Decided the same day: D-018 (the
+  latency requirement), D-019 (the engine build), D-020 (no new features until the latency is
+  closed). The bench results are in `docs/17-box-record-and-bench.md`. The hardware shape is not decided yet.
 
 ## Phase 4 — Assist & measurement
 
@@ -256,8 +301,8 @@ parametric bands + the spectrum serve live notching better on 4 knobs).
      (OSM is GPL-3, so its approach and code are compatible with K1000's licence).
 - **Steps 1 and 2 pulled in for the rig test** (Thomas, Wed 14): the phone mic line (PGM ▾ PHONE
   MIC · BOTH, its own PEAK) and ≋ MEASURE › RESPONSE on the v2 page, the box's `pgm` windows
-  (docs/14 §3.6), app 0.2.2. On the box since `6a537bb` (Wed 14, 12:26); first real-music run at
-  Thursday's soak. Use and limits: `docs/11-phone-mic.md`. Steps 3-5 stay after the gig.
+  (docs/14 §3.6), app 0.2.2. On the box since `6a537bb` (Wed 14, 12:26); ~~first real-music run at
+  Thursday's soak~~ (that soak has no record, see Gates). Use and limits: `docs/11-phone-mic.md`. Steps 3-5 stay after the gig.
 
 ## Phase 5 — Road-proofing
 

@@ -899,17 +899,29 @@ def test_notch_on_the_predicted_slot(tmp_path: Path) -> None:
 
 
 def test_qr_cycle_includes_the_setup_page_when_the_portal_is_served(tmp_path: Path) -> None:
+    """Step 2, once a phone is on the AP, is the first-time page (plain HTTP: a fresh phone gets
+    no certificate warning, and the app or the web app from there); the page's https URL is the
+    next code, for a phone already set up. Without the portal: the URL, as before."""
     cfg = settings(tmp_path, address="10.42.0.1", hosts=())
     now = [0.0]
     srv = PhoneServer(object(), cfg, clock=lambda: now[0])
     srv.ports["https"], srv.ports["http"] = 443, 80
     assert srv.setup_url == "http://10.42.0.1/"
     assert srv.screen_info().setup_url == "http://10.42.0.1/"
-    assert [srv.select_qr(1) for _ in range(4)] == ["url", "setup", "wifi", "url"]
-    assert srv.select_qr(-1) == "wifi" and srv.select_qr(-1) == "setup"
+    assert [srv.select_qr(1) for _ in range(4)] == ["setup", "url", "wifi", "setup"]
+    assert srv.select_qr(-1) == "wifi" and srv.select_qr(-1) == "url"
+    assert srv.select_qr(-1) == "setup"
     del srv.ports["http"]                                     # forced 'setup', then no portal:
     assert srv.setup_url == "" and srv.screen_info().qr == "wifi"   # not shown any more
     assert srv.select_qr(1) == "url"
+    # a phone joins: step 2 by itself, the first-time page while the box serves it, else the URL
+    now[0] += web.QR_OVERRIDE_S + 1
+    Path(cfg.arp_file).write_text(ARP)
+    srv.refresh_presence()
+    assert srv.screen_info().stations == 2 and srv.screen_info().qr == "url"
+    srv.ports["http"] = 80
+    assert srv.screen_info().qr == "setup"
+    assert srv.select_qr(1) == "url" and srv.select_qr(1) == "wifi"
 
 
 class _HangingWS:

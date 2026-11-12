@@ -321,6 +321,18 @@ def test_console_unit_script_is_valid_sh():
 
 
 @pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="no systemd-analyze")
+def test_control_unit_verifies_with_systemd():
+    """k1000.service (Type=notify, WatchdogSec=; the contract with k1000/sdnotify.py is
+    tests/test_sdnotify.py)."""
+    unit = BOX / "systemd" / "k1000.service"
+    r = subprocess.run(["systemd-analyze", "verify", str(unit)], capture_output=True, text=True)
+    out = r.stdout + r.stderr
+    assert "escape" not in out.lower() and "unknown" not in out.lower(), out
+    if Path("/opt/k1000/k1000").exists():               # on the box: everything resolves
+        assert r.returncode == 0, out
+
+
+@pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="no systemd-analyze")
 def test_console_unit_verifies_with_systemd():
     r = subprocess.run(["systemd-analyze", "verify", str(CONSOLE_UNIT)], capture_output=True, text=True)
     assert "escape" not in (r.stdout + r.stderr).lower(), r.stdout + r.stderr
@@ -609,6 +621,214 @@ def test_install_keeps_the_journal_and_never_touches_the_network():
     assert not [u for u in disabled if re.search(r"NetworkManager|ssh|wpa|avahi|network", u)]
     # cloud-init is tools/k1000-lean.sh's call (after k1000-console.service), never install.sh's
     assert not re.search(r"^\s*touch\s+/etc/cloud/cloud-init\.disabled", text, re.M)
+
+
+# --------------------------------------------------------------------------- processor settings
+CPU_DIR = BOX / "cpu"
+
+
+def _cpu_table() -> dict[str, str]:
+    """install.sh's CPU_FILES: file in box/cpu/ -> where it is installed."""
+    m = re.search(r"^CPU_FILES=\(\n(.*?)^\)\n", INSTALL.read_text(), re.S | re.M)
+    assert m, "CPU_FILES not found in install.sh"
+    rows = re.findall(r'^\s*"(\S+) (\S+)"\s*$', m.group(1), re.M)
+    assert len(rows) == len(m.group(1).strip().splitlines())
+    return dict(rows)
+
+
+def _ini(path: Path, section: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    cur = None
+    for line in path.read_text().splitlines():
+        if line.startswith("["):
+            cur = line.strip("[]")
+        elif cur == section and "=" in line and not line.startswith("#"):
+            k, v = line.split("=", 1)
+            out[k] = v
+    return out
+
+
+def _cpus(spec: str) -> set[int]:
+    out: set[int] = set()
+    for part in spec.replace(",", " ").split():
+        a, _, b = part.partition("-")
+        out |= set(range(int(a), int(b or a) + 1))
+    return out
+
+
+def test_cpu_files_and_table_agree():
+    table = _cpu_table()
+    assert sorted(table) == sorted(p.name for p in CPU_DIR.iterdir()), table
+    for src, dst in table.items():
+        if dst.endswith(".service.d/50-k1000-cpu.conf"):
+            unit = dst.split("/")[-2][:-2]
+            assert (BOX / "systemd" / unit).exists(), unit      # a drop-in for one of OUR units
+            assert src == unit.removesuffix(".service") + ".conf"
+        else:
+            assert dst in ("/etc/udev/rules.d/61-k1000-cpu-governor.rules",
+                           "/etc/systemd/system.conf.d/50-k1000-cpu.conf"), dst
+    for p in CPU_DIR.iterdir():
+        assert p.read_text().startswith("# SPDX-License-Identifier: GPL-3.0-or-later\n"), p
+
+
+def test_cpu_governor_rule_comes_after_the_os_one():
+    name = "61-k1000-cpu-governor.rules"
+    assert name > "60-ondemand-governor.rules"      # raspberrypi-sys-mods' rule: ours runs last
+    rules = [l for l in (CPU_DIR / name).read_text().splitlines() if l and not l.startswith("#")]
+    assert rules == ['KERNEL=="cpu*", SUBSYSTEM=="cpu", ATTR{cpufreq/scaling_governor}="performance"']
+    # `udevadm verify` (systemd 254+) checks keys and syntax; older udevadm: skipped
+    if shutil.which("udevadm") and subprocess.run(["udevadm", "verify", "--help"],
+                                                  capture_output=True).returncode == 0:
+        r = subprocess.run(["udevadm", "verify", str(CPU_DIR / name)], capture_output=True, text=True)
+        assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_cpu_split_engine_alone_on_two_cores():
+    system = _cpus(_ini(CPU_DIR / "system.conf", "Manager")["CPUAffinity"])
+    engine = _ini(CPU_DIR / "camilladsp.conf", "Service")
+    assert engine == {"CPUAffinity": "2 3"}           # only a directive: no Exec*, no start logic
+    assert system == {0, 1} and _cpus(engine["CPUAffinity"]) == {2, 3}
+    for unit in ("k1000", "camillagui"):
+        assert _cpus(_ini(CPU_DIR / f"{unit}.conf", "Service")["CPUAffinity"]) == system, unit
+    # the control service: the INTENDED order, below the system's own work and above CamillaGUI.
+    # Whether nice ranks one service against another at all is a box check (manual 2 §6).
+    nice = int(_ini(CPU_DIR / "k1000.conf", "Service")["Nice"])
+    gui = int(_ini(BOX / "systemd" / "camillagui.service", "Service")["Nice"])
+    assert 0 < nice < gui
+    assert "Nice" not in _ini(CPU_DIR / "camilladsp.conf", "Service")
+
+
+@pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="no systemd-analyze")
+def test_cpu_dropins_verify_with_their_units(tmp_path):
+    """Each unit with its drop-in, the way systemd finds them (unit.service.d/ next to it)."""
+    for src, dst in _cpu_table().items():
+        if ".service.d/" not in dst:
+            continue
+        unit = dst.split("/")[-2][:-2]
+        (tmp_path / unit).write_text((BOX / "systemd" / unit).read_text())
+        d = tmp_path / f"{unit}.d"
+        d.mkdir()
+        (d / "50-k1000-cpu.conf").write_text((CPU_DIR / src).read_text())
+        r = subprocess.run(["systemd-analyze", "verify", str(tmp_path / unit)], capture_output=True,
+                           text=True)
+        bad = [l for l in (r.stdout + r.stderr).splitlines() if "50-k1000-cpu.conf" in l]
+        assert not bad, bad
+
+
+def _run_cpu_block(root: Path, do_cpu: str = "") -> tuple[str, dict[str, int]]:
+    """install.sh step 6b against a fake /etc under `root`. `put` is a stand-in (the real one
+    chowns to root): install when the content differs, report it, set PUT_CHANGED."""
+    text = INSTALL.read_text()
+    table = re.search(r"^CPU_FILES=\(\n.*?^\)\n", text, re.S | re.M).group(0)
+    choice = re.search(r"^CPU_CHOICE=.*\ncpu_choice\(\) .*\n", text, re.M).group(0)
+    start = text.index("# --- 6b. processor settings")
+    block = text[start:text.index("if [ $RELOAD = 1 ]; then", start)]
+    prog = ('set -euo pipefail\nCHANGES=0 RELOAD=0\nnote() { printf "%s\\n" "$*"; }\n'
+            'changed() { CHANGES=$((CHANGES + 1)); note "$*"; }\n'
+            'put() { PUT_CHANGED=0; if [ -f "$2" ] && cmp -s "$1" "$2"; then return 0; fi; '
+            'mkdir -p "$(dirname "$2")"; cp "$1" "$2"; changed "installed $2"; PUT_CHANGED=1; }\n'
+            f'SRC={BOX}\nTMP={root}/tmp\nmkdir -p "$TMP"\nDO_CPU={do_cpu}\n'
+            + (table + choice + block).replace("/etc/", f"{root}/etc/")
+            + 'echo "CHANGES=$CHANGES RELOAD=$RELOAD"\n')
+    r = subprocess.run(["bash", "-c", prog], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    tail = r.stdout.strip().splitlines()[-1]
+    return r.stdout, {k: int(v) for k, v in (kv.split("=") for kv in tail.split())}
+
+
+def test_install_cpu_settings_on_off_and_remembered(tmp_path):
+    table = _cpu_table()
+    installed = [tmp_path / dst.lstrip("/") for dst in table.values()]
+
+    out, n = _run_cpu_block(tmp_path)                       # first install: on by default
+    assert n == {"CHANGES": len(table), "RELOAD": 1}, out
+    for src, p in zip(table, installed):
+        assert p.read_text() == (CPU_DIR / src).read_text()
+    assert "processor settings on: cores and nice for what starts from now on" in out
+    assert _run_cpu_block(tmp_path)[1] == {"CHANGES": 0, "RELOAD": 0}     # idempotent
+
+    out, n = _run_cpu_block(tmp_path, "off")                # --cpu-off: all removed, remembered
+    assert not [p for p in installed if p.exists()], out
+    assert n == {"CHANGES": len(table) + 1, "RELOAD": 1}, out         # + the choice file
+    assert "processor settings off: reboot to apply" in out           # not "from the next boot"
+    assert "shares cores 0-1 with everything else" in out
+    choice = tmp_path / "etc/k1000/cpu-tuning"
+    assert choice.read_text().splitlines()[-1] == "off"
+    for unit in ("camilladsp", "k1000", "camillagui"):                 # empty drop-in dirs go too
+        assert not (tmp_path / f"etc/systemd/system/{unit}.service.d").exists()
+    assert (tmp_path / "etc/udev/rules.d").is_dir()                     # never a system directory
+    assert _run_cpu_block(tmp_path)[1] == {"CHANGES": 0, "RELOAD": 0}  # a later plain run: still off
+    assert _run_cpu_block(tmp_path, "off")[1] == {"CHANGES": 0, "RELOAD": 0}
+
+    out, n = _run_cpu_block(tmp_path, "on")                 # --cpu-on: back, remembered
+    assert all(p.exists() for p in installed) and n["RELOAD"] == 1, out
+    assert choice.read_text().splitlines()[-1] == "on"
+    assert _run_cpu_block(tmp_path)[1] == {"CHANGES": 0, "RELOAD": 0}
+
+    # a choice file edited by hand: anything but "off" is on, comments ignored
+    choice.write_text("# off\n  off  \n")
+    assert _run_cpu_block(tmp_path)[1]["CHANGES"] == len(table)
+    choice.write_text("# off\nmaybe\n")
+    assert _run_cpu_block(tmp_path)[1]["CHANGES"] == len(table)
+
+
+def _run_cpu_start_guard(root: Path, *, start: int, do_cpu: str = "", choice: str | None = None,
+                         pid1: str, online: str = "0-3") -> subprocess.CompletedProcess:
+    """install.sh's --start guard (before step 0) against a fake /etc, /proc/1/status and
+    /sys/devices/system/cpu/online under `root`."""
+    text = INSTALL.read_text()
+    choice_def = re.search(r"^CPU_CHOICE=.*\ncpu_choice\(\) .*\n", text, re.M).group(0)
+    start_at = text.index("# --- the processor settings switched off, and --start")
+    block = text[start_at:text.index("# --- 0. ", start_at)]
+    (root / "proc/1").mkdir(parents=True, exist_ok=True)
+    (root / "proc/1/status").write_text(f"Name:\tsystemd\nCpus_allowed:\t3\nCpus_allowed_list:\t{pid1}\n")
+    (root / "online").write_text(online + "\n")
+    choice_file = root / "etc/k1000/cpu-tuning"
+    choice_file.unlink(missing_ok=True)
+    if choice is not None:
+        choice_file.parent.mkdir(parents=True, exist_ok=True)
+        choice_file.write_text(f"# K1000 processor settings\n{choice}\n")
+    prog = ('set -euo pipefail\ndie() { printf "%s\\n" "$*" >&2; exit 1; }\n'
+            f'DO_START={start} DO_CPU={do_cpu}\n'
+            + (choice_def + block).replace("/etc/", f"{root}/etc/")
+                                  .replace("/proc/1/status", f"{root}/proc/1/status")
+                                  .replace("/sys/devices/system/cpu/online", f"{root}/online")
+            + 'echo passed\n')
+    return subprocess.run(["bash", "-c", prog], capture_output=True, text=True)
+
+
+def test_install_refuses_start_until_the_reboot_that_cpu_off_needs(tmp_path):
+    """systemd keeps cores 0-1 after --cpu-off until the next boot (a daemon-reload gives none
+    back): --start would put the engine there with everything else, so it is refused, before any
+    change, while PID 1 has fewer cores than the box."""
+    def run(**kw):
+        return _run_cpu_start_guard(tmp_path, **kw)
+
+    r = run(start=1, do_cpu="off", pid1="0-1")                       # --cpu-off --start
+    assert r.returncode == 1 and "passed" not in r.stdout, r.stdout
+    assert "cores 0-1 of 0-3" in r.stderr and "run without --start, then reboot" in r.stderr
+    r = run(start=1, choice="off", pid1="0-1")      # --cpu-off earlier, no reboot since, --start
+    assert r.returncode == 1, r.stdout
+    # allowed: rebooted since (PID 1 has every core), no --start, settings on (by flag or file)
+    for kw in (dict(do_cpu="off", pid1="0-3"), dict(choice="off", pid1="0-3"),
+               dict(do_cpu="on", choice="off", pid1="0-1"), dict(choice="on", pid1="0-1"),
+               dict(pid1="0-1")):
+        r = run(start=1, **kw)
+        assert r.returncode == 0 and r.stdout == "passed\n", (kw, r.stderr)
+    r = run(start=0, do_cpu="off", pid1="0-1")
+    assert r.returncode == 0 and r.stdout == "passed\n", r.stderr
+
+
+def test_install_cpu_flags_parse_and_are_documented():
+    # --deps exits inside the option loop, before the root check: the flag in front of it was
+    # parsed (an unknown one exits 2 first), and nothing is installed even when run as root.
+    for flag in ("--cpu-off", "--cpu-on"):
+        r = subprocess.run(["bash", str(INSTALL), flag, "--deps"], capture_output=True, text=True)
+        assert r.returncode == 0 and "rsync" in r.stdout.split(), (flag, r.stderr)
+    r = subprocess.run(["bash", str(INSTALL), "--cpu-of", "--deps"], capture_output=True, text=True)
+    assert r.returncode == 2 and "unknown option '--cpu-of'" in r.stderr, r.stderr
+    r = subprocess.run(["bash", str(INSTALL), "--help"], capture_output=True, text=True)
+    assert r.returncode == 0 and "--cpu-off" in r.stdout and "--cpu-on" in r.stdout
 
 
 # --------------------------------------------------------------------------- fake bins

@@ -16,9 +16,15 @@ val keystoreProps: Properties? = keystorePropsFile
     ?.let { f -> Properties().apply { FileInputStream(f).use { load(it) } } }
 
 // The bench build (debug only, never distributed) also trusts ONE development host on the LAN:
-// -Pk1000.benchHost=<IPv4 or DNS name> (default 192.168.8.54, Thomas's bench box) and
-// -Pk1000.benchCa=<that host's CA, PEM> (default: the K1000 CA itself). docs/09-android.md §9.
-val benchHost: String = (providers.gradleProperty("k1000.benchHost").orNull ?: "192.168.8.54").trim().lowercase()
+// k1000.benchHost=<IPv4 or DNS name> and k1000.benchCa=<that host's CA, PEM> (default: the K1000
+// CA itself), given as -P options or kept in android/local.properties (gitignored: a LAN address
+// stays on the machine that builds). No default host: "bench.invalid" (a name that never
+// resolves) until one is set, and a bench build refuses it. docs/09-android.md §9.
+val localProps = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.isFile }?.let { f -> FileInputStream(f).use { load(it) } }
+}
+val benchHost: String = (providers.gradleProperty("k1000.benchHost").orNull
+    ?: localProps.getProperty("k1000.benchHost") ?: "bench.invalid").trim().lowercase()
 if (!Regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$").matches(benchHost) ||
     benchHost == "10.42.0.1" || benchHost == "k1000.home.arpa") {
     throw GradleException("k1000.benchHost: not a usable development host: $benchHost")
@@ -166,6 +172,10 @@ abstract class BenchTrustTask : DefaultTask() {
 
     @TaskAction
     fun write() {
+        check(host.get() != "bench.invalid") {
+            "k1000.benchHost is not set: -Pk1000.benchHost=<address>, or k1000.benchHost=<address> " +
+                "in android/local.properties (android/README.md › Build)"
+        }
         val out = outputDir.get().asFile
         out.deleteRecursively()
         File(out, "raw").mkdirs()
@@ -188,6 +198,7 @@ abstract class BenchTrustTask : DefaultTask() {
 }
 
 val benchCa = providers.gradleProperty("k1000.benchCa")
+    .orElse(providers.provider { localProps.getProperty("k1000.benchCa") })
 
 androidComponents {
     onVariants(selector().withBuildType("smoke")) { variant ->

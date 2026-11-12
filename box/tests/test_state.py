@@ -368,8 +368,9 @@ def test_align_delay_stops_at_zero_before_crossing():
 
 
 def test_align_delay_normalises_a_both_sides_state_on_its_first_move_only():
-    """A saved state with both delays set (v0's SETUP > Top delay + sub delay) shows the net
-    value; loading keeps both (no engine change at boot); the first move writes one side."""
+    """A state with both delays set (v0's SETUP > Top delay + sub delay) shows the net value;
+    the pure parse (`from_dict`, also run on the engine's own view) keeps both, and the first
+    move writes one side. `load_state` drops the common part (the test after the next)."""
     loaded = State.from_dict({"sub_delay_ms": 1.0, "top_delay_ms": 0.5})
     assert (loaded.sub_delay_ms, loaded.top_delay_ms) == (1.0, 0.5)
     assert loaded.get(st.ALIGN_DELAY) == 0.5
@@ -379,6 +380,45 @@ def test_align_delay_normalises_a_both_sides_state_on_its_first_move_only():
     assert s.nudge(st.ALIGN_DELAY, -1) == -0.8 and (s.sub_delay_ms, s.top_delay_ms) == (0.0, 0.8)
     s = State(sub_delay_ms=1.0, top_delay_ms=1.0)               # net 0: moves off zero freely
     assert s.nudge(st.ALIGN_DELAY, -1) == -0.1 and (s.sub_delay_ms, s.top_delay_ms) == (0.0, 0.1)
+
+
+@pytest.mark.parametrize("sub,top,want_sub,want_top,common", [
+    (45.0, 40.0, 5.0, 0.0, 40.0), (40.0, 45.0, 0.0, 5.0, 40.0), (1.0, 1.0, 0.0, 0.0, 1.0),
+    (50.0, 50.0, 0.0, 0.0, 50.0), (0.3, 1.0, 0.0, 0.7, 0.3), (2.0, 0.0, 2.0, 0.0, 0.0),
+    (0.0, 3.5, 0.0, 3.5, 0.0), (0.0, 0.0, 0.0, 0.0, 0.0),
+])
+def test_drop_common_delay_keeps_align_and_leaves_one_side(sub, top, want_sub, want_top, common):
+    """docs/16 §5.1 finding 1: the smaller of the two delays delays the whole PA, and ALIGN
+    never shows it. Dropping it leaves ALIGN's value as it was and one side at 0."""
+    s = State(sub_delay_ms=sub, top_delay_ms=top)
+    align = s.get(st.ALIGN_DELAY)
+    assert st.common_delay_ms(s) == common
+    assert st.drop_common_delay(s) == common
+    assert (s.sub_delay_ms, s.top_delay_ms) == (want_sub, want_top)
+    assert s.get(st.ALIGN_DELAY) == align and st.common_delay_ms(s) == 0.0
+    assert st.drop_common_delay(s) == 0.0 and (s.sub_delay_ms, s.top_delay_ms) == (want_sub, want_top)
+    assert "-0.0" not in json.dumps(s.to_dict())
+
+
+def test_load_state_drops_a_common_delay_and_says_so(tmp_path, caplog):
+    """sub 45 / top 40 reads "5 ms" on ALIGN and plays every speaker 40 ms late. Loaded, the
+    state keeps the difference only, and the journal names what was removed."""
+    import logging
+    p = tmp_path / "state.json"
+    p.write_text(json.dumps({**State().to_dict(), "sub_delay_ms": 45.0, "top_delay_ms": 40.0}))
+    with caplog.at_level(logging.WARNING, logger="k1000.state"):
+        s = load_state(p)
+    assert (s.sub_delay_ms, s.top_delay_ms) == (5.0, 0.0) and s.get(st.ALIGN_DELAY) == 5.0
+    said = [r.getMessage() for r in caplog.records]
+    assert len(said) == 1 and "40.000 ms late" in said[0] and "+5.000 ms" in said[0], said
+    # the pure parse keeps both: dspconfig runs it on the engine's view, which must stay true
+    assert State.from_dict(json.loads(p.read_text())).top_delay_ms == 40.0
+    assert State(sub_delay_ms=45.0, top_delay_ms=40.0).clamped().top_delay_ms == 40.0
+    caplog.clear()
+    p.write_text(json.dumps({**State().to_dict(), "top_delay_ms": 2.0}))     # one side: as is
+    with caplog.at_level(logging.WARNING, logger="k1000.state"):
+        assert (load_state(p).sub_delay_ms, load_state(p).top_delay_ms) == (0.0, 2.0)
+    assert not caplog.records
 
 
 def test_align_delay_walk_never_delays_both_sides_nor_jumps_across_zero():

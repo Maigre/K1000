@@ -86,12 +86,28 @@ class FakeEngine:
 
     Scripted commands: Fail (error result), Hang (never answers), Slow (answers after `delay`),
     Chatty (event + garbage + a stale reply before its own), Drop (closes the link).
-    Unknown commands get the engine's real `{"reply": "Invalid", "error": ...}`.
+    Unknown commands get the engine's real `{"reply": "Invalid", "error": ...}`, and so does an
+    engine command with a field it does not take (`FIELDS`; the upstream fix K1000 moves to,
+    next5 0930f9b, refuses them; 5.0.0-beta.1 ignored them).
     `states_after_setconfig`: the GetState answers after each SetConfig, in order (the last one
     sticks; "EXIT" closes the link, as camilladsp exits on a failed device open).
     `config = None` is wait mode (-w): GetConfigJson answers Ok with "null"; with
     `drop_config_on_setconfig` an upload is dropped (wait mode, device failed to open).
     """
+
+    # The fields each engine command takes (camilladsp-schema protocol.rs, the same in beta.1
+    # and next5). The scripted test commands above are not engine commands: not checked.
+    # Every test that drives a helper (test_helpers_send_v5_shapes first) thus also proves it
+    # sends only these fields.
+    FIELDS: dict[str, tuple[str, ...]] = {
+        **{n: () for n in ("GetVersion", "GetState", "GetStopReason", "GetProcessingLoad",
+                           "GetSignalLevels", "GetClippedSamples", "ResetClippedSamples",
+                           "GetConfigJson", "GetFaders")},
+        "GetConfigValue": ("value",), "SetConfigValue": ("pointer", "value"),
+        "PatchConfig": ("value",), "SetConfig": ("value",), "GetFaderVolume": ("fader",),
+        "SetFaderVolume": ("fader", "value"), "AdjustFaderVolume": ("fader", "value", "min", "max"),
+        "SetFaderMute": ("fader", "value"),
+    }
 
     def __init__(self) -> None:
         self.log: list[dict[str, Any]] = []
@@ -116,6 +132,15 @@ class FakeEngine:
         self.drop_config_on_setconfig = False
         self.stop_reason: Any = "None"
         self.latency_s = 0.0
+        # Per command: apply and answer after this long (`slow`; `slow_once`: the next one only),
+        # or swallow the next one: never applied, never answered (`hang_once`). Only the
+        # connection that sent it waits.
+        self.slow: dict[str, float] = {}
+        self.slow_once: dict[str, float] = {}
+        self.hang_once: set[str] = set()
+        self.conns: list[Any] = []                  # every connection, in order
+        self.on_conn: list[tuple[int, str]] = []    # (index in conns, command) as received
+        self.main_mutes: list[bool] = []            # SetFaderMute on Main, as applied
         self.server: Any = None
         self.port = 0
 
@@ -132,10 +157,13 @@ class FakeEngine:
         await self.server.wait_closed()
 
     async def _handler(self, ws: Any) -> None:
+        self.conns.append(ws)
+        conn = len(self.conns) - 1
         try:
             async for raw in ws:
                 msg = json.loads(raw)
                 self.log.append(msg)
+                self.on_conn.append((conn, msg["command"]))
                 self.events.append("rx")
                 frames = await self._respond(ws, msg)
                 for frame in frames:
@@ -146,8 +174,19 @@ class FakeEngine:
 
     async def _respond(self, ws: Any, msg: dict[str, Any]) -> list[Any]:
         name = msg["command"]
+        if name in self.hang_once:
+            self.hang_once.discard(name)
+            return []
+        if name in self.slow:
+            await asyncio.sleep(self.slow[name])
+        if name in self.slow_once:
+            await asyncio.sleep(self.slow_once.pop(name))
         if self.latency_s:
             await asyncio.sleep(self.latency_s)
+        allowed = self.FIELDS.get(name)
+        extra = [k for k in msg if k != "command" and allowed is not None and k not in allowed]
+        if extra:
+            return [{"reply": "Invalid", "error": _unknown_field(extra[0], allowed or ())}]
 
         def ok(*value: Any) -> dict[str, Any]:
             reply: dict[str, Any] = {"reply": name, "result": "Ok"}
@@ -241,6 +280,8 @@ class FakeEngine:
                 if (f := fader()) is None:
                     return [err("InvalidFaderError")]
                 f["mute"] = msg["value"]
+                if msg["fader"] == MAIN:
+                    self.main_mutes.append(msg["value"])
                 return [ok()]
             case "Fail":
                 return [err("InvalidValueError", "too loud")]
@@ -262,6 +303,20 @@ class FakeEngine:
                 return []
             case _:
                 return [{"reply": "Invalid", "error": f"unknown variant `{name}`"}]
+
+
+def _unknown_field(field: str, allowed: tuple[str, ...]) -> str:
+    """serde's wording, as next5 sends it (probed on 0930f9b)."""
+    names = [f"`{a}`" for a in allowed]
+    if not names:
+        tail = "there are no fields"
+    elif len(names) == 1:
+        tail = f"expected {names[0]}"
+    elif len(names) == 2:
+        tail = f"expected {names[0]} or {names[1]}"
+    else:
+        tail = "expected one of " + ", ".join(names)
+    return f"unknown field `{field}`, {tail}"
 
 
 def _merge(dst: dict[str, Any], patch: dict[str, Any]) -> None:
@@ -351,6 +406,9 @@ def test_error_replies_raise_and_keep_the_link() -> None:
             with pytest.raises(CdspError) as ei:
                 await c.command("Bogus")
             assert ei.value.result == "Invalid" and "unknown variant" in ei.value.message
+            with pytest.raises(CdspError) as ei:  # next5 refuses a field the command does not take
+                await c.command("GetState", value=None)
+            assert ei.value.result == "Invalid" and "unknown field `value`" in ei.value.message
             with pytest.raises(CdspError) as ei:  # the engine, not PyYAML, judges a config
                 await c.set_config_yaml("garbage: [")
             assert ei.value.result == "ConfigReadError"
@@ -870,6 +928,211 @@ def test_hook_failure_is_contained_and_close_is_clean() -> None:
     run(body())
 
 
+# ======================================================================= the mute link
+
+
+async def _upload_in_flight(eng: FakeEngine) -> None:
+    await until(lambda: any(m["command"] == "SetConfig" for m in eng.log), what="upload in flight")
+
+
+def test_main_mute_has_a_link_of_its_own() -> None:
+    """Audit 5.1 #6: behind the one lock, a mute waited for the command in flight: up to
+    CONFIRM_TIMEOUT_S behind a write's read-back, up to SETUP_TIMEOUT_S behind a whole-config
+    upload. With `mute_link`, Main's mute goes out on a second websocket and lands while the
+    upload, or a write's read-back, still holds the main link. Nothing else uses that link."""
+    async def body() -> None:
+        async with rig() as (eng, c):
+            assert len(eng.conns) == 1 and not c.mute_connected       # off by default
+        async with rig(mute_link=True) as (eng, c):
+            await until(lambda: c.mute_connected, what="mute link up")
+            assert len(eng.conns) == 2 and c.connect_count == 1
+            eng.faders[MAIN]["mute"] = False
+            eng.slow["SetConfig"] = 1.0
+            upload = asyncio.create_task(c.set_config_yaml("title: x\n"))
+            await _upload_in_flight(eng)
+            t0 = time.perf_counter()
+            await c.set_fader_mute(MAIN, True)
+            assert time.perf_counter() - t0 < 0.3
+            assert eng.faders[MAIN]["mute"] is True and not upload.done()
+            await upload
+            main = next(i for i, name in eng.on_conn if name == "SetConfig")
+            assert [i for i, name in eng.on_conn if name == "SetFaderMute"] == [1 - main]
+            # Aux mutes (the delay/polarity guards) and everything else stay on the main link
+            await c.set_fader_mute(AUX1, True)
+            await c.get_faders()
+            assert {i for i, name in eng.on_conn if name != "SetFaderMute"} == {main}
+            assert eng.on_conn[-2] == (main, "SetFaderMute")
+            assert c.main_mute_gen == 2             # one Main mute asked, none on its way
+            # behind a knob write's read-back (the main link held up to CONFIRM_TIMEOUT_S)
+            eng.faders[MAIN]["mute"] = False
+            eng.slow["GetConfigValue"] = 0.4
+            write = asyncio.create_task(c.set_value("/filters/sub_delay/parameters/delay", 1.5))
+            await until(lambda: any(m["command"] == "GetConfigValue" for m in eng.log),
+                        what="read-back in flight")
+            t0 = time.perf_counter()
+            await c.set_fader_mute(MAIN, True)
+            assert time.perf_counter() - t0 < 0.2
+            assert eng.faders[MAIN]["mute"] is True and not write.done()
+            assert await write == 1.5 and c.main_mute_gen == 4
+
+    run(body())
+
+
+def test_main_mute_falls_back_to_the_main_link() -> None:
+    """Mute link hung: reset after its short timeout, and the main link carries the mute. Mute
+    link down: the main link carries it, behind whatever holds that link (as before)."""
+    async def body() -> None:
+        async with rig(mute_link=True, timeout=0.3, backoff_min=0.05) as (eng, c):
+            await until(lambda: c.mute_connected, what="mute link up")
+            eng.faders[MAIN]["mute"] = False
+            eng.hang_once.add("SetFaderMute")
+            t0 = time.perf_counter()
+            await c.set_fader_mute(MAIN, True)
+            assert 0.25 < time.perf_counter() - t0 < 1.0
+            assert eng.faders[MAIN]["mute"] is True and eng.main_mutes == [True]
+            await until(lambda: c.mute_connected, what="mute link back")
+            assert c.connect_count == 1             # the main link was never reset
+            await c._mute.close()                   # down for good
+            assert not c.mute_connected
+            eng.slow["SetConfig"] = 0.5
+            upload = asyncio.create_task(c.set_config_yaml("title: y\n"))
+            await _upload_in_flight(eng)
+            t0 = time.perf_counter()
+            await c.set_fader_mute(MAIN, False)
+            assert time.perf_counter() - t0 > 0.3 and eng.faders[MAIN]["mute"] is False
+            await upload
+
+    run(body())
+
+
+def test_a_mute_never_waits_for_an_unmute_queued_on_the_main_link() -> None:
+    """An unmute asked first, carried by the main link (the mute link was down) and queued there
+    behind an upload: a mute asked after it, the mute link back up meanwhile, goes out at once
+    (it used to wait for that unmute, so for the upload). The unmute, once it holds the main
+    link, finds a later request and is dropped: the engine never sees it and ends muted."""
+    async def body() -> None:
+        async with rig(mute_link=True) as (eng, c):
+            await until(lambda: c.mute_connected, what="mute link up")
+            ws = c._mute._ws
+            c._mute._ws = None                      # seen as down
+            eng.faders[MAIN]["mute"] = True
+            eng.slow["SetConfig"] = 0.6
+            upload = asyncio.create_task(c.set_config_yaml("title: x\n"))
+            await _upload_in_flight(eng)
+            unmute = asyncio.create_task(c.set_fader_mute(MAIN, False))
+            await asyncio.sleep(0.05)
+            assert c.main_mute_gen % 2 == 1 and not unmute.done()  # queued behind the upload
+            c._mute._ws = ws                        # back up
+            t0 = time.perf_counter()
+            await c.set_fader_mute(MAIN, True)
+            assert time.perf_counter() - t0 < 0.2
+            assert eng.main_mutes == [True] and not unmute.done() and not upload.done()
+            await upload
+            await unmute
+            assert eng.main_mutes == [True] and eng.faders[MAIN]["mute"] is True
+            assert c.main_mute_gen % 2 == 0
+
+    run(body())
+
+
+def test_a_mute_that_crosses_an_unmute_is_the_engines_last_word() -> None:
+    """An unmute already sent on the main link (the mute link was down), the engine slow to take
+    it; a mute asked meanwhile goes out at once on the mute link and the engine takes it first.
+    The unmute then lands: the PA would end UNMUTED after the mute. Its call sends the mute
+    again before it returns."""
+    async def body() -> None:
+        async with rig(mute_link=True) as (eng, c):
+            await until(lambda: c.mute_connected, what="mute link up")
+            ws = c._mute._ws
+            c._mute._ws = None                      # seen as down
+            eng.faders[MAIN]["mute"] = True
+            eng.slow_once["SetFaderMute"] = 0.4     # the unmute: taken late
+            unmute = asyncio.create_task(c.set_fader_mute(MAIN, False))
+            await until(lambda: any(m["command"] == "SetFaderMute" for m in eng.log),
+                        what="unmute sent")
+            c._mute._ws = ws                        # back up
+            t0 = time.perf_counter()
+            await c.set_fader_mute(MAIN, True)
+            assert time.perf_counter() - t0 < 0.2 and not unmute.done()
+            await unmute
+            assert eng.main_mutes == [True, False, True] and eng.faders[MAIN]["mute"] is True
+            conns = [i for i, name in eng.on_conn if name == "SetFaderMute"]
+            assert conns[0] != conns[1] == conns[2]     # main link, then the mute link twice
+            # one link: the same rules; a mute behind a queued unmute drops it
+            c._mute._ws = None
+            eng.main_mutes.clear()
+            eng.slow["SetConfig"] = 0.3
+            upload = asyncio.create_task(c.set_config_yaml("title: z\n"))
+            await until(lambda: c._lock.locked(), what="upload holds the main link")
+            unmute = asyncio.create_task(c.set_fader_mute(MAIN, False))
+            await asyncio.sleep(0.02)
+            await c.set_fader_mute(MAIN, True)
+            await asyncio.gather(upload, unmute)
+            assert eng.main_mutes == [True] and eng.faders[MAIN]["mute"] is True
+            c._mute._ws = ws
+
+    run(body())
+
+
+def test_an_unmute_needs_the_main_link_a_mute_does_not() -> None:
+    """The main link down (here reset, back in a second): a mute still goes out on the mute
+    link; an unmute fails as before (the controller's connect sync decides about it)."""
+    async def body() -> None:
+        async with rig(mute_link=True, backoff_min=1.0, backoff_max=1.0) as (eng, c):
+            await until(lambda: c.mute_connected, what="mute link up")
+            eng.faders[MAIN]["mute"] = False
+            with pytest.raises(CdspUnavailable):
+                await c.command("Drop")
+            assert not c.connected and c.mute_connected
+            await c.set_fader_mute(MAIN, True)
+            assert eng.faders[MAIN]["mute"] is True
+            with pytest.raises(CdspUnavailable):
+                await c.set_fader_mute(MAIN, False)
+            assert eng.main_mutes == [True] and c.main_mute_gen % 2 == 0
+
+    run(body())
+
+
+def test_the_mute_link_names_itself_in_the_journal(caplog: Any) -> None:
+    """Its connects and losses are not the engine link's: read after a show, a reset of the mute
+    link alone must not look like 'lost connection to camilladsp'."""
+    import logging
+
+    async def body() -> None:
+        async with rig(mute_link=True, backoff_min=0.05) as (eng, c):
+            await until(lambda: c.mute_connected, what="mute link up")
+            with pytest.raises(CdspUnavailable):
+                await c._mute.command("Drop")
+            await until(lambda: c._mute.connect_count == 2, what="mute link back")
+            assert c.connect_count == 1
+
+    with caplog.at_level(logging.INFO, logger="k1000.cdsp"):
+        run(body())
+    lines = [r.getMessage() for r in caplog.records if r.name == "k1000.cdsp"]
+    assert sum(m.startswith("connected to camilladsp at") for m in lines) == 1
+    assert sum(m.startswith("mute link: connected to camilladsp at") for m in lines) == 2
+    assert [m for m in lines if "lost connection" in m] == [
+        m for m in lines if m.startswith("mute link: lost connection to camilladsp at")] != []
+
+
+def test_close_closes_the_mute_link_too() -> None:
+    async def body() -> None:
+        eng = FakeEngine()
+        await eng.start()
+        c = CamillaClient(eng.url, mute_link=True)
+        try:
+            assert await c.connect(timeout=2.0)
+            await until(lambda: c.mute_connected, what="mute link up")
+        finally:
+            await c.close()
+            await eng.stop()
+        assert not c.connected and not c.mute_connected
+        left = [t for t in asyncio.all_tasks() if t.get_name().startswith("cdsp-") and not t.done()]
+        assert left == []
+
+    run(body())
+
+
 # ======================================================================= engine tests
 
 CDSP_BIN = shutil.which("camilladsp") or "/usr/local/bin/camilladsp"
@@ -1178,6 +1441,46 @@ def test_engine_adjust_fader_never_lifts_below_floor(engine: Engine) -> None:
             assert [faders[i]["volume"] for i in (MAIN, AUX1, AUX2)] == [-40.0, -149.5, 6.0]
 
     run(body())
+
+
+@pytest.mark.engine
+@pytest.mark.skipif(not os.access(CDSP_BIN, os.X_OK), reason="no camilladsp binary")
+def test_engine_main_mute_on_its_own_link(engine: Engine) -> None:
+    """The real engine answers a Main mute on the mute link at once while the main link is held:
+    by the client alone, then by a real device-changing upload (the engine restarts its devices
+    meanwhile, and the client holds the main link until it has run steadily on them)."""
+    async def body() -> dict[str, float]:
+        out: dict[str, float] = {}
+        async with CamillaClient(engine.url, mute_link=True, settle_s=0.3) as c:
+            await until(lambda: c.mute_connected, what="mute link up")
+            await _running(c)
+            await c.set_fader_mute(MAIN, False)
+            assert (await c.get_faders())[MAIN]["mute"] is False
+            async with c._lock:                     # the main link busy
+                t0 = time.perf_counter()
+                await c.set_fader_mute(MAIN, True)
+                out["main link held"] = time.perf_counter() - t0
+            assert (await c.get_faders())[MAIN]["mute"] is True
+            assert c.connect_count == 1 and c.main_mute_gen == 4
+            # a real upload that changes the devices (chunksize): held >= settle_s
+            await c.set_fader_mute(MAIN, False)
+            upload = asyncio.create_task(
+                c.set_config_yaml(engine_yaml().replace("chunksize: 256", "chunksize: 512")))
+            await until(lambda: c._lock.locked(), what="upload holds the main link")
+            t0 = time.perf_counter()
+            await c.set_fader_mute(MAIN, True)
+            out["during an upload"] = time.perf_counter() - t0
+            assert not upload.done()
+            await upload
+            await _running(c)
+            assert (await c.get_config_json())["devices"]["chunksize"] == 512
+            assert c.connect_count == 1
+        return out
+
+    took = run(body())
+    print(f"\n[cdsp] Main mute on its own link: {took['main link held'] * 1e3:.1f} ms with the main "
+          f"link held, {took['during an upload'] * 1e3:.1f} ms during a device-changing upload")
+    assert took["main link held"] < 0.1 and took["during an upload"] < 0.1, took
 
 
 def _bad_device_yaml() -> str:

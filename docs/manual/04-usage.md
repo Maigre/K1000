@@ -439,8 +439,9 @@ and the read-only reasons ([§5](#5-setup)).
 ![PHONE: step 1, join the Wi-Fi](../ui/phone_wifi.png)
 
 The QR codes a phone needs, and the phone switch. **E1 turn**: the next code, `1 · JOIN WI-FI` →
-`2 · OPEN K1000` → `FIRST TIME` (the certificate page). Once a phone is on the Wi-Fi the page shows
-step 2 by itself. **E1 push**: phone control on/off (`PHONE CONTROL ON` /
+`2 · OPEN K1000` (the first-time page: the app or the web app, and the certificate where it is
+needed) → `DIRECT LINK` (the page itself, for a phone already set up). Once a phone is on the
+Wi-Fi the page shows step 2 by itself. **E1 push**: phone control on/off (`PHONE CONTROL ON` /
 `PHONE OFF · KNOBS ONLY`, kept across restarts). **B1 tap**: back to SETUP; **B1 hold**: SHOW.
 B4 still mutes.
 
@@ -505,7 +506,7 @@ The alerts, most urgent first:
 |---|---|
 | `KNOBS OFFLINE · USE PHONE MUTE / BYPASS` or `KNOBS OFFLINE · SOURCE DOWN / BYPASS` | critical. **B4 does nothing meanwhile.** The first text only while a phone can mute right now (phone servers on, SETUP › PHONE › Phone on, the Wi-Fi up, the page served); otherwise the second |
 | `NO DEVICE · MOTU M4`, `ENGINE DOWN` (also full-screen) | critical |
-| `CANNOT SAVE STATE`, `ENGINE SYNC FAILED (SEE LOG)` | critical |
+| `CANNOT SAVE STATE`, `ENGINE SYNC FAILED (SEE LOG)`, `ENGINE ON WRONG DEVICES (SEE LOG)` | critical |
 | `SETTINGS: …`, `k1000.yaml ROUTING FIXED UP (SEE LOG)`, `NO AUDIO FLOWING · HELD MUTED` | warning |
 | `PIPELINE CHANGED (GUI)`, `CONFIG DRIFT (SEE LOG)`, `RESTORING ENGINE DEVICES`, `DEVICES CHANGED (GUI)`, a cut kept from CamillaGUI (`SUBS GROUP MUTED (GUI)`, `N CUTS/MUTES (GUI)`…) | warning |
 | `APPLYING SETUP…`, `RAMPING IN` | passing state (blue) |
@@ -524,7 +525,7 @@ mute. Use the phone at a show only once it has been proven with your phone on yo
 ### 8.1 Once per phone, at home
 
 1. **The K1000 certificate.** The phone needs a screen lock. Put the CA's public certificate
-   (`k1000-ca.crt`) on the phone, or get it from the box: E1 to the `FIRST TIME` QR (or
+   (`k1000-ca.crt`) on the phone, or get it from the box: the `2 · OPEN K1000` QR (or
    `http://10.42.0.1/` in Chrome), *Download the K1000 certificate*, *Keep*. **Do not tap the
    file.** Install it from Settings › Security › Encryption & credentials › Install a certificate
    › **CA certificate**. *Network may be monitored* is expected: this CA can only vouch for the

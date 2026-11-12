@@ -39,7 +39,11 @@ The order at power-on:
   websocket meanwhile. After 30 s of waiting the engine is tried anyway (it exits and the wait
   starts again), so even a wrong check can never hold the audio back for more than 30 s.
 - If `/var/log/k1000` cannot be written, the engine still plays and logs to the journal instead.
-- All three units restart 1–2 s after any crash, with no retry limit.
+- All three units restart 1–2 s after any crash, with no retry limit. k1000 also when it hangs:
+  its event loop feeds a systemd watchdog, and 15 s without it is a restart. The engine plays on
+  and the new k1000 adopts it (docs/manual/02-installation.md §6).
+- The engine runs alone on cores 2 and 3, everything else on 0 and 1, with the CPU governor at
+  `performance` (`cpu/`; `install.sh --cpu-off` takes it all away).
 - The hardware watchdog reboots the box if systemd itself hangs for 15 s.
 - The journal is kept on the SD card (32 MB at most), so after a power cycle `journalctl -b -1`
   still shows what happened before it.
@@ -64,6 +68,8 @@ The order at power-on:
 | `/etc/NetworkManager/dnsmasq-shared.d/k1000.conf`, `/etc/NetworkManager/conf.d/k1000-ap-unmanaged.conf` | the AP's DNS (portal off by default), and `wlan0` left to hostapd |
 | `/var/lib/k1000/phone.json` | SETUP › PHONE › Phone on/off, kept across restarts |
 | `/etc/systemd/system.conf.d/50-k1000-watchdog.conf` | `RuntimeWatchdogSec=15` |
+| `/etc/udev/rules.d/61-k1000-cpu-governor.rules`, `/etc/systemd/system.conf.d/50-k1000-cpu.conf`, `/etc/systemd/system/{camilladsp,k1000,camillagui}.service.d/50-k1000-cpu.conf` | the processor settings, from `cpu/`: governor `performance`, the engine on cores 2-3 and the rest on 0-1, `Nice=5` for k1000 (all of it from the next boot; after `--cpu-off`, a reboot, and `--start` is refused until then) |
+| `/etc/k1000/cpu-tuning` | `off` after `install.sh --cpu-off` (the settings above removed, and kept off by later runs), `on` after `--cpu-on`; absent = on |
 | `/etc/systemd/journald.conf.d/50-k1000-journal.conf` | journal on the SD card, 32 MB cap (applies at the next reboot) |
 | `/etc/modules-load.d/k1000.conf` | `i2c-dev` at boot: `/dev/i2c-1`, the knob board (install.sh `--boot`) |
 | `/etc/rpi/swap.conf.d/50-k1000.conf` | swap in RAM only (zram), from `tools/k1000-lean.sh` |
@@ -75,7 +81,7 @@ The order at power-on:
 From the repo checkout on the laptop, with the `k1000` host in your SSH config:
 
 ```sh
-rsync -a --delete --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
+rsync -a --delete --filter='P apk/' --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
 ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/install.sh"
 ```
 
@@ -152,6 +158,22 @@ ssh k1000 "sudo /opt/k1000-src/install.sh --boot --headless --start && sudo rebo
     `sudo systemctl --global unmask pipewire.socket pipewire.service pipewire-pulse.socket pipewire-pulse.service wireplumber.service filter-chain.service`,
     `sudo systemctl enable bluetooth cups cups.socket cups.path rpcbind rpcbind.socket nfs-blkmap`
     and `sudo mv /etc/systemd/system/getty@tty1.service.d/autologin.conf.k1000-off /etc/systemd/system/getty@tty1.service.d/autologin.conf`
+
+## The engine build (`tools/engine-build/`, D-019)
+
+The box runs CamillaDSP built from upstream's `next5` branch at a pinned commit: the fix for the
+delay that stays after a dropout is there and in no release yet. `tools/engine-build/build.sh`
+cross-builds it for the box in a Debian trixie container (any machine with Docker, about two
+minutes), with the dependency versions of the build that was measured on the bench:
+
+```sh
+box/tools/engine-build/build.sh                 # -> out/camilladsp; says whether it is the measured binary (sha256 dd4106c9…)
+scp out/camilladsp k1000:/tmp/ && ssh k1000 "sudo install -m 755 /tmp/camilladsp /usr/local/bin/camilladsp && camilladsp --version && sudo systemctl restart camilladsp"
+```
+
+`camilladsp --version` names the commit (`5.0.0-beta.2 (0930f9b)`). The 5.0.0-beta.1 release
+binary still works with this K1000 and stays the fallback: its delay does not come back after an
+underrun, and no setting under chunk 256 holds on it (`docs/17`).
 
 ## Lean OS (`tools/k1000-lean.sh`)
 
@@ -246,7 +268,7 @@ A spare or replacement gig card from nothing (D-006, step 3):
 2. From the repo on the laptop:
 
    ```sh
-   rsync -a --delete --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
+   rsync -a --delete --filter='P apk/' --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
    ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/bootstrap.sh"
    ```
 
