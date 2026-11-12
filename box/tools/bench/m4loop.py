@@ -13,7 +13,8 @@ Reads only the engine's meters and spectra (CamillaDSP websocket); changes nothi
 - routing: playback RMS of all four outputs (which carry the source).
 - response: |H(f)| = spectrum(RET) / spectrum(SRC), 1/3 octave.
 - latency: the capture average (SRC + RET) is a comb whose tooth spacing is 1/latency;
-  found by a matched comb search over 200 Hz - 10 kHz. Latency = analog LINE IN -> OUT N.
+  found by a matched comb search over 200 Hz - 10 kHz, between 3 ms and --max-ms (150).
+  Latency = analog LINE IN -> OUT N.
 """
 import argparse, json, math, os, subprocess, sys, time, wave
 import numpy as np
@@ -95,9 +96,9 @@ def spectrum(e, channel, min_f, max_f, n_bins, n_avg, gap=0.35):
     return f, acc / n_avg
 
 
-def comb_latency(f_log, p):
+def comb_latency(f_log, p, max_ms=150.0):
     """Matched comb search: the delay tau whose cos(2 pi f tau) best fits the detrended log
-    spectrum. Returns (tau_ms, sign, snr)."""
+    spectrum, searched between 3 ms and `max_ms`. Returns (tau_ms, sign, snr)."""
     grid = np.arange(200.0, 10000.0, 0.5)
     m = np.interp(grid, f_log, db(p))
     k = int(300 / 0.5)                                   # remove the slope / EQ: 300 Hz mean
@@ -108,7 +109,7 @@ def comb_latency(f_log, p):
     nfft = 1 << (len(d) * 4 - 1).bit_length()
     C = np.abs(np.fft.rfft(d, nfft))
     q = np.arange(len(C)) / (nfft * 0.5)                 # seconds
-    sel = (q > 0.003) & (q < 0.080)
+    sel = (q > 0.003) & (q < max_ms / 1000.0)
     i = np.argmax(np.where(sel, C, 0))
     snr = C[i] / np.median(C[sel])
     # fine: direct correlation around the coarse peak
@@ -134,6 +135,8 @@ def main():
     ap.add_argument("--ret", type=int, default=3, help="capture channel of the return (3 = LINE IN 4)")
     ap.add_argument("--ext", action="store_true", help="external source (phone): play nothing")
     ap.add_argument("--avg", type=int, default=8)
+    ap.add_argument("--max-ms", type=float, default=150.0,
+                    help="longest latency searched (the engine can hold about 105 ms after dropouts)")
     a = ap.parse_args()
     e = Engine()
     o = a.out - 1
@@ -162,19 +165,25 @@ def main():
     time.sleep(3.0)
     f, p_src = spectrum(e, a.src, 10.0, 20000.0, 400, a.avg)
     f2, p_ret = spectrum(e, a.ret, 10.0, 20000.0, 400, a.avg)
-    fl, p_all = spectrum(e, None, 1.5, 10500.0, 12000, a.avg)
+    # 0.75 Hz -> a 65536-point window (1.4 s) and 24000 bins: the comb of a delay up to 150 ms
+    # stays resolved (checked by m4loop_sim.py; 1.5 Hz / 12000 bins lost it above 100 ms).
+    fl, p_all = spectrum(e, None, 0.75, 10500.0, 24000, a.avg)
     pn = e.cmd("GetCaptureSignalRmsSince", 2.0)
     if pr:
         pr.terminate(); pr.wait()
     res["noise_capture_rms"] = [round(x, 2) for x in pn]
     res["response_db_third_oct"] = [(fc, round(g, 2)) for fc, g in third_octave(f, p_ret, p_src)]
-    tau, sign, snr = comb_latency(fl, p_all)
+    tau, sign, snr = comb_latency(fl, p_all, a.max_ms)
     res["latency_ms"] = round(tau, 3)
     res["return_polarity"] = "same" if sign > 0 else "inverted"
     res["comb_snr"] = round(snr, 1)
+    if snr < 10:
+        res["latency_warning"] = "no clear comb (snr < 10): do not trust latency_ms"
     lvl = e.cmd("GetBufferLevel")
     res["buffer_level_frames"] = lvl
-    res["engine_buffers_ms"] = round((256 + lvl) / FS * 1000, 2)
+    chunk = int(json.loads(e.cmd("GetConfigJson"))["devices"]["chunksize"])
+    res["chunksize_frames"] = chunk
+    res["engine_buffers_ms"] = round((chunk + lvl) / FS * 1000, 2)
     print(json.dumps(res, indent=1))
 
 

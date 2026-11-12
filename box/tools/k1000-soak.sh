@@ -42,7 +42,8 @@
 #   K1000_CDSP_LOG (/var/log/k1000/camilladsp.log, the name given to camilladsp -o),
 #   K1000_SOAK_INTERVAL (10), K1000_SOAK_UNIT (camilladsp.service), K1000_SOAK_K1000_UNIT
 #   (k1000.service), K1000_SOAK_BOOT_ID (/proc/sys/kernel/random/boot_id), K1000_SOAK_UPTIME
-#   (/proc/uptime), K1000_SOAK_NOW (ISO time used as "now" by --summary).
+#   (/proc/uptime), K1000_SOAK_NOW (ISO time used as "now" by --summary), K1000_SOAK_BUFFER_RISE
+#   (256: frames above the starting buffer level that --summary reports as a backlog).
 #
 # Why one long-lived python3 process instead of a client per sample: starting python + websockets
 # every 10 s on the Pi would itself disturb the load figures being measured. Rotated engine logs
@@ -72,6 +73,9 @@ CDSP_LOG = os.environ.get("K1000_CDSP_LOG", "/var/log/k1000/camilladsp.log")
 INTERVAL = float(os.environ.get("K1000_SOAK_INTERVAL", "10"))
 UNIT = os.environ.get("K1000_SOAK_UNIT", "camilladsp.service")
 K1000_UNIT = os.environ.get("K1000_SOAK_K1000_UNIT", "k1000.service")
+# --summary: a playback buffer this many frames above where the soak started is a finding
+# (256 = 5.3 ms at 48 kHz, well above the jitter of the engine's 10 s average).
+BUFFER_RISE = float(os.environ.get("K1000_SOAK_BUFFER_RISE", "256"))
 BOOT_ID = os.environ.get("K1000_SOAK_BOOT_ID", "/proc/sys/kernel/random/boot_id")
 UPTIME = os.environ.get("K1000_SOAK_UPTIME", "/proc/uptime")
 # Matches CamillaDSP v5's own wording ("PB: write underrun", "Capture: read overrun", "Capture
@@ -397,6 +401,24 @@ def summary():
         n = sum(max(0.0, b - a) for (_t, a), (_t2, b) in zip(s, s[1:]))
         if n:
             issues.append(f"{what} restarted {int(n)} times during the soak")
+    # Latency: the playback buffer must not end up above where it started. An engine that keeps
+    # a backlog after a dropout shows it here and nowhere else in this log (docs/16 §2.2). The
+    # level is 0 until the engine publishes its first average: those samples are left out.
+    b = [(ts, v) for ts, v in series("buffer") if v > 0]
+    if b:
+        vals = [v for _t, v in b]
+        head = sorted(vals[:6])
+        base = head[len(head) // 2]
+        r = series("rate")
+        fs = r[-1][1] if r and r[-1][1] > 0 else 48000.0
+        print(f"buffer: starts at {base:.0f} frames, {min(vals):.0f} .. {max(vals):.0f}")
+        high = [(ts, v) for ts, v in b if v > base + BUFFER_RISE]
+        if high:
+            top = max(v for _t, v in high)
+            issues.append(f"the playback buffer rose to {top:.0f} frames, "
+                          f"{(top - base) / fs * 1000:.1f} ms above its start ({base:.0f}), first at "
+                          f"{high[0][0].isoformat()}: the engine is holding a backlog and the sound "
+                          "is later until the engine restarts")
     s = series("clipped")
     if s and max(v for _t, v in s) > 0:
         issues.append(f"clipped samples: up to {int(max(v for _t, v in s))}")
@@ -429,8 +451,8 @@ def summary():
         for i in issues:
             print(f"  - {i}")
         return 1
-    print("clean: no gap, no reboot, no xrun during the soak, no restart, no clip, never muted, "
-          "no throttling")
+    print("clean: no gap, no reboot, no xrun during the soak, no buffer rise, no restart, no clip, "
+          "never muted, no throttling")
     return 0
 
 
