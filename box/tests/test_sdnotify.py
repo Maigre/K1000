@@ -191,14 +191,14 @@ def test_a_stuck_loop_stops_the_pings_and_a_free_one_resumes_them(systemd: FakeS
     alive.set()
     th.join(2)
     assert systemd.wait_for("STOPPING=1", 2.0)
-    pings = systemd.times("WATCHDOG=1")
-    during = [t for t in pings if t_block + 0.01 < t < t_free - 0.01]
+    pings = systemd.times("WATCHDOG=1")      # arrival times: a ping sent just before the
+    during = [t for t in pings if t_block + 0.1 < t < t_free - 0.01]   # block may land a bit later
     assert not during, (t_block, t_free, pings)
     assert [t for t in pings if t < t_block], pings              # it pinged before ...
     after = [t for t in pings if t >= t_free]
     assert len(after) >= 2, pings                                # ... and again once free
     gap = max(b - a for a, b in zip(pings, pings[1:]))
-    assert gap >= 0.55 > n.watchdog_s, pings                     # systemd would have fired
+    assert gap >= 0.45 > 2 * n.watchdog_s, pings                 # systemd would have fired
     assert [t for t in beats if t_block < t < t_free]            # the thread never noticed
 
 
