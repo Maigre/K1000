@@ -159,6 +159,22 @@ ssh k1000 "sudo /opt/k1000-src/install.sh --boot --headless --start && sudo rebo
     `sudo systemctl enable bluetooth cups cups.socket cups.path rpcbind rpcbind.socket nfs-blkmap`
     and `sudo mv /etc/systemd/system/getty@tty1.service.d/autologin.conf.k1000-off /etc/systemd/system/getty@tty1.service.d/autologin.conf`
 
+## The engine build (`tools/engine-build/`, D-019)
+
+The box runs CamillaDSP built from upstream's `next5` branch at a pinned commit: the fix for the
+delay that stays after a dropout is there and in no release yet. `tools/engine-build/build.sh`
+cross-builds it for the box in a Debian trixie container (any machine with Docker, about two
+minutes), with the dependency versions of the build that was measured on the bench:
+
+```sh
+box/tools/engine-build/build.sh                 # -> out/camilladsp; says whether it is the measured binary (sha256 dd4106c9…)
+scp out/camilladsp k1000:/tmp/ && ssh k1000 "sudo install -m 755 /tmp/camilladsp /usr/local/bin/camilladsp && camilladsp --version && sudo systemctl restart camilladsp"
+```
+
+`camilladsp --version` names the commit (`5.0.0-beta.2 (0930f9b)`). The 5.0.0-beta.1 release
+binary still works with this K1000 and stays the fallback: its delay does not come back after an
+underrun, and no setting under chunk 256 holds on it (`docs/17`).
+
 ## Lean OS (`tools/k1000-lean.sh`)
 
 D-006: the box runs Raspberry Pi OS Lite plus K1000, with nothing at boot or during a show that
