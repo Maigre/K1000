@@ -67,6 +67,21 @@ export function delaySub(v, short) {
   if (short) return v > 0 ? "subs later" : "tops later";
   return (v > 0 ? "SUBS LATER" : "TOPS LATER") + " · " + (Math.abs(v) * 0.343).toFixed(2) + " m";
 }
+// D-018: the box's delay readout in words (docs/14 §3.2 `latency`, the STATUS sheet's row):
+// "20.3 ms · ABOVE 10 ms · 0 dropouts". "at least …" when the figure is a floor: the box knows
+// only the engine's share, or the engine logged a dropout (a backlog past its playback buffer is
+// not in the figure, docs/16 §2.2). The dropout count only beside a figure, as on the box's
+// screen: without one the engine is not running, and its log may still be the previous run's.
+export function latencyWords(L) {
+  L = L || {};
+  if (!num(L.ms)) return "--";
+  const drops = num(L.drops) ? L.drops : null;
+  const floor = L.io === false || (drops !== null && drops > 0);
+  const parts = [(floor ? "at least " : "") + L.ms.toFixed(1) + " ms" + (L.io === false ? " (engine only)" : "")];
+  if (num(L.limit)) parts.push((L.over ? "ABOVE " : "limit ") + L.limit + " ms");
+  if (drops !== null) parts.push(drops + (drops === 1 ? " dropout" : " dropouts"));
+  return parts.join(" · ");
+}
 export function mmss(s) {
   s = Math.max(0, Math.ceil(s));
   const hh = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;

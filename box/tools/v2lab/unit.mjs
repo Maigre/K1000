@@ -5,7 +5,7 @@
    Prints one JSON object {ok, checks:[{name, ok, detail}]}; exit 1 on a failure. */
 
 import { Bucket, Guard, NudgeQueue, generic, speedMult, stepLabel, stepValue } from "../../k1000/web/static/v2/js/fields.js";
-import { delaySub, fmtDb, fmtHz, fmtSigned, mmss } from "../../k1000/web/static/v2/js/util.js";
+import { delaySub, fmtDb, fmtHz, fmtSigned, latencyWords, mmss } from "../../k1000/web/static/v2/js/util.js";
 import { loadFixtures } from "./fakebox.mjs";
 
 const fx = loadFixtures(process.argv[2]);
@@ -79,6 +79,12 @@ check("fmtHz", fmtHz(2440) === "2.44k" && fmtHz(12500) === "12.5k" && fmtHz(112)
 check("fmtSigned", fmtSigned(0.5) === "+½" && fmtSigned(-3) === "−3" && fmtSigned(1.5) === "+1½");
 check("delay words", delaySub(1.25, true) === "subs later" && delaySub(-1, false).startsWith("TOPS LATER") && delaySub(0, false) === "ALIGNED");
 check("mmss", mmss(299.2) === "5:00" && mmss(7140) === "1:59:00");
+// the delay readout's words (D-018, docs/14 §3.2 `latency`): the STATUS sheet's row
+const lw = latencyWords;
+check("delay: the bench figure, above the limit, 0 dropouts", lw({ ms: 20.3, io: true, over: true, limit: 10, buf: 536, drops: 0 }) === "20.3 ms · ABOVE 10 ms · 0 dropouts", lw({ ms: 20.3, io: true, over: true, limit: 10, buf: 536, drops: 0 }));
+check("delay: after a dropout the figure is a floor", lw({ ms: 9.1, io: true, over: false, limit: 10, drops: 1 }) === "at least 9.1 ms · limit 10 ms · 1 dropout" && lw({ ms: 30.5, io: true, over: true, limit: 12.5, drops: 7 }) === "at least 30.5 ms · ABOVE 12.5 ms · 7 dropouts", lw({ ms: 9.1, io: true, over: false, limit: 10, drops: 1 }));
+check("delay: the engine's share alone, the log unread", lw({ ms: 16.5, io: false, over: true, limit: 10, drops: null }) === "at least 16.5 ms (engine only) · ABOVE 10 ms", lw({ ms: 16.5, io: false, over: true, limit: 10, drops: null }));
+check("delay: no figure reads --, without a count (the log may be the previous run's)", lw({ ms: null, io: true, over: false, limit: 10, drops: 3 }) === "--" && lw(undefined) === "--" && lw({ ms: NaN, drops: 0 }) === "--");
 
 const ok = checks.every((c) => c.ok);
 console.log(JSON.stringify({ ok, checks }));

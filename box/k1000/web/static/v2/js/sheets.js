@@ -27,7 +27,7 @@ import { can, hasNative, nativeSend, refused as refusedNative, requestDiag } fro
 import { syncSub } from "./rta.js";
 import { M as MIC, allowFromSetup, allowed as micAllowed, running as micRunning, setMic } from "./mic.js";
 import { closePop } from "./graph.js";
-import { $, $$, clamp, fmtDb, fmtHz, h, mmss, now, num, setText } from "./util.js";
+import { $, $$, clamp, fmtDb, fmtHz, h, latencyWords, mmss, now, num, setText } from "./util.js";
 
 const SET_GUARD_MS = 400;
 const ME = "THIS PHONE";
@@ -589,22 +589,6 @@ function rowGestures() {
 }
 
 // ------------------------------------------------------------------ STATUS
-// D-018: the box's delay readout (docs/14 §3.2 `latency`): "20.3 ms · ABOVE 10 ms · 0 dropouts";
-// "at least …" when the box knows only the engine's share; no dropout count when it cannot read
-// the engine's log.
-function latencyWords(L) {
-  L = L || {};
-  const parts = [];
-  if (num(L.ms)) {
-    parts.push((L.io === false ? "at least " : "") + L.ms.toFixed(1) + " ms" + (L.io === false ? " (engine only)" : ""));
-    if (num(L.limit)) parts.push((L.over ? "ABOVE " : "limit ") + L.limit + " ms");
-  } else {
-    parts.push("--");
-  }
-  if (num(L.drops)) parts.push(L.drops + (L.drops === 1 ? " dropout" : " dropouts"));
-  return parts.join(" · ");
-}
-
 function buildStatus() {
   const body = $("#shBody");
   const box = h("div", "");

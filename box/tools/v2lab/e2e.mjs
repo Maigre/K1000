@@ -1229,6 +1229,17 @@ await run("sheets", async () => {
   check("sheets: STATUS Mute says by this phone, as the strip", /MUTED · by this phone/.test(st), st.slice(0, 300));
   check("sheets: STATUS has Mono subs · sub LP", /Mono subs · sub LP\s*ON · /.test(st));
   check("sheets: STATUS Spectrum says not running, not a raw 'off'", !/· PGM · off/.test(st));
+  // D-018's delay readout (docs/14 §3.2 `latency`): a floor after dropouts, yellow above the limit
+  const delayRow = () => page.evaluate(() => {
+    const r = Array.from(document.querySelectorAll("#shBody .kv")).find((e) => e.firstChild && e.firstChild.textContent === "Delay in → out");
+    return r ? { text: r.lastChild.textContent, warn: r.classList.contains("warn") } : null;
+  });
+  box.push({ latency: { ms: 20.3, io: true, over: true, limit: 10, buf: 536, drops: 2 } }); await sleep(250);
+  const dl1 = await delayRow();
+  check("sheets: STATUS Delay in → out, above the limit after dropouts: a floor, yellow", !!dl1 && dl1.text === "at least 20.3 ms · ABOVE 10 ms · 2 dropouts" && dl1.warn, JSON.stringify(dl1));
+  box.push({ latency: { ms: 8.9, io: true, over: false, limit: 10, buf: 170, drops: 0 } }); await sleep(250);
+  const dl2 = await delayRow();
+  check("sheets: STATUS Delay in → out, within the limit: plain", !!dl2 && dl2.text === "8.9 ms · limit 10 ms · 0 dropouts" && !dl2.warn, JSON.stringify(dl2));
   await tapSel(t, page, "#shX");
   await t.close();
 });
