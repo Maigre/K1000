@@ -86,12 +86,26 @@ class FakeEngine:
 
     Scripted commands: Fail (error result), Hang (never answers), Slow (answers after `delay`),
     Chatty (event + garbage + a stale reply before its own), Drop (closes the link).
-    Unknown commands get the engine's real `{"reply": "Invalid", "error": ...}`.
+    Unknown commands get the engine's real `{"reply": "Invalid", "error": ...}`, and so does an
+    engine command with a field it does not take (`FIELDS`; the upstream fix K1000 moves to,
+    next5 0930f9b, refuses them; 5.0.0-beta.1 ignored them).
     `states_after_setconfig`: the GetState answers after each SetConfig, in order (the last one
     sticks; "EXIT" closes the link, as camilladsp exits on a failed device open).
     `config = None` is wait mode (-w): GetConfigJson answers Ok with "null"; with
     `drop_config_on_setconfig` an upload is dropped (wait mode, device failed to open).
     """
+
+    # The fields each engine command takes (camilladsp-schema protocol.rs, the same in beta.1
+    # and next5). The scripted test commands above are not engine commands: not checked.
+    FIELDS: dict[str, tuple[str, ...]] = {
+        **{n: () for n in ("GetVersion", "GetState", "GetStopReason", "GetProcessingLoad",
+                           "GetSignalLevels", "GetClippedSamples", "ResetClippedSamples",
+                           "GetConfigJson", "GetFaders")},
+        "GetConfigValue": ("value",), "SetConfigValue": ("pointer", "value"),
+        "PatchConfig": ("value",), "SetConfig": ("value",), "GetFaderVolume": ("fader",),
+        "SetFaderVolume": ("fader", "value"), "AdjustFaderVolume": ("fader", "value", "min", "max"),
+        "SetFaderMute": ("fader", "value"),
+    }
 
     def __init__(self) -> None:
         self.log: list[dict[str, Any]] = []
@@ -148,6 +162,10 @@ class FakeEngine:
         name = msg["command"]
         if self.latency_s:
             await asyncio.sleep(self.latency_s)
+        allowed = self.FIELDS.get(name)
+        extra = [k for k in msg if k != "command" and allowed is not None and k not in allowed]
+        if extra:
+            return [{"reply": "Invalid", "error": _unknown_field(extra[0], allowed or ())}]
 
         def ok(*value: Any) -> dict[str, Any]:
             reply: dict[str, Any] = {"reply": name, "result": "Ok"}
@@ -264,6 +282,20 @@ class FakeEngine:
                 return [{"reply": "Invalid", "error": f"unknown variant `{name}`"}]
 
 
+def _unknown_field(field: str, allowed: tuple[str, ...]) -> str:
+    """serde's wording, as next5 sends it (probed on 0930f9b)."""
+    names = [f"`{a}`" for a in allowed]
+    if not names:
+        tail = "there are no fields"
+    elif len(names) == 1:
+        tail = f"expected {names[0]}"
+    elif len(names) == 2:
+        tail = f"expected {names[0]} or {names[1]}"
+    else:
+        tail = "expected one of " + ", ".join(names)
+    return f"unknown field `{field}`, {tail}"
+
+
 def _merge(dst: dict[str, Any], patch: dict[str, Any]) -> None:
     for k, v in patch.items():
         if isinstance(v, dict) and isinstance(dst.get(k), dict):
@@ -358,6 +390,25 @@ def test_error_replies_raise_and_keep_the_link() -> None:
             # an error reply is a healthy link: no reconnect, next command fine
             assert await c.get_version() == "5.0.0-fake"
             assert c.connect_count == 1
+
+    run(body())
+
+
+def test_a_field_the_command_does_not_take_is_refused_and_keeps_the_link() -> None:
+    """next5 (0930f9b) answers Invalid to a misspelled or extra field instead of ignoring it:
+    the client raises it like any refusal, the link stays, and the helpers send none."""
+    async def body() -> None:
+        async with rig() as (eng, c):
+            with pytest.raises(CdspError) as ei:
+                await c.command("GetState", value=None)
+            assert (ei.value.result, ei.value.message) == (
+                "Invalid", "unknown field `value`, there are no fields")
+            with pytest.raises(CdspError) as ei:
+                await c.command("AdjustFaderVolume", fader=AUX1, value=0.5, minimum=-20.0)
+            assert ei.value.message == ("unknown field `minimum`, expected one of `fader`, "
+                                        "`value`, `min`, `max`")
+            assert await c.adjust_fader(AUX1, -1.0, min=-20.0, max=0.0) == -1.0
+            assert await c.get_state() == "Running" and c.connect_count == 1
 
     run(body())
 
