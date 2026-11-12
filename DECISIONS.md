@@ -677,3 +677,42 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   and left, Mono L+R's popup and its E3 push, Reset live EQ twice, an E1 turn cancelling a popup);
   before the gig only if Thomas wants it there, else after it. Then the printed operator card
   (still one A4 page).
+
+## D-018 — Latency: 10 ms or less in to out, never growing, shown on the box · decided 2026-11-12
+
+- **Context**: at the gig of 18 Oct, beatmatching against the speakers was impossible; the delay
+  felt like 50 to 200 ms, where the bench had measured 20.3 ms on 16 Oct. The requirements held only
+  "latency irrelevant live (≤ ~10 ms) (?)". Review: `docs/16-post-gig-audit.md` §2 and §3.
+- **Options**: keep 20 ms and rely on a DJ monitor fed from the DJ mixer · 10 ms or less · lower.
+- **Decision** (Thomas, 2026-11-12): in to out, **10 ms or less at any moment of a show**,
+  measured, never growing. The box shows its current delay and says so when it is above the limit.
+  **Sample rate: 24-bit/48 kHz is the minimum; 24-bit/96 kHz is wished for.**
+- **Why**: a DJ who cues in headphones and listens to the speakers is the user who suffers most
+  from the delay. Ten milliseconds is 3.4 m of air.
+- **Consequences**: this replaces the `target_level` 512 item of D-010 and its reasoning ("DJ only,
+  the extra latency costs nothing"). Chunk and buffer are chosen by measurement and a night run
+  (`docs/16` §3.3). 96 kHz, set aside on 16 Oct, is back as a wish and as a latency lever.
+  **Claude's proposal for the order**: hold 10 ms at 48 kHz first, then study 96 kHz.
+
+## D-019 — Engine: a pinned build of upstream's fixed branch, tested on the desk box · decided 2026-11-12
+
+- **Context**: CamillaDSP 5.0.0-beta.1 keeps a backlog after each playback dropout, and with rate
+  adjust off nothing removes it (`docs/16` §2.2). Upstream fixed it after the gig on its `next5`
+  branch, which is in no release yet. The same branch fixes the spectrum crash K1000 works around
+  and a capture overrun that can stop the engine on a USB device like the M4.
+- **Options** (`docs/16` §3.2): A, a build of the fixed branch · B, rate adjust with the `Slip`
+  resampler on beta.1 · C, K1000 watches the buffer and restarts the engine.
+- **Decision** (Thomas, 2026-11-12): **A**. Build the engine from upstream `next5` at a pinned
+  commit, test it on the desk box, and pin it if it passes: K1000's engine tests, the produced-fault
+  test (the delay comes back after a gap) and a night run. B is the fallback if the build
+  misbehaves.
+- **Consequences**: this replaces the beta.1 freeze of D-004. The engine is still CamillaDSP 5.
+  The pinned commit and its checksum go where the beta.1 tarball is pinned today
+  (`box/bootstrap.sh`, `box/install.sh`).
+
+## D-020 — No new features until the latency is closed · decided 2026-11-12
+
+- **Decision** (Thomas, 2026-11-12): USB recording, the in-app update of the Android app and the
+  Loudness and De-harsh overlays on the spectrum wait. The faster-boot work, agreed earlier the
+  same day, continues and can share the desk time.
+- **Closed means**: D-018 holds on the box after a night run, and Thomas has beatmatched on it.
