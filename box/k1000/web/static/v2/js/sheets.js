@@ -520,6 +520,38 @@ function buildMe() {
     p.append(a);
   }
   setText(note(p), "The escape hatch for the field test: the v1 page at https://10.42.0.1/ (MUTE, master, balance, the live EQ).");
+  rowInstall();
+}
+
+// THIS PHONE › Install K1000 (hello.install, docs/14 §3.1): the Android app the box holds, for
+// this phone in Chrome or as a file to send to the next one, and how another phone gets in (the
+// box's first-time page). Never the download inside the app: its own update waits (D-020), and
+// its WebView does not download. An iPhone gets the web app only.
+const isIos = () => /iPhone|iPad|iPod/.test(navigator.userAgent || "") ||
+  (/Macintosh/.test(navigator.userAgent || "") && navigator.maxTouchPoints > 1);
+const mb = (n) => (Math.max(num(n) ? n : 0, 50000) / 1e6).toFixed(1) + " MB";
+function rowInstall() {
+  const ins = K.hello && K.hello.install;
+  if (!ins || typeof ins !== "object") return;           // an older box: no row
+  const apk = ins.apk && typeof ins.apk === "object" && typeof ins.apk.url === "string" ? ins.apk : null;
+  const start = typeof ins.start === "string" ? ins.start : "";
+  const r = srow("install");
+  const rv = head(r, "Install K1000");
+  setText(rv, apk ? "app " + String(apk.version || "?") + " · " + mb(apk.size) : "no app on this box");
+  const inApp = hasNative() || /K1000-Android\//.test(navigator.userAgent || "");   // the app's WebView, before its handshake too
+  if (apk && !inApp && !isIos()) {
+    const a = h("a", "act go linkbtn");
+    a.href = apk.url;
+    a.setAttribute("download", String(apk.file || "K1000.apk"));
+    a.textContent = "GET THE ANDROID APP";
+    r.append(a);
+    setText(note(r), "Version " + String(apk.version || "?") + " · " + mb(apk.size) + " · sha256 " + String(apk.sha8 || "--") +
+      ". On this phone: open the download, Android asks Settings › Allow from this source, then Install. The file can also be sent to another phone.");
+  } else if (!apk) {
+    setText(note(r), "This box holds no copy of the Android app: another phone uses the web app.");
+  }
+  setText(note(r), "Another phone: join the K1000 Wi-Fi (the code on the box screen), then open " +
+    (start || "http://" + (location.hostname || "10.42.0.1") + "/") + " in its browser: the app or the web app, step by step.");
 }
 
 // THIS PHONE › Phone mic: the ONE place the page asks for the mic (DESIGN §7, §9.15: a system

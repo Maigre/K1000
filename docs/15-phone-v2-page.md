@@ -137,6 +137,13 @@ Back closes the stepper, then the popover, then a pending choice, then the sheet
 Fullscreen, THIS PHONE › Diagnostics (`diag`, and the app's own panel), THIS PHONE › OPEN UI v1
 (`set_ui`). In Chrome none of it: `navigator.vibrate`, Esc acts as Back, UI v1 is a link to `/`.
 
+**Installing K1000 (2026-11-12).** THIS PHONE › *Install K1000*, under *Page*, from
+`hello.install` (docs/14 §3.1): the APK the box holds (version, size) or *no app on this box*; in
+Chrome on Android a *GET THE ANDROID APP* key (`/k1000.apk`, same origin; the file can be sent to
+another phone); never in the app (its update waits, D-020) nor on an iPhone; and for another
+phone, the K1000 Wi-Fi code, then the first-time page. The page has a manifest
+(`manifest.webmanifest`, id and scope `/v2/`): Chrome's *Add to Home screen* installs v2 itself.
+
 ## 5. Spectrum
 
 Subscribed only while LIVE shows the box spectrum (page visible, portrait: the landscape notice

@@ -1958,6 +1958,16 @@ class PhoneServer:
         """The web app the first-time page opens: the v2 page, the one the Android app opens."""
         return self.url.rstrip("/") + V2_PREFIX
 
+    def install_info(self) -> dict[str, Any]:
+        """v2 hello.install (docs/14 §3.1): what SETUP › THIS PHONE offers to install K1000 on a
+        phone, this one or the next: the APK the box holds (null: none) and the first-time page
+        a new phone opens once it is on the Wi-Fi ("" when the box does not serve it)."""
+        apk = self._apk
+        return {"apk": None if apk is None else {
+                    "url": APK_PATH, "file": apk.filename, "version": apk.version,
+                    "size": len(apk.body), "sha8": apk.sha256[:8]},
+                "start": self.setup_url}
+
     def screen_info(self) -> PhoneScreenInfo:
         """Cached presence + settings for the PHONE page (cheap: called by the render path)."""
         psk, why = self._psk
@@ -2580,6 +2590,7 @@ class PhoneServer:
             c.sess = PhoneSession(n=c.n, seen=self._clock())
             log.info("phone %s connected (%d, v2, %s)", peer, len(self._clients), c.name)
             hello = self.bridge.hello2(self._on, self.build_v2, you=c.n, limits=self._limits())
+            hello["install"] = self.install_info()
         else:
             log.info("phone %s connected (%d)", peer, len(self._clients))
             hello = self.bridge.hello(self._on, self.build)

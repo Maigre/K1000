@@ -553,6 +553,24 @@ await run("setup", async () => {
   // THIS PHONE: the UI v1 link, no mic request
   await page.locator("#shTabs button.me").click(); await sleep(150);
   check("setup: THIS PHONE has the UI v1 link to /", (await page.getAttribute("#shBody a.linkbtn", "href")) === "/");
+  // THIS PHONE › Install K1000 (hello.install): what the box holds, and the way in for another phone
+  const ins = '#shBody [data-row="install"]';
+  check("setup: THIS PHONE › Install K1000 says what the box holds", (await page.textContent(ins + " .rv")) ===
+    (fx.hello.install.apk ? "app " + fx.hello.install.apk.version + " · " + (Math.max(fx.hello.install.apk.size, 50000) / 1e6).toFixed(1) + " MB" : "no app on this box"),
+    await page.textContent(ins + " .rv"));
+  check("setup: THIS PHONE › Install K1000 tells another phone the way in", /Another phone: join the K1000 Wi-Fi .* then open http:\/\/.*\/ in its browser/.test(await page.textContent(ins)),
+    await page.textContent(ins));
+  {   // a box that holds the APK: Chrome on Android gets the download key (never the app, never an iPhone)
+    const t2 = await open({ tag: "install", hello: (h) => Object.assign(h, { install: { apk: { url: "/k1000.apk", file: "K1000-0.2.2.apk", version: "0.2.2", size: 524288, sha8: "44b75423" }, start: "http://10.42.0.1/" } }) });
+    await tapSel(t2, t2.page, "#setupBtn"); await t2.page.locator("#shTabs button.me").click(); await sleep(150);
+    const key = ins + " a.linkbtn";
+    check("setup: THIS PHONE › Install K1000 offers the box's APK in Chrome", (await t2.page.textContent(ins + " .rv")) === "app 0.2.2 · 0.5 MB" &&
+      (await t2.page.getAttribute(key, "href")) === "/k1000.apk" && (await t2.page.getAttribute(key, "download")) === "K1000-0.2.2.apk" &&
+      (await t2.page.textContent(ins)).includes("then open http://10.42.0.1/ in its browser"), await t2.page.textContent(ins));
+    await t2.page.locator(ins).scrollIntoViewIfNeeded(); await sleep(100);
+    await shot(t2.page, "this-phone-install");
+    await t2.close();
+  }
   await shot(page, "this-phone");
   // a sheet scrolls under a vertical swipe (LIVE never does)
   await page.setViewportSize({ width: 393, height: 600 }); await sleep(200);

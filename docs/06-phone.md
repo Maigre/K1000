@@ -212,7 +212,10 @@ page (the PHONE page's third QR, **FIRST TIME**) offers:
    the iPhone steps (Safari › Allow, *Profile Downloaded* › Install, *Certificate Trust Settings*
    › K1000 Local CA) when the page sees an iPhone.
 
-The captive portal stays **off** (§5):
+A phone already on K1000 finds the same in the v2 page: SETUP › THIS PHONE › **Install K1000**
+(the APK's version and size; in Chrome on Android a *GET THE ANDROID APP* key, whose file can
+also be sent to another phone; and, for another phone, the Wi-Fi code then the first-time page).
+Not inside the Android app: its own update waits (D-020). The captive portal stays **off** (§5):
 the app is offered by the page a phone opens once, not by a portal that would cost the automatic
 rejoin.
 

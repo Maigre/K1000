@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import hashlib
 import json
 import math
 import os
@@ -1608,6 +1609,37 @@ def test_d016_switches_choose_and_rebuild_from_the_phone(tmp_path: Path) -> None
 
 
 # ============================================================================ installing K1000
+def test_hello_says_what_a_phone_can_install(tmp_path: Path) -> None:
+    """2026-11-12: v2's hello carries `install` (docs/14 §3.1), additive, display only: the APK
+    the box holds (or null) and the first-time page for the next phone. v1's hello is pinned
+    above and does not get it."""
+    from test_web_apk import _put_apk
+
+    async def go() -> None:
+        ctl, _ = make_ctl(tmp_path)
+        await boot(ctl)
+        for apk in (False, True):
+            folder = tmp_path / ("apk" if apk else "none")
+            body = _put_apk(folder, "0.2.2") if apk else b""
+            srv = PhoneServer(ctl, settings(tmp_path, apk_dir=folder, http_port=free_port()))
+            await srv.start()
+            async with ws_connect(v2url(srv), origin=origin(srv)) as ws:
+                hello = json.loads(await ws.recv())
+            async with ws_connect(v1url(srv), origin=origin(srv)) as ws:
+                assert "install" not in json.loads(await ws.recv())
+            start = f"http://127.0.0.1:{srv.ports['http']}/"
+            if apk:
+                assert hello["install"] == {"apk": {"url": "/k1000.apk", "file": "K1000-0.2.2.apk",
+                                                    "version": "0.2.2", "size": len(body),
+                                                    "sha8": hashlib.sha256(body).hexdigest()[:8]},
+                                            "start": start}
+            else:
+                assert hello["install"] == {"apk": None, "start": start}
+            await srv.stop()
+        await ctl.stop()
+    run(go())
+
+
 def test_the_v2_page_installs_as_its_own_app(tmp_path: Path) -> None:
     """Chrome's Add to Home screen on /v2/ installs the v2 page (the first-time page's web app),
     not a bookmark: a manifest with id and scope /v2/, the box's icons, cached by v2's worker."""
