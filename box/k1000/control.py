@@ -76,9 +76,9 @@ from .cdsp import CdspError, CdspNoConfig, CdspUnavailable
 from .dspconfig import FADER_MAIN, FADER_SUBS, FADER_TOPS, Fader, FaderMute, Op, Rebuild, SetValue
 from .profiles import (PROC_ASOUND, PROFILE_NAMES, Profile, ProfileChoice, card_id, card_present,
                        load_profile)
-from .state import (BOOL_FIELDS, CHOICES, N_SYS_PEQ, RANGES, REBUILD_FIELDS, SAMPLE_MS, State,
-                    atomic_write, delay_samples, drop_common_delay, effective_gain,
-                    is_band_on_path, load_state)
+from .state import (BOOL_FIELDS, CHOICES, DELAY_FIELDS, N_SYS_PEQ, RANGES, REBUILD_FIELDS,
+                    SAMPLE_MS, State, atomic_write, common_delay_ms, delay_samples,
+                    drop_common_delay, effective_gain, is_band_on_path, load_state)
 from .ui.input_map import (
     A_LAPTOP, ALL_PAGES, AUTO_HOME_PAGES, BELL_SLOTS, EDIT_HIGHLIGHT_S, F_AUX_GAIN, F_AUX_MODE,
     F_LOWCUT_ON, F_SPECTRUM_ON,
@@ -225,7 +225,8 @@ OUTSIDE = "(GUI)"
 NOTE_REBUILT = "STATE REBUILT · CHECK MASTER"
 NOTE_MISSING = "NO SAVED STATE · CHECK MASTER"
 # The engine still plays a common sub + top delay (the whole PA late) that the state no longer
-# has: kept while Main is audible, written out at the next mute (Controller._common_held).
+# has: kept while Main may be heard (ALIGN moves ride on top of it), written out at the next
+# mute (Controller._common_held).
 MSG_COMMON_DELAY = "PA LATE {ms:.2f} MS · MUTE TO CLEAR"
 # Messages at/above this priority are alerts: also shown inside the MUTED band and on SETUP.
 ALERT_PRIO = 4
@@ -2144,37 +2145,53 @@ class Controller:
         return FADER_MAIN in self._guards and not self._ramping
 
     # ------------------------------------------------------------------ the common delay
-    def _common_held(self, base: State, want: State) -> bool:
-        """Leave the engine's common delay where it is for now? True while the engine (`base`)
-        holds a sub AND a top delay, its Main is audible, and `want` differs from it only by
-        their common part (docs/16 §5.1 finding 1: the state drops that part when it is loaded
-        or adopted, `state.drop_common_delay`; ALIGN has not moved since).
+    def _common_held(self, base: State) -> float:
+        """The common delay (ms) the engine (`base`) keeps for now, 0.0 = none or written out
+        now. The state never holds one (docs/16 §5.1 finding 1: dropped when it is loaded or
+        adopted, `state.drop_common_delay`); the engine keeps the one it plays while Main may be
+        heard. Main counts as muted only when the engine has it muted AND the operator wants it
+        so: an unmute on its way to the engine counts as heard.
 
         Why not write it at once: every Delay write rebuilds the delay line and clicks, so K1000
         writes delays under a mute of the groups whose delay changes, and here both change: the
         whole PA dips for about 0.3 s. Made on K1000's own decision in the middle of the music,
         that is a dropout nobody asked for. So the engine plays on as it was, the screen says how
-        late the PA is (MSG_COMMON_DELAY, `_note_common`), and the write goes at the first moment
-        it is inaudible or asked for: Main muted (B4, the phone), an ALIGN move (the move writes
-        both delays: one dip, as any delay move), a setup change (rebuilt under a Main mute), or
-        the next engine start (a fresh engine is set up muted, before its ramp)."""
-        if base.muted or self.status.muted is True:
-            return False
-        sub, top = delay_samples(base.sub_delay_ms), delay_samples(base.top_delay_ms)
-        if min(sub, top) <= 0:
-            return False
-        dropped = base.copy()
-        drop_common_delay(dropped)
-        return ((delay_samples(dropped.sub_delay_ms), delay_samples(dropped.top_delay_ms))
-                == (delay_samples(want.sub_delay_ms), delay_samples(want.top_delay_ms)))
+        late the PA is (MSG_COMMON_DELAY, `_note_common`), ALIGN moves ride on top of it
+        (`_worker_target`), and the write goes at the first moment it is inaudible: Main muted
+        (B4, the phone), a setup change (rebuilt under a Main mute), or the next engine start (a
+        fresh engine is set up muted, before its ramp). Decided when the worker plans: an unmute
+        that reaches the engine in the few ms between that and the group mutes still gets the
+        write (the PA comes in about 0.1 s later)."""
+        if (base.muted or self.status.muted is True) and self._operator_muted():
+            return 0.0
+        if min(delay_samples(base.sub_delay_ms), delay_samples(base.top_delay_ms)) <= 0:
+            return 0.0
+        return common_delay_ms(base)
 
     def _worker_target(self, base: State) -> State:
-        """A copy of the state, as the worker takes the engine to it from `base`: with `base`'s
-        two delays while `_common_held` (never in a setup rebuild: Main is muted around it)."""
+        """A copy of the state, as the worker takes the engine to it from `base`. While
+        `_common_held`, the held part rides on both delays: a side the state has not moved since
+        keeps `base`'s value as it is, a moved side is the state's value plus the held part. So
+        an ALIGN move changes only the late side and dips only its group, as any ALIGN move, and
+        the PA stays as late as it was until the mute. Not in a setup rebuild (Main is muted
+        around it), nor when a side would pass its range: that move writes the state's pair, and
+        both groups dip (both delays change)."""
         target = self.state.copy()
-        if self._common_held(base, target) and not any(
-                isinstance(op, Rebuild) for op in dc.diff_ops(base, target)):
-            target.sub_delay_ms, target.top_delay_ms = base.sub_delay_ms, base.top_delay_ms
+        common = self._common_held(base)
+        if not common or any(isinstance(op, Rebuild) for op in dc.diff_ops(base, target)):
+            return target
+        dropped = base.copy()
+        drop_common_delay(dropped)
+        held: list[float] = []
+        for f in DELAY_FIELDS:
+            want = getattr(target, f)
+            if delay_samples(want) == delay_samples(getattr(dropped, f)):
+                held.append(getattr(base, f))          # not moved: exactly what the engine holds
+            elif (v := round(want + common, 6)) <= RANGES[f].max:
+                held.append(v)
+            else:
+                return target
+        target.sub_delay_ms, target.top_delay_ms = held
         return target
 
     def _drop_adopted_common(self, new: State) -> None:
@@ -2192,9 +2209,9 @@ class Controller:
             self._set_message("common", 4, MSG_COMMON_DELAY.format(ms=common * SAMPLE_MS))
             if common != self._common_seen:
                 log.warning("the engine plays the whole PA %.3f ms late (sub delay %.3f ms, top "
-                            "delay %.3f ms): written out at the next mute, ALIGN move, setup "
-                            "change or engine start, never while the PA plays (the write dips "
-                            "both groups)", common * SAMPLE_MS, a.sub_delay_ms, a.top_delay_ms)
+                            "delay %.3f ms): written out at the next mute, setup change or "
+                            "engine start, never while the PA plays (the write dips both "
+                            "groups)", common * SAMPLE_MS, a.sub_delay_ms, a.top_delay_ms)
         elif self._common_seen:
             log.info("the common delay of %.3f ms is out of the engine",
                      self._common_seen * SAMPLE_MS)

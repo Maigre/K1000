@@ -391,9 +391,10 @@ speaker by the smaller one with nothing on the screen (sub 2.0 / top 0.5 shows `
 the whole PA 0.5 ms late), so K1000 takes that common part out wherever settings come in: when it
 loads `state.json` or rebuilds it from `active.yml`, and when it adopts a CamillaGUI edit. Sub 2.0 /
 top 0.5 becomes sub 1.5 / top 0, ALIGN still reads `1.50 ms`, and the journal says what was
-removed. An engine already playing keeps the old pair until the next mute, ALIGN move, setup change
-or engine start (writing it dips the whole PA); meanwhile the screen says `PA LATE … · MUTE TO
-CLEAR` ([chapter 6](06-troubleshooting.md)). A `lowcut_hz` between the 2 Hz steps (e.g. 112.25) also stays as it is until its first
+removed. An engine already playing keeps the old pair until the next mute, setup change or engine
+start (writing it dips the whole PA); meanwhile the screen says `PA LATE … · MUTE TO CLEAR`
+([chapter 6](06-troubleshooting.md)), and an ALIGN move changes only the late side, on top of the
+old pair, dipping only that group as usual. A `lowcut_hz` between the 2 Hz steps (e.g. 112.25) also stays as it is until its first
 click, which lands on the next step in the turn's direction (114 up, 112 down). Reset live EQ puts
 the four bells and both shelves back to the defaults above.
 

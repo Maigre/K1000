@@ -3670,7 +3670,8 @@ def test_signed_delay_saved_pair_loses_its_common_part_the_playing_engine_waits(
     """docs/16 §5.1 finding 1. A saved sub 1.0 / top 0.5 plays the whole PA 0.5 ms late behind
     an ALIGN reading of 0.50. At start the state keeps the difference only (saved so); the
     engine, already playing, is not written (both groups would dip): the screen says how late
-    the PA is, and the first ALIGN move writes both delays in one patch, both groups dipped."""
+    the PA is. An ALIGN move changes only the late side, on top of the held part (one group
+    dips, as any ALIGN move); the mute writes the pair out."""
     async def body() -> None:
         ctl, cl = make(tmp_path, State(sub_delay_ms=1.0, top_delay_ms=0.5), playing=True)
         await boot(ctl)
@@ -3688,13 +3689,59 @@ def test_signed_delay_saved_pair_loses_its_common_part_the_playing_engine_waits(
         n = len(cl.log)
         ctl.nudge("align_delay_ms", 1)
         assert await ctl.settle(3.0)
-        ops = nomark(cl.log[n:])
-        assert len(_config_writes(ops)) == 1                             # both values, one patch
+        assert nomark(cl.log[n:]) == [("mute", 1, True), ("set", SUB_DELAY_PTR, dc.delay_on_grid(1.1)),
+                                      ("mute", 1, False)]                # the subs only
+        assert _engine_delays(cl) == (dc.delay_on_grid(1.1), 0.5)
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (0.6, 0.0)
+        assert _pa_late(ctl) == [("warning", "PA LATE 0.50 MS · MUTE TO CLEAR")]
+        n = len(cl.log)
+        ctl.set_mute(True)
+        await until(lambda: _engine_delays(cl) == (dc.delay_on_grid(0.6), 0.0), what="pair out")
+        assert await ctl.settle(3.0)
+        assert len(_config_writes(cl.log[n:])) == 1 and cl.faders[0]["mute"] is True
+        assert _pa_late(ctl) == []
+        await ctl.stop()
+
+    run(body())
+
+
+def test_common_delay_held_align_moves_dip_only_the_late_side(tmp_path: Path) -> None:
+    """While the engine plays a CamillaGUI pair (sub 45 / top 40), ALIGN moves ride on top of the
+    held 40 ms: each one changes one delay and dips one group, never the whole PA, and the PA
+    does not jump 40 ms earlier under the DJ. Through ALIGNED to the tops side the same way. A
+    move that would take a side past 50 ms cannot carry it: that one writes the state's pair,
+    both groups dipped, and the alert goes."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(sub_delay_ms=45.0), playing=True)
+        await boot(ctl)
+        cl.cfg["filters"]["top_delay"]["parameters"]["delay"] = 40.0     # laptop editor
+        await ctl.poll_once()
+        assert await ctl.settle(2.0)
+        assert _engine_delays(cl) == (45.0, 40.0) and ctl.state.get("align_delay_ms") == 5.0
+
+        async def move(v: float) -> list[tuple[Any, ...]]:
+            n = len(cl.log)
+            ctl.set_value("align_delay_ms", v)
+            assert await ctl.settle(3.0)
+            return nomark(cl.log[n:])
+
+        ctl.nudge("align_delay_ms", 1)
+        assert await ctl.settle(3.0)
+        assert _engine_delays(cl) == (dc.delay_on_grid(45.1), 40.0)
+        assert await move(0.0) == [("mute", 1, True), ("set", SUB_DELAY_PTR, 40.0), ("mute", 1, False)]
+        assert await move(-0.1) == [("mute", 2, True), ("set", TOP_DELAY_PTR, dc.delay_on_grid(40.1)),
+                                    ("mute", 2, False)]
+        assert _engine_delays(cl) == (40.0, dc.delay_on_grid(40.1))
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (0.0, 0.1)
+        assert _pa_late(ctl) == [("warning", "PA LATE 40.00 MS · MUTE TO CLEAR")]
+        assert cl.faders[0]["mute"] is False                             # the PA played on
+
+        ops = await move(-15.0)                                          # tops 55 ms: past the range
+        writes = _config_writes(ops)
+        assert len(writes) == 1 and writes[0][0] == "patch", ops
         assert sorted(op for op in ops if op[0] == "mute") == [
             ("mute", 1, False), ("mute", 1, True), ("mute", 2, False), ("mute", 2, True)]
-        assert _engine_delays(cl) == (dc.delay_on_grid(0.6), 0.0)
-        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (0.6, 0.0)
-        assert _pa_late(ctl) == []
+        assert _engine_delays(cl) == (0.0, 15.0) and _pa_late(ctl) == []
         await ctl.stop()
 
     run(body())
@@ -3755,17 +3802,20 @@ def test_common_delay_adopted_while_playing_is_shown_and_waits_for_the_mute(
 
 
 def test_common_delay_unmuted_before_the_write_stays_held(tmp_path: Path) -> None:
-    """The hold is re-decided when the worker runs: muted and unmuted again before it wrote,
-    the PA plays, so nothing is written and the alert stays."""
+    """The hold is decided when the worker plans, from the operator's wish as well as the
+    engine's mute: Main muted lets the pair go; an unmute pressed since, still on its way (the
+    engine reads muted), keeps it, so the PA is not dipped right after it comes in."""
     async def body() -> None:
         ctl, cl = make(tmp_path, State(sub_delay_ms=3.0, top_delay_ms=2.0), playing=True)
         await boot(ctl)
         assert _pa_late(ctl) == [("warning", "PA LATE 2.00 MS · MUTE TO CLEAR")]
         assert ctl._pending_ops() == []
-        ctl.status.muted = True                                          # a poll read it muted
+        ctl.state.muted = ctl.status.muted = True                        # muted, a poll read it
         assert {o.pointer for o in ctl._pending_ops() if isinstance(o, dc.SetValue)} \
             == {SUB_DELAY_PTR, TOP_DELAY_PTR}
-        ctl.status.muted = False                                         # and unmuted again
+        ctl.state.muted = False                                          # unmute pressed, not there yet
+        assert ctl._pending_ops() == []
+        ctl.status.muted = False                                         # and in the engine
         assert ctl._pending_ops() == []
         n = len(cl.log)
         ctl._kick.set()

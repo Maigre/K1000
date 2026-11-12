@@ -210,6 +210,7 @@ RANGES: dict[str, Range] = {
 # engine (`drop_common_delay`). `from_dict` / `clamped` keep both: they are the pure parse that
 # `dspconfig` runs on every state, including the engine's own view.
 ALIGN_DELAY = "align_delay_ms"
+DELAY_FIELDS: tuple[str, str] = ("sub_delay_ms", "top_delay_ms")
 VIRTUAL_RANGES: dict[str, Range] = {
     ALIGN_DELAY: Range(-50.0, 50.0, 0.1, fine=SAMPLE_MS, default=0.0, digits=6, unit="ms"),
 }
