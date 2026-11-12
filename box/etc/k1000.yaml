@@ -26,7 +26,16 @@ profiles:
     input_map: [2, 3]            # program L, R = M4 line inputs 3-4 (0-based capture channels)
     output_map: [TopL, TopR, SubL, SubR]   # physical out1..out4 <- logical channel
     probe: true
-    target_level: 512            # playback buffer, frames (~10.7 ms): margin over USB; DJ/program only (D-010)
+    # The engine's buffer, its share of the in-to-out delay: about one chunk plus target_level
+    # (D-018: 10 ms or less in to out, chosen by measurement, docs/16 §3.3). Device settings:
+    # read when the engine starts, never at show time (restart k1000, then camilladsp).
+    # chunksize: frames processed at a time, 64, 128, 256 (default), 512 or 1024; any other
+    # value is refused (256 is used, the journal says so).
+    # target_level: frames left in the playback buffer when a chunk arrives; default one chunk;
+    # 64 up to 6 x chunksize (384 at 64, 768 at 128, 1536 at 256, 3072 at 512, 6144 at 1024),
+    # clamped with a journal line. Measured at 256 + 512: 20.3 ms in to out (16 Oct).
+    chunksize: 256
+    target_level: 512            # ~10.7 ms: the gig value (D-010), to come down by measurement (D-018)
 
 # Physical -> logical controls (MCP23017 indices, see docs/03-v0-architecture.md §1).
 # UNCONFIRMED DEFAULTS until SETUP > Knob test (HWTEST) on the box has identified every button

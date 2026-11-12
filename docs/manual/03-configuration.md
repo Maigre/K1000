@@ -46,7 +46,8 @@ profiles:
     input_map: [2, 3]
     output_map: [TopL, TopR, SubL, SubR]
     probe: true
-    target_level: 512            # D-010: margin over USB; DJ/program only
+    chunksize: 256               # the default; measured steps down are D-018's work
+    target_level: 512            # D-010: margin over USB; to come down by measurement (D-018)
 
 controls:
   encoders: [0, 1, 2, 3]
@@ -112,7 +113,8 @@ One section per profile. Every key is optional: a missing key keeps the built-in
 | `input_map` | `[L, R]`: the capture channels (0-based) that carry the program | `[0, 1]` | `[2, 3]` = LINE IN 3 and 4 |
 | `output_map` | One entry per physical output, in order: which logical channel it carries. `SubL`, `SubR`, `TopL`, `TopR` (or 0–3) | (not used: `dev` has an audition mixer) | `[TopL, TopR, SubL, SubR]` = out1 Top L, out2 Top R, out3 Sub L, out4 Sub R. The Sunday patch (D-012) feeds both subs from out3 (SETUP › SUBS › Mono L+R ON makes out3 = out4 = the L+R sum); out4 is spare |
 | `probe` | `true` / `false` | `false` (the HiFiBerry is never opened by the probe) | `true` |
-| `target_level` | Frames, 64–1536 | 256 | 512 (D-010; the code default is 256) |
+| `chunksize` | Frames: 64, 128, 256, 512 or 1024 | 256 | 256 |
+| `target_level` | Frames, 64 to 6 × `chunksize` (64–1536 at 256) | one chunk (256) | 512 (D-010; the code default is one chunk) |
 
 Details:
 
@@ -131,15 +133,27 @@ Details:
 - **Any `input_map` or `output_map` problem** (a bad entry, too many entries, a logical channel
   routed nowhere) raises the alert `k1000.yaml ROUTING FIXED UP (SEE LOG)`. The journal says what
   was fixed.
-- **`target_level`** is the playback buffer CamillaDSP keeps, in frames (256 = 5.3 ms at 48 kHz).
-  A USB interface may need more margin against dropouts: the shipped `m4` value is 512 (~10.7 ms),
-  768 if a soak still shows an underrun. Values outside 64–1536 are
-  clamped with a warning. It is an engine device setting, so it applies **at the next engine
+- **`chunksize` and `target_level`** are the engine's buffer, and its share of the in-to-out
+  delay: about one chunk plus the target level (D-018 asks 10 ms or less in to out;
+  [`docs/16`](../16-post-gig-audit.md) §3.3). Measured on 16 Oct at 256 + 512: 20.3 ms in to out,
+  16.5 ms of it in the engine. Both are engine device settings, so they apply **at the next engine
   start** only, never at show time ([§9](#9-what-needs-a-restart)).
+  - **`chunksize`** is how many frames the engine processes at a time (256 = 5.3 ms at 48 kHz):
+    64, 128, 256, 512 or 1024. Smaller is less delay and more processor load. Any other value is
+    refused: 256 is used and the journal says so. The click-safe steps and the engine checks
+    K1000 times by the chunk follow it (12 ms apart up to 256, 24 ms at 512, 48 ms at 1024).
+  - **`target_level`** is what CamillaDSP keeps in the playback buffer when the next chunk
+    arrives, in frames (256 = 5.3 ms). Without it: one chunk. A USB interface may need more margin
+    against dropouts: the shipped `m4` value is 512 (~10.7 ms). The range is 64 to 6 × `chunksize`,
+    the most CamillaDSP documents as usable (`(2 + queuelimit) × chunksize`, `queuelimit` left at
+    its default 4): 64–384 at chunk 64, 64–768 at 128, 64–1536 at 256, 64–3072 at 512, 64–6144 at
+    1024. A value outside is clamped, with a journal line. The engine's device buffer is 4 ×
+    `chunksize` (the power of two at or above 3 chunks), so up to 3 × `chunksize` the target sits in
+    that buffer and above it the rest waits in the engine's queue.
 - **`dev` only:** the 4 logical outputs are folded onto the HiFiBerry's 2. SETUP › BOX › Audition (dev)
   picks `sum` (each side = top + sub at −6 dB each), `tops` or `subs`.
 
-The fixed parts, not configurable: 48 kHz, chunk size 256, no rate adjustment, Main capped at 0 dB
+The fixed parts, not configurable: 48 kHz, no rate adjustment, Main capped at 0 dB
 (`volume_limit`), and fader ramps of 100 ms (Main and the group faders: master and balance answer
 the hand, and the mute fades over 0.1 s). An engine still running an older config with another
 ramp shows `DEVICES CHANGED (GUI)` until its next start.
@@ -288,7 +302,7 @@ touch the engine:
 | `controls`, `engine.*`, `spectrum.*`, `ui.*`, `phone.*` | `sudo systemctl restart k1000` | Nothing. `boot_gain_db`/`boot_ramp_s` apply at the next fresh engine start. The screen and knobs pause for a few seconds; an open Laptop access closes |
 | `profile`, or a profile's device or channel counts | Restart k1000 | K1000 switches the engine to the new device: about 1 s of silence, then the 3 s ramp. **Bench only** |
 | `input_map`, `output_map` | Restart k1000 | K1000 rebuilds the engine's pipeline with Main muted around it. Possible click. **Bench only** |
-| `target_level`, a format | Restart k1000, then `sudo systemctl restart camilladsp` | k1000 rewrites `active.yml`; the screen may say `DEVICES CHANGED (GUI)` until the engine restarts. The engine restart is about 1 s of silence, then the ramp |
+| `chunksize`, `target_level`, a format | Restart k1000, then `sudo systemctl restart camilladsp` | k1000 rewrites `active.yml`; the screen may say `DEVICES CHANGED (GUI)` until the engine restarts. The engine restart is about 1 s of silence, then the ramp |
 | The phone certificate | Restart k1000 | Nothing; phones reconnect by themselves |
 
 ## 10. The state files

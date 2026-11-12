@@ -120,6 +120,88 @@ def test_target_level_per_profile():
         assert q.target_level == want and any("target_level" in w for w in q.warnings), bad
 
 
+def _chunk(chunk, **more):
+    return pf.load_profile("m4", {"profiles": {"m4": {"chunksize": chunk, **more}}}, probe=False)
+
+
+def test_chunksize_per_profile_refuses_what_the_engine_should_not_get():
+    """docs/16 §3.3: the chunk becomes a per-profile setting like target_level. Absent or null:
+    256. Anything but 64, 128, 256, 512, 1024 is refused with a message, and 256 is used."""
+    assert pf.load_profile("m4", {}, probe=False).chunksize == 256
+    assert pf.CHUNKSIZES == (64, 128, 256, 512, 1024) and pf.CHUNKSIZE == 256
+    p = _chunk(None)
+    assert p.chunksize == 256 and p.target_level == 256 and not p.warnings
+    for bad in (100, 2048, 32, 0, -256, "256", 256.0, True, [256]):
+        q = _chunk(bad)
+        assert q.chunksize == 256 and q.target_level == 256, bad
+        assert any(f"chunksize {bad!r} refused" in w and "64, 128, 256, 512, 1024" in w
+                   for w in q.warnings), (bad, q.warnings)
+        assert d.generate(q, State())["devices"]["chunksize"] == 256
+    # a refused chunk still clamps the target to the 256 range, with its own message
+    q = _chunk(2048, target_level=4000)
+    assert (q.chunksize, q.target_level) == (256, 1536) and len(q.warnings) == 2
+
+
+@pytest.mark.parametrize("chunk", [64, 128, 256, 512, 1024])
+def test_one_config_per_chunk_size_and_what_follows_from_it(chunk):
+    """Each allowed chunk: the devices block carries it (an int: the engine refuses 256.0), the
+    target defaults to one chunk and stays in 64 .. 6 x chunk ((2 + queuelimit 4) x chunk, the
+    engine's documented usable maximum, under its own refusal at (4 + 4) x chunk), the step and
+    Running-check wait spans more than 2 chunks and never drops under 12 ms, and nothing else in
+    the config moves."""
+    p = _chunk(chunk)
+    assert p.chunksize == chunk and not p.warnings
+    cfg = d.generate(p, State(profile="m4"))
+    dv = cfg["devices"]
+    assert (dv["chunksize"], dv["target_level"]) == (chunk, chunk)
+    assert type(dv["chunksize"]) is int and type(dv["target_level"]) is int
+    assert f"chunksize: {chunk}\n" in d.to_yaml(cfg)
+    lo, hi = pf.target_level_range(chunk)
+    assert (lo, hi) == (64, 6 * chunk) and hi < (4 + pf.QUEUELIMIT) * chunk
+    assert pf.device_buffer_frames(chunk) == 4 * chunk        # the power of two >= 3 chunks
+    top = _chunk(chunk, target_level=hi)
+    assert top.target_level == hi and not top.warnings
+    assert d.generate(top, State())["devices"]["target_level"] == hi
+    over = _chunk(chunk, target_level=hi + 1)
+    assert over.target_level == hi
+    assert any(f"outside 64..{hi}" in w and f"chunksize {chunk}" in w for w in over.warnings)
+    under = _chunk(chunk, target_level=63)
+    assert under.target_level == 64 and under.warnings
+    wait = {64: 0.012, 128: 0.012, 256: 0.012, 512: 0.024, 1024: 0.048}[chunk]
+    assert d.two_chunks_s(chunk) == wait and wait > 2 * chunk / 48000
+    plan = d.smooth_ops(State(), State(lowcut_hz=150.0), step_wait_s=d.two_chunks_s(chunk))
+    assert len(plan) > 2 and plan[0][0] == 0.0 and all(w == wait for w, _ in plan[1:])
+    assert d.GUARD_WAIT_S - d.VOLUME_RAMP_MS / 1000.0 > 2 * chunk / 48000   # its margin too
+    base = d.generate(pf.load_profile("m4", {}, probe=False), State(profile="m4"))
+    dv["chunksize"] = dv["target_level"] = 256
+    assert cfg == base
+
+
+@pytest.mark.parametrize("profile_key", list(golden.PROFILES))
+def test_chunksize_256_written_out_is_still_the_golden_config(profile_key):
+    """The default chunk named in k1000.yaml changes nothing: f2671b0's bytes, every state."""
+    name, ov = golden.PROFILES[profile_key]
+    sec = {**((ov or {}).get("profiles", {}).get(name, {})), "chunksize": 256}
+    prof = pf.load_profile(name, {"profiles": {name: sec}}, probe=False)
+    assert not prof.warnings
+    for state_key in golden.STATES:
+        want = golden.golden_path(profile_key, state_key).read_text(encoding="utf-8")
+        assert d.to_yaml(d.generate(prof, golden.STATES[state_key](State))) == want, state_key
+
+
+def test_engine_buffer_never_writes_what_the_engine_refuses():
+    """A Profile built by hand (not through load_profile) is checked again at generate."""
+    base = dev()
+    for cs, tl, want in ((100, 256, (256, 256)), (256.0, 256, (256, 256)), (True, 256, (256, 256)),
+                         (64, 5000, (64, 384)), (1024, 10, (1024, 64)), (512, 0, (512, 512)),
+                         (128, None, (128, 128)), (256, 512.0, (256, 256))):
+        p = copy.copy(base)
+        p.chunksize, p.target_level = cs, tl
+        assert d.engine_buffer(p) == want, (cs, tl)
+        dv = d.generate(p, State())["devices"]
+        assert (dv["chunksize"], dv["target_level"]) == want
+
+
 def _fake_prober(probe):
     return lambda device: probe
 
@@ -697,6 +779,17 @@ def test_camilladsp_accepts_generated_config(tmp_path, name):
     r = subprocess.run([CDSP, "-c", str(path)], capture_output=True, text=True, timeout=20)
     assert "Config is valid" in r.stdout + r.stderr, r.stdout + r.stderr
     assert r.returncode == 0
+
+
+@engine
+@needs_cdsp
+@pytest.mark.parametrize("chunk", [64, 128, 256, 512, 1024])
+def test_camilladsp_accepts_every_chunk_at_both_ends_of_its_target_range(tmp_path, chunk):
+    for tl in pf.target_level_range(chunk):
+        path = tmp_path / f"m4_{chunk}_{tl}.yml"
+        path.write_text(d.to_yaml(d.generate(m4(chunksize=chunk, target_level=tl), State())))
+        r = subprocess.run([CDSP, "-c", str(path)], capture_output=True, text=True, timeout=20)
+        assert "Config is valid" in r.stdout + r.stderr, (chunk, tl, r.stdout + r.stderr)
 
 
 @engine

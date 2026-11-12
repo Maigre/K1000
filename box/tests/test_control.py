@@ -3826,6 +3826,46 @@ def test_rebuilt_state_loses_a_common_delay(tmp_path: Path) -> None:
     assert (st.sub_delay_ms, st.top_delay_ms) == (1.0, 0.0)
 
 
+# ======================================================================= chunk size (docs/16 §3.3)
+def test_step_and_running_check_waits_follow_the_running_chunk(tmp_path: Path) -> None:
+    """A 1024-frame chunk is 21 ms: steps 12 ms apart could reach the engine twice within one
+    chunk (one skipped: a bigger jump), and two Running reads 12 ms apart could fall in the same
+    chunk. The waits follow the larger of the profile's chunk and the running engine's (a
+    k1000.yaml change waits for the next engine start, so the two can differ)."""
+    big = load_profile("dev", {"profiles": {"dev": {"chunksize": 1024}}}, probe=False)
+    paths = Paths(tmp_path / "x" / "state.json", tmp_path / "x" / "active.yml")
+    assert Controller(FakeClient(None), DEV, State(), paths)._two_chunks_s() == 0.012
+    assert Controller(FakeClient(None), big, State(), paths)._two_chunks_s() == 0.048
+
+    async def body() -> None:
+        slept: list[float] = []
+
+        async def rec(s: float) -> None:
+            slept.append(s)
+            await asyncio.sleep(0)
+
+        # the profile says 256, the engine still runs 1024 (started before the yaml change)
+        ctl, cl = make(tmp_path, State(), playing=True, cfg=dc.generate(big, State()), sleep=rec)
+        await boot(ctl)
+        assert ctl.profile.chunksize == 256 and ctl._engine_chunk == 1024
+        slept.clear()
+        ctl.nudge("lowcut_hz", 20)                                       # 100 -> 140 Hz, stepped
+        assert await ctl.settle(3.0)
+        assert len(sets_for(cl.log, LOWCUT_PTR)) > 2
+        assert 0.048 in slept and 0.012 not in slept, slept
+        slept.clear()
+        assert await ctl._engine_running(ctl._epoch, held=True)
+        assert slept == [0.048]
+        plan, _pushed, _held = ctl._fix_plan(cl.cfg, [dc.SetValue(LOWCUT_PTR, 100.0)])
+        assert [w for w, _b in plan[1:]] and all(w == 0.048 for w, _b in plan[1:])
+        cl.cfg["devices"]["chunksize"] = 256                             # the engine restarted
+        await ctl.poll_once()
+        assert ctl._engine_chunk == 256 and ctl._two_chunks_s() == 0.012
+        await ctl.stop()
+
+    run(body())
+
+
 def pages_align_value(ctl: Controller) -> tuple[str, str]:
     from k1000.ui import pages
     return pages.fmt_align_delay(pages.align_delay(ctl.snapshot()[1]))

@@ -108,6 +108,7 @@ ENGINE_START_DB = dc.BOOT_GAIN_DB
 FRESH_TOL_DB = 0.05
 # The engine applies fader changes made while it is not processing as a step on resume: ramps
 # and guard unmutes wait for Running, read twice this far apart (> 2 chunks of 256 @ 48 kHz).
+# With another chunk size: `Controller._two_chunks_s` (dspconfig.two_chunks_s, never less).
 RUN_CHECK_S = 0.012
 RUN_WAIT_S = 0.05            # GetState poll while holding Main muted for the engine to run
 BOOT_STEP_MAX_DB = 6.0       # no boot-ramp step above this, whatever boot_ramp_s says
@@ -876,6 +877,9 @@ class Controller:
         # in samples as last noted, and the engine pair (in samples) last said in the journal.
         self._common_seen = 0
         self._common_logged: tuple[int, int] | None = None
+        # devices.chunksize of the running engine, as last read (None: not read yet). It differs
+        # from the profile's after a k1000.yaml change until the engine restarts (`_two_chunks_s`).
+        self._engine_chunk: int | None = None
         self._marker_engine: float | None = None       # Aux4 as last read or written
         # Aux groups lowered (offset <= 0 dB under the balance macro) or muted outside K1000:
         # kept, shown, never raised or released by K1000.
@@ -1940,6 +1944,19 @@ class Controller:
         cfg = dc.generate(profile or self.profile, state)
         return self._transform(cfg) if self._transform else cfg
 
+    def _note_engine_chunk(self, live: Any) -> None:
+        dev = live.get("devices") if isinstance(live, dict) else None
+        cs = dev.get("chunksize") if isinstance(dev, dict) else None
+        self._engine_chunk = cs if isinstance(cs, int) and not isinstance(cs, bool) and cs > 0 \
+            else None
+
+    def _two_chunks_s(self) -> float:
+        """The step and Running-check wait (dspconfig.two_chunks_s) for the larger of the
+        profile's chunk and the running engine's: a k1000.yaml chunk change waits for the next
+        engine start (a devices change), and until then the engine runs the old one."""
+        chunk = max(dc.engine_buffer(self.profile)[0], self._engine_chunk or 0)
+        return dc.two_chunks_s(chunk)
+
     def _pending_ops(self) -> list[Op]:
         """What the worker still has to send (mute excluded: it has its own path)."""
         return dc.diff_ops(_no_mute(self._applied), _no_mute(self._worker_target(self._applied)))
@@ -2046,11 +2063,12 @@ class Controller:
             self._changed()
 
     async def _engine_running(self, epoch: int, *, held: bool = False) -> bool:
-        """GetState reads Running (with `held`: twice, RUN_CHECK_S apart). Anything else means
-        a fader change now would be applied as a step when audio resumes."""
+        """GetState reads Running (with `held`: twice, more than 2 chunks apart: RUN_CHECK_S at
+        chunk 256, `_two_chunks_s`). Anything else means a fader change now would be applied as
+        a step when audio resumes."""
         for k in range(2 if held else 1):
             if k:
-                await self._sleep(RUN_CHECK_S)
+                await self._sleep(self._two_chunks_s())
                 self._check_link(epoch)
             est = await self.client.get_state()
             self._note_engine(est)
@@ -2225,7 +2243,7 @@ class Controller:
         target = self._worker_target(base)
         target.muted = base.muted
         epoch = self._epoch
-        plan = dc.smooth_ops(base, target)
+        plan = dc.smooth_ops(base, target, step_wait_s=self._two_chunks_s())
         rebuild = next((op for _w, b in plan for op in b if isinstance(op, Rebuild)), None)
         self._busy = True
         try:
@@ -2580,6 +2598,7 @@ class Controller:
             live: Any = await self.client.get_config_json()
         except CdspNoConfig:
             live = None
+        self._note_engine_chunk(live)
         faders = await self.client.get_faders()
         self._note_engine(await self.client.get_state())
         main_vol, main_mute = _fader(faders, FADER_MAIN)
@@ -2932,6 +2951,7 @@ class Controller:
                         continue
                 direct.append(f)
         plan: dc.Plan = []
+        step_s = self._two_chunks_s()            # dspconfig.STEP_WAIT_S at chunk 256
         if tracks:
             n = 1
             for _p, a, b, is_log, step in tracks:
@@ -2944,16 +2964,16 @@ class Controller:
                 for ptr, a, b, is_log, _s in tracks:
                     v = b if k == n else round(a * (b / a) ** t if is_log else a + (b - a) * t, 3)
                     batch.append(SetValue(ptr, v))
-                plan.append((dc.STEP_WAIT_S if plan else 0.0, batch))
+                plan.append((step_s if plan else 0.0, batch))
         plain = [f for f in direct if dc._guard_group(f.pointer) is None]
         guarded = [f for f in direct if dc._guard_group(f.pointer) is not None]
         if plain:
-            plan.append((dc.STEP_WAIT_S if plan else 0.0, list(plain)))
+            plan.append((step_s if plan else 0.0, list(plain)))
         if guarded:
             groups = sorted({g for g in (dc._guard_group(f.pointer) for f in guarded) if g is not None})
-            plan.append((dc.STEP_WAIT_S if plan else 0.0, [FaderMute(g, True) for g in groups]))
+            plan.append((step_s if plan else 0.0, [FaderMute(g, True) for g in groups]))
             plan.append((dc.GUARD_WAIT_S, list(guarded)))
-            plan.append((dc.STEP_WAIT_S, [FaderMute(g, False) for g in groups]))
+            plan.append((step_s, [FaderMute(g, False) for g in groups]))
         return plan, pushed, held
 
     @staticmethod
@@ -3154,6 +3174,7 @@ class Controller:
                 log.warning("engine lost its config: uploading K1000's")
                 await self._sync(self._epoch)
                 return
+            self._note_engine_chunk(live)
             faders = await self.client.get_faders()
             self._marker_engine = _fader(faders, MARKER_FADER)[0]
             _v, m = _fader(faders, FADER_MAIN)

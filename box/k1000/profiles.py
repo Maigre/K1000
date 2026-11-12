@@ -57,14 +57,48 @@ ALSA_TO_CDSP: dict[str, str] = {
 FORMAT_PREFERENCE: tuple[str, ...] = ("S32_LE", "S24_3_LE", "S24_4_LE", "S16_LE", "F32_LE", "F64_LE")
 CDSP_FORMATS = frozenset(FORMAT_PREFERENCE)
 
-# devices.target_level: playback buffer (frames) kept when a chunk arrives. 256 = 1 chunk, the
-# contract value, proven on the I2S HiFiBerry. A USB interface may need more margin against
-# underruns (more latency: 256 frames = 5.3 ms at 48 kHz): `profiles.<name>.target_level` in
-# k1000.yaml, clamped to CamillaDSP's usable range ((2 + queuelimit 4) * chunksize 256 max). A
-# change is a devices change: it takes effect at the next ENGINE start (k1000 rewrites
-# active.yml when it starts), never at show time.
-TARGET_LEVEL = 256
-TARGET_LEVEL_RANGE = (64, 1536)
+# devices.chunksize and devices.target_level: the engine's share of the in-to-out delay is about
+# one chunk plus the target level (docs/16 §3.3; D-018 asks 10 ms or less in to out), set per
+# profile in k1000.yaml (`profiles.<name>.chunksize`, `.target_level`). Both are device settings:
+# a change takes effect at the next ENGINE start (k1000 rewrites active.yml when it starts),
+# never at show time.
+# - chunksize: the frames the engine processes at a time. 256 (5.3 ms at 48 kHz) is the value
+#   measured on the bench (20.3 ms in to out with target_level 512); the others are steps to
+#   measure, a power of two each (the engine's FFT, its device buffer).
+# - target_level: the frames left in the playback buffer when the next chunk arrives. Default
+#   one chunk (the engine's own default; 256 = the contract value, proven on the I2S HiFiBerry).
+#   A USB interface may need more margin against underruns, at the cost of latency.
+# The engine (5.0.0-beta.1, ALSA backend) sizes each device buffer as the power of two at or
+# above 3 x chunksize (src/alsa_backend/buffermanager.rs; a device whose minimum period is large
+# can make it bigger): 4 x chunksize, of which one chunk is being written, so a target up to
+# 3 x chunksize sits in the device buffer, and the rest of a larger one waits in the engine's
+# queue to playback. Its config check refuses a target above (4 + queuelimit) x chunksize; its
+# README gives (2 + queuelimit) x chunksize as the usable maximum. K1000 leaves queuelimit at
+# the default 4 and keeps the target within TARGET_LEVEL_MIN .. (2 + 4) x chunksize: 64..384 at
+# chunk 64, 64..768 at 128, 64..1536 at 256, 64..3072 at 512, 64..6144 at 1024. The floor is a
+# time margin (1.3 ms), not a number of chunks.
+CHUNKSIZE = 256
+CHUNKSIZES: tuple[int, ...] = (64, 128, 256, 512, 1024)
+QUEUELIMIT = 4                   # devices.queuelimit, never written: the engine's default
+TARGET_LEVEL_MIN = 64
+
+
+def target_level_range(chunksize: int = CHUNKSIZE) -> tuple[int, int]:
+    """(lowest, highest) target_level K1000 writes with `chunksize` (see above)."""
+    return TARGET_LEVEL_MIN, (2 + QUEUELIMIT) * int(chunksize)
+
+
+def device_buffer_frames(chunksize: int) -> int:
+    """The device buffer the engine asks ALSA for with `chunksize`: the power of two at or above
+    3 x chunksize (a device may impose a larger one through its minimum period)."""
+    n = 1
+    while n < 3 * int(chunksize):
+        n *= 2
+    return n
+
+
+TARGET_LEVEL = CHUNKSIZE                          # one chunk at the default chunk
+TARGET_LEVEL_RANGE = target_level_range(CHUNKSIZE)  # (64, 1536)
 
 
 # Key `load_settings` adds when the file exists but cannot be used as written.
@@ -137,6 +171,7 @@ class Profile:
     present: bool | None = None
     warnings: list[str] = field(default_factory=list)
     target_level: int = TARGET_LEVEL
+    chunksize: int = CHUNKSIZE
 
 
 _DEFAULTS: dict[str, dict[str, Any]] = {
@@ -490,7 +525,8 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
     `overrides` may be the whole settings dict (its `profiles.<name>` section is used) or that
     section directly. Keys: capture_device, playback_device, capture_channels, playback_channels,
     capture_format, playback_format, input_map [L, R], output_map [phys1..physN], probe,
-    target_level (frames, 64..1536).
+    chunksize (frames: one of CHUNKSIZES, default 256), target_level (frames, default one chunk,
+    `target_level_range(chunksize)`: 64..1536 at chunk 256).
     `probe` None = profile default (m4 probes, dev does not: its facts are proven and the box's
     HiFiBerry is shared). Probed channel counts beat configured ones the device refuses.
     `name` is normalised ('M4' -> 'm4'); only an unknown name raises (ProfileError). Malformed
@@ -581,15 +617,24 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
         if missing:
             warnings.append(f"{name}: not routed to any output: {', '.join(missing)}")
 
-    tl = ov.get("target_level", TARGET_LEVEL)
+    cs = ov.get("chunksize")
+    if cs is None:                       # absent or `null`: the default
+        cs = CHUNKSIZE
+    elif isinstance(cs, bool) or not isinstance(cs, int) or cs not in CHUNKSIZES:
+        warnings.append(f"{name}: chunksize {cs!r} refused: it must be one of "
+                        f"{', '.join(str(c) for c in CHUNKSIZES)} frames; using {CHUNKSIZE}")
+        cs = CHUNKSIZE
+    lo, hi = target_level_range(cs)
+    tl = ov.get("target_level", cs)
     if isinstance(tl, bool) or not isinstance(tl, int):
         warnings.append(f"{name}: target_level {tl!r} is not a whole number of frames; "
-                        f"using {TARGET_LEVEL}")
-        tl = TARGET_LEVEL
-    elif not TARGET_LEVEL_RANGE[0] <= tl <= TARGET_LEVEL_RANGE[1]:
-        clamped = min(TARGET_LEVEL_RANGE[1], max(TARGET_LEVEL_RANGE[0], tl))
-        warnings.append(f"{name}: target_level {tl} outside {TARGET_LEVEL_RANGE[0]}.."
-                        f"{TARGET_LEVEL_RANGE[1]}; using {clamped}")
+                        f"using {cs} (one chunk)")
+        tl = cs
+    elif not lo <= tl <= hi:
+        clamped = min(hi, max(lo, tl))
+        warnings.append(f"{name}: target_level {tl} outside {lo}..{hi}, the range with chunksize "
+                        f"{cs} (at most (2 + queuelimit {QUEUELIMIT}) x {cs}, the engine's usable "
+                        f"maximum); using {clamped}")
         tl = clamped
 
     for w in warnings:
@@ -601,5 +646,5 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
         capture_format=d["capture_format"], playback_format=d["playback_format"],
         input_map=imap_t, output_map=omap_t,
         audition=d["audition"], pinned=d["pinned"], probe=do_probe,
-        present=present, warnings=warnings, target_level=tl,
+        present=present, warnings=warnings, target_level=tl, chunksize=cs,
     )
