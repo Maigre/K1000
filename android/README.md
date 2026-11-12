@@ -137,8 +137,8 @@ only (below: why). Gradle reads it through
 the signed APK to `$K1000_SIGNING_DIR/out/K1000-<versionName>.apk`, with its `.sha256` and
 `apksigner verify` output.
 
-**Keep the keystore safe** (it is a binary file: the hub's secrets sync does not carry it, so it
-belongs in the USB escrow). A K1000 update must be signed with the same key to install over the
+**Keep the keystore safe** (it is a binary file: keep a second copy off the build machine, for
+example on a USB stick). A K1000 update must be signed with the same key to install over the
 previous version; with another key, Android refuses it and the old app must be uninstalled first
 (which also forgets the stored Wi-Fi password).
 
