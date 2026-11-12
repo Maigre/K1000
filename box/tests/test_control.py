@@ -3533,9 +3533,9 @@ def test_engine_moved_to_another_card_is_put_back(tmp_path: Path) -> None:
 
 def test_device_repair_stops_after_three_tries_then_only_alerts(tmp_path: Path) -> None:
     """The same limit as the pipeline restore (audit 5.1 #5): an engine that will not take the
-    profile's devices gets REPAIR_MAX_TRIES uploads with Main muted around them, then only
-    DEVICES CHANGED (GUI); once on the profile's devices for REPAIR_FORGET_S, the count starts
-    again (a moment back on them is not enough)."""
+    profile's devices gets REPAIR_MAX_TRIES uploads with Main muted around them, then only an
+    alert of its own (the PA plays nothing); once on the profile's devices for REPAIR_FORGET_S,
+    the count starts again (a moment back on them is not enough)."""
     async def body() -> None:
         now = [1000.0]
         ctl, cl = make(tmp_path, State(master_db=-12.0), playing=True, clock=lambda: now[0])
@@ -3558,13 +3558,17 @@ def test_device_repair_stops_after_three_tries_then_only_alerts(tmp_path: Path) 
         assert len(tries) == ctl_mod.REPAIR_MAX_TRIES
         dips = [e for e in nomark(cl.log[n:]) if e[:2] == ("mute", 0)]
         assert dips == [("mute", 0, True), ("mute", 0, False)] * 3
-        assert ctl._messages["devices"][1] == ctl_mod.MSG_DEVICES_CHANGED and ctl.status.drift
-        assert ctl.status.message in (ctl_mod.MSG_DEVICES_CHANGED, ctl_mod.MSG_PIPELINE_CHANGED)
+        # the PA plays nothing: said in red, above PIPELINE CHANGED (GUI) (the GUI's pipeline
+        # differs too) and DEVICES CHANGED (GUI)
+        assert ctl._messages["drift"][1] == ctl_mod.MSG_PIPELINE_CHANGED and ctl.status.drift
+        assert ctl.status.message == ctl.status.alert == ctl_mod.MSG_WRONG_DEVICES
+        assert ctl.alerts()[0] == ("critical", ctl_mod.MSG_WRONG_DEVICES)
         # back on the profile's devices for a look, then the same wrong move: no upload
         cl.set_config_yaml = real_upload  # type: ignore[method-assign]
         cl.cfg = dc.generate(DEV, ctl.state)
         now[0] += ctl_mod.RESTORE_MIN_INTERVAL_S + 1
         await ctl.poll_once()
+        assert "wrongdev" not in ctl._messages and ctl.status.alert == ""
         cl.cfg = gui_default_config()
         k = len(cl.log)
         for _ in range(3):
@@ -3572,6 +3576,7 @@ def test_device_repair_stops_after_three_tries_then_only_alerts(tmp_path: Path) 
             await ctl.poll_once()
             assert await ctl.settle(5.0)
         assert [e[0] for e in cl.log[k:]].count("config") == 0
+        assert ctl.status.alert == ctl_mod.MSG_WRONG_DEVICES
         # on them for REPAIR_FORGET_S: the next wrong move is repaired again
         cl.cfg = dc.generate(DEV, ctl.state)
         for step in (1.0, ctl_mod.REPAIR_FORGET_S + 1.0):

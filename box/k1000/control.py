@@ -231,6 +231,9 @@ MSG_PROFILE_ROUTING = "k1000.yaml ROUTING FIXED UP (SEE LOG)"
 # short, so the status bar shows them whole at a readable size (UX-5; docs/03 §3 has the table).
 MSG_PIPELINE_CHANGED = "PIPELINE CHANGED (GUI)"
 MSG_DEVICES_CHANGED = "DEVICES CHANGED (GUI)"
+# The engine on the wrong card/channels and the device repair has given up (REPAIR_MAX_TRIES):
+# the PA plays nothing or the wrong input. Critical, above the drift messages.
+MSG_WRONG_DEVICES = "ENGINE ON WRONG DEVICES (SEE LOG)"
 OUTSIDE = "(GUI)"
 NOTE_REBUILT = "STATE REBUILT · CHECK MASTER"
 NOTE_MISSING = "NO SAVED STATE · CHECK MASTER"
@@ -247,6 +250,7 @@ ALERT_PRIO = 4
 ALERT_CRITICAL, ALERT_WARNING, ALERT_INFO = "critical", "warning", "info"
 MESSAGE_LEVELS = {
     "knobs": ALERT_CRITICAL, "save": ALERT_CRITICAL, "engine": ALERT_CRITICAL,
+    "wrongdev": ALERT_CRITICAL,
     "settings": ALERT_WARNING, "profile": ALERT_WARNING, "wait": ALERT_WARNING,
     "drift": ALERT_WARNING, "devices": ALERT_WARNING, "held": ALERT_WARNING,
     "common": ALERT_WARNING,
@@ -2900,6 +2904,8 @@ class Controller:
             return    # devices + pipeline back from the profile; the next poll re-reconciles
         drift = dc.config_drift(live, expected, skip_pointers=recent_p)
         self._repair_look(clean=not wrong and not drift.rebuild)
+        if not wrong:
+            self._set_message("wrongdev", 6, None)
         held: list[str] = list(drift.held)      # AUX routing cuts made outside K1000 (D-016)
         if drift.rebuild and wrong:
             # A pipeline restore keeps the live devices: useless there (and refused when the
@@ -3145,8 +3151,9 @@ class Controller:
         Each one mutes Main around its upload: unlimited, a drift that an upload does not cure
         (the engine refuses K1000's config, or something puts the change back, at once or a few
         seconds later) would mute the PA every RESTORE_MIN_INTERVAL_S for as long as it goes on.
-        So at most REPAIR_MAX_TRIES uploads per drift, then no upload: the alert the drift raises
-        anyway (PIPELINE CHANGED (GUI), DEVICES CHANGED (GUI)) and one log line.
+        So at most REPAIR_MAX_TRIES uploads per drift, then no upload: an alert (PIPELINE
+        CHANGED (GUI), the drift's own; ENGINE ON WRONG DEVICES, `_maybe_repair_devices`) and
+        one log line.
         Each drift (`key`) has its own count: another change gets its tries, and two changes
         that take turns cannot reset each other's. The counts are forgotten when:
         - the engine's devices and pipeline have stayed K1000's for REPAIR_FORGET_S without a
@@ -3256,11 +3263,16 @@ class Controller:
         keeps the live devices, so it cannot help. Put the profile's whole config back (device
         restart, Main muted around it, then the boot ramp): already silent, so this is the safe
         direction. Second look first, at most once per RESTORE_MIN_INTERVAL_S and
-        REPAIR_MAX_TRIES times for the same wrong devices (`_repair_allowed`). True = done."""
+        REPAIR_MAX_TRIES times for the same wrong devices (`_repair_allowed`); after that, no
+        upload and MSG_WRONG_DEVICES (critical) until the devices are right. True = done."""
         self._device_seen += 1
         key = ("devices", tuple(wrong), "")
-        if self._device_seen < 2 or not self._repair_allowed(key):
+        if self._device_seen < 2:
             return False
+        if not self._repair_allowed(key):
+            self._set_message("wrongdev", 6, MSG_WRONG_DEVICES)
+            return False
+        self._set_message("wrongdev", 6, None)
         now = self._clock()
         if now - self._last_repair < RESTORE_MIN_INTERVAL_S:
             return False

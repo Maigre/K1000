@@ -505,7 +505,7 @@ The alerts, most urgent first:
 |---|---|
 | `KNOBS OFFLINE · USE PHONE MUTE / BYPASS` or `KNOBS OFFLINE · SOURCE DOWN / BYPASS` | critical. **B4 does nothing meanwhile.** The first text only while a phone can mute right now (phone servers on, SETUP › PHONE › Phone on, the Wi-Fi up, the page served); otherwise the second |
 | `NO DEVICE · MOTU M4`, `ENGINE DOWN` (also full-screen) | critical |
-| `CANNOT SAVE STATE`, `ENGINE SYNC FAILED (SEE LOG)` | critical |
+| `CANNOT SAVE STATE`, `ENGINE SYNC FAILED (SEE LOG)`, `ENGINE ON WRONG DEVICES (SEE LOG)` | critical |
 | `SETTINGS: …`, `k1000.yaml ROUTING FIXED UP (SEE LOG)`, `NO AUDIO FLOWING · HELD MUTED` | warning |
 | `PIPELINE CHANGED (GUI)`, `CONFIG DRIFT (SEE LOG)`, `RESTORING ENGINE DEVICES`, `DEVICES CHANGED (GUI)`, a cut kept from CamillaGUI (`SUBS GROUP MUTED (GUI)`, `N CUTS/MUTES (GUI)`…) | warning |
 | `APPLYING SETUP…`, `RAMPING IN` | passing state (blue) |
