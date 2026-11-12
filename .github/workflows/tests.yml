@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # The box's test suite on every push and pull request, on the box's own distribution: Debian
-# trixie (Python 3.13) with the Debian packages box/install.sh puts on the box. There is no
-# engine binary here, so the engine tests skip; so do the tests of tools this container lacks
-# (node, shellcheck, systemd-analyze, dnsmasq, nft). docs/manual/08-development.md.
+# trixie (Python 3.13) with the box's Python packages from Debian (a subset of box/install.sh's
+# list, plus git and openssl for the tests). There is no engine binary here, so the engine tests
+# skip; so do the tests of tools this container lacks (node, shellcheck, systemd-analyze,
+# dnsmasq, nft). docs/manual/08-development.md.
 name: tests
 
 on:

@@ -107,10 +107,10 @@ budget).
 ### In CI
 
 `.github/workflows/tests.yml` runs `tests` and `tools/tests` on every push and pull request, in a
-Debian trixie container (Python 3.13) with the Debian packages `install.sh` puts on the box. It has
-no CamillaDSP binary, so the engine tests skip, as do the tests of tools the container lacks
-(node, `shellcheck`, `systemd-analyze`, dnsmasq, nft). It proves the logic, never the audio
-hardware.
+Debian trixie container (Python 3.13) with the box's Python packages from Debian (a subset of
+`install.sh`'s list). It has no CamillaDSP binary, so the engine tests skip, as do the tests of
+tools the container lacks (node, `shellcheck`, `systemd-analyze`, dnsmasq, nft). It proves the
+logic, never the audio hardware.
 
 ### On the box
 
