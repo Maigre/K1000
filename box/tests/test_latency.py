@@ -9,6 +9,7 @@ import asyncio
 import dataclasses
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ from k1000 import latency as lat
 from k1000 import state as st
 from k1000.cdsp import CdspError
 from k1000.control import Controller, Paths, Status
-from k1000.latency import DropoutCounter, LatencyWatch, Reading, latency_limit_ms, run_devices
+from k1000.latency import DropoutCounter, LatencyWatch, Reading, latency_limit_ms, run_devices, scan
 from k1000.profiles import load_profile, load_settings
 from k1000.ui import pages
 from k1000.ui.input_map import Focus
@@ -34,6 +35,11 @@ UNDERRUN = (b"2026-10-13 05:00:15.123456 WARN  [camilladsp::alsa_backend::device
             b"<src/alsa_backend/device.rs:126> PB: Prepare playback after buffer underrun\n")
 OVERRUN = b"2026-10-13 05:00:16.000001 WARN  Capture: read overrun\n"
 CLIP = b"2026-10-13 05:00:17.000001 WARN  [camilladsp::processing] Clipping detected, 3 samples\n"
+# The engine's first line as the next5 source writes it (src/bin.rs: `info!("CamillaDSP version {}
+# ({})")` through custom_logger_format). Read in the source, not yet in a log of the next5 build.
+START_NEXT5 = (b"2026-11-12 18:00:00.000001 INFO  [camilladsp] <src/bin.rs:463> "
+               b"CamillaDSP version 5.0.0-beta.2 (v5.0.0-beta.1-58-g0930f9b)\n")
+RS = 1000                       # a small rotation size for the tests: the box's is 256000
 
 
 # ======================================================================= the estimate
@@ -133,6 +139,35 @@ def _write(p: Path, data: bytes, mode: str = "ab") -> None:
         f.write(data)
 
 
+def _fill(p: Path, size: int = RS) -> None:
+    """Clipping lines (no dropout) until the file holds `size` bytes: what a size rotation
+    leaves behind (an engine start leaves a shorter file)."""
+    while not p.exists() or p.stat().st_size < size:
+        _write(p, CLIP)
+
+
+def test_scan_counts_lines_after_the_last_start() -> None:
+    assert scan(b"") == (0, False)
+    assert scan(UNDERRUN + CLIP + OVERRUN) == (2, False)                # clipping is not a dropout
+    assert scan(b"x: UNDERRUN then an overrun, one line\n") == (1, False)
+    assert scan(UNDERRUN * 3 + START + OVERRUN) == (1, True)            # the run before is not counted
+    assert scan(UNDERRUN + START_NEXT5 + OVERRUN * 2) == (2, True)      # next5's first line
+    assert scan(OVERRUN + START) == (0, True)
+    for line in (b"Capture device is stalled", b"Entering STALLED state", b"PlaybackError: x",
+                 b"CaptureError: y", b"alsa xrun"):
+        assert scan(line + b"\n") == (1, False), line
+
+
+def test_the_words_and_the_rotation_size_follow_the_tools() -> None:
+    """The same words as k1000-soak.sh's PATTERN, the same size as the engine unit's rotation."""
+    soak = (BOX / "tools" / "k1000-soak.sh").read_text()
+    m = re.search(r'PATTERN = re\.compile\(rb"([^"]+)", re\.IGNORECASE\)', soak)
+    assert m is not None
+    assert tuple(w.lower().encode() for w in m.group(1).split("|")) == lat.DROPOUT_WORDS
+    unit = (BOX / "systemd" / "camilladsp.service").read_text()
+    assert f"--log_rotate_size {lat.ROTATE_SIZE} " in unit
+
+
 def test_dropouts_are_counted_incrementally(tmp_path: Path) -> None:
     live = tmp_path / "camilladsp_rCURRENT.log"
     c = DropoutCounter(live)
@@ -150,18 +185,38 @@ def test_dropouts_are_counted_incrementally(tmp_path: Path) -> None:
 def test_a_size_rotation_keeps_counting_and_an_engine_start_resets(tmp_path: Path) -> None:
     live = tmp_path / "camilladsp_rCURRENT.log"
     _write(live, START + UNDERRUN)
-    c = DropoutCounter(live)
+    c = DropoutCounter(live, rotate_size=RS)
     assert c.read() == 1
     _write(live, UNDERRUN)                                      # written before the rotation...
+    _fill(live)
     os.rename(live, tmp_path / "camilladsp_r2026-10-13_05-30-00.log")
     _write(live, CLIP + OVERRUN)                                # ...a size rotation: no start line
     assert c.read() == 3
+    _fill(live)                                                 # the engine killed past the size,
     os.rename(live, tmp_path / "camilladsp_r2026-10-13_06-00-00.log")
-    _write(live, START + OVERRUN)                               # the engine restarted
+    _write(live, START + OVERRUN)                               # restarted: its first line resets
     assert c.read() == 1
     live.write_bytes(b"")                                       # truncated in place
     assert c.read() == 1
     _write(live, START)
+    assert c.read() == 0
+    c.close()
+
+
+def test_an_engine_start_resets_the_count_whatever_its_first_line(tmp_path: Path) -> None:
+    """A rotation that leaves the old file short of the rotation size is an engine start: the
+    count goes back to 0 even when the new run's first line is worded differently."""
+    live = tmp_path / "camilladsp_rCURRENT.log"
+    _write(live, START + UNDERRUN * 2)
+    c = DropoutCounter(live, rotate_size=RS)
+    assert c.read() == 2
+    _write(live, OVERRUN)                                       # the run's last line, then it stops
+    os.rename(live, tmp_path / "camilladsp_r2026-10-13_06-00-00.log")
+    _write(live, b"2026-10-13 06:00:01.000001 INFO  [camilladsp] engine 6.0 starting\n" + UNDERRUN)
+    assert c.read() == 1                                        # not 2 + 1 + 1
+    os.rename(live, tmp_path / "camilladsp_r2026-10-13_06-10-00.log")
+    assert c.read() is None                                     # between the rename and the new file
+    _write(live, b"")
     assert c.read() == 0
     c.close()
 
@@ -171,15 +226,43 @@ def test_a_k1000_restart_counts_back_to_the_engine_start(tmp_path: Path) -> None
     through the rotated logs to the engine's first line, never further."""
     _write(tmp_path / "camilladsp_r2026-10-13_04-00-00.log", START + UNDERRUN * 5)      # older run
     _write(tmp_path / "camilladsp_r2026-10-13_05-00-00.log", UNDERRUN + START + UNDERRUN)
+    _fill(tmp_path / "camilladsp_r2026-10-13_05-00-00.log")
     _write(tmp_path / "camilladsp_r2026-10-13_05-30-00.log", OVERRUN * 2 + CLIP)
+    _fill(tmp_path / "camilladsp_r2026-10-13_05-30-00.log")
     _write(tmp_path / "camilladsp_rCURRENT.log", UNDERRUN)
     _write(tmp_path / "soak.log", UNDERRUN * 9)                                       # not the engine's
-    c = DropoutCounter(tmp_path / "camilladsp_rCURRENT.log")
+    live = tmp_path / "camilladsp_rCURRENT.log"
+    c = DropoutCounter(live, rotate_size=RS)
     assert c.read() == 1 + 2 + 1
-    assert DropoutCounter(tmp_path / "camilladsp_rCURRENT.log", max_back=1).read() == 1 + 2
+    one = (tmp_path / "camilladsp_r2026-10-13_05-30-00.log").stat().st_size
+    assert DropoutCounter(live, rotate_size=RS, max_back_bytes=one).read() == 1 + 2   # the budget
+    assert DropoutCounter(live, rotate_size=RS, max_back_bytes=one - 1).read() == 1
     assert DropoutCounter(tmp_path / "other.log").read() is None
     _write(tmp_path / "plain.log", UNDERRUN)
     assert DropoutCounter(tmp_path / "plain.log").read() == 1    # no rotation names: no going back
+    c.close()
+
+
+def test_counting_back_stops_at_the_run_before_without_its_first_line(tmp_path: Path) -> None:
+    """No start line anywhere (another wording): the count back stops at the file an engine start
+    rotated (short of the rotation size), which is the run before's last."""
+    _write(tmp_path / "camilladsp_r2026-10-13_04-00-00.log", UNDERRUN * 5)              # run before
+    _write(tmp_path / "camilladsp_r2026-10-13_05-00-00.log", OVERRUN * 2)
+    _fill(tmp_path / "camilladsp_r2026-10-13_05-00-00.log")                             # this run
+    _write(tmp_path / "camilladsp_rCURRENT.log", UNDERRUN)
+    assert DropoutCounter(tmp_path / "camilladsp_rCURRENT.log", rotate_size=RS).read() == 2 + 1
+
+
+def test_a_first_read_on_a_fresh_log_does_not_count_the_run_before(tmp_path: Path) -> None:
+    """k1000 reads right after an engine start, before the new run wrote anything: the count is
+    0, not the previous run's (its last file was rotated at this start, short of the size)."""
+    _write(tmp_path / "camilladsp_r2026-10-13_06-00-00.log", START + UNDERRUN * 4)
+    live = tmp_path / "camilladsp_rCURRENT.log"
+    _write(live, b"")
+    c = DropoutCounter(live)                                    # the box's rotation size
+    assert c.read() == 0
+    _write(live, START_NEXT5 + UNDERRUN)
+    assert c.read() == 1
     c.close()
 
 

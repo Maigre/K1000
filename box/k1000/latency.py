@@ -9,8 +9,7 @@ Why it is shaped like this:
   adds its converters and USB, a fixed share measured through a loop cable
   (`profiles.<name>.io_latency_ms`: 3.8 ms on the M4, 16 Oct). On the bench, 536 + 256 frames at
   48 kHz + 3.8 ms = 20.3 ms, the loop measurement of 16 Oct. A profile without that figure (dev)
-  shows the engine's share alone, marked as a floor (`io` False). A backlog held in the engine's
-  queues after a dropout shows here only in part (docs/16 §2.2): this is a floor, not a loop
+  shows the engine's share alone, marked as a floor (`io` False). An estimate, not a loop
   measurement.
 - **One more read a second, nothing written.** The control service's status poll adds one
   GetBufferLevel; chunksize and samplerate come from the running config the poll already reads.
@@ -23,17 +22,25 @@ Why it is shaped like this:
   every LOG_EVERY_S otherwise.
 - **Dropouts since the engine started** (`DropoutCounter`): the engine writes one line per
   dropout in its live log (`camilladsp -o`, rotated at every start and every 256 kB). The lines
-  are counted with k1000-soak.sh's pattern, read from where the last read stopped, in a worker
-  thread (blocking file I/O never runs in the event loop). A size rotation keeps the count going
-  (the old file is read to its end through the descriptor still open); the engine's first line
-  ("CamillaDSP version") sets it back to 0. A log that cannot be read gives None: nothing shown.
+  are counted with k1000-soak.sh's words, read from where the last read stopped, in a worker
+  thread (blocking file I/O never runs in the event loop), with C-level searches (`bytes.find`),
+  not a Python loop per line. A size rotation keeps the count going (the old file is read to its
+  end through the descriptor still open). Two things set it back to 0 at an engine start, so
+  that neither is relied on alone: the engine's first line ("CamillaDSP version", in beta.1 and
+  in the next5 source) and a rotation that left the old file shorter than the rotation size (a
+  size rotation leaves it at that size or more: flexi_logger's Criterion::Size, not read in its
+  source, to confirm on the box with `ls -l /var/log/k1000`). A log that cannot be read gives
+  None: nothing shown.
+- **After a dropout the figure is a floor.** The playback buffer holds 1024 frames at most with
+  today's settings: a backlog past that sits in the engine's queues, which GetBufferLevel does
+  not see (docs/16 §2.2, read in the engine source, not measured). The screen and the phone mark
+  it "≥" / "at least" once the count is above 0.
 """
 from __future__ import annotations
 
 import logging
 import math
 import os
-import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,13 +55,15 @@ DROPOUT_READ_S = 10.0            # the engine log is read at most this often
 # camilladsp.service: `-o /var/log/k1000/camilladsp.log --log_rotate_size ...` writes this file.
 ENGINE_LOG = Path("/var/log/k1000/camilladsp_rCURRENT.log")
 LIVE_SUFFIX = "_rCURRENT"
-# k1000-soak.sh's pattern (CamillaDSP v5's wording: "PB: Prepare playback after buffer underrun",
-# "Capture: read overrun", "Capture device is stalled", PlaybackError...).
-DROPOUT = re.compile(rb"underrun|overrun|xrun|stalled|PlaybackError|CaptureError", re.IGNORECASE)
-ENGINE_START = re.compile(rb"CamillaDSP version")      # the first line of every engine run
+# k1000-soak.sh's pattern, as lower-case words: a line holding any of them, in any case, is one
+# dropout (CamillaDSP v5's wording: "PB: Prepare playback after buffer underrun", "Capture: read
+# overrun", "Capture device is stalled", PlaybackError...). A test keeps them in step.
+DROPOUT_WORDS = (b"underrun", b"overrun", b"xrun", b"stalled", b"playbackerror", b"captureerror")
+ENGINE_START = b"CamillaDSP version"   # the first line of every engine run (bin.rs, beta.1 and next5)
+ROTATE_SIZE = 256000             # camilladsp.service's --log_rotate_size (a test keeps them in step)
 READ_CHUNK = 64 * 1024
 MAX_LINE = 64 * 1024             # a line longer than this is not one of the engine's
-MAX_BACK = 50                    # rotated logs read back at most (the unit keeps 50)
+MAX_BACK_BYTES = 2 * 1024 * 1024  # the first read goes back through at most this much rotated log
 
 
 def latency_limit_ms(settings: Any) -> float:
@@ -166,18 +175,40 @@ class LatencyWatch:
         return self._clock() - self._logged_at >= LOG_EVERY_S
 
 
+def scan(data: bytes) -> tuple[int, bool]:
+    """Whole log lines -> (dropout lines after the last engine start line, whether one was there).
+    Only C-level searches: a 256 kB log costs a few ms, where a Python loop per line costs tens."""
+    i = data.rfind(ENGINE_START)
+    started = i >= 0
+    if started:
+        j = data.find(b"\n", i)
+        data = b"" if j < 0 else data[j + 1:]
+    low = data.lower()
+    lines: set[int] = set()              # one dropout per line, whatever words it holds
+    for w in DROPOUT_WORDS:
+        k = low.find(w)
+        while k >= 0:
+            lines.add(low.rfind(b"\n", 0, k))
+            k = low.find(w, k + len(w))
+    return len(lines), started
+
+
 class DropoutCounter:
     """Dropout lines of the engine's current run, from its live log, read a piece at a time.
 
     `read()` does blocking file I/O: run it in a worker thread, one call at a time. It returns
     the count, or None while the log cannot be read. The first read also counts back through the
-    rotated logs (`<stem>_r<time>.log`, newest first, at most MAX_BACK) when the live one does
-    not hold the engine's first line: a k1000 restart in the middle of a long run still counts
-    from the engine's start."""
+    rotated logs (`<stem>_r<time>.log`, newest first) when the live one does not hold the
+    engine's first line, so that a k1000 restart in the middle of a long run still counts from
+    the engine's start. It stops at that start (the first line, or a file shorter than
+    `rotate_size`: the last one of the run before) and after `max_back_bytes`, past which the
+    count falls short."""
 
-    def __init__(self, path: str | Path = ENGINE_LOG, max_back: int = MAX_BACK) -> None:
+    def __init__(self, path: str | Path = ENGINE_LOG, *, rotate_size: int = ROTATE_SIZE,
+                 max_back_bytes: int = MAX_BACK_BYTES) -> None:
         self.path = Path(path)
-        self.max_back = max_back
+        self.rotate_size = rotate_size
+        self.max_back_bytes = max_back_bytes
         self.count = 0
         self._f: BinaryIO | None = None
         self._ident: tuple[int, int] | None = None
@@ -192,7 +223,10 @@ class DropoutCounter:
             st = None
         if self._f is not None and (st is None or (st.st_dev, st.st_ino) != self._ident):
             self._drain()                    # rotated: the old file to its end, then let go
+            size = self._size()
             self._close()
+            if size is not None and size < self.rotate_size:
+                self.count = 0               # rotated at an engine start, whatever its first line
         if st is None:
             return None
         if self._f is None:
@@ -218,12 +252,12 @@ class DropoutCounter:
     def close(self) -> None:
         self._close()
 
-    def _line(self, line: bytes) -> None:
-        if ENGINE_START.search(line):
-            self.count = 0
-            self._started = True
-        elif DROPOUT.search(line):
-            self.count += 1
+    def _lines(self, data: bytes) -> None:
+        k, started = scan(data)
+        if started:
+            self.count, self._started = k, True
+        else:
+            self.count += k
 
     def _drain(self) -> None:
         f = self._f
@@ -234,18 +268,25 @@ class DropoutCounter:
                 chunk = f.read(READ_CHUNK)
                 if not chunk:
                     break
-                lines = (self._tail + chunk).split(b"\n")
-                self._tail = lines.pop()             # a line still being written
+                buf = self._tail + chunk
+                cut = buf.rfind(b"\n") + 1
+                self._tail = buf[cut:]               # a line still being written
                 if len(self._tail) > MAX_LINE:
                     self._tail = b""
-                for line in lines:
-                    self._line(line)
+                if cut:
+                    self._lines(buf[:cut])
         except OSError:
             pass
 
+    def _size(self) -> int | None:
+        try:
+            return os.fstat(self._f.fileno()).st_size if self._f is not None else None
+        except OSError:
+            return None
+
     def _close(self) -> None:
         if self._tail:
-            self._line(self._tail)                   # a closed file's last line is complete
+            self._lines(self._tail)                  # a closed file's last line is complete
             self._tail = b""
         if self._f is not None:
             try:
@@ -255,7 +296,7 @@ class DropoutCounter:
         self._f = None
 
     def _count_back(self) -> int:
-        """Dropout lines after the engine's first line in the rotated logs before the live one."""
+        """Dropout lines of this engine run in the rotated logs before the live one."""
         name = self.path.name
         stem, dot, ext = name.rpartition(".")
         if not dot or not stem.endswith(LIVE_SUFFIX):
@@ -266,19 +307,24 @@ class DropoutCounter:
                            key=lambda p: p.name, reverse=True)
         except OSError:
             return 0
-        n = 0
-        for p in older[: self.max_back]:
+        n, budget = 0, self.max_back_bytes
+        for p in older:
+            try:
+                size = p.stat().st_size
+            except OSError:
+                continue
+            if size < self.rotate_size:
+                break                        # rotated at an engine start: the run before's last
+            budget -= size
+            if budget < 0:
+                break                        # a very long run: the count stays short
             try:
                 data = p.read_bytes()
             except OSError:
                 continue
-            k, started = 0, False
-            for line in data.split(b"\n"):
-                if ENGINE_START.search(line):
-                    k, started = 0, True
-                elif DROPOUT.search(line):
-                    k += 1
+            k, started = scan(data)
             n += k
             if started:
                 break
+            time.sleep(0)                    # the GIL back to the event loop between files
         return n
