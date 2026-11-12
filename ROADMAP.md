@@ -13,7 +13,7 @@ is **not confirmed for that night**: the engine logged no dropout, and the box r
 delay of about 20 ms. The logs also show heavy output clipping. The decisions of 12 Nov: D-018
 (10 ms or less in to out, never growing, shown on the box), D-019 (an engine built from upstream's
 fixed branch, pinned once it passes on the desk box) and D-020 (no new features until the latency
-is closed). The bench results will be in `docs/17` (forthcoming). Two gates have no record of
+is closed). The bench results are in `docs/17-box-record-and-bench.md`: the new engine reaches 5 to 8 ms where the current one never gets under 12.5. Two gates have no record of
 having run before the gig: the overnight soak on the M4 at the show setting, and the USB drills.
 
 ## At a glance
@@ -87,8 +87,8 @@ gantt
    - Not in the protocol: a listening check with a DJ source (`docs/16` §2.5).
 4. **Sun 18 — gig.** Afterwards, note what was touched, missed or failed. → **Played.** The
    owner's report: beatmatching against the speakers was impossible. No debrief is in the
-   repository; the review is `docs/16-post-gig-audit.md` (12 Nov), and the bench results go in
-   `docs/17` (forthcoming).
+   repository; the review is `docs/16-post-gig-audit.md` (12 Nov), and the bench results are in
+   `docs/17-box-record-and-bench.md`.
 
 ## Workstreams now
 
@@ -276,7 +276,7 @@ Progress:
   not confirmed for the gig night: the engine logged no dropout, and the box ran at its base delay
   of about 20 ms. The logs also show heavy output clipping. Decided the same day: D-018 (the
   latency requirement), D-019 (the engine build), D-020 (no new features until the latency is
-  closed). The bench results go in `docs/17` (forthcoming). The hardware shape is not decided yet.
+  closed). The bench results are in `docs/17-box-record-and-bench.md`. The hardware shape is not decided yet.
 
 ## Phase 4 — Assist & measurement
 

@@ -59,7 +59,7 @@ and a phone on the box's own Wi-Fi.
 on the author's box with the MOTU M4 (`025b8f8`, chunk 256, `target_level` 512). Beatmatching
 against the speakers was impossible there, so the latency is the open work now: 10 ms or less in to
 out, never growing, shown on the box (D-018), and no new features until then (D-020). The review
-is [`docs/16`](docs/16-post-gig-audit.md); the [roadmap](ROADMAP.md) has the details. Use it with
+is [`docs/16`](docs/16-post-gig-audit.md), the bench that followed is [`docs/17`](docs/17-box-record-and-bench.md); the [roadmap](ROADMAP.md) has the details. Use it with
 the bypass cables in the case.
 
 ## Documentation
