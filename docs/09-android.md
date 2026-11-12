@@ -709,17 +709,17 @@ shows. It is never distributed and never the gig app:
 - Package `gr.trentesept.k1000.bench`, app name K1000, version `0.2.0-bench`. It installs
   **beside** the release app; it is signed with the SDK's debug key, never the release key.
 - The WebView is debuggable: `chrome://inspect` on the laptop, with the phone on USB.
-- It trusts **one** development host besides the box: `-Pk1000.benchHost` (default
-  `192.168.8.54`). The host's CA comes from `-Pk1000.benchCa` (default: the K1000 CA). That CA is
-  trusted for that host only, through a network security config generated for the bench variant.
+- It trusts **one** development host besides the box: `-Pk1000.benchHost` (no default; the
+  address can also stay in `android/local.properties`). The host's CA comes from
+  `-Pk1000.benchCa` (default: the K1000 CA). That CA is trusted for that host only, through a network security config generated for the bench variant.
   The bench host is loaded first, then `10.42.0.1`. The fallback mode (*I joined K1000 in
   Android's Wi-Fi settings*) also follows a Wi-Fi on the bench host's /24.
 - **The box side is not done, and it is Thomas's call.** Today the phone server binds the AP
   address only (`server.py`, *physical access is the authorisation*). To serve the bench box on
   its LAN address, `k1000.yaml` would need:
-  - `phone.bind: 192.168.8.54` and `phone.hosts: [192.168.8.54]`. With those, the page is no
+  - `phone.bind: <bench address>` and `phone.hosts: [<bench address>]`. With those, the page is no
     longer served on the AP while they are set.
-  - A certificate naming 192.168.8.54 in a separate `phone.tls_dir`, issued by a **bench CA**
+  - A certificate naming that address in a separate `phone.tls_dir`, issued by a **bench CA**
     (pass that CA as `k1000.benchCa`). Do not use the K1000 CA for it: its name constraints
     exclude the LAN. Android would still accept such a leaf (the gap in §3), but Chrome and
     `K1000Trust` refuse it.
