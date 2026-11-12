@@ -834,6 +834,37 @@ def test_a_fader_read_that_crossed_a_mute_never_shows_it_undone(tmp_path: Path) 
     run(body())
 
 
+def test_the_re_read_after_a_refused_write_never_undoes_a_crossed_mute(tmp_path: Path) -> None:
+    """The re-read after a refused write (the engine's values win) takes the faders too: a Main
+    mute landing on its own link while that read is on its way must not be undone by it, in
+    the state nor in K1000's view of the engine."""
+    async def body() -> None:
+        ctl, cl = make_two_links(tmp_path, State(master_db=-20.0))
+        await boot(ctl)
+        real_get_faders = cl.get_faders
+        crossing = [True]
+
+        async def get_faders() -> list[dict[str, Any]]:
+            got = await real_get_faders()           # Main unmuted: answered before the mute
+            if crossing[0]:
+                crossing[0] = False
+                ctl.set_mute(True)
+                await until(lambda: cl.faders[0]["mute"] is True and ctl._mute_want is None,
+                            what="mute landed")
+            return got
+
+        cl.get_faders = get_faders  # type: ignore[method-assign]
+        cl.refuse.add("/filters/live_peq_1/parameters/q")
+        ctl.nudge("live_peq.0.q", 1)
+        assert await ctl.settle(3.0)
+        assert ctl.focus.hint == "ENGINE REFUSED THE CHANGE" and not crossing[0]
+        assert ctl.state.muted is True and ctl._applied.muted is True
+        assert ctl.status.muted is True and cl.faders[0]["mute"] is True
+        await ctl.stop()
+
+    run(body())
+
+
 def test_a_cut_short_guard_never_unmutes_over_a_mute_pressed_meanwhile(tmp_path: Path) -> None:
     """`_finish_main_guard` asks the engine whether it runs before it unmutes: B4 pressed during
     that round trip must win (the unmute is dropped), on one link or two."""

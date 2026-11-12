@@ -2434,9 +2434,12 @@ class Controller:
         except CdspError as e:
             log.warning("cannot re-read the engine (%s); the next poll adopts", e)
             return
-        crossed = set() if self._main_mute_read_ok(seq) else {FADER_MAIN}
-        skip = ({FADER_MAIN} if self._mute_want is not None else set()) | crossed
-        self._applied = dc.state_from_config(live, faders, self._applied, skip_faders=crossed)
+        if not self._main_mute_read_ok(seq):
+            # A Main mute crossed this read (`_main_mute_read_ok`): its Main is not the engine's.
+            # An empty entry keeps each view's own Main (`dc.state_from_config`).
+            faders = [{} if i == FADER_MAIN else f for i, f in enumerate(faders)]
+        skip = {FADER_MAIN} if self._mute_want is not None else set()
+        self._applied = dc.state_from_config(live, faders, self._applied)
         new = dc.state_from_config(live, faders, self.state, skip_faders=skip)
         self._drop_adopted_common(new)
         self.state = new
