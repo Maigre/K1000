@@ -1247,6 +1247,41 @@ def test_engine_alsa_auto_format_is_not_device_drift(tmp_path):
         assert drift.clean
 
 
+@engine
+@pytest.mark.parametrize("settings,aux", [({}, "off"), ({"capture_channels": 6}, "off"),
+                                          ({"capture_channels": 6}, "line")])   # AUX on 0, 1: 4, 5 padded
+def test_engine_capture_spectrum_of_every_channel_keeps_the_engine_up(tmp_path, settings, aux):
+    """The capture pad of `_input_mixer` on the real engine and its ALSA capture path (the ALSA
+    `null` PCM: software, no hardware): the spectrum of every capture channel, the M4's mic
+    inputs included, answers and the engine runs on. Without the pad, 5.0.0-beta.1 panics its
+    capture thread on the first request ("index out of bounds: the len is 0", reproduced here
+    with the `null` PCM, as on the box on 2026-10-16). Upstream fixed it after the gig
+    (`next5`, 9dacca3), but the pad stays while beta.1 can still be the installed engine."""
+    from k1000.rta import spectrum_request
+    prof = pf.load_profile("m4", {"capture_device": "null", "playback_device": "null", **settings},
+                           probe=False)
+    cfg = d.generate(prof, State(profile="m4", aux_mode=aux))
+    cfg["devices"]["playback"] = {"type": "File", "channels": prof.playback_channels,
+                                  "filename": "/dev/null", "format": "S32_LE"}
+    with _engine(tmp_path, cfg) as (cmd, _log):
+        t = time.monotonic()
+        while cmd("GetState")["value"] != "Running" and time.monotonic() - t < 3:
+            time.sleep(0.1)
+        if cmd("GetState")["value"] != "Running":
+            pytest.skip("ALSA null capture did not start here")
+        for ch in range(prof.capture_channels):
+            t = time.monotonic()
+            while True:      # a fresh analyser answers "No audio data" / "Insufficient data" first
+                r = cmd("GetSpectrum", value=spectrum_request(ch))
+                if r["result"] == "Ok" or time.monotonic() - t > 3:
+                    break
+                time.sleep(0.05)
+            assert r["result"] == "Ok", (ch, r)
+            assert len(r["value"]["magnitudes"]) == len(r["value"]["frequencies"]) > 2
+        time.sleep(0.2)
+        assert cmd("GetState")["value"] == "Running"                   # a panic closes the link
+
+
 def test_with_live_devices_keeps_running_devices_only():
     exp = d.generate(dev(), State(mono_subs=True))
     live = d.generate(dev(), State())
