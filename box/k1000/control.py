@@ -127,6 +127,9 @@ GUARD_SETTLE_S = 0.15
 GUARD_SETTLE_MAX_S = 0.6
 RESTORE_MIN_INTERVAL_S = 30.0   # at most one automatic pipeline restore per interval
 FIX_MAX_REPEATS = 3             # identical drift fixes re-sent at most this often in a row
+# Automatic whole-config repairs (a pipeline restore, a device repair: each one mutes Main around
+# its upload) for one drift, at most; then the alert only (`Controller._repair_allowed`).
+REPAIR_MAX_TRIES = 3
 CLIP_DBFS = -0.1                # a playback peak at/above this lights the clip box
 CLIP_HOLD_S = 3.0
 IN_CLIP_DBFS = -0.5             # a capture (ADC) peak at/above this lights IN CLIP
@@ -917,6 +920,10 @@ class Controller:
         self._meter_key: Any = None
         self._device_seen = 0             # polls in a row with the engine on the wrong card
         self._last_repair = -math.inf
+        # The drift the automatic whole-config repairs are counted against, and their count
+        # (`_repair_allowed`).
+        self._repair_key: Any = None
+        self._repair_tries = 0
         # Is `a` the same ALSA card as `b`? (/proc/asound/<id> -> cardN). Injectable for tests.
         self.same_card: Callable[[str, str], bool | None] = _same_card
         self._logged: set[Any] = set()
@@ -2406,6 +2413,7 @@ class Controller:
         if not ok:
             self._revert_setup(base, "SETUP FAILED")
             return
+        self._repair_reset()     # the operator acted: the automatic repairs may try again
         if profile_change:
             self.profile = new_profile
             self.status.profile = new_profile.name
@@ -2875,6 +2883,8 @@ class Controller:
         else:
             self._rebuild_seen = 0
             self._set_message("drift", 2, None)
+            if not wrong:
+                self._repair_reset()     # devices and pipeline are K1000's: that drift is over
             held += await self._apply_fixes(live, drift.fixes)
 
         # Main: only ever pulled down or muted (dspconfig.fader_drift); the Aux groups: above.
@@ -3103,6 +3113,36 @@ class Controller:
         await self._run_plan(plan, self._epoch)
         return held
 
+    def _repair_allowed(self, key: tuple[str, tuple[str, ...], str]) -> bool:
+        """May the poll make one more automatic whole-config upload for the drift `key`
+        ("pipeline" or "devices", what differs, the running pipeline or "")?
+
+        Each one mutes Main around its upload: unlimited, a drift that an upload does not cure
+        (the engine refuses K1000's config, or something puts the change back at once) would mute
+        the PA every RESTORE_MIN_INTERVAL_S for as long as it lasts. So at most REPAIR_MAX_TRIES
+        uploads per drift, then no upload: the alert the drift raises anyway (PIPELINE CHANGED
+        (GUI), DEVICES CHANGED (GUI)) and one log line. The count starts again when:
+        - a look finds the engine's devices and pipeline K1000's (`_reconcile`): that drift is over;
+        - the drift changes (another `key`: other differences): someone made another change;
+        - the operator applies a setup action (`_rebuild`), which uploads K1000's config itself;
+        - k1000 restarts (the count lives in memory only).
+        Value fixes have their own limit (FIX_MAX_REPEATS); a fresh engine's upload at connect
+        (`_sync_fresh`, the engine muted already) is not counted."""
+        if key != self._repair_key:
+            self._repair_reset()
+            self._repair_key = key
+        if self._repair_tries < REPAIR_MAX_TRIES:
+            return True
+        self._log_once(("repair", key), logging.ERROR,
+                       "engine %s: still not K1000's after %d automatic repairs (%s); no more "
+                       "uploads until that changes or the operator acts (alert only)", key[0],
+                       self._repair_tries, "; ".join(key[1])[:300])
+        return False
+
+    def _repair_reset(self) -> None:
+        self._logged.discard(("repair", self._repair_key))
+        self._repair_key, self._repair_tries = None, 0
+
     def _report_drift(self, devices: list[str], held: list[str]) -> None:
         drift = list(devices) + list(held)
         if drift != self.status.drift:
@@ -3169,14 +3209,16 @@ class Controller:
         PA plays nothing (or the wrong input) whatever the knobs do, and a pipeline restore
         keeps the live devices, so it cannot help. Put the profile's whole config back (device
         restart, Main muted around it, then the boot ramp): already silent, so this is the safe
-        direction. Second look first, at most once per RESTORE_MIN_INTERVAL_S. True = done."""
+        direction. Second look first, at most once per RESTORE_MIN_INTERVAL_S and
+        REPAIR_MAX_TRIES times for the same wrong devices (`_repair_allowed`). True = done."""
         self._device_seen += 1
-        if self._device_seen < 2:
+        if self._device_seen < 2 or not self._repair_allowed(("devices", tuple(wrong), "")):
             return False
         now = self._clock()
         if now - self._last_repair < RESTORE_MIN_INTERVAL_S:
             return False
         self._last_repair = now
+        self._repair_tries += 1
         log.warning("engine is not on the profile's devices (%s): restoring %s's config (device "
                     "restart, Main muted, then the boot ramp)", "; ".join(wrong), self.profile.name)
         self._set_message("devices", 1, "RESTORING ENGINE DEVICES")
@@ -3192,15 +3234,22 @@ class Controller:
     async def _maybe_restore(self, live: Any, engine_view: State, reasons: list[str],
                              connect: bool) -> None:
         """The running pipeline is not K1000's (a CamillaGUI structure edit): put it back, Main
-        muted around the upload, after a second look and at most once per interval."""
+        muted around the upload, after a second look, at most once per interval and
+        REPAIR_MAX_TRIES times for the same differences (`_repair_allowed`)."""
         self._rebuild_seen += 1
         if not connect and self._rebuild_seen < 2:
             return
         now = self._clock()
-        if now - self._last_restore < RESTORE_MIN_INTERVAL_S:
+        # The reasons name WHAT differs ("pipeline differs"); the running pipeline tells one
+        # pipeline edit from the next.
+        key = ("pipeline", tuple(reasons),
+               json.dumps(dc._as_cfg(live).get("pipeline"), sort_keys=True, default=str))
+        if (not self._repair_allowed(key)
+                or now - self._last_restore < RESTORE_MIN_INTERVAL_S):
             self._set_message("drift", 2, MSG_PIPELINE_CHANGED)
             return
         self._last_restore = now
+        self._repair_tries += 1
         log.warning("pipeline differs from K1000's (%s): restoring it (Main muted around the "
                     "upload)", "; ".join(reasons)[:300])
         view = self._restore_view(engine_view)

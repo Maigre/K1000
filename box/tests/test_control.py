@@ -926,6 +926,81 @@ def test_pipeline_change_is_restored_under_a_mute_after_a_second_look(tmp_path: 
     run(body())
 
 
+@pytest.mark.parametrize("cure", ["refused", "put_back"])
+def test_pipeline_restore_stops_after_three_tries_then_only_alerts(tmp_path: Path, caplog: Any,
+                                                                   cure: str) -> None:
+    """Audit 5.1 #5: a drift that an upload does not cure (the engine refuses K1000's config, or
+    something puts the change back at once) was restored, Main muted around it, every
+    RESTORE_MIN_INTERVAL_S for as long as it lasted. Now REPAIR_MAX_TRIES dips at most, then
+    only the alert. The count starts again when the drift changes, when it is gone, and when the
+    operator applies a setup action."""
+    import logging
+
+    async def body() -> None:
+        now = [1000.0]
+        ctl, cl = make(tmp_path, State(master_db=-20.0), playing=True, clock=lambda: now[0])
+        await boot(ctl)
+        real_upload = cl.set_config_yaml
+        tries: list[str] = []
+        failing = [True]
+        gui: list[dict[str, Any]] = []
+
+        def gui_drops_a_step() -> None:          # a CamillaGUI Apply: the engine runs this
+            cfg = copy.deepcopy(cl.cfg)
+            cfg["pipeline"] = cfg["pipeline"][:-2] + cfg["pipeline"][-1:]
+            gui[:] = [cfg]
+            cl.cfg = copy.deepcopy(cfg)
+
+        async def upload(text: str, timeout: float = 10.0) -> None:
+            if not failing[0]:
+                return await real_upload(text, timeout)
+            tries.append(text)
+            if cure == "refused":
+                raise CdspError("SetConfig", "ConfigValidationError", "fake")
+            await real_upload(text, timeout)    # accepted, and the GUI's config is straight back
+            cl.cfg = copy.deepcopy(gui[0])
+
+        async def looks(k: int) -> None:
+            for _ in range(k):
+                now[0] += ctl_mod.RESTORE_MIN_INTERVAL_S + 1
+                await ctl.poll_once()
+                assert await ctl.settle(5.0)
+
+        cl.set_config_yaml = upload  # type: ignore[method-assign]
+        gui_drops_a_step()
+        n = len(cl.log)
+        with caplog.at_level(logging.ERROR, logger="k1000.control"):
+            await looks(12)                     # six minutes of a drift that stays
+        assert len(tries) == ctl_mod.REPAIR_MAX_TRIES == 3
+        dips = [e for e in nomark(cl.log[n:]) if e[:2] == ("mute", 0)]
+        assert dips == [("mute", 0, True), ("mute", 0, False)] * 3    # one dip per try, no more
+        assert cl.faders[0] == {"volume": -20.0, "mute": False}       # playing on
+        assert "PIPELINE CHANGED" in ctl.status.message                # the alert stays up
+        gave_up = [r for r in caplog.records if "automatic repairs" in r.getMessage()]
+        assert len(gave_up) == 1 and "pipeline" in gave_up[0].getMessage()
+        # the drift changes (the GUI drops another step): another drift, three tries again
+        gui_drops_a_step()
+        await looks(8)
+        assert len(tries) == 6
+        # the drift is gone (the GUI's change undone): the count starts again for the next one
+        cl.cfg = dc.generate(DEV, ctl.state)
+        await looks(1)
+        assert ctl._repair_tries == 0 and "PIPELINE CHANGED" not in ctl.status.message
+        gui_drops_a_step()
+        await looks(2)
+        assert len(tries) == 7
+        await looks(6)
+        assert len(tries) == 9 and ctl._repair_tries == 3
+        # the operator applies a setup action: the count starts again too
+        failing[0] = False
+        assert ctl.toggle("mono_subs", confirmed=True)
+        assert await ctl.settle(5.0)
+        assert ctl._repair_tries == 0
+        await ctl.stop()
+
+    run(body())
+
+
 def test_device_drift_is_shown_never_fixed_while_playing(tmp_path: Path) -> None:
     async def body() -> None:
         ctl, cl = make(tmp_path, State(), playing=True)
@@ -3218,6 +3293,53 @@ def test_engine_moved_to_another_card_is_put_back(tmp_path: Path) -> None:
         await ctl.poll_once()
         assert not any(e[0] == "config" for e in cl.log[m:])
         assert "PIPELINE CHANGED" in ctl.status.message or "DEVICES" in ctl.status.message
+        await ctl.stop()
+
+    run(body())
+
+
+def test_device_repair_stops_after_three_tries_then_only_alerts(tmp_path: Path) -> None:
+    """The same limit as the pipeline restore (audit 5.1 #5): an engine that will not take the
+    profile's devices gets REPAIR_MAX_TRIES uploads with Main muted around them, then only
+    DEVICES CHANGED (GUI); once on the profile's devices again, the count starts again."""
+    async def body() -> None:
+        now = [1000.0]
+        ctl, cl = make(tmp_path, State(master_db=-12.0), playing=True, clock=lambda: now[0])
+        ctl.same_card = lambda a, b: a == b
+        await boot(ctl)
+        real_upload = cl.set_config_yaml
+        tries: list[str] = []
+
+        async def refuse(text: str, timeout: float = 10.0) -> None:
+            tries.append(text)
+            raise CdspError("SetConfig", "NotRunning", "fake: the device did not open")
+
+        cl.set_config_yaml = refuse  # type: ignore[method-assign]
+        cl.cfg = gui_default_config()
+        n = len(cl.log)
+        for _ in range(12):
+            now[0] += ctl_mod.RESTORE_MIN_INTERVAL_S + 1
+            await ctl.poll_once()
+            assert await ctl.settle(5.0)
+        assert len(tries) == ctl_mod.REPAIR_MAX_TRIES
+        dips = [e for e in nomark(cl.log[n:]) if e[:2] == ("mute", 0)]
+        assert dips == [("mute", 0, True), ("mute", 0, False)] * 3
+        assert ctl._messages["devices"][1] == ctl_mod.MSG_DEVICES_CHANGED and ctl.status.drift
+        assert ctl.status.message in (ctl_mod.MSG_DEVICES_CHANGED, ctl_mod.MSG_PIPELINE_CHANGED)
+        # back on the profile's devices: the next wrong move is repaired again
+        cl.set_config_yaml = real_upload  # type: ignore[method-assign]
+        cl.cfg = dc.generate(DEV, ctl.state)
+        now[0] += ctl_mod.RESTORE_MIN_INTERVAL_S + 1
+        await ctl.poll_once()
+        assert ctl._repair_tries == 0
+        cl.cfg = gui_default_config()
+        m = len(cl.log)
+        for _ in range(2):
+            now[0] += ctl_mod.RESTORE_MIN_INTERVAL_S + 1
+            await ctl.poll_once()
+            assert await ctl.settle(5.0)
+        assert [e[0] for e in cl.log[m:]].count("config") == 1
+        assert cl.cfg["devices"] == dc.generate(DEV, ctl.state)["devices"]
         await ctl.stop()
 
     run(body())
