@@ -3801,6 +3801,74 @@ def test_common_delay_adopted_while_playing_is_shown_and_waits_for_the_mute(
     run(body())
 
 
+def test_common_delay_held_pair_is_adopted_as_a_pair(tmp_path: Path, caplog: Any) -> None:
+    """Regression (found in review): after an ALIGN move on top of a held 45/40, the next poll
+    skips our own write of the sub delay for OWN_WRITE_S and read the top alone: sub 5.1 (the
+    state's) with top 40 (the engine's) came in as ALIGN -34.9, and was written out. The two
+    delays are adopted together or not at all, our own write or a pending edit alike. Read back
+    later, the operator's 5.1 stays 5.1 (not the grid's 5.104167) and the journal stays quiet."""
+    import logging
+
+    async def body() -> None:
+        now = {"t": 1000.0}
+        ctl, cl = make(tmp_path, State(sub_delay_ms=45.0), playing=True, clock=lambda: now["t"])
+        await boot(ctl)
+        cl.cfg["filters"]["top_delay"]["parameters"]["delay"] = 40.0     # laptop editor
+        await ctl.poll_once()
+        assert await ctl.settle(2.0)
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            ctl.nudge("align_delay_ms", 1)
+            assert await ctl.settle(3.0)
+            await ctl.poll_once()                                        # within OWN_WRITE_S
+            assert await ctl.settle(2.0)
+            assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (5.1, 0.0)
+            now["t"] += 2 * ctl_mod.OWN_WRITE_S
+            await ctl.poll_once()                                        # read back whole
+            assert await ctl.settle(2.0)
+            assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (5.1, 0.0)
+            assert _engine_delays(cl) == (dc.delay_on_grid(45.1), 40.0)
+            ctl.state.set("align_delay_ms", 5.2)                         # an edit not sent yet
+            await ctl.poll_once()
+            assert await ctl.settle(2.0)
+            assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (5.2, 0.0)
+            assert _engine_delays(cl) == (dc.delay_on_grid(45.2), 40.0)
+        assert not [r for r in caplog.records if "were both set" in r.getMessage()]
+        assert _pa_late(ctl) == [("warning", "PA LATE 40.00 MS · MUTE TO CLEAR")]
+        await ctl.stop()
+
+    run(body())
+
+
+def test_a_gui_delay_edit_inside_our_own_write_window_waits_and_is_not_pushed_back(
+        tmp_path: Path) -> None:
+    """The pair rule also holds for the drift check: CamillaGUI gives the subs 0.5 ms right after
+    K1000 wrote the tops' delay. Within OWN_WRITE_S neither delay is adopted nor pushed back;
+    the next poll takes the pair whole (ALIGN -0.6, the 0.5 held with PA LATE)."""
+    async def body() -> None:
+        now = {"t": 1000.0}
+        ctl, cl = make(tmp_path, State(top_delay_ms=1.0), playing=True, clock=lambda: now["t"])
+        await boot(ctl)
+        ctl.nudge("align_delay_ms", -1)                                  # tops 1.1
+        assert await ctl.settle(3.0)
+        cl.cfg["filters"]["sub_delay"]["parameters"]["delay"] = 0.5      # laptop editor, at once
+        n = len(cl.log)
+        await ctl.poll_once()
+        assert await ctl.settle(2.0)
+        assert _config_writes(cl.log[n:]) == []
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (0.0, 1.1)
+        now["t"] += 2 * ctl_mod.OWN_WRITE_S
+        await ctl.poll_once()
+        assert await ctl.settle(2.0)
+        assert _config_writes(cl.log[n:]) == []
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (0.0, 0.6)
+        assert _engine_delays(cl) == (0.5, dc.delay_on_grid(1.1))
+        assert _pa_late(ctl) == [("warning", "PA LATE 0.50 MS · MUTE TO CLEAR")]
+        await ctl.stop()
+
+    run(body())
+
+
 def test_common_delay_unmuted_before_the_write_stays_held(tmp_path: Path) -> None:
     """The hold is decided when the worker plans, from the operator's wish as well as the
     engine's mute: Main muted lets the pair go; an unmute pressed since, still on its way (the

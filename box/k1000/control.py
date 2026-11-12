@@ -581,6 +581,17 @@ def _no_mute(s: State) -> State:
     return c
 
 
+# The two delay pointers are adopted as a pair or not at all. One side alone (our own recent
+# write, a pending edit) would mix the engine's pair with the state's difference: with a held
+# common delay (`Controller._common_held`) the engine plays sub 45.1 / top 40 for an ALIGN of 5.1,
+# and sub 5.1 (the state's) with top 40 (the engine's) would come in as ALIGN -34.9.
+DELAY_PTRS = frozenset({dc._pp("sub_delay", "delay"), dc._pp("top_delay", "delay")})
+
+
+def _pair_delays(ptrs: set[str]) -> set[str]:
+    return ptrs | DELAY_PTRS if ptrs & DELAY_PTRS else ptrs
+
+
 def _num(v: Any) -> float | None:
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return None
@@ -874,9 +885,9 @@ class Controller:
         # set before the guard's mute, removed once its unmute is confirmed.
         self._guards: set[int] = set()
         # A common sub + top delay the engine holds (`_note_common`, `_common_held`): its size
-        # in samples as last noted, and the engine pair (in samples) last said in the journal.
+        # in samples as last noted, and as last said in the journal by an adoption.
         self._common_seen = 0
-        self._common_logged: tuple[int, int] | None = None
+        self._common_logged: int | None = None
         # devices.chunksize of the running engine, as last read (None: not read yet). It differs
         # from the profile's after a k1000.yaml change until the engine restarts (`_two_chunks_s`).
         self._engine_chunk: int | None = None
@@ -1966,15 +1977,17 @@ class Controller:
         return dc.diff_ops(_no_mute(self._applied), _no_mute(self._worker_target(self._applied)))
 
     def _pending_keys(self) -> tuple[set[str], set[int]]:
-        """Pointers and faders with local edits not sent yet (protected from adoption)."""
+        """Pointers and faders with local edits not sent yet (protected from adoption; the two
+        delays as a pair, `_pair_delays`)."""
         pa, ps = dc.param_map(self._applied), dc.param_map(self._worker_target(self._applied))
         ptrs = {k for k, v in ps.items() if pa.get(k) != v}
         fa, fs = dc.fader_levels(self._applied), dc.fader_levels(self.state)
-        return ptrs, {i for i in fs if fa.get(i) != fs[i]}
+        return _pair_delays(ptrs), {i for i in fs if fa.get(i) != fs[i]}
 
     def _recent_own(self) -> tuple[set[str], set[int]]:
+        """Pointers and faders K1000 wrote within OWN_WRITE_S (the delays as a pair)."""
         now = self._clock()
-        return ({p for p, t in self._own_ptr.items() if now - t < OWN_WRITE_S},
+        return (_pair_delays({p for p, t in self._own_ptr.items() if now - t < OWN_WRITE_S}),
                 {i for i, t in self._own_fader.items() if now - t < OWN_WRITE_S})
 
     async def _send(self, ops: Iterable[Op]) -> None:
@@ -2198,11 +2211,19 @@ class Controller:
         return target
 
     def _drop_adopted_common(self, new: State) -> None:
-        """A state adopted from the engine keeps no common delay (`state.drop_common_delay`);
-        the journal says so once per pair the engine holds."""
-        key = (delay_samples(new.sub_delay_ms), delay_samples(new.top_delay_ms))
-        if drop_common_delay(new, "" if key == self._common_logged else "adopted from the engine"):
-            self._common_logged = key
+        """`new`, about to replace the state, is adopted from the engine: it keeps no common
+        delay (`state.drop_common_delay`). A side that lands on the samples the state already
+        has keeps the state's own value: a held pair reads back on the sample grid (45.104167 /
+        40 for the 5.1 ALIGN set), and the operator's 5.1 stays 5.1. The journal says it once
+        per common part the engine holds, not after every ALIGN move made on top of it."""
+        common = min(delay_samples(new.sub_delay_ms), delay_samples(new.top_delay_ms))
+        if not drop_common_delay(new, "" if common == self._common_logged
+                                 else "adopted from the engine"):
+            return
+        self._common_logged = common
+        for f in DELAY_FIELDS:
+            if delay_samples(getattr(new, f)) == delay_samples(getattr(self.state, f)):
+                setattr(new, f, getattr(self.state, f))
 
     def _note_common(self) -> None:
         """The screen and the journal follow the common delay the engine holds (`_applied`)."""
@@ -2329,8 +2350,9 @@ class Controller:
             return
         skip = {FADER_MAIN} if self._mute_want is not None else set()
         self._applied = dc.state_from_config(live, faders, self._applied)
-        self.state = dc.state_from_config(live, faders, self.state, skip_faders=skip)
-        self._drop_adopted_common(self.state)
+        new = dc.state_from_config(live, faders, self.state, skip_faders=skip)
+        self._drop_adopted_common(new)
+        self.state = new
         self._note_common()
         self._mark_dirty()
         self._changed()
