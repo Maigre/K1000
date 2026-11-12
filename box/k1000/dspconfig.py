@@ -391,10 +391,12 @@ def _input_mixer(profile: Profile, aux: tuple[int, ...] = ()) -> dict[str, Any]:
     (adds exactly nothing): CamillaDSP leaves a channel no mixer source uses empty, and
     5.0.0-beta.1's spectrum ring buffer then indexes that empty channel and panics the capture
     thread (the M4's mic inputs 1-2, 2026-10-16: the engine restarted every 2 s). Only the FIRST
-    mixer counts for that, so it is this one that must name every capture channel. Upstream
-    fixed the panic after the gig (`next5` 9dacca3: an unused channel is kept as silence); the
-    pad is harmless there and stays while beta.1 can still be the installed engine (tests:
-    test_engine_capture_spectrum_of_every_channel_keeps_the_engine_up).
+    mixer counts for that, so it is this one that must name every capture channel. Fixed
+    upstream in 9dacca3 (2026-10-18: an unused channel is kept as silence), in v5.0.0-beta.2 and
+    `next5`; the pad is harmless there and is needed only while beta.1 can be installed. Its
+    guard is test_every_capture_channel_is_used_and_adds_nothing (no engine needed);
+    test_engine_capture_spectrum_of_every_channel_keeps_the_engine_up shows the crash itself,
+    and only when beta.1 is the engine on PATH.
 
     `aux` (`aux_inputs`): those capture channels become outputs 2[, 3] (A1, A2) at 0 dB instead
     of being padded; the others still pad. Without `aux` the mixer is exactly f2671b0's."""

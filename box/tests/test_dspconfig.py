@@ -1255,8 +1255,10 @@ def test_engine_capture_spectrum_of_every_channel_keeps_the_engine_up(tmp_path, 
     `null` PCM: software, no hardware): the spectrum of every capture channel, the M4's mic
     inputs included, answers and the engine runs on. Without the pad, 5.0.0-beta.1 panics its
     capture thread on the first request ("index out of bounds: the len is 0", reproduced here
-    with the `null` PCM, as on the box on 2026-10-16). Upstream fixed it after the gig
-    (`next5`, 9dacca3), but the pad stays while beta.1 can still be the installed engine."""
+    with the `null` PCM, as on the box on 2026-10-16). Fixed upstream in 9dacca3 (2026-10-18),
+    in v5.0.0-beta.2 and `next5`; the pad is needed only while beta.1 can be installed.
+    This test can fail only when beta.1 is the camilladsp on PATH: on a later engine it passes
+    with or without the pad, which test_every_capture_channel_is_used_and_adds_nothing guards."""
     from k1000.rta import spectrum_request
     prof = pf.load_profile("m4", {"capture_device": "null", "playback_device": "null", **settings},
                            probe=False)
