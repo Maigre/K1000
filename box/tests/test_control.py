@@ -3659,13 +3659,32 @@ def test_signed_delay_crossing_in_one_update_dips_both_groups(tmp_path: Path) ->
     run(body())
 
 
-def test_signed_delay_normalises_a_saved_pair_on_its_first_move_never_at_boot(tmp_path: Path) -> None:
+PA_LATE = ctl_mod.MSG_COMMON_DELAY.split("{")[0]          # "PA LATE "
+
+
+def _pa_late(ctl: Controller) -> list[tuple[str, str]]:
+    return [(lv, t) for lv, t in ctl.alerts() if t.startswith(PA_LATE)]
+
+
+def test_signed_delay_saved_pair_loses_its_common_part_the_playing_engine_waits(tmp_path: Path) -> None:
+    """docs/16 §5.1 finding 1. A saved sub 1.0 / top 0.5 plays the whole PA 0.5 ms late behind
+    an ALIGN reading of 0.50. At start the state keeps the difference only (saved so); the
+    engine, already playing, is not written (both groups would dip): the screen says how late
+    the PA is, and the first ALIGN move writes both delays in one patch, both groups dipped."""
     async def body() -> None:
         ctl, cl = make(tmp_path, State(sub_delay_ms=1.0, top_delay_ms=0.5), playing=True)
         await boot(ctl)
-        assert _config_writes(cl.log) == []                              # boot changes nothing
+        assert _config_writes(cl.log) == []                              # the music is untouched
+        assert _engine_delays(cl) == (1.0, 0.5)
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (0.5, 0.0)
         assert ctl.state.get("align_delay_ms") == 0.5
         assert pages_align_value(ctl) == ("0.50", "SUBS LATER · 0.17 m")
+        assert _pa_late(ctl) == [("warning", "PA LATE 0.50 MS · MUTE TO CLEAR")]
+        saved = json.loads((tmp_path / "state.json").read_text())
+        assert (saved["sub_delay_ms"], saved["top_delay_ms"]) == (0.5, 0.0)
+        active = yaml.safe_load((tmp_path / "active.yml").read_text())["filters"]
+        assert (active["sub_delay"]["parameters"]["delay"], active["top_delay"]["parameters"]["delay"]) \
+            == (0.5, 0.0)                                                # a restart comes back without it
         n = len(cl.log)
         ctl.nudge("align_delay_ms", 1)
         assert await ctl.settle(3.0)
@@ -3675,9 +3694,136 @@ def test_signed_delay_normalises_a_saved_pair_on_its_first_move_never_at_boot(tm
             ("mute", 1, False), ("mute", 1, True), ("mute", 2, False), ("mute", 2, True)]
         assert _engine_delays(cl) == (dc.delay_on_grid(0.6), 0.0)
         assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (0.6, 0.0)
+        assert _pa_late(ctl) == []
         await ctl.stop()
 
     run(body())
+
+
+def test_common_delay_adopted_while_playing_is_shown_and_waits_for_the_mute(
+        tmp_path: Path, caplog: Any) -> None:
+    """A CamillaGUI edit gives the tops 40 ms while the subs have 45: ALIGN would read 5 ms and
+    the whole PA play 40 ms late. Adopted: the state keeps 5 / 0, said once in the journal; the
+    engine is not written while the PA plays (it would dip both groups), the screen says PA
+    LATE. The operator's mute is the moment: both delays in one write under the group guard,
+    Main left muted (K1000 never unmutes on its own), the alert gone."""
+    import logging
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(sub_delay_ms=45.0), playing=True)
+        await boot(ctl)
+        n = len(cl.log)
+        cl.cfg["filters"]["top_delay"]["parameters"]["delay"] = 40.0     # laptop editor
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            await ctl.poll_once()
+            assert await ctl.settle(2.0)
+        assert (ctl.state.sub_delay_ms, ctl.state.top_delay_ms) == (5.0, 0.0)
+        assert _engine_delays(cl) == (45.0, 40.0) and nomark(cl.log[n:]) == []
+        assert _pa_late(ctl) == [("warning", "PA LATE 40.00 MS · MUTE TO CLEAR")]
+        said = " | ".join(r.getMessage() for r in caplog.records)
+        assert "adopted from the engine: sub delay 45.000 ms and top delay 40.000 ms" in said, said
+        assert "plays the whole PA 40.000 ms late" in said, said
+        caplog.clear()
+        with caplog.at_level(logging.INFO):                              # the next polls: quiet
+            await ctl.poll_once()
+            await ctl.poll_once()
+            assert await ctl.settle(2.0)
+        assert nomark(cl.log[n:]) == [] and _engine_delays(cl) == (45.0, 40.0)
+        assert not [r for r in caplog.records if "40.000" in r.getMessage()]
+        assert json.loads((tmp_path / "state.json").read_text())["top_delay_ms"] == 0.0
+
+        n = len(cl.log)
+        ctl.set_mute(True)                                               # B4
+        await until(lambda: _engine_delays(cl) == (5.0, 0.0), what="common delay written out")
+        assert await ctl.settle(3.0)
+        ops = nomark(cl.log[n:])
+        writes = _config_writes(ops)
+        assert len(writes) == 1, ops
+        i = ops.index(writes[0])
+        assert ops[0] == ("mute", 0, True)                               # Main first, then the guard
+        assert sorted(ops[1:i]) == [("mute", 1, True), ("mute", 2, True)]
+        assert sorted(ops[i + 1:]) == [("mute", 1, False), ("mute", 2, False)]
+        assert cl.faders[0]["mute"] is True and ctl.state.muted is True
+        assert _pa_late(ctl) == []
+        await ctl.poll_once()
+        assert await ctl.settle(2.0)
+        assert _config_writes(cl.log[n + len(ops):]) == []
+        await ctl.stop()
+
+    run(body())
+
+
+def test_common_delay_unmuted_before_the_write_stays_held(tmp_path: Path) -> None:
+    """The hold is re-decided when the worker runs: muted and unmuted again before it wrote,
+    the PA plays, so nothing is written and the alert stays."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(sub_delay_ms=3.0, top_delay_ms=2.0), playing=True)
+        await boot(ctl)
+        assert _pa_late(ctl) == [("warning", "PA LATE 2.00 MS · MUTE TO CLEAR")]
+        assert ctl._pending_ops() == []
+        ctl.status.muted = True                                          # a poll read it muted
+        assert {o.pointer for o in ctl._pending_ops() if isinstance(o, dc.SetValue)} \
+            == {SUB_DELAY_PTR, TOP_DELAY_PTR}
+        ctl.status.muted = False                                         # and unmuted again
+        assert ctl._pending_ops() == []
+        n = len(cl.log)
+        ctl._kick.set()
+        assert await ctl.settle(2.0)
+        assert _config_writes(cl.log[n:]) == [] and _engine_delays(cl) == (3.0, 2.0)
+        await ctl.stop()
+
+    run(body())
+
+
+def test_common_delay_goes_with_a_setup_rebuild_under_the_main_guard(tmp_path: Path) -> None:
+    """A setup change rebuilds the pipeline with Main muted around it: the common delay goes in
+    that upload, not in a write of its own."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(sub_delay_ms=1.0, top_delay_ms=1.5), playing=True)
+        await boot(ctl)
+        assert _pa_late(ctl) == [("warning", "PA LATE 1.00 MS · MUTE TO CLEAR")]
+        n = len(cl.log)
+        assert ctl.toggle("mono_subs", confirmed=True)
+        assert await ctl.settle(3.0)
+        ops = nomark(cl.log[n:])
+        uploads = [e for e in ops if e[0] == "config"]
+        assert len(uploads) == 1 and len(_config_writes(ops)) == 1, ops
+        i = ops.index(uploads[0])
+        assert ("mute", 0, True) in ops[:i] and ("mute", 0, False) in ops[i + 1:]
+        assert _engine_delays(cl) == (0.0, 0.5) and _pa_late(ctl) == []
+        await ctl.stop()
+
+    run(body())
+
+
+def test_fresh_engine_from_an_old_active_yml_loses_the_common_delay_before_the_ramp(
+        tmp_path: Path) -> None:
+    """The engine started from an active.yml written with both delays (before this build, or
+    by hand), muted as every fresh engine: the delays are set right while it is muted, before
+    the ramp brings Main in; no group guard is needed and no alert shows."""
+    async def body() -> None:
+        pair = State(sub_delay_ms=2.0, top_delay_ms=12.0)
+        ctl, cl = make(tmp_path, pair)                                   # fresh: Main muted at -40
+        await boot(ctl)
+        assert _engine_delays(cl) == (0.0, 10.0)
+        ops = nomark(cl.log)
+        first_write = next(i for i, e in enumerate(ops) if e[0] in ("set", "patch", "config"))
+        assert first_write < ops.index(("mute", 0, False))
+        assert not [e for e in ops if e[0] == "mute" and e[1] in (1, 2) and e[2] is True]
+        assert _pa_late(ctl) == []
+        await ctl.stop()
+
+    run(body())
+
+
+def test_rebuilt_state_loses_a_common_delay(tmp_path: Path) -> None:
+    pair = State(sub_delay_ms=3.0, top_delay_ms=2.0)
+    (tmp_path / "active.yml").write_text(dc.to_yaml(dc.generate(DEV, pair)))
+    (tmp_path / "state.json").write_text('{"schema": 1, "master_db": -10.0, "sys_peq": [{"fr')
+    st, note = recover_state(Paths(tmp_path / "state.json", tmp_path / "active.yml"))
+    assert note == ctl_mod.NOTE_REBUILT and st.muted is True
+    assert (st.sub_delay_ms, st.top_delay_ms) == (1.0, 0.0)
 
 
 def pages_align_value(ctl: Controller) -> tuple[str, str]:

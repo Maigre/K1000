@@ -76,8 +76,9 @@ from .cdsp import CdspError, CdspNoConfig, CdspUnavailable
 from .dspconfig import FADER_MAIN, FADER_SUBS, FADER_TOPS, Fader, FaderMute, Op, Rebuild, SetValue
 from .profiles import (PROC_ASOUND, PROFILE_NAMES, Profile, ProfileChoice, card_id, card_present,
                        load_profile)
-from .state import (BOOL_FIELDS, CHOICES, N_SYS_PEQ, RANGES, REBUILD_FIELDS, State, atomic_write,
-                    effective_gain, is_band_on_path, load_state)
+from .state import (BOOL_FIELDS, CHOICES, N_SYS_PEQ, RANGES, REBUILD_FIELDS, SAMPLE_MS, State,
+                    atomic_write, delay_samples, drop_common_delay, effective_gain,
+                    is_band_on_path, load_state)
 from .ui.input_map import (
     A_LAPTOP, ALL_PAGES, AUTO_HOME_PAGES, BELL_SLOTS, EDIT_HIGHLIGHT_S, F_AUX_GAIN, F_AUX_MODE,
     F_LOWCUT_ON, F_SPECTRUM_ON,
@@ -222,6 +223,9 @@ MSG_DEVICES_CHANGED = "DEVICES CHANGED (GUI)"
 OUTSIDE = "(GUI)"
 NOTE_REBUILT = "STATE REBUILT · CHECK MASTER"
 NOTE_MISSING = "NO SAVED STATE · CHECK MASTER"
+# The engine still plays a common sub + top delay (the whole PA late) that the state no longer
+# has: kept while Main is audible, written out at the next mute (Controller._common_held).
+MSG_COMMON_DELAY = "PA LATE {ms:.2f} MS · MUTE TO CLEAR"
 # Messages at/above this priority are alerts: also shown inside the MUTED band and on SETUP.
 ALERT_PRIO = 4
 
@@ -233,6 +237,7 @@ MESSAGE_LEVELS = {
     "knobs": ALERT_CRITICAL, "save": ALERT_CRITICAL, "engine": ALERT_CRITICAL,
     "settings": ALERT_WARNING, "profile": ALERT_WARNING, "wait": ALERT_WARNING,
     "drift": ALERT_WARNING, "devices": ALERT_WARNING, "held": ALERT_WARNING,
+    "common": ALERT_WARNING,
     "setup": ALERT_INFO, "ramp": ALERT_INFO,
 }
 # Status-bar ranks of the conditions the controller does not hold as messages (the body shows
@@ -710,6 +715,7 @@ def recover_state(paths: Paths) -> tuple[State, str]:
     # blocks are what ran (a rebuilt state without them would strip them from the engine).
     for f, v in dc.feature_switches(cfg).items():
         setattr(rebuilt, f, v)
+    drop_common_delay(rebuilt, f"state rebuilt from {paths.active_config}")
     rebuilt.muted = True
     log.warning("state.json %s: state rebuilt from %s (the tune the engine boots from); "
                 "master/balance are defaults, MUTED until the operator checks the master", why,
@@ -768,6 +774,7 @@ class Controller:
 
         s = state.clamped()
         s.profile = profile.name          # the state always names the running profile
+        drop_common_delay(s, "k1000 start")   # load_state did it already for state.json
         self.state: State = s
         self._applied: State = s.copy()   # what the engine is believed to hold
         self.page = HOME_PAGE
@@ -865,6 +872,10 @@ class Controller:
         # Faders K1000 may have left in a guard/ramp on the engine (mirrored in the marker):
         # set before the guard's mute, removed once its unmute is confirmed.
         self._guards: set[int] = set()
+        # A common sub + top delay the engine holds (`_note_common`, `_common_held`): its size
+        # in samples as last noted, and the engine pair (in samples) last said in the journal.
+        self._common_seen = 0
+        self._common_logged: tuple[int, int] | None = None
         self._marker_engine: float | None = None       # Aux4 as last read or written
         # Aux groups lowered (offset <= 0 dB under the balance macro) or muted outside K1000:
         # kept, shown, never raised or released by K1000.
@@ -1931,11 +1942,11 @@ class Controller:
 
     def _pending_ops(self) -> list[Op]:
         """What the worker still has to send (mute excluded: it has its own path)."""
-        return dc.diff_ops(_no_mute(self._applied), _no_mute(self.state))
+        return dc.diff_ops(_no_mute(self._applied), _no_mute(self._worker_target(self._applied)))
 
     def _pending_keys(self) -> tuple[set[str], set[int]]:
         """Pointers and faders with local edits not sent yet (protected from adoption)."""
-        pa, ps = dc.param_map(self._applied), dc.param_map(self.state)
+        pa, ps = dc.param_map(self._applied), dc.param_map(self._worker_target(self._applied))
         ptrs = {k for k, v in ps.items() if pa.get(k) != v}
         fa, fs = dc.fader_levels(self._applied), dc.fader_levels(self.state)
         return ptrs, {i for i in fs if fa.get(i) != fs[i]}
@@ -2106,11 +2117,72 @@ class Controller:
             self.status.muted = want
             if self._mute_want == want:
                 self._mute_want = None
+            if want:
+                self._kick.set()    # a common delay held while audible can go now (_common_held)
             self._changed()
 
     def _main_guard_holds(self) -> bool:
         """A setup guard (not a boot ramp: Main is parked low there) holds Main muted."""
         return FADER_MAIN in self._guards and not self._ramping
+
+    # ------------------------------------------------------------------ the common delay
+    def _common_held(self, base: State, want: State) -> bool:
+        """Leave the engine's common delay where it is for now? True while the engine (`base`)
+        holds a sub AND a top delay, its Main is audible, and `want` differs from it only by
+        their common part (docs/16 §5.1 finding 1: the state drops that part when it is loaded
+        or adopted, `state.drop_common_delay`; ALIGN has not moved since).
+
+        Why not write it at once: every Delay write rebuilds the delay line and clicks, so K1000
+        writes delays under a mute of the groups whose delay changes, and here both change: the
+        whole PA dips for about 0.3 s. Made on K1000's own decision in the middle of the music,
+        that is a dropout nobody asked for. So the engine plays on as it was, the screen says how
+        late the PA is (MSG_COMMON_DELAY, `_note_common`), and the write goes at the first moment
+        it is inaudible or asked for: Main muted (B4, the phone), an ALIGN move (the move writes
+        both delays: one dip, as any delay move), a setup change (rebuilt under a Main mute), or
+        the next engine start (a fresh engine is set up muted, before its ramp)."""
+        if base.muted or self.status.muted is True:
+            return False
+        sub, top = delay_samples(base.sub_delay_ms), delay_samples(base.top_delay_ms)
+        if min(sub, top) <= 0:
+            return False
+        dropped = base.copy()
+        drop_common_delay(dropped)
+        return ((delay_samples(dropped.sub_delay_ms), delay_samples(dropped.top_delay_ms))
+                == (delay_samples(want.sub_delay_ms), delay_samples(want.top_delay_ms)))
+
+    def _worker_target(self, base: State) -> State:
+        """A copy of the state, as the worker takes the engine to it from `base`: with `base`'s
+        two delays while `_common_held` (never in a setup rebuild: Main is muted around it)."""
+        target = self.state.copy()
+        if self._common_held(base, target) and not any(
+                isinstance(op, Rebuild) for op in dc.diff_ops(base, target)):
+            target.sub_delay_ms, target.top_delay_ms = base.sub_delay_ms, base.top_delay_ms
+        return target
+
+    def _drop_adopted_common(self, new: State) -> None:
+        """A state adopted from the engine keeps no common delay (`state.drop_common_delay`);
+        the journal says so once per pair the engine holds."""
+        key = (delay_samples(new.sub_delay_ms), delay_samples(new.top_delay_ms))
+        if drop_common_delay(new, "" if key == self._common_logged else "adopted from the engine"):
+            self._common_logged = key
+
+    def _note_common(self) -> None:
+        """The screen and the journal follow the common delay the engine holds (`_applied`)."""
+        a = self._applied
+        common = min(delay_samples(a.sub_delay_ms), delay_samples(a.top_delay_ms))
+        if common > 0:
+            self._set_message("common", 4, MSG_COMMON_DELAY.format(ms=common * SAMPLE_MS))
+            if common != self._common_seen:
+                log.warning("the engine plays the whole PA %.3f ms late (sub delay %.3f ms, top "
+                            "delay %.3f ms): written out at the next mute, ALIGN move, setup "
+                            "change or engine start, never while the PA plays (the write dips "
+                            "both groups)", common * SAMPLE_MS, a.sub_delay_ms, a.top_delay_ms)
+        elif self._common_seen:
+            log.info("the common delay of %.3f ms is out of the engine",
+                     self._common_seen * SAMPLE_MS)
+            self._set_message("common", 4, None)
+            self._common_logged = None
+        self._common_seen = common
 
     # ------------------------------------------------------------------ apply worker
     async def _worker(self) -> None:
@@ -2150,7 +2222,7 @@ class Controller:
     async def _apply_once(self) -> bool:
         """One plan from `_applied` to the state. False when it failed (no busy retry loop)."""
         base = self._applied.copy()
-        target = self.state.copy()
+        target = self._worker_target(base)
         target.muted = base.muted
         epoch = self._epoch
         plan = dc.smooth_ops(base, target)
@@ -2185,6 +2257,7 @@ class Controller:
             return False
         finally:
             self._busy = False
+            self._note_common()
             self._changed()
 
     async def _run_plan(self, plan: dc.Plan, epoch: int) -> None:
@@ -2219,6 +2292,8 @@ class Controller:
         skip = {FADER_MAIN} if self._mute_want is not None else set()
         self._applied = dc.state_from_config(live, faders, self._applied)
         self.state = dc.state_from_config(live, faders, self.state, skip_faders=skip)
+        self._drop_adopted_common(self.state)
+        self._note_common()
         self._mark_dirty()
         self._changed()
 
@@ -2541,6 +2616,7 @@ class Controller:
                          " muted" if main_mute else "", "" if managed else ", not brought in by K1000")
             await self._sync_running(live, faders, epoch, managed=managed)
         self._check_link(epoch)
+        self._note_common()
         await self._write_marker()
 
     async def _sync_fresh(self, live: Any, faders: Any, epoch: int) -> None:
@@ -2644,6 +2720,9 @@ class Controller:
         for f in STRUCTURE_FIELDS:                  # a setup edit not applied yet also wins
             if getattr(self.state, f) != getattr(self._applied, f):
                 setattr(new, f, getattr(self.state, f))
+        # Never a common sub + top delay in the state; the engine keeps one while the PA plays
+        # (`_common_held`): the engine view below holds both, the state their difference.
+        self._drop_adopted_common(new)
         _vol, engine_muted = _fader(faders, FADER_MAIN)
         if connect and self._mute_want is False:
             if FADER_MAIN in extra_skip or engine_muted is False:
@@ -2667,6 +2746,7 @@ class Controller:
             self._mark_dirty()
             self._changed()
         self._applied = engine_view
+        self._note_common()
         return engine_view
 
     async def _reconcile(self, live: Any, faders: Any, *, connect: bool,

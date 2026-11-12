@@ -372,10 +372,14 @@ change. Delays are applied in whole samples at 48 kHz.
 **The two delays are one knob** (D-011). ALIGN E2 (E3 until D-015) shows
 `sub_delay_ms − top_delay_ms`: 0.1 ms a click, one sample (1/48 ms) with the push, stopping one
 click on `ALIGNED` (0) before crossing to the other side. A knob move sets the late side and zeroes
-the other. A file with both set (written by hand, by CamillaGUI or by a build before D-011) keeps
-both until the first DELAY change (the wake-up click aside), which moves the net value one step,
-writes it to the late side and zeroes the other: sub 2.0 / top 0.5 shows `1.50 ms`, `SUBS LATER · 0.51 m`, and one click clockwise
-stores sub 1.6, top 0. A `lowcut_hz` between the 2 Hz steps (e.g. 112.25) also stays as it is until its first
+the other. Both set (written by hand, by CamillaGUI or by a build before D-011) would delay every
+speaker by the smaller one with nothing on the screen (sub 2.0 / top 0.5 shows `1.50 ms` and plays
+the whole PA 0.5 ms late), so K1000 takes that common part out wherever settings come in: when it
+loads `state.json` or rebuilds it from `active.yml`, and when it adopts a CamillaGUI edit. Sub 2.0 /
+top 0.5 becomes sub 1.5 / top 0, ALIGN still reads `1.50 ms`, and the journal says what was
+removed. An engine already playing keeps the old pair until the next mute, ALIGN move, setup change
+or engine start (writing it dips the whole PA); meanwhile the screen says `PA LATE … · MUTE TO
+CLEAR` ([chapter 6](06-troubleshooting.md)). A `lowcut_hz` between the 2 Hz steps (e.g. 112.25) also stays as it is until its first
 click, which lands on the next step in the turn's direction (114 up, 112 down). Reset live EQ puts
 the four bells and both shelves back to the defaults above.
 
