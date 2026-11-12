@@ -547,23 +547,46 @@ config_set() {
     }' "$c" > "$c.k1000-new"
   mv "$c.k1000-new" "$c"
 }
+# eeprom_hdmi: the DISABLE_HDMI value the bootloader takes from the EEPROM configuration on stdin:
+# the last one set before any [section] or under [all]. A line under any other section does not
+# count: [none] never applies (the stock Pi 4 configuration ends with one), a board section may not.
+# Prints "" when there is none.
+eeprom_hdmi() {
+  awk 'BEGIN { on = 1 }
+       /^[[:space:]]*\[/ { s = $0; gsub(/[[:space:]]/, "", s); on = (s == "[all]"); next }
+       on && /^[[:space:]]*DISABLE_HDMI[[:space:]]*=/ { v = $0; sub(/^[^=]*=/, "", v); gsub(/[[:space:]]/, "", v) }
+       END { print v }'
+}
 # eeprom_hint: the EEPROM half, for a person to run (DISABLE_HDMI=1: no HDMI diagnostics screen, so
-# the bootloader stops probing HDMI). This script only reads the EEPROM configuration.
+# the bootloader stops probing HDMI). This script only reads the EEPROM configuration. The printed
+# edit drops every DISABLE_HDMI line, then puts DISABLE_HDMI=1 right under the first [all] (the
+# form measured on the box, 2026-11-12), or in an [all] of its own at the end when there is none:
+# appended after the last section as it stands (the stock [none]), it would never apply.
 eeprom_hint() {
-  local cur
+  local cur edit
   if ! command -v rpi-eeprom-config >/dev/null; then
     note "EEPROM: rpi-eeprom-config not found, DISABLE_HDMI not read"; return 0
   fi
   cur=$(rpi-eeprom-config 2>/dev/null || true)
-  if grep -Eq '^[[:space:]]*DISABLE_HDMI=1[[:space:]]*$' <<<"$cur"; then
+  if [ "$(eeprom_hdmi <<<"$cur")" = 1 ]; then
     note "EEPROM: DISABLE_HDMI=1 already set"; return 0
+  fi
+  if grep -Eq '^[[:space:]]*DISABLE_HDMI[[:space:]]*=[[:space:]]*1[[:space:]]*$' <<<"$cur"; then
+    note "EEPROM: a DISABLE_HDMI=1 line is there, but under a section that does not apply to every boot (after [none] it never does): not in effect"
+  fi
+  if grep -q '^\[all\]' <<<"$cur"; then
+    edit="sed -e '/^[[:space:]]*DISABLE_HDMI[[:space:]]*=/d' -e '0,/^\[all\]/s/^\[all\].*/&\nDISABLE_HDMI=1/' ~/eeprom-before.conf > /tmp/boot.conf"
+  else
+    edit="sed '/^[[:space:]]*DISABLE_HDMI[[:space:]]*=/d' ~/eeprom-before.conf > /tmp/boot.conf && printf '\n[all]\nDISABLE_HDMI=1\n' >> /tmp/boot.conf"
   fi
   note "EEPROM: DISABLE_HDMI=1 is NOT set, and this script never writes the EEPROM. It stops the bootloader probing HDMI; a rescue then has SSH and the box's Wi-Fi, no HDMI screen. By hand, on the box, as a power cycle of its own once this one is checked:"
   printf '    %s\n' \
-    "vcgencmd bootloader_version; rpi-eeprom-config > /tmp/boot.conf" \
-    "echo DISABLE_HDMI=1 >> /tmp/boot.conf && sudo rpi-eeprom-config --apply /tmp/boot.conf" \
+    "vcgencmd bootloader_version; rpi-eeprom-config > ~/eeprom-before.conf" \
+    "$edit" \
+    "diff ~/eeprom-before.conf /tmp/boot.conf    # check: DISABLE_HDMI=1 under [all], no other DISABLE_HDMI line" \
+    "sudo rpi-eeprom-config --apply /tmp/boot.conf" \
     "# --apply writes the config onto the newest bootloader image rpi-eeprom holds: it may update the bootloader too (compare bootloader_version after)" \
-    "# undo: the same, without the DISABLE_HDMI line"
+    "# undo: sudo rpi-eeprom-config --apply ~/eeprom-before.conf"
 }
 step_firmware() {
   local c=$BOOT_DIR/config.txt kv todo=() why

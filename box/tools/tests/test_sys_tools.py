@@ -1707,6 +1707,74 @@ def test_lean_firmware_says_when_the_eeprom_already_has_disable_hdmi(tmp_path):
     assert box.calls() == []
 
 
+def _eeprom_applies(conf: str) -> dict[str, str]:
+    """What the bootloader takes from an EEPROM configuration: the lines before any section and
+    under [all]; [none] and any other section skipped (the reading eeprom_hdmi makes)."""
+    on, got = True, {}
+    for ln in conf.splitlines():
+        s = ln.strip()
+        if s.startswith("["):
+            on = s.replace(" ", "") == "[all]"
+        elif on and "=" in s and not s.startswith("#"):
+            k, v = s.split("=", 1)
+            got[k.strip()] = v.strip()
+    return got
+
+
+def _run_printed_eeprom_edit(out: str, before: str, d: Path) -> str:
+    """Run the edit line k1000-lean printed for a person, on `before`, with ~/ and /tmp/ moved
+    into `d`; return the configuration it would --apply."""
+    tail = out.split("DISABLE_HDMI=1 is NOT set", 1)[1].splitlines()[1:]
+    lines = []
+    for ln in tail:
+        if not ln.startswith("    "):
+            break
+        lines.append(ln[4:])
+    assert lines[0].endswith("rpi-eeprom-config > ~/eeprom-before.conf")
+    assert lines[2].startswith("diff ~/eeprom-before.conf /tmp/boot.conf")
+    assert lines[3] == "sudo rpi-eeprom-config --apply /tmp/boot.conf"
+    assert lines[-1] == "# undo: sudo rpi-eeprom-config --apply ~/eeprom-before.conf"
+    (d / "eeprom-before.conf").write_text(before)
+    edit = lines[1].replace("~/", f"{d}/").replace("/tmp/boot.conf", str(d / "boot.conf"))
+    r = subprocess.run(["bash", "-c", edit], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return (d / "boot.conf").read_text()
+
+
+# The shapes a Pi 4 EEPROM configuration takes: stock (an [all] block, then [none]), the one the
+# old printed `echo >>` left on the box on 2026-11-12 (DISABLE_HDMI=1 under [none]: never applied),
+# a DISABLE_HDMI=0 under [all], and an old one with no section at all.
+STOCK_EEPROM = "[all]\nBOOT_UART=0\nWAKE_ON_GPIO=1\nPOWER_OFF_ON_HALT=0\n\n[none]\nFREEZE_VERSION=0\n"
+
+
+@pytest.mark.parametrize("before, stranded", [
+    (STOCK_EEPROM, False),
+    (STOCK_EEPROM + "DISABLE_HDMI=1\n", True),
+    ("[all]\nBOOT_UART=0\nDISABLE_HDMI=0\n\n[none]\nFREEZE_VERSION=0\n", False),
+    ("BOOT_UART=0\nBOOT_ORDER=0xf41\n", False),
+])
+def test_lean_firmware_eeprom_command_puts_disable_hdmi_where_it_applies(tmp_path, before, stranded):
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    _eeprom(box, before)
+    r = box.run("--only", "firmware")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "DISABLE_HDMI=1 is NOT set" in r.stdout and "already set" not in r.stdout
+    assert ("not in effect" in r.stdout) == stranded
+    assert box.calls() == []                                    # printed, never run
+    after = _run_printed_eeprom_edit(r.stdout, before, tmp_path)
+    assert _eeprom_applies(after)["DISABLE_HDMI"] == "1"
+    assert after.count("DISABLE_HDMI") == 1                     # no stray line left under [none]
+    rest = {k: v for k, v in _eeprom_applies(after).items() if k != "DISABLE_HDMI"}
+    assert rest == {k: v for k, v in _eeprom_applies(before).items() if k != "DISABLE_HDMI"}
+    if "[all]" in before:                                       # the measured form: right under [all]
+        assert after.startswith("[all]\nDISABLE_HDMI=1\n")
+        assert after.replace("DISABLE_HDMI=1\n", "", 1) == re.sub(r"DISABLE_HDMI=.*\n", "", before)
+    # the box reads it back as set: the next run has nothing to print
+    _eeprom(box, after)
+    r2 = box.run("--only", "firmware")
+    assert "EEPROM: DISABLE_HDMI=1 already set" in r2.stdout and "--apply" not in r2.stdout
+
+
 def test_lean_check_without_an_initramfs_does_not_ask_for_one(tmp_path):
     """auto_initramfs=0: the firmware loads none, so a missing or stale initramfs8 is no reason to stop."""
     box = LeanBox(tmp_path, {}, plan=[], units={})
