@@ -166,11 +166,13 @@ After any edit of `k1000.yaml`: `sudo systemctl restart k1000`.
 
 | Flag | What it adds |
 |---|---|
-| *(none)* | Installs and updates the files, enables the four units (`camilladsp`, `k1000`, `camillagui`, `k1000-console`), and installs the two Laptop access units (`k1000-laptop.path`, `k1000-laptop.service`), never enabled: k1000 brings the watcher. **Starts nothing.** A changed access-point unit is only reported (`not applied; between shows: … --ap`), never copied |
-| `--start` | Then (re)starts those four units. **The audio drops for about a second**, then ramps back in. Never during a show |
+| *(none)* | Installs and updates the files, enables the five units (`camilladsp`, `k1000`, `camillagui`, `k1000-console`, `k1000-usbwatch`), and installs the two Laptop access units (`k1000-laptop.path`, `k1000-laptop.service`), never enabled: k1000 brings the watcher. Installs the processor settings unless they were switched off (below). **Starts nothing.** A changed access-point unit is only reported (`not applied; between shows: … --ap`), never copied |
+| `--start` | Then (re)starts those five units. **The audio drops for about a second**, then ramps back in. Never during a show |
 | `--boot` | Boot-level setup, applied at the next reboot: compiles the screen overlay into `/boot/firmware/overlays/`, adds `dtoverlay=k1000-zynscreen,rotate=270` to `config.txt`, adds `vt.global_cursor_default=0` to `cmdline.txt` (original kept as `cmdline.txt.k1000-orig`), turns I²C on for the knobs (`dtparam=i2c_arm=on`, `i2c-dev` loaded at boot) |
 | `--headless` | Boots to the console instead of a desktop (`multi-user.target`), masks PipeWire/WirePlumber for all users, disables Bluetooth, printing and the NFS client/rpcbind, removes the tty1 auto-login. Applied at the next reboot. It leaves cloud-init alone (see §4) |
 | `--ap` | Runs `net/setup-ap.sh`: the phone's Wi-Fi "K1000" on `wlan0` and its firewall, and installs or updates the access point's units (the only way they are). Takes effect at once. Later runs keep every earlier choice, a no-go included: after `setup-ap.sh --down` the access point stays down until `setup-ap.sh --up`. It refuses (exit 4, nothing changed) while another interface holds a 10.42.0.x address or `wlan0` is a client of another Wi-Fi |
+| `--cpu-off` | Removes the [processor settings](#processor-settings) and keeps them off on every later run (`/etc/k1000/cpu-tuning` says `off`). The OS defaults come back at the next boot |
+| `--cpu-on` | Puts them back and keeps them on (the default) |
 | `--deps` | Prints the apt packages it may install, one per line, and exits |
 | `-h`, `--help` | Prints its header |
 
@@ -201,6 +203,95 @@ it is missing or not 5.x. When the source carries the Android app (`apk/K1000-<v
 there by the deploy, never in git), it installs the newest one to `/opt/k1000/apk/` for the
 first-time page, and keeps the box's when there is none ([chapter
 7](07-maintenance.md#the-android-app-on-the-box)).
+
+### The control service's watchdog
+
+Like the engine, k1000 restarts 1 s after a crash. `k1000.service` also restarts when the service
+**hangs**: it is `Type=notify` with `WatchdogSec=15`. k1000 tells systemd it is up (`READY=1`) once
+its knobs, screen and phone page are started, then sends `WATCHDOG=1` every 3.75 s from its event
+loop, never from a side thread, so a loop that is stuck stops sending. 15 s after the last one,
+systemd sends SIGABRT (the journal gets every thread's Python traceback: where it hung), then
+starts k1000 again 1 s later. A start that never reaches `READY=1` is killed after 30 s and
+retried. Without systemd (tests, a run by hand) nothing of this happens.
+
+The engine does not depend on k1000 and keeps playing throughout. What the new k1000 does to it,
+read from `box/k1000/control.py` (`_sync`) and held by the tests:
+
+- An engine playing at its level (Main unmuted, K1000's marker on the unused Aux4 fader): it reads
+  the version, the config, the faders and the state, and **adopts** them. No mute, no ramp, no
+  config upload. Edits that reached the engine before the hang are kept and saved; a knob edit
+  still on its way is lost. It writes the marker again only if it is missing.
+- Killed in the middle of a boot ramp or a click guard (the marker records it): it finishes it.
+  Main's ramp continues from where Main stands, without a dip; a group muted by a guard is
+  unmuted.
+- A pipeline changed in CamillaGUI while k1000 was hung: put back at once, with Main muted around
+  the upload (a short gap). Values K1000 cannot adopt (out of its ranges, a group fader raised
+  above the balance): pulled down in small steps, while cuts and mutes made outside it are kept. A
+  profile changed in `k1000.yaml`: applied (about 1 s of silence, then the ramp). None of these
+  happens on a box where nobody edited anything meanwhile.
+
+Meanwhile the knobs and B4 do nothing: the 15 s, then 1 s and k1000's start-up. The screen keeps
+the last frame until the new k1000 draws (a SIGABRT does not draw the "restarting…" frame).
+
+```sh
+journalctl -u k1000 -b | grep -iE "watchdog|systemd: ready"    # restarts, and each start's READY
+systemctl show -p NRestarts -p WatchdogUSec k1000
+# a hang on purpose, between shows: the sound must not change. A stopped process cannot print its
+# traceback, so systemd kills it 5 s after the SIGABRT: k1000 is back about 25 s later
+sudo kill -STOP "$(systemctl show -p MainPID --value k1000)"
+```
+
+### Processor settings
+
+`install.sh` installs five small files from `box/cpu/`, listed in one table (`CPU_FILES`), and
+`--cpu-off` takes them all away (each file says why it exists):
+
+| File on the box | What | From |
+|---|---|---|
+| `/etc/udev/rules.d/61-k1000-cpu-governor.rules` | CPU governor `performance`: the clock stays at its maximum. Raspberry Pi OS sets `ondemand` with its own rule (`60-ondemand-governor.rules`); this one runs after it | the next boot |
+| `/etc/systemd/system.conf.d/50-k1000-cpu.conf` | `CPUAffinity=0 1`: every process on cores 0 and 1 unless its unit says otherwise | the next boot |
+| `/etc/systemd/system/camilladsp.service.d/50-k1000-cpu.conf` | `CPUAffinity=2 3`: the engine alone on cores 2 and 3 | the engine's next start |
+| `/etc/systemd/system/k1000.service.d/50-k1000-cpu.conf` | `CPUAffinity=0 1`, `Nice=5`: the control service yields to the system's own work under load, and still comes before CamillaGUI | its next start |
+| `/etc/systemd/system/camillagui.service.d/50-k1000-cpu.conf` | `CPUAffinity=0 1` (its unit keeps `Nice=10`) | its next start |
+
+The cost of `performance`: the processor no longer slows down when idle, so the box draws a
+little more power and runs warmer. Not measured yet. The firmware still slows it down on heat or
+low voltage, so watch these after a long run, with and without the settings:
+
+```sh
+vcgencmd measure_temp; vcgencmd measure_clock arm; vcgencmd get_throttled   # throttled=0x0 is clean
+cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor                 # performance
+pid=$(systemctl show -p MainPID --value camilladsp); ps -L -o tid,psr,rtprio,comm -p "$pid"   # psr: 2 or 3
+ps -L -N --ppid 2 -o psr=,comm= | awk '$1 >= 2 { print $2 }' | sort | uniq -c   # the engine's threads only
+```
+
+Not set, on purpose: each needs a measurement on the box first.
+
+- **Which core handles the interrupts.** USB (the M4), Wi-Fi, the SD card and Ethernet are
+  expected on core 0 unless moved. `cat /proc/interrupts` twice, 10 s apart, shows the counts per core;
+  `/proc/irq/<n>/smp_affinity_list` moves one (the PCIe interrupts behind the Pi 4's USB may
+  refuse). The idea to test: USB on the engine's cores, the rest on 0 and 1.
+- **`isolcpus=2,3`.** It would keep even the kernel's balancing off the engine's cores, but then
+  the engine's threads stay on the core they start on, all on one if unlucky, unless each is
+  pinned by hand. `nohz_full` is not built into Raspberry Pi OS's 64-bit kernels (checked on
+  6.18.60, normal and real-time).
+- **A real-time kernel.** Raspberry Pi OS trixie has one as a package: `linux-image-rpi-v8-rt`
+  (`PREEMPT_RT`; it carries the screen, touch, USB audio and Wi-Fi drivers). It installs as
+  `kernel8_rt.img` (and `initramfs8_rt`) next to the normal kernel and boots only with
+  `kernel=kernel8_rt.img` in `config.txt`, so the way back is that one line. To measure with
+  `cyclictest` (Debian's `rt-tests`) on cores 2 and 3, under load, normal kernel against
+  real-time.
+- **Whether `Nice=` ranks one service against another.** Only when they share a scheduling
+  group, and two things can give each service its own: the kernel's autogroup (built in, on by
+  default) and systemd's CPU control groups.
+  `cat /sys/fs/cgroup/cgroup.subtree_control /sys/fs/cgroup/system.slice/cgroup.subtree_control`:
+  `cpu` in the second, one group per service and the lever is `CPUWeight=`; `cpu` in the first
+  only, the services share one group and nice counts; in neither, the autogroup decides and
+  `kernel.sched_autogroup_enabled = 0` (a sysctl) makes nice count. CamillaGUI's `Nice=10` has
+  the same question.
+
+Each is judged the same way: the loop latency, the produced fault and a night run of
+`docs/16-post-gig-audit.md` §3.3, before and after.
 
 ## 7. Converting a desktop card
 
