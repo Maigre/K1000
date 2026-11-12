@@ -27,15 +27,15 @@ the amber strip for a few seconds (what your own press did), **pills** sit on SH
 | ● `INACTIVE` / `STALLED` red | The engine stopped, or gets no input data | See ENGINE DOWN |
 | `NO ENGINE` red | No connection to CamillaDSP | See ENGINE DOWN |
 | `ENGINE ?` amber, and the orange alert `STATUS ? engine · device` | K1000 cannot tell yet whether the engine runs or the device is there ([picture](../ui/unknown_status.png)) | Wait. Audio never depends on the screen |
-| `DSP 1.2%` | The engine's processing load | Normal: a few percent |
-| `20.3ms` after the engine state, white | The delay from the inputs to the outputs (D-018), estimated: the engine's playback buffer plus one chunk, plus the interface's own share (`io_latency_ms`, 3.8 ms on the M4). The engine refreshes it about every 10 s. Nothing shown: no reading yet (the first seconds after an engine start), the engine not running, an alert on the bar, or no room beside the pills | — |
+| `DSP 1.2%` | The engine's processing load. Left out when the pills leave too little room for it beside the delay | Normal: a few percent |
+| `20.3ms` after the engine state, white | An estimate of the delay from the inputs to the outputs (D-018), not a measurement: the engine's playback buffer plus one chunk, plus the interface's own share (`io_latency_ms`, 3.8 ms on the M4). Once the engine has logged a dropout it is only a floor, marked `≥`: part of a backlog can sit where the engine's buffer reading does not see it ([`docs/16`](../16-post-gig-audit.md) §2.2). The engine refreshes it about every 10 s. Nothing shown: no reading yet (the first seconds after an engine start), the engine not running, an alert on the bar, or no room beside the pills (`DSP` gives way first, then the dropout count, then the delay) | — |
 | `20.3ms` orange | Above the limit (`engine.latency_limit_ms`, 10 ms). It only informs: the sound is not changed | After the show: `journalctl -u k1000 \| grep latency:` gives one line at each engine connection, at each move of more than one chunk, and every 10 minutes |
-| `≥16.5ms` | The profile does not know its interface's share (`dev`): the engine's share alone, a floor | — |
-| `3 DROP` small, orange, after the delay | The engine logged that many dropouts (underrun, overrun, stall) since it started. Not shown at 0, nor when its log cannot be read. A delay that grew since the start, with dropouts beside it, matches the backlog described in [`docs/16-post-gig-audit.md`](../16-post-gig-audit.md) §2.2 | Copy `/var/log/k1000/camilladsp_r*.log` aside before the engine restarts |
+| `≥16.5ms` | A floor: the profile does not know its interface's share (`dev`), so the engine's share alone; or the engine logged a dropout (`3 DROP` beside it) | — |
+| `3 DROP` small, orange, after the delay | The engine logged that many dropouts (underrun, overrun, stall) since it started. Not shown at 0, nor when its log cannot be read. A delay that grew since the start, with dropouts beside it, may be the backlog of [`docs/16-post-gig-audit.md`](../16-post-gig-audit.md) §2.2 (unproven) | Copy `/var/log/k1000/camilladsp_r*.log` aside before the engine restarts |
 | A coloured bar across the top | A system alert | See "Alerts" below |
 
-The phone's STATUS sheet says the same in words, on its `Delay in → out` row, with the dropout
-count even at 0.
+The phone's STATUS sheet says the same in words, on its `Delay in → out` row (`at least` for
+`≥`), with the dropout count even at 0, beside a figure only.
 
 ### Full-screen states
 
