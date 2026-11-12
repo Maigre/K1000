@@ -690,7 +690,8 @@ def test_cpu_split_engine_alone_on_two_cores():
     assert system == {0, 1} and _cpus(engine["CPUAffinity"]) == {2, 3}
     for unit in ("k1000", "camillagui"):
         assert _cpus(_ini(CPU_DIR / f"{unit}.conf", "Service")["CPUAffinity"]) == system, unit
-    # the control service: below the system's own work, above CamillaGUI
+    # the control service: the INTENDED order, below the system's own work and above CamillaGUI.
+    # Whether nice ranks one service against another at all is a box check (manual 2 §6).
     nice = int(_ini(CPU_DIR / "k1000.conf", "Service")["Nice"])
     gui = int(_ini(BOX / "systemd" / "camillagui.service", "Service")["Nice"])
     assert 0 < nice < gui

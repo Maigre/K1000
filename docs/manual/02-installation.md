@@ -236,8 +236,9 @@ the last frame until the new k1000 draws (a SIGABRT does not draw the "restartin
 ```sh
 journalctl -u k1000 -b | grep -iE "watchdog|systemd: ready"    # restarts, and each start's READY
 systemctl show -p NRestarts -p WatchdogUSec k1000
-# a hang on purpose, between shows: the sound must not change. A stopped process cannot print its
-# traceback, so systemd kills it 5 s after the SIGABRT: k1000 is back about 25 s later
+# a hang on purpose, between shows: the sound must not change. systemd follows its SIGABRT with a
+# SIGCONT, so even a stopped k1000 prints its traceback (the loop idle in its selector) and exits:
+# it is back about 20 s later (11 to 15 s after the stop, then 1 s and its start-up)
 sudo kill -STOP "$(systemctl show -p MainPID --value k1000)"
 ```
 
@@ -252,7 +253,7 @@ last column says; switched off, they all leave at the next boot only (see `--cpu
 | `/etc/udev/rules.d/61-k1000-cpu-governor.rules` | CPU governor `performance`: the clock stays at its maximum. Raspberry Pi OS sets `ondemand` with its own rule (`60-ondemand-governor.rules`); this one runs after it | the next boot |
 | `/etc/systemd/system.conf.d/50-k1000-cpu.conf` | `CPUAffinity=0 1`: every process on cores 0 and 1 unless its unit says otherwise | install.sh's daemon-reload, for what systemd starts from then on; everything at the next boot |
 | `/etc/systemd/system/camilladsp.service.d/50-k1000-cpu.conf` | `CPUAffinity=2 3`: the engine alone on cores 2 and 3 | the engine's next start |
-| `/etc/systemd/system/k1000.service.d/50-k1000-cpu.conf` | `CPUAffinity=0 1`, `Nice=5`: the control service yields to the system's own work under load, and still comes before CamillaGUI | its next start |
+| `/etc/systemd/system/k1000.service.d/50-k1000-cpu.conf` | `CPUAffinity=0 1`, `Nice=5`. Intended, not verified: the control service yields to the system's own work under load and still comes before CamillaGUI. Likely no effect until the scheduling-group check below is done | its next start |
 | `/etc/systemd/system/camillagui.service.d/50-k1000-cpu.conf` | `CPUAffinity=0 1` (its unit keeps `Nice=10`) | its next start |
 
 The cost of `performance`: the processor no longer slows down when idle, so the box draws a
@@ -262,9 +263,18 @@ low voltage, so watch these after a long run, with and without the settings:
 ```sh
 vcgencmd measure_temp; vcgencmd measure_clock arm; vcgencmd get_throttled   # throttled=0x0 is clean
 cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor                 # performance
-pid=$(systemctl show -p MainPID --value camilladsp); ps -L -o tid,psr,rtprio,comm -p "$pid"   # psr: 2 or 3
-ps -L -N --ppid 2 -o psr=,comm= | awk '$1 >= 2 { print $2 }' | sort | uniq -c   # the engine's threads only
+grep Cpus_allowed_list /proc/1/status                     # systemd: 0-1 on, 0-3 off (after a reboot)
+pid=$(systemctl show -p MainPID --value camilladsp)
+taskset -acp "$pid"                                       # every engine thread may use 2,3
+taskset -acp "$(systemctl show -p MainPID --value k1000)" # every k1000 thread: 0,1
+ps -L -o tid,psr,rtprio,comm -p "$pid"                    # psr: the core each last ran on
+# a snapshot of user-space threads last seen on cores 2-3, kernel threads left out: the engine's only
+ps -e -L -o pid=,ppid=,psr=,comm= | awk '$1 != 2 && $2 != 2 && $3 >= 2'
 ```
+
+The knobs share cores 0 and 1 with everything else now: compare a knob trace
+(`tools/k1000-knobtrace.py capture --guided`, [chapter 8](08-development.md)) with and without
+the settings, beside the dropout and boot-time checks.
 
 Not set, on purpose: each needs a measurement on the box first.
 
