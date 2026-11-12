@@ -168,6 +168,7 @@ Every step is idempotent: a converged box answers `0 changes`.
 | `timers` | `apt-daily`, `apt-daily-upgrade`, `man-db`, `e2scrub_all` disabled | no apt or man-db work in the middle of a show (and no internet at gigs) |
 | `swap` | `/etc/rpi/swap.conf.d/50-k1000.conf`: `Mechanism=zram` | no 2 GB swap file re-made on the SD card at every boot (1.5 s), no writeback to the SD card hours into a show |
 | `boot` | `cmdline.txt`: `quiet`, `logo.nologo`, no `splash`/`plymouth` arguments; `config.txt`: `disable_splash=1` | a quiet panel and console at boot |
+| `firmware` | **opt-in** (`--only firmware`; a plain run and `bootstrap.sh` leave it out): `config.txt` `auto_initramfs=0`, `camera_auto_detect=0`, `display_auto_detect=0`, each set where it stands or added under `[all]`; **refused**, nothing changed, unless `cmdline.txt`'s `root=` is a `PARTUUID=` or a `/dev` partition and nothing on it needs an initramfs (`boot=overlay`, `cryptdevice=`, a named `initramfs` line). The EEPROM's `DISABLE_HDMI=1` is printed as a command, never applied | the firmware's 10.4 s before Linux (16/10): reading the 11.9 MB initramfs (~1.1 s), camera/display and HDMI probing. The initramfs is still built: the undo is `config.txt` alone (its backup is on the boot partition, readable from a laptop) |
 
 - **The guard.** Every removal is simulated first (`apt-get -s`) and its plan saved in
   `/var/backups/k1000-lean/`. A plan that names a package K1000, the boot, SSH, the network, the
@@ -185,7 +186,8 @@ Every step is idempotent: a converged box answers `0 changes`.
   installed; `initramfs8` (and `initramfs_2712`) are byte-identical to the newest
   `/boot/initrd.img-*-rpi-v8` (`-2712`) and list an `/init`; `cmdline.txt` is one line with the
   same `root=` this boot used and `rootwait`; `kernel8.img` and `config.txt` are there; `i2c-dev`
-  is loaded at boot. Any failure prints what to fix and says **do NOT power-cycle**. After an
+  is loaded at boot. With `auto_initramfs=0` the initramfs is not checked; `root=` must then be one
+  the kernel finds alone. Any failure prints what to fix and says **do NOT power-cycle**. After an
   interrupted run, run `--check` before anything else.
 - **One change set per power cycle.** After each, check the box: SSH answers, the engine is
   Running, Main is back at its saved level, the panel shows K1000.

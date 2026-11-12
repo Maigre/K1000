@@ -1407,7 +1407,7 @@ def test_lean_refuses_a_two_line_cmdline(tmp_path):
 
 def test_lean_list_and_unknown_step(tmp_path):
     box = LeanBox(tmp_path, {}, plan=[], units={})
-    assert box.run("--list").stdout.split() == ["keep", "desktop", "services", "timers", "swap", "boot"]
+    assert box.run("--list").stdout.split() == ["keep", "desktop", "services", "timers", "swap", "boot", "firmware"]
     r = box.run("--only", "network")
     assert r.returncode == 1 and "unknown step 'network'" in r.stderr
 
@@ -1558,6 +1558,193 @@ def test_lean_dry_run_and_check_never_detach(tmp_path):
     _fake_systemd_run(tmp_path / "bin", box.w)
     assert box.run("--dry-run").returncode == 0 and box.run("--check").returncode == 0
     assert not [c for c in box.calls() if c.startswith("systemd-run")]
+
+
+# --------------------------------------------------------------------------- k1000-lean.sh --only firmware
+# Raspberry Pi OS's own config.txt (the lines the firmware step reads), with the K1000 lines added.
+PIOS_CONFIG = ("# For more options and information see\n# http://rptl.io/configtxt\n\n"
+               "dtparam=audio=on\n\n# Automatically load overlays for detected cameras\ncamera_auto_detect=1\n\n"
+               "# Automatically load overlays for detected DSI displays\ndisplay_auto_detect=1\n\n"
+               "# Automatically load initramfs files, if found\nauto_initramfs=1\n\n"
+               "dtoverlay=vc4-kms-v3d\nmax_framebuffers=2\ndisable_fw_kms_setup=1\narm_64bit=1\n"
+               "disable_overscan=1\narm_boost=1\n\n[cm4]\notg_mode=1\n\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n\n"
+               "[all]\ndtparam=spi=on\ndtoverlay=k1000-zynscreen,rotate=270\n")
+FIRMWARE = {"auto_initramfs": "0", "camera_auto_detect": "0", "display_auto_detect": "0"}
+
+
+def _config_values(text: str, key: str) -> list[str]:
+    return [ln.split("=", 1)[1] for ln in text.splitlines() if ln.strip().startswith(key + "=")]
+
+
+def _eeprom(box: LeanBox, config: str = "[all]\nBOOT_UART=0\nBOOT_ORDER=0xf41\n") -> None:
+    """A fake rpi-eeprom-config: prints `config` with no argument, records any other call."""
+    _bin(box.tmp / "bin", "rpi-eeprom-config",
+         f'if [ $# = 0 ]; then printf "%s" "{config}"; else echo "rpi-eeprom-config $*" >> "{box.w}/calls"; fi\n')
+
+
+def test_lean_firmware_is_opt_in_a_plain_run_leaves_it(tmp_path):
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    (box.boot / "config.txt").write_text(PIOS_CONFIG)
+    for args in ((), ("--dry-run",)):
+        r = box.run(*args)
+        assert r.returncode == 0, r.stderr
+        assert "not run (opt-in, each with its own power cycle): firmware (--only firmware)" in r.stdout
+        assert "auto_initramfs" not in r.stdout and "EEPROM" not in r.stdout
+    text = (box.boot / "config.txt").read_text()
+    for key in FIRMWARE:
+        assert _config_values(text, key) == ["1"], key
+
+
+def test_lean_firmware_sets_the_three_lines_where_they_stand_then_reruns_to_0_changes(tmp_path):
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    (box.boot / "config.txt").write_text(PIOS_CONFIG)
+    _eeprom(box)
+    r = box.run("--only", "firmware")
+    assert r.returncode == 0, r.stdout + r.stderr
+    text = (box.boot / "config.txt").read_text()
+    for key, val in FIRMWARE.items():
+        assert _config_values(text, key) == [val], key
+        assert f"# K1000 (tools/k1000-lean.sh --only firmware) was: {key}=1\n{key}=0\n" in text
+    assert "[all]\n# K1000" not in text                      # set where they stand: nothing appended
+    backups = list(box.boot.glob("config.txt.k1000-lean-firmware-*"))
+    assert len(backups) == 1 and backups[0].read_text() == PIOS_CONFIG
+    assert list(box.state.glob("boot-firmware-*/config.txt"))
+    assert (box.boot / "cmdline.txt").read_text() == LeanBox.CMDLINE            # cmdline.txt untouched
+    assert (box.boot / "initramfs8").read_bytes() == LeanBox.INITRD             # the initramfs too
+    out = r.stdout
+    assert "config.txt: auto_initramfs=0 (undo: cp " in out and "config.txt: display_auto_detect=0" in out
+    assert "no initramfs (auto_initramfs=0) and a root= the kernel finds alone" in out
+    assert "safe to power-cycle" in out and re.search(r"3 changes \(they take effect", out)
+    assert "copy config.txt.k1000-lean-firmware-" in out
+    # the EEPROM: read, never written; the command is printed for a person
+    assert "DISABLE_HDMI=1 is NOT set" in out and "sudo rpi-eeprom-config --apply /tmp/boot.conf" in out
+    assert box.calls() == []
+    snap = box.snapshot()
+    r2 = box.run("--only", "firmware")
+    assert r2.returncode == 0, r2.stderr
+    assert "k1000-lean: 0 changes" in r2.stdout and box.snapshot() == snap and box.calls() == []
+
+
+def test_lean_firmware_adds_the_lines_a_config_lacks_under_all(tmp_path):
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    before = (box.boot / "config.txt").read_text()               # LeanBox's: none of the three lines
+    r = box.run("--only", "firmware")
+    assert r.returncode == 0, r.stdout + r.stderr
+    text = (box.boot / "config.txt").read_text()
+    assert text.startswith(before)
+    assert text[len(before):] == ("\n[all]\n# K1000 (tools/k1000-lean.sh --only firmware): a faster firmware boot\n"
+                                  "auto_initramfs=0\ncamera_auto_detect=0\ndisplay_auto_detect=0\n")
+    assert "rpi-eeprom-config not found" in r.stdout
+
+
+def test_lean_firmware_sets_only_what_is_left(tmp_path):
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    (box.boot / "config.txt").write_text(PIOS_CONFIG.replace("camera_auto_detect=1", "camera_auto_detect=0")
+                                         .replace("auto_initramfs=1", "auto_initramfs=0"))
+    r = box.run("--only", "firmware")
+    assert r.returncode == 0, r.stderr
+    assert "display_auto_detect=0 (undo" in r.stdout and "config.txt: auto_initramfs" not in r.stdout
+    assert re.search(r"\b1 changes \(they take effect", r.stdout)
+
+
+@pytest.mark.parametrize("root, extra, why", [
+    ("root=UUID=8a1e-4f2c", "", "has root=UUID=8a1e-4f2c, which only an initramfs resolves"),
+    ("root=LABEL=rootfs", "", "has root=LABEL=rootfs"),
+    ("root=/dev/mapper/k1000-root", "", "has root=/dev/mapper/k1000-root"),
+    ("root=PARTUUID=230baedc-02", " boot=overlay", "boot=overlay"),
+    ("root=PARTUUID=230baedc-02", " cryptdevice=/dev/mmcblk0p2:root", "cryptdevice="),
+    ("root=PARTUUID=230baedc-02", "@named", "config.txt names an initramfs"),
+])
+def test_lean_firmware_refuses_a_card_that_needs_its_initramfs_and_changes_nothing(tmp_path, root, extra, why):
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    config = PIOS_CONFIG
+    if extra == "@named":
+        config += "initramfs initramfs8 followkernel\n"
+        extra = ""
+    (box.boot / "config.txt").write_text(config)
+    cmdline = LeanBox.CMDLINE.replace("root=PARTUUID=230baedc-02", root) + extra
+    (box.boot / "cmdline.txt").write_text(cmdline)
+    (box.w / "proc_cmdline").write_text(cmdline + "\n")
+    snap = box.snapshot()
+    for args in (("--only", "firmware"), ("--dry-run", "--only", "firmware")):
+        r = box.run(*args)
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "firmware: REFUSED, nothing changed" in r.stderr and why in r.stderr, r.stderr
+        assert box.snapshot() == snap
+
+
+@pytest.mark.parametrize("root", ["root=PARTUUID=230baedc-02", "root=/dev/mmcblk0p2", "root=/dev/sda2",
+                                  "root=/dev/nvme0n1p2"])
+def test_lean_firmware_takes_a_root_the_kernel_finds_alone(tmp_path, root):
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    cmdline = LeanBox.CMDLINE.replace("root=PARTUUID=230baedc-02", root)
+    (box.boot / "cmdline.txt").write_text(cmdline)
+    (box.w / "proc_cmdline").write_text(cmdline + "\n")
+    r = box.run("--only", "firmware")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _config_values((box.boot / "config.txt").read_text(), "auto_initramfs") == ["0"]
+
+
+def test_lean_firmware_dry_run_changes_nothing_and_prints_the_eeprom_command(tmp_path):
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    (box.boot / "config.txt").write_text(PIOS_CONFIG)
+    _eeprom(box)
+    snap = box.snapshot()
+    r = box.run("--dry-run", "--only", "firmware")
+    assert r.returncode == 0, r.stderr
+    for key in FIRMWARE:
+        assert f"would: config.txt: {key}=0" in r.stdout
+    assert "dry run: 3 changes" in r.stdout and "rpi-eeprom-config --apply" in r.stdout
+    assert box.snapshot() == snap and box.calls() == []
+
+
+def test_lean_firmware_says_when_the_eeprom_already_has_disable_hdmi(tmp_path):
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    _eeprom(box, "[all]\nBOOT_UART=0\nDISABLE_HDMI=1\nBOOT_ORDER=0xf41\n")
+    r = box.run("--only", "firmware")
+    assert r.returncode == 0, r.stderr
+    assert "EEPROM: DISABLE_HDMI=1 already set" in r.stdout and "--apply" not in r.stdout
+    assert box.calls() == []
+
+
+def test_lean_check_without_an_initramfs_does_not_ask_for_one(tmp_path):
+    """auto_initramfs=0: the firmware loads none, so a missing or stale initramfs8 is no reason to stop."""
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    (box.boot / "config.txt").write_text(PIOS_CONFIG.replace("auto_initramfs=1", "auto_initramfs=0"))
+    (box.boot / "initramfs8").unlink()
+    (box.boot / "initramfs_2712").write_bytes(b"x")
+    r = box.run("--check")
+    assert r.returncode == 0, r.stderr
+    assert "no initramfs (auto_initramfs=0)" in r.stdout
+    # ... and with the load back on, the same card must not be power-cycled
+    (box.boot / "config.txt").write_text(PIOS_CONFIG)
+    r = box.run("--check")
+    assert r.returncode == 1 and "initramfs8 is missing" in r.stderr
+
+
+@pytest.mark.parametrize("root, extra, why", [
+    ("root=UUID=8a1e-4f2c", "", "has root=UUID=8a1e-4f2c"),
+    ("root=PARTUUID=230baedc-02", " boot=overlay", "boot=overlay"),
+])
+def test_lean_check_without_an_initramfs_refuses_a_root_only_it_finds(tmp_path, root, extra, why):
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    (box.boot / "config.txt").write_text(PIOS_CONFIG.replace("auto_initramfs=1", "auto_initramfs=0"))
+    cmdline = LeanBox.CMDLINE.replace("root=PARTUUID=230baedc-02", root) + extra
+    (box.boot / "cmdline.txt").write_text(cmdline)
+    (box.w / "proc_cmdline").write_text(cmdline + "\n")
+    r = box.run("--check")
+    assert r.returncode == 1, r.stdout
+    assert "do NOT power-cycle" in r.stderr and why in r.stderr and "auto_initramfs=0, so this card would not boot" in r.stderr
+
+
+def test_lean_check_reads_a_named_initramfs_as_loaded(tmp_path):
+    """`initramfs FILE followkernel` loads it whatever auto_initramfs says: still checked."""
+    box = LeanBox(tmp_path, {}, plan=[], units={})
+    (box.boot / "config.txt").write_text(PIOS_CONFIG.replace("auto_initramfs=1", "auto_initramfs=0")
+                                         + "initramfs initramfs8 followkernel\n")
+    (box.boot / "initramfs8").unlink()
+    r = box.run("--check")
+    assert r.returncode == 1 and "initramfs8 is missing" in r.stderr
 
 
 # --------------------------------------------------------------------------- install.sh --deps, --boot I2C

@@ -4,7 +4,7 @@
 # to what the K1000 box needs, without the services that slow its boot or wake up during a show.
 # Idempotent: a re-run with nothing left to do changes nothing and ends with "0 changes".
 #
-#   sudo ./k1000-lean.sh                 apply every step, in order
+#   sudo ./k1000-lean.sh                 apply every step, in order (the opt-in ones excepted)
 #   sudo ./k1000-lean.sh --only desktop  apply some steps only (comma list): one change set per reboot
 #   sudo ./k1000-lean.sh --dry-run       print what would change, change nothing (apt removals are
 #                                        still simulated and checked)
@@ -30,6 +30,14 @@
 #             to the SD card three hours into a show
 #   boot      cmdline.txt: quiet, logo.nologo, no splash/plymouth arguments; config.txt:
 #             disable_splash=1. Both files are backed up first; cmdline.txt stays one line.
+#   firmware  OPT-IN: only with --only firmware (a plain run and bootstrap.sh leave it out). The
+#             firmware's own seconds before Linux: config.txt auto_initramfs=0 (no 11.9 MB
+#             initramfs read; REFUSED, nothing changed, unless cmdline.txt's root= is a PARTUUID or
+#             a /dev partition and nothing on it needs an initramfs), camera_auto_detect=0,
+#             display_auto_detect=0 (no probing for a camera or a DSI display). Each line is set
+#             where it stands, or added under [all]; config.txt is backed up first. The initramfs
+#             is still built and copied (initramfs-tools stays): the undo is config.txt alone. The
+#             EEPROM's DISABLE_HDMI=1 is printed as a command for a person, never applied.
 #
 # The guard: every apt removal is simulated first (apt-get -s), the plan is saved under $STATE, and
 # it is refused (nothing removed, exit 1) when it names a package of the KEEP list below or one
@@ -39,11 +47,15 @@
 # package; the boot packages are installed; each initramfs the firmware loads is byte-identical
 # to /boot/initrd.img-* and has its /init (plymouth's removal rebuilds them, and raspi-firmware's
 # hook copies them onto /boot/firmware in place); cmdline.txt is one line with this boot's root=
-# and rootwait; kernel8.img and config.txt are there; i2c-dev is loaded at boot (the knobs).
+# and rootwait; kernel8.img and config.txt are there; i2c-dev is loaded at boot (the knobs). Once
+# config.txt has auto_initramfs=0 the firmware loads no initramfs: the initramfs is not checked,
+# and root= must be one the kernel finds alone (PARTUUID= or a /dev partition), with no argument
+# that needs an initramfs.
 #
-# What it never does: touch root=/fstab/the initramfs configuration, kernel or firmware packages,
-# the EEPROM configuration, sshd, sudoers, users, NetworkManager connections or the Wi-Fi radio;
-# apt upgrade; reboot. Undo for each change is printed where it happens.
+# What it never does: touch root=/fstab/the initramfs configuration (the opt-in firmware step only
+# stops the firmware from loading the initramfs), kernel or firmware packages, the EEPROM
+# configuration (read, never written), sshd, sudoers, users, NetworkManager connections or the
+# Wi-Fi radio; apt upgrade; reboot. Undo for each change is printed where it happens.
 #
 # K1000_BOOT_DIR overrides /boot/firmware; K1000_LEAN_STATE overrides /var/backups/k1000-lean (plans,
 # backups, run logs); K1000_LEAN_ETC overrides /etc, K1000_LEAN_INITRD_DIR /boot and
@@ -55,7 +67,10 @@ STATE=${K1000_LEAN_STATE:-/var/backups/k1000-lean}
 ETC=${K1000_LEAN_ETC:-/etc}
 INITRD_DIR=${K1000_LEAN_INITRD_DIR:-/boot}
 PROC_CMDLINE=${K1000_LEAN_PROC_CMDLINE:-/proc/cmdline}
-STEPS=(keep desktop services timers swap boot)
+STEPS=(keep desktop services timers swap boot firmware)
+# Steps a run applies only when --only names them: each changes the boot itself, with its own
+# power cycle and its own risk (step_firmware).
+OPT_IN=(firmware)
 ARGS=("$@")
 
 # Everything K1000 needs installed. The guard refuses a removal plan that names one of these.
@@ -267,22 +282,27 @@ boot_problems() {
   for p in "${ESSENTIAL[@]}"; do installed "$p" || lost+=("$p"); done
   [ ${#lost[@]} = 0 ] || echo "not installed: ${lost[*]} (sudo apt-get install ${lost[*]})"
   # The firmware loads initramfs8 (Pi 4, kernel8.img) / initramfs_2712 (Pi 5), copies of the
-  # newest /boot/initrd.img-*-rpi-v8 / -rpi-2712 (raspi-firmware's initramfs hook).
-  command -v lsinitramfs >/dev/null || echo "lsinitramfs not found: the initramfs cannot be checked"
-  for fl in v8 2712; do
-    if [ $fl = v8 ]; then dst=$BOOT_DIR/initramfs8; else dst=$BOOT_DIR/initramfs_2712; fi
-    src=$(find "$INITRD_DIR" -maxdepth 1 -name "initrd.img-*-rpi-$fl" 2>/dev/null | sort -V | tail -n 1)
-    if [ -z "$src" ] && [ ! -e "$dst" ]; then continue; fi
-    if [ -z "$src" ]; then echo "$dst has no initrd.img-*-rpi-$fl in $INITRD_DIR to compare with"; continue; fi
-    if [ ! -e "$dst" ]; then echo "$dst is missing: sudo cp $src $dst.new && sudo mv $dst.new $dst"; continue; fi
-    if ! cmp -s "$src" "$dst"; then
-      echo "$dst differs from $src (an interrupted copy?): sudo cp $src $dst.new && sudo mv $dst.new $dst"
-      continue
-    fi
-    if command -v lsinitramfs >/dev/null && ! has_init "$dst"; then
-      echo "$dst has no /init: restore it (and $src) from $STATE/boot-*/"
-    fi
-  done
+  # newest /boot/initrd.img-*-rpi-v8 / -rpi-2712 (raspi-firmware's initramfs hook) -- unless
+  # config.txt turned that off (the firmware step): then the kernel must find the root alone.
+  if initramfs_off; then
+    needs_initramfs | sed 's/$/: config.txt has auto_initramfs=0, so this card would not boot (undo: the config.txt.k1000-lean-firmware-* next to it)/'
+  else
+    command -v lsinitramfs >/dev/null || echo "lsinitramfs not found: the initramfs cannot be checked"
+    for fl in v8 2712; do
+      if [ $fl = v8 ]; then dst=$BOOT_DIR/initramfs8; else dst=$BOOT_DIR/initramfs_2712; fi
+      src=$(find "$INITRD_DIR" -maxdepth 1 -name "initrd.img-*-rpi-$fl" 2>/dev/null | sort -V | tail -n 1)
+      if [ -z "$src" ] && [ ! -e "$dst" ]; then continue; fi
+      if [ -z "$src" ]; then echo "$dst has no initrd.img-*-rpi-$fl in $INITRD_DIR to compare with"; continue; fi
+      if [ ! -e "$dst" ]; then echo "$dst is missing: sudo cp $src $dst.new && sudo mv $dst.new $dst"; continue; fi
+      if ! cmp -s "$src" "$dst"; then
+        echo "$dst differs from $src (an interrupted copy?): sudo cp $src $dst.new && sudo mv $dst.new $dst"
+        continue
+      fi
+      if command -v lsinitramfs >/dev/null && ! has_init "$dst"; then
+        echo "$dst has no /init: restore it (and $src) from $STATE/boot-*/"
+      fi
+    done
+  fi
   [ -s "$BOOT_DIR/kernel8.img" ] || echo "$BOOT_DIR/kernel8.img is missing or empty"
   [ -s "$BOOT_DIR/config.txt" ] || echo "$BOOT_DIR/config.txt is missing or empty"
   if [ ! -s "$f" ]; then
@@ -312,7 +332,9 @@ boot_check() {
     printf '%s\n' "$problems" | sed 's/^/  - /' >&2
     return 1
   fi
-  note "check: dpkg clean, boot packages installed, initramfs = /boot copies with /init, cmdline.txt one line with this boot's root=, i2c-dev at boot: safe to power-cycle"
+  local ir="initramfs = /boot copies with /init"
+  if initramfs_off; then ir="no initramfs (auto_initramfs=0) and a root= the kernel finds alone"; fi
+  note "check: dpkg clean, boot packages installed, $ir, cmdline.txt one line with this boot's root=, i2c-dev at boot: safe to power-cycle"
 }
 
 # --- step: services ------------------------------------------------------------------------------
@@ -454,6 +476,124 @@ step_boot() {
   diff "$STATE/boot-boot-$TS/config.txt" "$c" | sed 's/^/    /' || true
 }
 
+# --- step: firmware (opt-in) ----------------------------------------------------------------------
+# What the firmware does before Linux starts (docs/05-m4-day.md, 16/10: 10.4 s after power-on): it
+# reads the 11.9 MB initramfs (~1.1 s) and probes for a camera and a DSI display at every boot. The
+# box needs none of it: root is on the SD card, the panel is an SPI overlay, there is no camera.
+FIRMWARE_SET=(auto_initramfs=0 camera_auto_detect=0 display_auto_detect=0)
+
+# config_values KEY: the value of every uncommented KEY= line of config.txt, in order (any section).
+config_values() {
+  sed -n -E "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*([^[:space:]]*).*/\1/p" "$BOOT_DIR/config.txt" 2>/dev/null || true
+}
+# config_is KEY VALUE: config.txt sets KEY, and every line that sets it says VALUE.
+config_is() {
+  local vals
+  vals=$(config_values "$1")
+  [ -n "$vals" ] && ! grep -qvxF "$2" <<<"$vals"
+}
+# config_loads_initramfs_by_name: config.txt names an initramfs (`initramfs FILE followkernel`),
+# which the firmware loads whatever auto_initramfs says.
+config_loads_initramfs_by_name() { grep -Eqs '^[[:space:]]*initramfs[[:space:]]' "$BOOT_DIR/config.txt"; }
+# initramfs_off: the firmware loads no initramfs at the next boot: the last auto_initramfs= line
+# says 0 (the firmware reads config.txt top to bottom) and none is named.
+initramfs_off() {
+  [ "$(config_values auto_initramfs | tail -n 1)" = 0 ] && ! config_loads_initramfs_by_name
+}
+# needs_initramfs: one line per reason the kernel could NOT mount the root from cmdline.txt without
+# an initramfs; nothing when it can. Alone, it finds a root= by PARTUUID= or a /dev partition; a
+# UUID=/LABEL= root, raspi-config's overlay root and an encrypted root are initramfs work.
+needs_initramfs() {
+  local words root w
+  words=$( { tr -s '[:blank:]' '\n' < "$BOOT_DIR/cmdline.txt"; } 2>/dev/null || true)
+  root=$(grep '^root=' <<<"$words" | tail -n 1 || true)
+  case ${root#root=} in
+    PARTUUID=?*|/dev/mmcblk[0-9]*p[0-9]*|/dev/sd[a-z]*[0-9]|/dev/nvme[0-9]*n[0-9]*p[0-9]*) ;;
+    "") echo "cmdline.txt has no root=" ;;
+    *) echo "cmdline.txt has $root, which only an initramfs resolves (the kernel alone needs root=PARTUUID= or a /dev partition)" ;;
+  esac
+  while read -r w; do
+    case $w in
+      boot=overlay) echo "cmdline.txt has boot=overlay (raspi-config's overlay root is made by the initramfs)" ;;
+      cryptdevice=*) echo "cmdline.txt has $w (an encrypted root is opened by the initramfs)" ;;
+    esac
+  done <<<"$words"
+}
+# config_set KEY=VALUE...: every uncommented KEY= line of config.txt rewritten to KEY=VALUE where it
+# stands (a comment above it keeps the old line), and a KEY that has none added under a final
+# [all]. Written next to config.txt, then moved over it.
+config_set() {
+  local c=$BOOT_DIR/config.txt
+  awk -v set="$*" '
+    BEGIN { n = split(set, kv, " "); for (i = 1; i <= n; i++) { k = kv[i]; sub(/=.*/, "", k); want[k] = kv[i]; order[i] = k } }
+    {
+      line = $0; key = line
+      if (match(key, /^[ \t]*[A-Za-z0-9_]+[ \t]*=/)) {
+        key = substr(key, 1, RLENGTH); sub(/^[ \t]*/, "", key); sub(/[ \t]*=$/, "", key)
+        if (key in want) {
+          seen[key] = 1
+          if (line != want[key]) {
+            print "# K1000 (tools/k1000-lean.sh --only firmware) was: " line
+            print want[key]; next
+          }
+        }
+      }
+      print line
+    }
+    END {
+      add = ""
+      for (i = 1; i <= n; i++) if (!(order[i] in seen)) add = add want[order[i]] "\n"
+      if (add != "") printf "\n[all]\n# K1000 (tools/k1000-lean.sh --only firmware): a faster firmware boot\n%s", add
+    }' "$c" > "$c.k1000-new"
+  mv "$c.k1000-new" "$c"
+}
+# eeprom_hint: the EEPROM half, for a person to run (DISABLE_HDMI=1: no HDMI diagnostics screen, so
+# the bootloader stops probing HDMI). This script only reads the EEPROM configuration.
+eeprom_hint() {
+  local cur
+  if ! command -v rpi-eeprom-config >/dev/null; then
+    note "EEPROM: rpi-eeprom-config not found, DISABLE_HDMI not read"; return 0
+  fi
+  cur=$(rpi-eeprom-config 2>/dev/null || true)
+  if grep -Eq '^[[:space:]]*DISABLE_HDMI=1[[:space:]]*$' <<<"$cur"; then
+    note "EEPROM: DISABLE_HDMI=1 already set"; return 0
+  fi
+  note "EEPROM: DISABLE_HDMI=1 is NOT set, and this script never writes the EEPROM. It stops the bootloader probing HDMI; a rescue then has SSH and the box's Wi-Fi, no HDMI screen. By hand, on the box, as a power cycle of its own once this one is checked:"
+  printf '    %s\n' \
+    "vcgencmd bootloader_version; rpi-eeprom-config > /tmp/boot.conf" \
+    "echo DISABLE_HDMI=1 >> /tmp/boot.conf && sudo rpi-eeprom-config --apply /tmp/boot.conf" \
+    "# --apply writes the config onto the newest bootloader image rpi-eeprom holds: it may update the bootloader too (compare bootloader_version after)" \
+    "# undo: the same, without the DISABLE_HDMI line"
+}
+step_firmware() {
+  local c=$BOOT_DIR/config.txt kv todo=() why
+  [ -f "$BOOT_DIR/cmdline.txt" ] && [ -f "$c" ] || die "$BOOT_DIR has no cmdline.txt/config.txt"
+  for kv in "${FIRMWARE_SET[@]}"; do config_is "${kv%%=*}" "${kv#*=}" || todo+=("$kv"); done
+  if [[ " ${todo[*]} " == *" auto_initramfs=0 "* ]]; then
+    why=$(needs_initramfs)
+    if config_loads_initramfs_by_name; then
+      why+="${why:+$'\n'}config.txt names an initramfs (initramfs ... line): auto_initramfs=0 would not stop it; take that line out by hand first"
+    fi
+    if [ -n "$why" ]; then
+      printf 'k1000-lean: firmware: REFUSED, nothing changed: without an initramfs this card would not boot:\n' >&2
+      printf '%s\n' "$why" | sed 's/^/  - /' >&2
+      exit 1
+    fi
+  fi
+  if [ ${#todo[@]} = 0 ]; then eeprom_hint; return 0; fi
+  if [ $DRY = 1 ]; then
+    for kv in "${todo[@]}"; do act "config.txt: $kv"; done
+    eeprom_hint; return 0
+  fi
+  backup_boot firmware
+  config_set "${todo[@]}"
+  for kv in "${todo[@]}"; do act "config.txt: $kv (undo: cp $c.k1000-lean-firmware-$TS $c)" true; done
+  note "config.txt now (diff against $STATE/boot-firmware-$TS/):"
+  diff "$STATE/boot-firmware-$TS/config.txt" "$c" | sed 's/^/    /' || true
+  note "if the box does not come back: its SD card in a laptop, and on the boot partition copy config.txt.k1000-lean-firmware-$TS over config.txt"
+  eeprom_hint
+}
+
 # --- detach from the terminal ----------------------------------------------------------------------
 # follow LOG RCFILE UNIT: print LOG as it grows until RCFILE says the run ended (or UNIT is gone
 # without one). Only reads: killing this (a lost SSH session) leaves the unit running.
@@ -518,10 +658,15 @@ main() {
   refresh_pkgs
   for s in "${STEPS[@]}"; do
     want=1
-    if [ -n "$ONLY" ] && [[ ",$ONLY," != *",$s,"* ]]; then want=0; fi
+    if [ -n "$ONLY" ]; then
+      [[ ",$ONLY," == *",$s,"* ]] || want=0
+    elif [[ " ${OPT_IN[*]} " == *" $s "* ]]; then
+      want=0
+    fi
     [ $want = 1 ] || continue
     "step_$s"
   done
+  [ -n "$ONLY" ] || note "not run (opt-in, each with its own power cycle): ${OPT_IN[*]} (--only ${OPT_IN[0]})"
   if [ $DRY = 1 ]; then
     note "dry run: $CHANGES changes"
   elif [ $CHANGES = 0 ]; then
