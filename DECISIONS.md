@@ -721,3 +721,20 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   Loudness and De-harsh overlays on the spectrum wait. The faster-boot work, agreed earlier the
   same day, continues and can share the desk time.
 - **Closed means**: D-018 holds on the box after a night run, and Thomas has beatmatched on it.
+
+## D-021 — Output clipping: a limiter as the last stage, no gain after the master, clipping shown on the phone · proposed 2026-11-12
+
+- **Context**: the engine's log of the gig night holds 5,718 output-clipping warnings, peaks up to
+  +5.67 dBFS, mostly on the two sub outputs (`docs/17-box-record-and-bench.md` §5). At the worst
+  moment the master was at −5 dB and the input was not clipping: the chain after the master had
+  at least about 11 dB of gain at the clipping frequencies (the +6 dB output trims set at the rig,
+  the EQ, the sub balance). Only the box's screen showed it, 3 s at a time; the phone never did.
+- **Options**:
+  - A. A limiter as the last stage of every output: the engine's clipper or its compressor with a
+    clip limit (no delay), or its look-ahead limiter (delay = its attack, 1 ms).
+  - B. No fixed gain after the master: the output trims move in front of it or into the input trim.
+  - C. Clipping shown on the phone too, latched until acknowledged, with the dB to take off.
+  - D. EQ, balance and delay edits written to the journal, so a gig's record can be read whole.
+- **Proposed** (Claude): A with no delay, B, C and D together. Thomas decides, and decides by ear
+  between the limiter kinds. Nothing is built.
+- **Constraint**: D-018's 10 ms. A look-ahead limiter costs 1 ms of it; the others cost none.
