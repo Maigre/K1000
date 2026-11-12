@@ -218,6 +218,9 @@ MUTE_FALLBACK_NONE = "turn the source down · bypass"
 RTA_MIN_INTERVAL_S = 0.1              # <= 10 frames a second per phone
 RTA_MAX_BUFFERED = 4096               # bytes still on their way to a phone (asyncio, TLS and the
                                       # kernel's send queue): above this an rta frame is dropped
+LATEST_MAX_BUFFERED = 4096            # the same for a state or meters frame: above this it waits
+                                      # (never queued behind older ones) and the latest goes once
+                                      # the backlog is under it; a reply (a mute ack) never waits
 RTA_SUB_IDLE_S = 10.0                 # a subscription lapses after this long without a message
                                       # from the phone (its pings stop when the page is frozen)
 RTA_STEP_DB = 0.5
@@ -1865,7 +1868,7 @@ class PhoneServer:
                                       "dropped": 0, "dropped_replies": 0, "rta_sent": 0,
                                       "rta_dropped": 0, "pgm_sent": 0, "pgm_dropped": 0,
                                       "http_limited": 0, "wifi_sent": 0,
-                                      "wifi_refused": 0, "wifi_held": 0, "apk_sent": 0}
+                                      "wifi_refused": 0, "wifi_held": 0, "apk_sent": 0, "held": 0}
         self.rx: dict[str, int] = {}
 
     # ------------------------------------------------------------------ public
@@ -3076,19 +3079,26 @@ class PhoneServer:
         a reply (a mute ack) queued meanwhile goes before anything else; a RESPONSE window or a
         spectrum frame is dropped, never queued, while more than RTA_MAX_BUFFERED bytes are
         still on their way to the phone, kernel included (_backlog): it never makes a later
-        send wait."""
+        send wait. The state and the meters wait while more than LATEST_MAX_BUFFERED bytes are
+        (_held): a slow link then gets the latest one once it has room, never a queue of old
+        ones that would show the past for seconds."""
         try:
+            held = False
             while True:
-                await c.kick.wait()
-                c.kick.clear()
+                await self._wake(c, held)
+                held = False
                 while True:
                     if c.out:
                         await self._send(c, c.out.popleft())
                     elif c.sent_state != self._state2_seq and self._state2_json:
+                        if held := self._held(c):
+                            break
                         seq, text = self._state2_seq, self._state2_json
                         await self._send(c, text)
                         c.sent_state = seq
                     elif c.sent_meter != self._meter2_seq and self._meter2_json:
+                        if held := self._held(c):
+                            break
                         seq, text = self._meter2_seq, self._meter2_json
                         await self._send(c, text)
                         c.sent_meter = seq
@@ -3119,6 +3129,25 @@ class PhoneServer:
             with contextlib.suppress(Exception):
                 c.ws.transport.abort()
 
+    async def _wake(self, c: _Client, held: bool) -> None:
+        """Until the pump or a reply kicks this phone's sender; with a state or meters frame
+        held back (_held), at most one tick: the backlog is looked at again then."""
+        if held:
+            with contextlib.suppress(TimeoutError, asyncio.TimeoutError):
+                await asyncio.wait_for(c.kick.wait(), self.tick_s)
+        else:
+            await c.kick.wait()
+        c.kick.clear()
+
+    def _held(self, c: _Client) -> bool:
+        """A state or meters frame waits: more than LATEST_MAX_BUFFERED bytes are still on their
+        way to this phone (_backlog). Sent now, it would queue behind them and reach the phone
+        late; waiting, the phone gets the newest one as soon as the link has room."""
+        if self._backlog(c) <= LATEST_MAX_BUFFERED:
+            return False
+        self.stats["held"] += 1
+        return True
+
     async def _send(self, c: _Client, text: str) -> None:
         async with c.lock:
             try:
@@ -3132,18 +3161,24 @@ class PhoneServer:
 
     async def _sender(self, c: _Client) -> None:
         """Replies in order, then only ever the LATEST state/meters: a slow phone skips states,
-        never queues them. The only task that writes to this phone (besides the final 'bye')."""
+        never queues them, not even in the kernel's send queue (_held). The only task that writes
+        to this phone (besides the final 'bye')."""
         try:
+            held = False
             while True:
-                await c.kick.wait()
-                c.kick.clear()
+                await self._wake(c, held)
                 while c.out:
                     await self._send(c, c.out.popleft())
+                held = False
                 if c.sent_state != self._state_seq and self._state_json:
+                    if held := self._held(c):
+                        continue
                     seq, text = self._state_seq, self._state_json
                     await self._send(c, text)
                     c.sent_state = seq
                 if c.sent_meter != self._meter_seq and self._meter_json:
+                    if held := self._held(c):
+                        continue
                     seq, text = self._meter_seq, self._meter_json
                     await self._send(c, text)
                     c.sent_meter = seq

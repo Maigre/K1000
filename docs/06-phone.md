@@ -131,6 +131,8 @@ system EQ, trims, input trim, sub low-pass.
 - A **mute is never rate-limited**; everything else is limited per phone (30 msg/s, burst 40).
 - Drags are coalesced on the phone (one message per 50 ms, the last value always sent) and the box
   only ever sends each phone its **latest** state: a slow phone skips states, never stalls the box.
+  The state and meters wait while more than 4 kB are still on their way to that phone (kernel's
+  send queue included), so a weak link never shows a queue of old states (2026-11-12).
   The box never waits on a phone before reading its next message (a mute behind a stalled
   downlink is applied at once). A stuck phone is dropped after 2 s. At most **4 phones** at once.
 - Nothing a phone sends can raise into the controller or another phone (per-phone error isolation,

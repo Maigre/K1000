@@ -290,8 +290,11 @@ after it when that row's label starts with the switch's (`Low-pass` + `Low-pass 
 
 ### 3.2 `state` (every change; latest only)
 
-A slow phone skips states, it never queues them. Every v1 key keeps its v1 meaning; v2 adds the
-rest. Numbers are rounded, never NaN or infinite (`null` instead).
+A slow phone skips states, it never queues them: while more than 4 kB are still on their way to
+the phone (counted as for `rta`, §3.4, kernel included) the state and the meters wait, and the
+latest one goes once there is room (2026-11-12: before, a 16 kB/s link got every state from the
+box's send queue and showed a change 6.6 s late). A reply never waits. Every v1 key keeps its v1
+meaning; v2 adds the rest. Numbers are rounded, never NaN or infinite (`null` instead).
 
 ```json
 {"t": "state",
