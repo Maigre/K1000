@@ -30,10 +30,12 @@ how far it generalises.
 [`DECISIONS.md`](../../DECISIONS.md)), with the live UI v1 (D-009), the knob fixes and the phone
 page built and accepted on the author's box. The buttons and SETUP follow D-013 (B1 PAGE · B2
 BAND/UNLOCK · B3 NOTCH · B4 MUTE; SETUP by speaker floor), built on 2026-10-13: a box not yet
-updated still runs D-009's buttons (B2 mute, B3 band and unlock, B4 notch). It has not yet played a
-show; the MOTU M4 and the phone are being proven on the real rig. Where this manual points to a
-numbered doc (`docs/0X`), that doc holds the design detail and the history; this manual says how the
-box works today.
+updated still runs D-009's buttons (B2 mute, B3 band and unlock, B4 notch). It played its first
+gig on 18 October 2026 with the MOTU M4 (`025b8f8`). Beatmatching against the speakers was
+impossible there; the latency is being reworked (D-018 to D-020,
+[`docs/16-post-gig-audit.md`](../16-post-gig-audit.md)), so the engine settings in this manual may
+change. Where this manual points to a numbered doc (`docs/0X`), that doc holds the design detail
+and the history; this manual says how the box works today.
 
 ## Chapters
 

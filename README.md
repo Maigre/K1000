@@ -27,9 +27,10 @@ and a phone on the box's own Wi-Fi.
   (whole samples at 48 kHz), a 12 dB/oct Lo-Cut on the tops, an optional sub low-pass, sub/top
   balance, four output trims, master and mute. Every show-time move is a parameter write or a
   ramped fader, never a pipeline rebuild. Three optional blocks, all off by default (D-016,
-  proposed after the first rig run): **de-harsh** (a dynamic cut around 2.7 kHz that acts only on
-  hard attacks), **sub loudness** (more sub as the master goes down, never more than at a
-  reference level) and **AUX IN** (the M4's front inputs as a mic or a line pair, into the program).
+  deployed the day before the gig; each is kept or dropped by ear): **de-harsh** (a dynamic cut
+  around 2.7 kHz that acts only on hard attacks), **sub loudness** (more sub as the master goes
+  down, never more than at a reference level) and **AUX IN** (the M4's front inputs as a mic or a
+  line pair, into the program).
 - **Knobs and screen** on a Zynthian V4 case (live UI v1, D-009): **SHOW**, the front page, with
   the master and the live EQ drawn over the program spectrum, and a 3-gesture notch helper on the
   spectrum's peak; **ALIGN** (balance, and one signed sub/top delay and the Lo-Cut behind a
@@ -43,8 +44,8 @@ and a phone on the box's own Wi-Fi.
   HiFiBerry board for the bench.
 - **A phone page** on the box's own Wi-Fi access point, installable over HTTPS through a
   name-constrained local CA, driving the show controls: master, balance, Lo-Cut, the live EQ and
-  mute (setup stays on the box). Built and tested in software; not yet proven with a real phone on
-  the box ([`docs/06`](docs/06-phone.md)).
+  mute (setup stays on the box). An Android app wraps it; the app drove the box at the rig the day
+  before the gig ([`docs/06`](docs/06-phone.md), [`docs/09`](docs/09-android.md)).
 - **The tune from a laptop**: a `/tune` page over the box's Wi-Fi (SETUP › Laptop access, 2 hours)
   that imports a REW filter export into the system EQ, and CamillaGUI there or on the wired
   network.
@@ -54,9 +55,12 @@ and a phone on the box's own Wi-Fi.
 
 ## Status
 
-**v0, on a beta engine** (CamillaDSP 5.0.0-beta.1). It runs on the author's box, where the live
-UI v1 was accepted; it has not yet played a show. The MOTU M4 profile and the phone are being proven
-on the rig; the [roadmap](ROADMAP.md) has the details. Use it with the bypass cables in the case.
+**v0, on a beta engine** (CamillaDSP 5.0.0-beta.1). It played its first gig on 18 October 2026,
+on the author's box with the MOTU M4 (`025b8f8`, chunk 256, `target_level` 512). Beatmatching
+against the speakers was impossible there, so the latency is the open work now: 10 ms or less in to
+out, never growing, shown on the box (D-018), and no new features until then (D-020). The review
+is [`docs/16`](docs/16-post-gig-audit.md); the [roadmap](ROADMAP.md) has the details. Use it with
+the bypass cables in the case.
 
 ## Documentation
 
