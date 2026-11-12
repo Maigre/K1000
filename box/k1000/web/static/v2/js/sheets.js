@@ -550,8 +550,10 @@ function rowInstall() {
   } else if (!apk) {
     setText(note(r), "This box holds no copy of the Android app: another phone uses the web app.");
   }
-  setText(note(r), "Another phone: join the K1000 Wi-Fi (the code on the box screen), then open " +
-    (start || "http://" + (location.hostname || "10.42.0.1") + "/") + " in its browser: the app or the web app, step by step.");
+  // no first-time page on this box (start ""): the web app itself, never an address it does not serve
+  setText(note(r), "Another phone: join the K1000 Wi-Fi (the code on the box screen), then open " + (start
+    ? start + " in its browser: the app or the web app, step by step."
+    : location.origin + "/v2/ in its browser: the web app (it needs the K1000 certificate once)."));
 }
 
 // THIS PHONE › Phone mic: the ONE place the page asks for the mic (DESIGN §7, §9.15: a system

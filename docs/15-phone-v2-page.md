@@ -141,7 +141,8 @@ Fullscreen, THIS PHONE › Diagnostics (`diag`, and the app's own panel), THIS P
 `hello.install` (docs/14 §3.1): the APK the box holds (version, size) or *no app on this box*; in
 Chrome on Android a *GET THE ANDROID APP* key (`/k1000.apk`, same origin; the file can be sent to
 another phone); never in the app (its update waits, D-020) nor on an iPhone; and for another
-phone, the K1000 Wi-Fi code, then the first-time page. The page has a manifest
+phone, the K1000 Wi-Fi code, then the first-time page (`start`; a box that does not serve it:
+the web app, `/v2/`, never an address the box does not answer). The page has a manifest
 (`manifest.webmanifest`, id and scope `/v2/`): Chrome's *Add to Home screen* installs v2 itself.
 
 ## 5. Spectrum

@@ -1319,7 +1319,7 @@
   },
   "install": {
    "apk": null,
-   "start": ""
+   "start": "http://10.42.0.1/"
   }
  },
  "state": {
