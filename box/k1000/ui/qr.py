@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The PHONE page of the box screen (480x320): the Wi-Fi QR to join the K1000 AP, then the URL QR
-once a phone is on it (D-007, docs/06-phone.md).
+"""The PHONE page of the box screen (480x320): the Wi-Fi QR to join the K1000 AP, then the
+first-time page's QR once a phone is on it (D-007, docs/06-phone.md).
 
 Why it looks like this:
 - **Scannable from 50 cm.** The QR is black on a white panel (inverted codes defeat many
@@ -12,8 +12,10 @@ Why it looks like this:
   not every Android scanner offers an uppercase scheme as a link.
 - **Two steps, one code at a time.** Step 1 joins the Wi-Fi (Android 10+ joins from a
   `WIFI:` code in one tap); once a phone holds a lease (or is connected) the panel switches to
-  the URL. E1 steps through the codes by hand: Wi-Fi, URL, and the first-time setup page
-  (http://10.42.0.1/: the certificate download), for a second phone or a first install.
+  step 2, the first-time page (http://10.42.0.1/: the app or the web app, and the certificate
+  only where it is needed; plain HTTP, so a fresh phone gets no certificate warning), or the URL
+  when the box does not serve that page. E1 steps through the codes by hand: Wi-Fi, the
+  first-time page, and the DIRECT LINK (the page's https URL, for a phone already set up).
 - **The password is also printed** (easy-to-type alphabet, setup-ap.sh): the fallback when a
   camera will not scan. It appears on the box screen only. While SETUP > Laptop access is open
   it is printed on every step (a laptop cannot scan the QR), with the time left.
@@ -296,14 +298,16 @@ def _body_link(c: Any, inf: _Info, step: str, url: str, lines: list[str]) -> Non
 
 def _body_url(c: Any, inf: _Info) -> None:
     lines = [("scan with the camera,", DIM), ("or tap the K1000 app", DIM)]
+    if inf.setup_url and inf.tls:   # step 2 is the first-time page: this is for a phone set up
+        lines.insert(0, ("phone already set up:", DIM))
     if not inf.tls:
         lines.append(("no HTTPS: page only", ORANGE))
-    _body_link(c, inf, "2 · OPEN K1000", inf.url, lines)
+    _body_link(c, inf, "DIRECT LINK" if inf.setup_url else "2 · OPEN K1000", inf.url, lines)
 
 
 def _body_setup(c: Any, inf: _Info) -> None:
-    _body_link(c, inf, "FIRST TIME", inf.setup_url,
-               [("the K1000 certificate", FG), ("+ setup help,", DIM), ("once per phone", DIM)])
+    _body_link(c, inf, "2 · OPEN K1000", inf.setup_url,
+               [("the app or the web app,", FG), ("certificate help,", DIM), ("scan with the camera", DIM)])
 
 
 def _render(info: Any, state: Any, status: Any, focus: Any, now: float | None) -> Image.Image:
@@ -396,7 +400,7 @@ def demo_cases() -> list[tuple[str, Any, Any, Any]]:
     return [
         ("phone_wifi", _Info(**base), s, run),
         ("phone_url", _Info(**{**base, "qr": "url", "stations": 1}), s, run),
-        ("phone_connected", _Info(**{**base, "qr": "url", "stations": 1, "phones": 1}), muted, run_m),
+        ("phone_connected", _Info(**{**base, "qr": "setup", "stations": 1, "phones": 1}), muted, run_m),
         ("phone_off", _Info(**{**base, "on": False}), s, run),
         ("phone_ap_down", _Info(**{**base, "ap_up": False}), s, nodev),
         ("phone_no_tls", _Info(**{**base, "qr": "url", "stations": 1, "tls": False,

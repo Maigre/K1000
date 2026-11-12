@@ -14,8 +14,9 @@ carry the show.
   wpa_supplicant AP on the Pi's chip drops Apple/older-Android clients ~6 s after the handshake.
   `--backend nm` stays available.
 - **Captive portal off** (the AP's DNS answers `k1000.home.arpa` only): Android then offers *Stay
-  connected* and keeps auto-joining K1000 after a dropout (§5). The PHONE page's third QR,
-  **FIRST TIME** (`http://10.42.0.1/`), covers the one-time certificate install.
+  connected* and keeps auto-joining K1000 after a dropout (§5). The PHONE page's second QR,
+  **2 · OPEN K1000** (`http://10.42.0.1/`, the first-time page), covers the app or the one-time
+  certificate install.
 - **5 GHz channel 36, country FR**; 2.4 GHz (`--band bg`, channel 6) is the documented fallback.
   Thomas stands up to ~10 m from the box.
 - **The phone may unmute**, with the stale-unmute protection (`mute_seq`, §2). **SSH and
@@ -76,9 +77,12 @@ carry the show.
   set up with Wi-Fi in Raspberry Pi Imager), `setup-ap.sh` refuses (exit 4) instead of cutting
   that link. Leave Wi-Fi empty in Imager.
 - **QR codes on the box screen** (SETUP › PHONE › Phone): first the Wi-Fi code (Android 10+ joins in one
-  tap; the password is also printed, easy to type). Once a phone is on the AP the screen shows the
-  page's URL. E1 turn steps through the codes: Wi-Fi → URL → **first time** (http://10.42.0.1/,
-  the certificate page).
+  tap; the password is also printed, easy to type). Once a phone is on the AP the screen shows
+  step 2, the first-time page (`http://10.42.0.1/`: the app or the web app; plain HTTP, so a fresh
+  phone gets no certificate warning; since 2026-11-12, before: the page's https URL, and the
+  first-time page was the third code). E1 turn steps through the codes: Wi-Fi → first-time page →
+  **DIRECT LINK** (`https://10.42.0.1/`, for a phone already set up). A box that does not serve
+  the first-time page shows the URL as step 2.
 - **The page is K1000's own**, served by the k1000 process (python3-websockets already on the box;
   the new packages are python3-qrcode for the screen codes and hostapd for the AP). It drives the **same Controller
   as the knobs**. It is not CamillaGUI, which POSTs whole configs and can undo knob work.
@@ -93,8 +97,8 @@ carry the show.
   the browser (`/k1000.apk`, `/api/wifi`, `/tune`, the CA) goes to the box untouched and is never
   kept as the page.
 
-Screens: `docs/ui/phone_wifi.png` (step 1), `phone_url.png` (step 2), `phone_setup.png` (first
-time), `phone_connected.png` (muted box, one phone connected), `phone_off.png`, `phone_ap_down.png`,
+Screens: `docs/ui/phone_wifi.png` (step 1), `phone_setup.png` (step 2, the first-time page),
+`phone_url.png` (the direct link), `phone_connected.png` (muted box, one phone connected), `phone_off.png`, `phone_ap_down.png`,
 `phone_no_tls.png`; with SETUP › PHONE › Laptop access open, `phone_laptop.png` (the password as text, §11).
 
 ## 2. What the phone does (v0)
@@ -166,7 +170,7 @@ system EQ, trims, input trim, sub low-pass.
    - Portal **on** (`--portal on`): Android shows *Sign in to network* instead (§5).
 4. **Install the K1000 certificate (once):**
    - The phone needs a **screen lock** (PIN/pattern): Android refuses certificates without one.
-   - If it is not on the phone yet: on the box, E1 turn to the **FIRST TIME** QR (or open
+   - If it is not on the phone yet: on the box, the second QR, **2 · OPEN K1000** (or open
      `http://10.42.0.1/` in **Chrome**), tap *Download the K1000 certificate*; Chrome may say it
      *can't be downloaded securely*: tap **Keep**.
    - Do **not** tap the downloaded file (Android 11+ answers *Can't install CA certificates*).
@@ -194,7 +198,8 @@ box only succeeds when it does). It also serves the CA at `http://10.42.0.1/k100
 (`application/x-x509-ca-cert`).
 
 **Two ways in, one button each** (2026-11-12; the app button since 2026-10-13). The first-time
-page (the PHONE page's third QR, **FIRST TIME**) offers:
+page (the PHONE page's second QR, **2 · OPEN K1000**, shown by itself once a phone is on the
+Wi-Fi) offers:
 
 1. **Android: the K1000 app** (when the box was deployed with the APK,
    [`docs/09-android.md`](09-android.md)): **Install the K1000 app**, with its version, size and
@@ -267,11 +272,11 @@ has no "Open in browser".
 | DNS | every name → 10.42.0.1 | only `k1000.home.arpa`; everything else "no such domain", at once |
 | On joining | *Sign in to network* (the first-time page in the WebView) | *No internet — Stay connected?* (joined from Settings) |
 | Afterwards | Android sees a portal that never validates: no "Don't ask again" possible; after each **automatic** join it pauses auto-joining K1000 for up to 10 min (Android 13 code). After a dropout mid-show the phone does not come back by itself: Wi-Fi tile off/on, or tap K1000 in Settings | With *Don't ask again*, K1000 is kept and auto-joined like any network, including after a dropout |
-| First-time certificate | via the sign-in window → Chrome | the FIRST TIME QR on the box, or the CA put on the phone beforehand |
+| First-time certificate | via the sign-in window → Chrome | the box's second QR (the first-time page), or the CA put on the phone beforehand |
 
 The portal was the D-007 "bonus"; it costs the main path its automatic reconnection, so it is
 **off by default** (2026-10-12). The one thing it gave, the certificate page on joining, is the
-PHONE page's third QR (**FIRST TIME**, `http://10.42.0.1/`). Back to the portal, one command:
+PHONE page's second QR (**2 · OPEN K1000**, `http://10.42.0.1/`). Back to the portal, one command:
 `sudo /opt/k1000/net/setup-ap.sh --portal on` (and `--portal off` again).
 
 ## 6. Range, band, plan B
@@ -366,7 +371,8 @@ socket, `/tune/ws` (§11).
 ## 9. Friday rig-test checklist (go/no-go for Sunday)
 
 1. The phone joins **K1000** from the QR, gets an IP (Settings › K1000 › IP address) and **stays
-   connected for more than 30 s**; the box screen switches to the URL QR. (Fails → §6 plan B.)
+   connected for more than 30 s**; the box screen switches to its second QR, the first-time
+   page. (Fails → §6 plan B.)
 2. Rejoin: Wi-Fi off/on, then walk out of range and back: the phone rejoins K1000 **by itself**
    within 30 s. (With portal on it may not: note it; §5.)
 3. In airplane mode + Wi-Fi, the **K1000 icon** opens in < 2 s and shows LINK + RUNNING. Note what

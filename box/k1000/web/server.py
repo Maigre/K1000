@@ -158,7 +158,7 @@ CA_CONTENT_TYPE = "application/x-x509-ca-cert"
 BUILD_MARK = b"__K1000_BUILD__"
 BUILD_STAMPED = frozenset({"/sw.js", "/app.js"})
 PORTAL_ONLY = frozenset({"/portal.html"})
-QR_CYCLE = ("wifi", "url", "setup")   # E1 on the PHONE page steps through these
+QR_CYCLE = ("wifi", "setup", "url")   # E1 on the PHONE page steps through these
 
 # The Android app, offered by the box (docs/06-phone.md §4; the app: docs/09-android.md).
 APK_PATH = "/k1000.apk"
@@ -1927,9 +1927,9 @@ class PhoneServer:
         return self.set_enabled(not self._on)
 
     def select_qr(self, delta: int = 1) -> str:
-        """E1 on the PHONE page: step through the codes (Wi-Fi -> URL -> first-time setup page,
-        the last one only when the portal port is served) for QR_OVERRIDE_S, then back to the
-        automatic choice (Wi-Fi until a phone is on the AP, then the URL). Returns it."""
+        """E1 on the PHONE page: step through the codes (Wi-Fi -> first-time page, only when the
+        portal port is served -> URL) for QR_OVERRIDE_S, then back to the automatic choice (Wi-Fi
+        until a phone is on the AP, then the first-time page, else the URL). Returns it."""
         cycle = [q for q in QR_CYCLE if q != "setup" or self.setup_url]
         shown = self.screen_info().qr
         i = cycle.index(shown) if shown in cycle else 0
@@ -1972,7 +1972,9 @@ class PhoneServer:
         """Cached presence + settings for the PHONE page (cheap: called by the render path)."""
         psk, why = self._psk
         setup_url = self.setup_url
-        qr = "url" if self._stations or self._clients else "wifi"
+        # once a phone is on the AP: the first-time page (http, so a fresh phone gets no
+        # certificate warning: the app or the web app, step by step), else the URL
+        qr = ("setup" if setup_url else "url") if self._stations or self._clients else "wifi"
         if (self._qr_force is not None and self._clock() < self._qr_until
                 and (self._qr_force != "setup" or setup_url)):
             qr = self._qr_force

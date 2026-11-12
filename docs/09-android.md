@@ -55,8 +55,8 @@ On the Pixel 4a (Android 13), with the box up, SETUP › PHONE on its screen:
 1. **Join K1000 with the camera.** The **first** QR code (Wi-Fi): Camera app, or Settings ›
    Network & internet › Internet › the **⊞ QR icon** › scan › *Join*. *K1000 has no internet
    access — Stay connected?* › **Yes** (`06-phone.md` §3 step 3).
-2. **The first-time page.** E1 turn to the **third** code, FIRST TIME (`http://10.42.0.1/`), scan
-   it, open it in **Chrome**. Tap **Install the K1000 app** (it shows the version, the size and
+2. **The first-time page.** The box screen shows it by itself once the phone is on the Wi-Fi: the
+   **second** code, 2 · OPEN K1000 (`http://10.42.0.1/`); scan it, open it in **Chrome**. Tap **Install the K1000 app** (it shows the version, the size and
    the first 8 hex of the APK's SHA-256; *This box holds no copy of the app* = no APK: §6).
 3. **Install.** Chrome may warn about the download (an APK, over plain http on the box's own Wi-Fi):
    **Download anyway** / **Keep**. Tap the download, then, once per phone: *Your phone is not allowed
@@ -68,7 +68,7 @@ On the Pixel 4a (Android 13), with the box up, SETUP › PHONE on its screen:
    **K1000 Wi-Fi taken from the box**.
 5. Android's own dialog: *Connect to device — K1000 app wants to use a temporary Wi-Fi network to
    connect to your device — K1000* › **Connect**. Once per phone and app: Android remembers it.
-6. The K1000 page opens (the box screen switches to the URL code, as with Chrome); Android says
+6. The K1000 page opens (the box screen shows its second code, as with Chrome); Android says
    *Viewing full screen · To exit, swipe down from the top* once › **Got it**. From then on the app
    joins K1000 by itself at every launch, as after a scan.
 
@@ -313,7 +313,7 @@ The contract is [`android/BRIDGE.md`](../android/BRIDGE.md); in short:
 |---|---|
 | On K1000 (joined with the camera), but the Connect screen does not ask the box | The fallback box *I joined K1000 in Android's Wi-Fi settings* is ticked (untick it), or Android 17's nearby devices permission was refused: the Connect screen then says so; tap that line › **Allow** (or close the app and open it again: a new Connect screen asks once more) |
 | *This box does not hand its Wi-Fi to the app* | The box predates `/api/wifi`, or has no password file (`setup-ap.sh --status`): scan the code |
-| The scan says *This is not a Wi-Fi QR code* | You scanned the URL or FIRST TIME code: turn E1 on the box back to the **Wi-Fi** code |
+| The scan says *This is not a Wi-Fi QR code* | You scanned the OPEN K1000 code or the DIRECT LINK: turn E1 on the box back to the **Wi-Fi** code |
 | The scan says the code is for an open network or WPA3 | The box's AP is not the K1000 WPA2 one (`setup-ap.sh --status`) |
 | *Joining K1000…* for long, no dialog | K1000 is out of range or on a band the phone cannot see (`setup-ap.sh --band bg`, `06-phone.md` §6) |
 | Android's dialog does not list K1000 | Same as above; or the password changed on the box (`--new-password`): *Change K1000 Wi-Fi* and scan again |
@@ -342,7 +342,7 @@ release is the intended way to hand it out (not done: publishing is Thomas's cal
 carry `K1000-<version>.LICENSES.txt` next to the APK (GitHub adds the source archive itself).
 
 **The box hands it out too (0.2.1):** its first-time page (`http://10.42.0.1/`, the PHONE page's
-third QR) offers *Install the K1000 app* when the box was deployed with an APK: `install.sh` installs
+second QR) offers *Install the K1000 app* when the box was deployed with an APK: `install.sh` installs
 the newest `box/apk/K1000-<version>.apk` (never in git) to `/opt/k1000/apk/`, and the deploy drops
 the signed release APK there before copying the tree (`06-phone.md`, first-time page). The page
 shows the version and the first 8 hex of the APK's SHA-256: compare them with
