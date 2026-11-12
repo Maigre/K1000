@@ -569,7 +569,7 @@ async def run(args: argparse.Namespace) -> int:
         probe = None    # virtual devices: always present
         log.warning("--test-devices: SignalGenerator -> /dev/null, the ALSA card is not used")
 
-    client = CamillaClient(eng.url, fader_max_db=FADER_CEILING_DB)
+    client = CamillaClient(eng.url, fader_max_db=FADER_CEILING_DB, mute_link=True)  # audit 5.1 #6
     ctl = Controller(client, profile, state, paths, settings=settings, profile_choice=choice,
                      boot_gain_db=eng.boot_gain_db, boot_ramp_s=eng.boot_ramp_s,
                      transform=transform, device_probe=probe)

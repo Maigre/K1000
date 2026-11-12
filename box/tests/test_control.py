@@ -682,6 +682,178 @@ def test_mute_is_sent_at_once_even_while_a_plan_runs(tmp_path: Path) -> None:
     run(body())
 
 
+class TwoLinkClient(FakeClient):
+    """FakeClient with CamillaClient's two paths for Main's mute (cdsp `mute_link`): the main
+    link carries one request at a time (`main_lock`; `hold`, when set, keeps a config write in
+    it, like a slow read-back), the mute link (`mute_up`) carries Main's mute; an unmute needs
+    the main link up. `mute_seq` moves as CamillaClient's does."""
+
+    def __init__(self, cfg: dict[str, Any] | None) -> None:
+        super().__init__(cfg)
+        self.main_lock = asyncio.Lock()
+        self.hold: asyncio.Event | None = None
+        self.mute_up = True
+        self.mute_seq = 0
+
+    @property
+    def mute_connected(self) -> bool:
+        return self.mute_up
+
+    async def set_value(self, pointer: str, value: Any, clamp: Any = None) -> Any:
+        async with self.main_lock:
+            if self.hold is not None:
+                await self.hold.wait()
+            return await super().set_value(pointer, value, clamp)
+
+    async def set_fader_mute(self, idx: int, mute: bool) -> None:
+        if idx != 0:
+            async with self.main_lock:
+                return await super().set_fader_mute(idx, mute)
+        self.mute_seq += 1
+        try:
+            if self.mute_up and (mute or self.connected):
+                self.faders[0]["mute"] = bool(mute)
+                await self._logged(("mute", 0, bool(mute)))
+            else:
+                async with self.main_lock:
+                    await super().set_fader_mute(idx, mute)
+        finally:
+            self.mute_seq += 1
+
+
+def make_two_links(tmp_path: Path, state: State) -> tuple[Controller, TwoLinkClient]:
+    st = state.copy()
+    client = TwoLinkClient(dc.generate(DEV, st))
+    lv = dc.fader_levels(st)
+    client.faders[0] = {"volume": lv[0], "mute": st.muted}
+    client.faders[1]["volume"], client.faders[2]["volume"] = lv[1], lv[2]
+    client.faders[MARKER_FADER]["volume"] = MARKER_DB
+    ctl = Controller(client, DEV, st, Paths(tmp_path / "state.json", tmp_path / "active.yml"),
+                     sleep=fast_sleep, poll_s=3600, meter_s=3600, persist_debounce_s=0.05,
+                     persist_max_delay_s=0.5, device_probe=lambda d: True)
+    return ctl, client
+
+
+def test_mute_lands_while_a_write_holds_the_main_link(tmp_path: Path) -> None:
+    """Audit 5.1 #6: B4 pressed while a knob write sits in the main link (its read-back) goes
+    out on the mute link at once; with the mute link down it goes on the main link, after the
+    write, as before."""
+    async def body() -> None:
+        ctl, cl = make_two_links(tmp_path, State(master_db=-20.0))
+        await boot(ctl)
+        cl.hold = asyncio.Event()
+        ctl.nudge("live_peq.0.gain", 2)
+        await until(lambda: cl.main_lock.locked() and ctl._busy, what="write in the main link")
+        ctl.set_mute(True)
+        await until(lambda: cl.faders[0]["mute"] is True, timeout=0.5, what="mute at once")
+        assert ctl.status.muted is True and ctl.displayed_muted() and not cl.hold.is_set()
+        cl.hold.set()
+        assert await ctl.settle(3.0)
+        ctl.set_mute(False)
+        assert await ctl.settle(3.0) and cl.faders[0]["mute"] is False
+        cl.mute_up = False                      # the mute link down: the main link carries it
+        cl.hold = asyncio.Event()
+        ctl.nudge("live_peq.0.gain", 2)
+        await until(lambda: cl.main_lock.locked() and ctl._busy, what="write in the main link")
+        ctl.set_mute(True)
+        await asyncio.sleep(0.1)
+        assert cl.faders[0]["mute"] is False    # behind the write
+        cl.hold.set()
+        await until(lambda: cl.faders[0]["mute"] is True, what="mute after the write")
+        assert await ctl.settle(3.0) and ctl.state.muted is True and ctl.status.muted is True
+        await ctl.stop()
+
+    run(body())
+
+
+def test_mute_goes_out_while_the_main_link_is_down_an_unmute_does_not(tmp_path: Path) -> None:
+    """The main link down, the mute link up: a mute reaches the engine at once (before, it waited
+    for the reconnect). An unmute is never sent that way: it is dropped on reconnect as before."""
+    async def body() -> None:
+        ctl, cl = make_two_links(tmp_path, State(master_db=-10.0))
+        await boot(ctl)
+        await cl.drop()
+        ctl.set_mute(True)
+        await until(lambda: cl.faders[0]["mute"] is True, timeout=0.5, what="mute, main link down")
+        assert ctl.status.muted is True and ctl._mute_want is None
+        ctl.set_mute(False)
+        await asyncio.sleep(0.05)
+        assert cl.faders[0]["mute"] is True and ("mute", 0, False) not in cl.log
+        await cl.reconnect()
+        await until(lambda: ctl.engine_ready, what="resync")
+        assert await ctl.settle(2.0)
+        assert ("mute", 0, False) not in cl.log
+        assert ctl.state.muted is True and cl.faders[0]["mute"] is True
+        assert ctl.focus.hint == ctl_mod.HINT_STILL_MUTED
+        await ctl.stop()
+
+    run(body())
+
+
+def test_a_fader_read_that_crossed_a_mute_never_shows_it_undone(tmp_path: Path) -> None:
+    """On two links a poll's GetFaders (main link) can be answered before a mute (mute link)
+    lands and read after it: it shows Main unmuted. Neither the screen nor the state may take
+    that for the truth; the next read does."""
+    async def body() -> None:
+        ctl, cl = make_two_links(tmp_path, State(master_db=-20.0))
+        await boot(ctl)
+        real_get_faders = cl.get_faders
+        crossing = [True]
+
+        async def get_faders() -> list[dict[str, Any]]:
+            got = await real_get_faders()           # Main unmuted: answered before the mute
+            if crossing[0]:
+                crossing[0] = False
+                ctl.set_mute(True)                  # B4, on the mute link, lands meanwhile
+                await until(lambda: cl.faders[0]["mute"] is True and ctl._mute_want is None,
+                            what="mute landed")
+            return got
+
+        cl.get_faders = get_faders  # type: ignore[method-assign]
+        for locked in (False, True):                # the adopting poll; the poll beside engine work
+            crossing[0] = True
+            if locked:
+                ctl.set_mute(False)
+                assert await ctl.settle(2.0) and cl.faders[0]["mute"] is False
+                await ctl._engine_lock.acquire()
+            try:
+                ctl._own_fader.clear()              # not shielded by the own-write window
+                await ctl.poll_once()
+            finally:
+                if locked:
+                    ctl._engine_lock.release()
+            assert ctl.status.muted is True and ctl.displayed_muted() is True
+            assert ctl.state.muted is True
+            await ctl.poll_once()                   # a clean read: muted, as it is
+            assert ctl.status.muted is True and ctl.state.muted is True
+        await ctl.stop()
+
+    run(body())
+
+
+def test_a_cut_short_guard_never_unmutes_over_a_mute_pressed_meanwhile(tmp_path: Path) -> None:
+    """`_finish_main_guard` asks the engine whether it runs before it unmutes: B4 pressed during
+    that round trip must win (the unmute is dropped), on one link or two."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-20.0), playing=True)
+        await boot(ctl)
+        cl.faders[0]["mute"] = True                 # the guard's mute
+        real_get_state = cl.get_state
+
+        async def get_state() -> str:
+            ctl.set_mute(True)
+            return await real_get_state()
+
+        cl.get_state = get_state  # type: ignore[method-assign]
+        n = len(cl.log)
+        assert await ctl._finish_main_guard() is True
+        assert await ctl.settle(2.0)
+        assert ("mute", 0, False) not in cl.log[n:] and cl.faders[0]["mute"] is True
+        await ctl.stop()
+
+    run(body())
+
+
 def test_mute_pressed_during_the_boot_ramp_cancels_its_unmute(tmp_path: Path) -> None:
     async def body() -> None:
         gate = asyncio.Event()
@@ -2613,7 +2785,7 @@ def test_engine_controller_follows_a_scripted_show(tmp_path: Path) -> None:
         paths = Paths(tmp_path / "state.json", tmp_path / "active.yml")
         st = State(master_db=-12.0)
         client = CamillaClient(f"ws://127.0.0.1:{ENGINE_PORT}", backoff_min=0.05, backoff_max=0.3,
-                               fader_max_db=ctl_mod.FADER_CEILING_DB)
+                               fader_max_db=ctl_mod.FADER_CEILING_DB, mute_link=True)  # as run
         ctl = Controller(client, DEV, st, paths, transform=_test_transform, device_probe=None,
                          poll_s=0.2, meter_s=0.1, persist_debounce_s=0.2, boot_ramp_s=3.0)
         ctl.save_now()                                   # the engine unit waits for this file

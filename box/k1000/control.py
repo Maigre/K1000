@@ -13,8 +13,12 @@ Why it is shaped like this:
   around it, and are refused unless the operator confirmed them (SETUP: proposed by an E3 turn,
   applied by an E3 push, D-017; chosen with E2 and set by a push under D-013) or the box is muted.
 - **Mute never waits.** B4 is the emergency gesture: `set_mute` sends the Main mute at once,
-  outside the worker and its lock. Nothing else ever UNMUTES Main except the operator, a boot ramp,
-  or a setup guard, and the last two re-check the operator's mute right before unmuting.
+  outside the worker and its lock, and the client carries it on a connection of its own (cdsp
+  `mute_link`), never behind a write's read-back or an upload; also while the main link is down
+  (an unmute is not: it needs the main link). A fader read on the main link that crossed a Main
+  mute is not trusted for Main (`_main_mute_read_ok`). Nothing else ever UNMUTES Main except the
+  operator, a boot ramp, or a setup guard, and the last two re-check the operator's mute right
+  before unmuting.
 - **No ramp into an engine that is not processing.** CamillaDSP applies a fader change made while
   it is Stalled/Paused/Starting at once when audio resumes (README, Volume control), so a ramp
   run "into" a stalled capture is no ramp at all. The boot ramp and the setup guard unmute only
@@ -2147,12 +2151,26 @@ class Controller:
             raise _LinkChanged("engine link changed")
 
     # ------------------------------------------------------------------ mute path
+    def _mute_link_up(self) -> bool:
+        """The client's mute link is up (cdsp `mute_link`): a mute goes out without the main link."""
+        return bool(getattr(self.client, "mute_connected", False))
+
+    def _mute_seq(self) -> int:
+        """The client's Main mute counter (cdsp `mute_seq`; odd while a mute is in flight)."""
+        return int(getattr(self.client, "mute_seq", 0))
+
+    def _main_mute_read_ok(self, seq: int) -> bool:
+        """Does a fader read started at `_mute_seq()` == `seq` show Main's mute as it is? Not if a
+        Main mute or unmute was in flight then or ran since: on its own link it can land while
+        the read is on its way back on the main link, which then shows it undone."""
+        return seq % 2 == 0 and self._mute_seq() == seq
+
     async def _mute_sender(self) -> None:
         """Send the latest operator mute until it is in the engine (or the link is down: the
         next connect sync takes it from there)."""
         while self._mute_want is not None:
             want = self._mute_want
-            if not self.client.connected:
+            if not self.client.connected and not (want and self._mute_link_up()):
                 return
             if want is False and self._main_guard_holds():
                 # A setup guard holds Main muted AT THE SHOW LEVEL until the engine runs: an
@@ -2364,6 +2382,7 @@ class Controller:
 
     async def _resync_from_engine(self) -> None:
         """After a refused write: the engine's values win (the refused edit is dropped)."""
+        seq = self._mute_seq()
         try:
             live = await self.client.get_config_json()
             faders = await self.client.get_faders()
@@ -2374,8 +2393,9 @@ class Controller:
         except CdspError as e:
             log.warning("cannot re-read the engine (%s); the next poll adopts", e)
             return
-        skip = {FADER_MAIN} if self._mute_want is not None else set()
-        self._applied = dc.state_from_config(live, faders, self._applied)
+        crossed = set() if self._main_mute_read_ok(seq) else {FADER_MAIN}
+        skip = ({FADER_MAIN} if self._mute_want is not None else set()) | crossed
+        self._applied = dc.state_from_config(live, faders, self._applied, skip_faders=crossed)
         new = dc.state_from_config(live, faders, self.state, skip_faders=skip)
         self._drop_adopted_common(new)
         self.state = new
@@ -2508,6 +2528,8 @@ class Controller:
         async def go() -> bool:
             if str(await self.client.get_state()) != "Running":
                 return False
+            if self._operator_muted():   # B4 pressed during that round trip: it wins
+                return True
             await self.client.set_fader_mute(FADER_MAIN, False)
             self._own_fader[FADER_MAIN] = self._clock()
             self._applied.muted = False
@@ -2668,6 +2690,7 @@ class Controller:
         if not str(version).startswith("5."):
             self._log_once(("version", version), logging.WARNING,
                            "engine version %s: K1000 v0 is built for CamillaDSP 5.0.0-beta.1", version)
+        seq = self._mute_seq()
         try:
             live: Any = await self.client.get_config_json()
         except CdspNoConfig:
@@ -2677,7 +2700,8 @@ class Controller:
         faders = await self.client.get_faders()
         self._note_engine(await self.client.get_state())
         main_vol, main_mute = _fader(faders, FADER_MAIN)
-        self.status.muted = main_mute
+        if self._main_mute_read_ok(seq):
+            self.status.muted = main_mute
         marker, _ = _fader(faders, MARKER_FADER)
         self._marker_engine = marker
         guards = decode_marker(marker)
@@ -3301,14 +3325,16 @@ class Controller:
         self._note_latency(est, level)
         if not self._engine_ready or self._syncing or self._engine_lock.locked():
             if not self._syncing:
+                seq = self._mute_seq()
                 _v, m = _fader(await self.client.get_faders(), FADER_MAIN)
-                if m != self.status.muted and not self._ramping:
+                if m != self.status.muted and not self._ramping and self._main_mute_read_ok(seq):
                     self.status.muted = m
                     self._changed()
             return
         async with self._engine_lock:     # settle()/stop() wait for this work too
             if not self._engine_ready or self._stopping:
                 return
+            seq = self._mute_seq()
             try:
                 live = await self.client.get_config_json()
             except CdspNoConfig:
@@ -3320,10 +3346,12 @@ class Controller:
             faders = await self.client.get_faders()
             self._marker_engine = _fader(faders, MARKER_FADER)[0]
             _v, m = _fader(faders, FADER_MAIN)
-            if self._mute_want is None and m != self.status.muted:
+            crossed = frozenset() if self._main_mute_read_ok(seq) else frozenset({FADER_MAIN})
+            if self._mute_want is None and m != self.status.muted and not crossed:
                 self.status.muted = m
                 self._changed()
-            await self._reconcile(live, faders, connect=False)
+            await self._reconcile(live, faders, connect=False, adopt_skip=crossed,
+                                  drift_skip=crossed)
             await self._write_marker()
 
     def _refresh_device(self) -> None:

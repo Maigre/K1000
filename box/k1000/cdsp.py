@@ -26,6 +26,15 @@ Why it is shaped like this:
   A whole-config upload that changes ``devices`` is also held until the engine has run
   steadily on them: the engine reports the new config (and even ``Running``) *before* it
   opens the new device, then stops or exits if the open fails (seen on the box).
+* **Main's mute on a connection of its own** (``mute_link=True``, the controller's client).
+  Behind the one lock, a mute waited for the command in flight: up to ``CONFIRM_TIMEOUT_S``
+  behind a write's read-back, up to ``SETUP_TIMEOUT_S`` behind a whole-config upload.
+  ``set_fader_mute(MAIN, ...)`` goes out on a second websocket that carries nothing else (the
+  engine serves each connection on its own, as for the spectrum's). Every Main mute and unmute
+  also passes one lock of its own, whichever link carries it, so they reach the engine in the
+  order they were asked for. The mute link down, or silent for ``MUTE_TIMEOUT_S`` (it is then
+  reset): the main link carries it, as before. An unmute needs the main link up, as before;
+  a mute does not. ``mute_seq`` lets a reader tell a fader read that crossed a Main mute.
 
 Protocol facts (``websocket.md`` v5, proven on the box with 5.0.0-beta.1):
 ``{"command": X, ...fields}`` -> ``{"reply": X, "result": "Ok" | <ErrorName>, "value"?, "message"?}``.
@@ -71,6 +80,9 @@ MATCH_ABS_TOL = 1e-6
 RUNNING_SETTLE_S = 0.5
 RUNNING_POLL_S = 0.02
 RUNNING_STATES = ("Running", "Paused")  # Paused = devices open, processing paused on silence
+# The mute link's command timeout: SetFaderMute answers in about a millisecond; a mute link that
+# has not answered in this time is reset and the main link carries the mute.
+MUTE_TIMEOUT_S = 0.5
 
 # Fader indices: Main is CamillaDSP's built-in master; Aux1..Aux4 drive Volume filters.
 MAIN, AUX1, AUX2, AUX3, AUX4 = range(5)
@@ -239,6 +251,7 @@ class CamillaClient:
         gain_min_db: float = ENGINE_GAIN_MIN_DB,
         gain_max_db: float = DEFAULT_GAIN_MAX_DB,
         settle_s: float = RUNNING_SETTLE_S,
+        mute_link: bool = False,
     ) -> None:
         if not ENGINE_FADER_MIN_DB <= fader_min_db < fader_max_db <= ENGINE_FADER_MAX_DB:
             raise ValueError("fader limits must satisfy -150 <= min < max <= +50 dB")
@@ -267,12 +280,25 @@ class CamillaClient:
         self._closing = False
         self._hook_task: asyncio.Task[None] | None = None
         self._side_tasks: set[asyncio.Task[None]] = set()
+        # Main's mute (module docstring): its own link (None = off), its own lock, and a counter
+        # that moves when one starts and when it ends (odd while one is in flight).
+        self._mute: CamillaClient | None = (
+            CamillaClient(url, timeout=min(timeout, MUTE_TIMEOUT_S), backoff_min=backoff_min,
+                          backoff_max=backoff_max, ping_interval=ping_interval)
+            if mute_link else None)
+        self._mute_lock = asyncio.Lock()
+        self.mute_seq = 0
 
     # ------------------------------------------------------------------ lifecycle
 
     @property
     def connected(self) -> bool:
         return self._ws is not None
+
+    @property
+    def mute_connected(self) -> bool:
+        """The mute link is up (False without one)."""
+        return self._mute is not None and self._mute.connected
 
     async def connect(self, timeout: float | None = 5.0) -> bool:
         """Start the (re)connect loop and wait up to ``timeout`` s (None = forever) for a link.
@@ -283,6 +309,8 @@ class CamillaClient:
         if self._runner is None or self._runner.done():
             self._closing = False
             self._runner = asyncio.create_task(self._run(), name="cdsp-link")
+        if self._mute is not None:
+            await self._mute.connect(timeout=0)    # its own loop; never waited for
         return await self.wait_connected(timeout)
 
     async def wait_connected(self, timeout: float | None = None) -> bool:
@@ -295,8 +323,10 @@ class CamillaClient:
         return self.connected
 
     async def close(self) -> None:
-        """Stop reconnecting and close the link. Idempotent."""
+        """Stop reconnecting and close the link (and the mute link). Idempotent."""
         self._closing = True
+        if self._mute is not None:
+            await self._mute.close()
         ws = self._ws
         runner, self._runner = self._runner, None
         tasks = [t for t in (runner, self._hook_task, *self._side_tasks) if t and not t.done()]
@@ -736,8 +766,27 @@ class CamillaClient:
         return float(value[1])  # [fader_index, new_volume_dB]
 
     async def set_fader_mute(self, idx: int, mute: bool) -> None:
+        """Main's goes out on the mute link when it is up (an unmute: when the main link is up
+        too), else on the main link; one at a time, in the order asked (module docstring). The
+        Aux faders' always go on the main link."""
         idx = self._fader_index(idx)
-        await self.command("SetFaderMute", fader=idx, value=bool(mute))
+        if idx != MAIN:
+            await self.command("SetFaderMute", fader=idx, value=bool(mute))
+            return
+        async with self._mute_lock:
+            self.mute_seq += 1
+            try:
+                link = self._mute
+                if link is not None and link.connected and (mute or self.connected):
+                    try:
+                        await link.command("SetFaderMute", fader=MAIN, value=bool(mute))
+                        return
+                    except CdspUnavailable as e:    # reset or timed out: not the engine's answer
+                        log.warning("mute link: %s; Main %s sent on the main link", e,
+                                    "mute" if mute else "unmute")
+                await self.command("SetFaderMute", fader=MAIN, value=bool(mute))
+            finally:
+                self.mute_seq += 1
 
     # ------------------------------------------------------------------ status
 
