@@ -1093,6 +1093,28 @@ def test_an_unmute_needs_the_main_link_a_mute_does_not() -> None:
     run(body())
 
 
+def test_the_mute_link_names_itself_in_the_journal(caplog: Any) -> None:
+    """Its connects and losses are not the engine link's: read after a show, a reset of the mute
+    link alone must not look like 'lost connection to camilladsp'."""
+    import logging
+
+    async def body() -> None:
+        async with rig(mute_link=True, backoff_min=0.05) as (eng, c):
+            await until(lambda: c.mute_connected, what="mute link up")
+            with pytest.raises(CdspUnavailable):
+                await c._mute.command("Drop")
+            await until(lambda: c._mute.connect_count == 2, what="mute link back")
+            assert c.connect_count == 1
+
+    with caplog.at_level(logging.INFO, logger="k1000.cdsp"):
+        run(body())
+    lines = [r.getMessage() for r in caplog.records if r.name == "k1000.cdsp"]
+    assert sum(m.startswith("connected to camilladsp at") for m in lines) == 1
+    assert sum(m.startswith("mute link: connected to camilladsp at") for m in lines) == 2
+    assert [m for m in lines if "lost connection" in m] == [
+        m for m in lines if m.startswith("mute link: lost connection to camilladsp at")] != []
+
+
 def test_close_closes_the_mute_link_too() -> None:
     async def body() -> None:
         eng = FakeEngine()

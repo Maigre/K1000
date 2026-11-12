@@ -276,6 +276,7 @@ class CamillaClient:
         self.gain_max_db = gain_max_db
         self.settle_s = settle_s  # see RUNNING_SETTLE_S
         self.connect_count = 0  # successful connections so far (1 = first, 2+ = reconnects)
+        self._tag = ""          # before its link's journal lines ("mute link: " for that one)
 
         self._ws: ClientConnection | None = None
         self._lock = asyncio.Lock()
@@ -291,6 +292,8 @@ class CamillaClient:
             CamillaClient(url, timeout=min(timeout, MUTE_TIMEOUT_S), backoff_min=backoff_min,
                           backoff_max=backoff_max, ping_interval=ping_interval)
             if mute_link else None)
+        if self._mute is not None:
+            self._mute._tag = "mute link: "
         self._main_asked = 0
         self._main_last: bool | None = None
         self._main_open = 0
@@ -386,7 +389,8 @@ class CamillaClient:
                 raise
             except Exception as e:  # refused, handshake timeout, bad URL...: keep trying
                 if not reported_down:
-                    log.warning("camilladsp unreachable at %s (%s); retrying", self.url, e)
+                    log.warning("%scamilladsp unreachable at %s (%s); retrying", self._tag,
+                                self.url, e)
                     reported_down = True
                 else:
                     log.debug("reconnect to %s failed: %s", self.url, e)
@@ -399,7 +403,8 @@ class CamillaClient:
             self._ws = ws
             self.connect_count += 1
             self._up.set()
-            log.info("connected to camilladsp at %s (connection #%d)", self.url, self.connect_count)
+            log.info("%sconnected to camilladsp at %s (connection #%d)", self._tag, self.url,
+                     self.connect_count)
             if self.on_connect is not None:
                 self._hook_task = self._spawn(self.on_connect, "on_connect")
             try:
@@ -408,7 +413,7 @@ class CamillaClient:
                 self._drop(ws, "closed")
             if self._closing:
                 break
-            log.warning("lost connection to camilladsp at %s", self.url)
+            log.warning("%slost connection to camilladsp at %s", self._tag, self.url)
             # A re-apply running against a dead link is pointless; the next on_connect redoes it.
             if self._hook_task is not None and not self._hook_task.done():
                 self._hook_task.cancel()
