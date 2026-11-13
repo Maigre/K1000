@@ -68,9 +68,11 @@ function magDb(c, f) {
   const dr = c[3] + c[4] * c1 + c[5] * c2, di = -(c[4] * s1 + c[5] * s2);
   return 10 * Math.log10((nr * nr + ni * ni) / (dr * dr + di * di));
 }
+// Each curve is cached under everything it is computed from, the box's rate included: a box
+// restarted at another rate (D-022, the same build: no page reload) redraws every curve.
 const cache = new Map();
 function bandArr(s, b) {
-  const key = bandKind(s) + "|" + b.f + "|" + b.g + "|" + b.q + "|" + xsN;
+  const key = bandKind(s) + "|" + b.f + "|" + b.g + "|" + b.q + "|" + xsN + "|" + FS();
   const c = cache.get(s);
   if (c && c.key === key) return c.arr;
   const arr = new Float32Array(xsN);
@@ -80,7 +82,7 @@ function bandArr(s, b) {
 }
 let hpCache = { key: "", arr: null };
 function hpArr(hz) {
-  const key = hz + "|" + xsN;
+  const key = hz + "|" + xsN + "|" + FS();
   if (hpCache.key !== key) {
     const co = coef("hp", hz, 0, 0.7071);
     hpCache = { key, arr: new Float32Array(xsN) };
