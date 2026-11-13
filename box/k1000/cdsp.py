@@ -256,6 +256,7 @@ class CamillaClient:
         gain_max_db: float = DEFAULT_GAIN_MAX_DB,
         settle_s: float = RUNNING_SETTLE_S,
         mute_link: bool = False,
+        tag: str = "",
     ) -> None:
         if not ENGINE_FADER_MIN_DB <= fader_min_db < fader_max_db <= ENGINE_FADER_MAX_DB:
             raise ValueError("fader limits must satisfy -150 <= min < max <= +50 dB")
@@ -276,7 +277,7 @@ class CamillaClient:
         self.gain_max_db = gain_max_db
         self.settle_s = settle_s  # see RUNNING_SETTLE_S
         self.connect_count = 0  # successful connections so far (1 = first, 2+ = reconnects)
-        self._tag = ""          # before its link's journal lines ("mute link: " for that one)
+        self._tag = tag         # before its link's journal lines ("mute link: " for that one)
 
         self._ws: ClientConnection | None = None
         self._lock = asyncio.Lock()

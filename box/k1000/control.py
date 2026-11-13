@@ -39,10 +39,11 @@ Why it is shaped like this:
 - **A restarted ENGINE is detected, not guessed.** camilladsp starts with Main muted at -40 dB
   and every Aux fader at 0 dB (measured). Once K1000 has brought an engine in, it parks the unused
   Aux4 fader at `MARKER_DB` (no Volume filter listens to Aux4: no audible effect). So Main muted
-  AT -40 and no marker = a fresh engine: push the saved state (safe while muted, devices included)
-  and ramp Main in (`boot_ramp_plan`). Muted elsewhere without a marker = someone muted it: kept
-  muted. Anything else = an engine that was already playing: adopt, never ramp, never drop the
-  level.
+  AT -40 and no marker = a fresh engine: push the saved state (safe while muted, devices included),
+  ask it for its spectrum once (`_warm_spectrum`: the first request of an engine run stalls its
+  audio, so it is made while Main is muted) and ramp Main in (`boot_ramp_plan`). Muted elsewhere
+  without a marker = someone muted it: kept muted. Anything else = an engine that was already
+  playing: adopt, never ramp, never drop the level.
 - **Guards are recorded on the engine.** The exact marker value also says which faders K1000 is
   holding in a transient state (`marker_db`/`decode_marker`): an Aux group muted by a
   delay/polarity guard, Main muted by a setup guard or under the boot ramp. A k1000 killed inside
@@ -119,6 +120,19 @@ FRESH_TOL_DB = 0.05
 # (`Controller._two_chunks_s`: dspconfig.two_chunks_s of the running chunk, 12 ms at 256).
 RUN_WAIT_S = 0.05            # GetState poll while holding Main muted for the engine to run
 BOOT_STEP_MAX_DB = 6.0       # no boot-ramp step above this, whatever boot_ramp_s says
+# The spectrum warm-up (`Controller._warm_spectrum`, docs/17 §3.2 and §9). The first GetSpectrum
+# of an engine run sets the engine's sticky "requested" flag, and at its next chunk the audio
+# thread allocates the spectrum's ring buffer, 262144 f32 per channel, before passing the chunk on
+# (CamillaDSP spectrum.rs `AudioRingBuffer::push_chunk`, called from lib.rs
+# `push_capture_audio_buffer` / `push_playback_audio_buffer`): a stall, and often a playback
+# underrun. A fresh engine is asked once before its boot ramp, while Main is muted. The engine
+# answers from its websocket thread without waiting for audio (only the capture status lock,
+# which the capture thread holds for one allocation at most); this bound (handshake + answer,
+# milliseconds on loopback) is what the warm-up may add to the boot at worst: no answer within it,
+# the ramp goes on. No wait of its own after the answer: the ramp's park -> unmute wait
+# (dspconfig.GUARD_WAIT_S, 0.15 s) and its two Running reads already exceed what the engine needs
+# (one chunk to see the flag, the stall, its target level to refill: tens of milliseconds).
+SPECTRUM_WARMUP_S = 0.3
 MAX_DETENTS = 1000.0         # a sane encoder move (input_map acceleration stays far below)
 
 POLL_S = 1.0                 # config + faders adoption, engine state, load, clipped samples
@@ -442,6 +456,14 @@ def spectrum_enabled(settings: Any) -> bool:
     connection; SETUP > Spectrum then says so. Only a real `false` turns it off."""
     sec = settings.get("spectrum") if isinstance(settings, dict) else None
     return not (isinstance(sec, dict) and sec.get("enabled") is False)
+
+
+def spectrum_warmup_request(channel: int) -> dict[str, Any]:
+    """The warm-up's GetSpectrum value: the spectrum task's own request (rta.spectrum_request:
+    the capture side, one program channel, 10 Hz - 20 kHz, 264 bins). Written out here because
+    rta imports numpy, which the boot path must not wait for; a test keeps the two equal."""
+    return {"side": "capture", "channel": int(channel), "min_freq": 10.0, "max_freq": 20000.0,
+            "n_bins": 264}
 
 
 def fmt_hz_short(hz: float) -> str:
@@ -832,6 +854,11 @@ class Controller:
         # k1000.yaml allows it at all (`spectrum: enabled: false` = no task, no second link).
         self.rta: Any = None
         self.spectrum_enabled = spectrum_enabled(self.settings)
+        # The spectrum warm-up's engine client (`_warm_spectrum`): a factory, set by __main__
+        # before start(), of a client of its own (the CamillaClient surface: connect(timeout),
+        # command(name, value=, timeout=), close()), built and closed for each warm-up. None =
+        # no warm-up.
+        self.warmup_client: Callable[[], Any] | None = None
         # Who looks at the spectrum (spectrum_wanted): the box screen on SHOW (`has_screen`:
         # False with --headless, set by __main__) and the v2 phones subscribed to its frames
         # (`set_spectrum_phones`, web.PhoneServer). `spectrum_hooks`: called (no argument)
@@ -2822,7 +2849,55 @@ class Controller:
         applied.balance_db = 0.0
         self._applied = applied
         self._mute_want = None   # the boot plan honours state.muted itself
+        await self._warm_spectrum()
         await self._boot_ramp(target, epoch)
+
+    async def _warm_spectrum(self) -> None:
+        """A fresh engine's first GetSpectrum, asked while Main is still muted (see
+        SPECTRUM_WARMUP_S): the stall it causes falls before the boot ramp, and no later
+        spectrum poll (the spectrum task, which reconnects by itself after an engine restart)
+        finds anything left to allocate.
+
+        - On a connection of its own (`warmup_client`), opened and closed here: never the main
+          link, which a timeout would reset (and the connect sync with it), and never in front
+          of a mute, which has its own link.
+        - The spectrum task's request (capture side, the first program channel): 5.0.0-beta.1
+          allocates both sides on any request, next5 only the side asked, and the capture side
+          is the only one K1000 asks. The FFT length (min_freq) and the channel cost the audio
+          threads nothing: they are the websocket thread's.
+        - Any answer will do: "No audio data available" is the expected one (the request itself
+          set the flag). No answer within SPECTRUM_WARMUP_S: logged, and the ramp goes on.
+        - Not asked when k1000.yaml disables the spectrum (K1000 then never asks), or without a
+          program channel. SETUP > Spectrum OFF is asked anyway: it can be switched on mid-show.
+        """
+        chans = list(getattr(self.profile, "input_map", ()) or ())
+        if self.warmup_client is None or not self.spectrum_enabled or not chans:
+            return
+        t0 = self._clock()
+        client: Any = None
+        try:
+            async with asyncio.timeout(SPECTRUM_WARMUP_S):
+                client = self.warmup_client()
+                if not await client.connect(timeout=SPECTRUM_WARMUP_S):
+                    raise CdspUnavailable("no link")
+                try:
+                    await client.command("GetSpectrum", value=spectrum_warmup_request(chans[0]),
+                                         timeout=SPECTRUM_WARMUP_S)
+                    said = "a spectrum"
+                except CdspError as e:
+                    said = str(e.message or e.result)
+            log.info("spectrum warm-up: the engine answered in %.0f ms (%s), Main still muted",
+                     (self._clock() - t0) * 1000.0, said)
+        except Exception as e:   # noqa: BLE001 - never stands between the engine and its ramp
+            log.warning("spectrum warm-up: no answer within %g s (%s); ramping in anyway, the "
+                        "first spectrum poll may cause a short dropout", SPECTRUM_WARMUP_S,
+                        f"{type(e).__name__}: {e}" if str(e) else type(e).__name__)
+        finally:
+            if client is not None:
+                try:
+                    await asyncio.wait_for(client.close(), SPECTRUM_WARMUP_S)
+                except Exception:   # noqa: BLE001
+                    pass
 
     async def _sync_running(self, live: Any, faders: Any, epoch: int, *, managed: bool = True,
                             resume_main: bool = False) -> None:

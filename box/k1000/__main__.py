@@ -27,7 +27,10 @@ runs on its OWN engine connection, with or without a screen (`--headless`: the v
 it, docs/14 §4.8); it polls only while the controller wants it (someone looks: the screen on
 SHOW, or a v2 phone subscribed; SETUP > Spectrum ON, engine processing), so a run where nobody
 looks never opens that second connection. It is stopped after the controller, like the engine
-link: it never holds anything the audio needs.
+link: it never holds anything the audio needs. Apart from it, a freshly started engine is asked
+for its spectrum once before its boot ramp, on a link opened for that request alone
+(`spectrum_warmup_client`, `Controller._warm_spectrum`): the engine's first spectrum request
+stalls its audio, and must fall while Main is muted.
 
 Test/bench flags: `--headless` (no framebuffer), `--no-hw` (no MCP23017 knobs), `--stdin` (one
 command per line on stdin, replies on stdout prefixed with '@'; see `COMMANDS`), and
@@ -49,7 +52,8 @@ from typing import Any, Callable
 
 from . import __version__
 from .cdsp import CamillaClient
-from .control import FADER_CEILING_DB, Controller, EngineSettings, Paths, recover_state
+from .control import (FADER_CEILING_DB, SPECTRUM_WARMUP_S, Controller, EngineSettings, Paths,
+                      recover_state)
 from .profiles import (SETTINGS_PATH, ProfileError, card_present, choose_profile, load_profile,
                        load_settings)
 from .ui.input_map import Nudge, apply_focus
@@ -548,6 +552,16 @@ def open_spectrum(ctl: Controller, url: str) -> Any:
         return None
 
 
+def spectrum_warmup_client(url: str) -> Callable[[], Any]:
+    """`Controller.warmup_client`: a client of its own for each spectrum warm-up (a fresh
+    engine's first GetSpectrum, made before its boot ramp), built from cdsp alone (no numpy on
+    the boot path), named in the journal, without keepalive pings (it lives for one request)."""
+    def build() -> Any:
+        return CamillaClient(url, timeout=SPECTRUM_WARMUP_S, ping_interval=None,
+                             backoff_max=ENGINE_RETRY_MAX_S, tag="spectrum warm-up: ")
+    return build
+
+
 def wire_surfaces(ctl: Controller, args: argparse.Namespace) -> None:
     """What this run has: a screen (not --headless: the spectrum's SHOW rule) and knobs (not
     --no-hw); the v2 phones read both (hello.surface, the mute fallback, docs/14 §3)."""
@@ -616,6 +630,8 @@ async def run(args: argparse.Namespace) -> int:
 
     hw: dict[str, Any] = {"fb": None, "controls": None}
     wire_surfaces(ctl, args)
+    # A fresh engine is asked for its spectrum once before its ramp (k1000.yaml spectrum.enabled).
+    ctl.warmup_client = spectrum_warmup_client(eng.url)
     await ctl.start()
     ui: list[asyncio.Task[Any]] = []          # knobs + screen: kept until the controller stopped
     if not args.no_hw:           # the knobs first: B4 mutes from the first second

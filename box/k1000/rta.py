@@ -21,10 +21,11 @@ Why it is shaped like this:
   (`eqgraph.combine_power`). Never `channel: null`: on the M4 it averages the waveforms of the
   mic and the spare input into the program.
 - **Robust to the engine.** A fresh engine answers its first calls with "No audio data
-  available" (the call itself starts the analyser), then "Insufficient data in buffer" until
-  its ring buffer holds one FFT (CamillaDSP 5.0.0-beta.1, spectrum.rs): the analyser warming
-  up, retried quietly every WARMUP_RETRY_S (state "waiting": no picture, no NO SPECTRUM, no
-  log). Only if it is still warming up after WARMUP_GRACE_S does it count as a refusal ("No
+  available" (the call itself starts the analyser; K1000's first one is the controller's
+  warm-up before the boot ramp, `control.SPECTRUM_WARMUP_S`), then "Insufficient data in
+  buffer" until its ring buffer holds one FFT (CamillaDSP 5.0.0-beta.1, spectrum.rs): the
+  analyser warming up, retried quietly every WARMUP_RETRY_S (state "waiting": no picture, no
+  NO SPECTRUM, no log). Only if it is still warming up after WARMUP_GRACE_S does it count as a refusal ("No
   audio data" again after another answer is an engine restart: the grace starts again; but
   WARMUP_CAP_S of warm-up answers on one link with no data is a refusal whatever). A link
   down or restarting: the frame is cleared after STALE_S without data (never a frozen picture),
