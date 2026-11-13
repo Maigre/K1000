@@ -128,11 +128,22 @@ BOOT_STEP_MAX_DB = 6.0       # no boot-ramp step above this, whatever boot_ramp_
 # underrun. A fresh engine is asked once before its boot ramp, while Main is muted. The engine
 # answers from its websocket thread without waiting for audio (only the capture status lock,
 # which the capture thread holds for one allocation at most); this bound (handshake + answer,
-# milliseconds on loopback) is what the warm-up may add to the boot at worst: no answer within it,
-# the ramp goes on. No wait of its own after the answer: the ramp's park -> unmute wait
-# (dspconfig.GUARD_WAIT_S, 0.15 s) and its two Running reads already exceed what the engine needs
-# (one chunk to see the flag, the stall, its target level to refill: tens of milliseconds).
+# milliseconds on loopback) is what the warm-up may add to the boot: no answer within it, the
+# ramp goes on. Closing that link has the same bound again (an abort, milliseconds in practice):
+# 0.6 s at the very worst. No wait of its own after the answer: the ramp's park -> unmute wait
+# (dspconfig.GUARD_WAIT_S, 0.15 s) and its two Running reads cover the stall itself (one chunk to
+# see the flag, about 20 ms of allocation, the underrun about 22.5 ms after the request). next5
+# then watches its playback level for 500 ms after the restart (utils/ringbuffer.rs
+# BACKLOG_WINDOW) and may drop a late chunk in that time ("Dropped N frames"): that reaches into
+# the ramp's first steps, at about -40 to -30 dB.
 SPECTRUM_WARMUP_S = 0.3
+# The engine's answers to a GetSpectrum that has set that flag (websocket_server/mod.rs
+# `handle_get_spectrum`, beta.1 and next5: they come after `request_spectrum_data`), lower case,
+# as message prefixes of an InvalidRequestError (Ok is the other). Any other refusal came before
+# the flag and warmed nothing: no active config (ProcessingNotRunningError), n_bins or the
+# frequency range refused, an engine without GetSpectrum ("Invalid").
+SPECTRUM_WARMED_ANSWERS = ("no audio data available", "insufficient data in buffer", "channel ",
+                           "fft error")
 MAX_DETENTS = 1000.0         # a sane encoder move (input_map acceleration stays far below)
 
 POLL_S = 1.0                 # config + faders adoption, engine state, load, clipped samples
@@ -2865,8 +2876,9 @@ class Controller:
           allocates both sides on any request, next5 only the side asked, and the capture side
           is the only one K1000 asks. The FFT length (min_freq) and the channel cost the audio
           threads nothing: they are the websocket thread's.
-        - Any answer will do: "No audio data available" is the expected one (the request itself
-          set the flag). No answer within SPECTRUM_WARMUP_S: logged, and the ramp goes on.
+        - "No audio data available" is the expected answer (the request itself set the flag); a
+          refusal outside SPECTRUM_WARMED_ANSWERS warmed nothing. That, or no answer within
+          SPECTRUM_WARMUP_S: a warning, and the ramp goes on.
         - Not asked when k1000.yaml disables the spectrum (K1000 then never asks), or without a
           program channel. SETUP > Spectrum OFF is asked anyway: it can be switched on mid-show.
         """
@@ -2883,11 +2895,18 @@ class Controller:
                 try:
                     await client.command("GetSpectrum", value=spectrum_warmup_request(chans[0]),
                                          timeout=SPECTRUM_WARMUP_S)
-                    said = "a spectrum"
+                    said, warmed = "a spectrum", True
                 except CdspError as e:
                     said = str(e.message or e.result)
-            log.info("spectrum warm-up: the engine answered in %.0f ms (%s), Main still muted",
-                     (self._clock() - t0) * 1000.0, said)
+                    warmed = (e.result == "InvalidRequestError"
+                              and said.lower().startswith(SPECTRUM_WARMED_ANSWERS))
+            ms = (self._clock() - t0) * 1000.0
+            if warmed:
+                log.info("spectrum warm-up: the engine answered in %.0f ms (%s), Main still muted",
+                         ms, said)
+            else:
+                log.warning("spectrum warm-up: refused in %.0f ms (%s), nothing warmed; ramping in "
+                            "anyway, the first spectrum poll may cause a short dropout", ms, said)
         except Exception as e:   # noqa: BLE001 - never stands between the engine and its ramp
             log.warning("spectrum warm-up: no answer within %g s (%s); ramping in anyway, the "
                         "first spectrum poll may cause a short dropout", SPECTRUM_WARMUP_S,

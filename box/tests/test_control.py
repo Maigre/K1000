@@ -749,17 +749,22 @@ def test_no_warm_up_when_k1000_yaml_disables_the_spectrum(tmp_path: Path) -> Non
     run(body())
 
 
-@pytest.mark.parametrize("fault", ["refused", "not running", "hangs", "no link", "no client"])
+@pytest.mark.parametrize("fault", ["refused", "not running", "n_bins", "hangs", "no link",
+                                   "no client"])
 def test_a_warm_up_without_an_answer_never_holds_the_ramp(
         tmp_path: Path, fault: str, caplog: pytest.LogCaptureFixture) -> None:
-    """An engine that refuses the request, answers nothing, or cannot be reached on a second
-    link: the ramp goes on, at most SPECTRUM_WARMUP_S later, and the warm-up's link is closed."""
+    """An engine that refuses the request before its flag (nothing warmed), answers nothing, or
+    cannot be reached on a second link: a warning, the ramp goes on, at most SPECTRUM_WARMUP_S
+    later, and the warm-up's link is closed."""
     async def body() -> float:
         ctl, cl, an, links = make_warm(tmp_path, "next5")
         if fault == "refused":
             an.refusal = CdspError("GetSpectrum", "Invalid", "unknown variant `GetSpectrum`")
         elif fault == "not running":
             an.refusal = CdspError("GetSpectrum", "ProcessingNotRunningError")
+        elif fault == "n_bins":
+            an.refusal = CdspError("GetSpectrum", "InvalidRequestError",
+                                   "n_bins must be at least 2")
         elif fault == "hangs":
             an.hang = True
         elif fault == "no link":
@@ -788,11 +793,85 @@ def test_a_warm_up_without_an_answer_never_holds_the_ramp(
     with caplog.at_level(logging.INFO, logger="k1000.control"):
         dt = run(body())
     assert dt < ctl_mod.SPECTRUM_WARMUP_S + 0.5
-    said = [r.getMessage() for r in caplog.records if "spectrum warm-up" in r.getMessage()]
+    said = [r for r in caplog.records if "spectrum warm-up" in r.getMessage()]
     assert len(said) == 1, said
-    answered = fault in ("refused", "not running")
-    assert said[0].startswith("spectrum warm-up: the engine answered" if answered
-                              else "spectrum warm-up: no answer within 0.3 s")
+    assert said[0].levelno == logging.WARNING
+    refused = fault in ("refused", "not running", "n_bins")
+    assert said[0].getMessage().startswith("spectrum warm-up: refused in" if refused
+                                           else "spectrum warm-up: no answer within 0.3 s")
+
+
+# The engine's GetSpectrum answers (websocket_server/mod.rs handle_get_spectrum, beta.1 and next5),
+# and whether the request had set its flag by then (request_spectrum_data) or was refused before.
+ANSWERS = [
+    ("Ok", None, True),
+    ("InvalidRequestError", "No audio data available", True),
+    ("InvalidRequestError", "Insufficient data in buffer", True),
+    ("InvalidRequestError", "Channel 3 out of range (2 channels available)", True),
+    ("ProcessingNotRunningError", None, False),
+    ("InvalidRequestError", "n_bins must be at least 2", False),
+    ("InvalidRequestError", "Invalid frequency range: min_freq must be > 0 and < max_freq", False),
+    ("Invalid", "unknown variant `GetSpectrum`, expected one of `GetVersion`", False),
+]
+
+
+@pytest.mark.parametrize("result,message,warmed", ANSWERS)
+def test_the_journal_says_warmed_only_for_an_answer_past_the_engines_flag(
+        tmp_path: Path, caplog: pytest.LogCaptureFixture, result: str, message: str | None,
+        warmed: bool) -> None:
+    async def body() -> None:
+        ctl, cl, an, links = make_warm(tmp_path, "next5")
+
+        async def answer(value: dict[str, Any], who: str) -> Any:
+            if result == "Ok":
+                return {"frequencies": SPECTRUM_FREQS, "magnitudes": [-60.0] * 264}
+            raise CdspError("GetSpectrum", result, message)
+
+        an.get_spectrum = answer             # type: ignore[method-assign]
+        await boot(ctl)
+        assert cl.faders[0] == {"volume": -6.0, "mute": False}
+        await ctl.stop()
+
+    with caplog.at_level(logging.INFO, logger="k1000.control"):
+        run(body())
+    said = [r for r in caplog.records if "spectrum warm-up" in r.getMessage()]
+    assert len(said) == 1, said
+    text = said[0].getMessage()
+    assert (said[0].levelno, text.startswith("spectrum warm-up: the engine answered in")) == \
+        ((logging.INFO, True) if warmed else (logging.WARNING, False))
+    assert f"({message or ('a spectrum' if result == 'Ok' else result)})" in text
+    assert ("nothing warmed" in text) is not warmed
+
+
+def test_a_refusal_before_the_flag_is_logged_as_such(
+        tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """The engine refuses the warm-up before its flag (here ProcessingNotRunningError), then
+    serves the spectrum task: that task's first poll is the one that allocates, after the
+    unmute. The journal says so instead of "answered"."""
+    async def body() -> list[tuple[Any, ...]]:
+        ctl, cl, an, links = make_warm(tmp_path, "next5")
+        an.refusal = CdspError("GetSpectrum", "ProcessingNotRunningError")
+        served = an.get_spectrum
+
+        async def refuse_the_warm_up(value: dict[str, Any], who: str) -> Any:
+            if who != "warmup":
+                an.refusal = None
+            return await served(value, who)
+
+        an.get_spectrum = refuse_the_warm_up   # type: ignore[method-assign]
+        task, link = await boot_as_main(ctl, cl, an)
+        await until(lambda: task.polls >= 2, what="spectrum polls")
+        await task.stop()
+        await ctl.stop()
+        return list(cl.log)
+
+    with caplog.at_level(logging.INFO, logger="k1000.control"):
+        log = run(body())
+    said = [r.getMessage() for r in caplog.records if "spectrum warm-up" in r.getMessage()]
+    assert len(said) == 1 and said[0].startswith("spectrum warm-up: refused in"), said
+    assert "(ProcessingNotRunningError), nothing warmed" in said[0]
+    allocs = [i for i, e in enumerate(log) if e[0] == "alloc"]
+    assert allocs and min(allocs) > log.index(("mute", 0, False))
 
 
 def test_the_warm_up_asks_what_the_spectrum_task_asks() -> None:
@@ -803,20 +882,35 @@ def test_the_warm_up_asks_what_the_spectrum_task_asks() -> None:
 
 def test_the_warm_up_on_a_real_socket(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """__main__'s warm-up client (a CamillaClient of its own) against a websocket engine
-    stand-in: one GetSpectrum on a second connection, named in the journal, closed; an engine
-    that never answers costs SPECTRUM_WARMUP_S, and the ramp goes on."""
+    stand-in: one GetSpectrum on a second connection, named in the journal, closed. A fresh
+    engine's answer ("No audio data available") reads as warmed; an engine without GetSpectrum
+    as refused; one that never answers costs SPECTRUM_WARMUP_S. The ramp goes on each time."""
     from k1000 import __main__ as main_mod
     from test_cdsp import FakeEngine
 
-    async def body() -> tuple[float, float, list[tuple[int, str]], list[Any]]:
-        eng = FakeEngine()
+    class SpectrumEngine(FakeEngine):
+        """Answers GetSpectrum as a fresh engine does (the stock stand-in does not know it)."""
+        knows_spectrum = True
+
+        async def _respond(self, ws: Any, msg: dict[str, Any]) -> list[Any]:
+            if (msg["command"] == "GetSpectrum" and self.knows_spectrum
+                    and "GetSpectrum" not in self.hang_once):
+                return [{"reply": "GetSpectrum", "result": "InvalidRequestError",
+                         "message": "No audio data available"}]
+            return await super()._respond(ws, msg)
+
+    cases = ("answers", "unknown", "hangs")
+
+    async def body() -> tuple[list[float], list[tuple[int, str]], list[Any]]:
+        eng = SpectrumEngine()
         await eng.start()
         try:
             out = []
-            for hang in (False, True):
-                if hang:
+            for case in cases:
+                eng.knows_spectrum = case != "unknown"
+                if case == "hangs":
                     eng.hang_once.add("GetSpectrum")
-                ctl, cl = make(tmp_path / str(hang), State(master_db=-6.0))
+                ctl, cl = make(tmp_path / case, State(master_db=-6.0))
                 ctl.warmup_client = main_mod.spectrum_warmup_client(eng.url)
                 loop = asyncio.get_running_loop()
                 t0 = loop.time()
@@ -824,19 +918,25 @@ def test_the_warm_up_on_a_real_socket(tmp_path: Path, caplog: pytest.LogCaptureF
                 out.append(loop.time() - t0)
                 assert cl.faders[0] == {"volume": -6.0, "mute": False}
                 await ctl.stop()
-            return out[0], out[1], list(eng.on_conn), [m.get("value") for m in eng.log]
+            return out, list(eng.on_conn), [m.get("value") for m in eng.log]
         finally:
             await eng.stop()
 
     with caplog.at_level(logging.INFO):
-        quick, hung, on_conn, values = run(body())
-    assert on_conn == [(0, "GetSpectrum"), (1, "GetSpectrum")]      # one link per warm-up
-    assert values == [ctl_mod.spectrum_warmup_request(0)] * 2         # dev: program L = 0
-    assert quick < 0.25 and ctl_mod.SPECTRUM_WARMUP_S <= hung < ctl_mod.SPECTRUM_WARMUP_S + 0.5
+        (quick, unknown, hung), on_conn, values = run(body())
+    assert on_conn == [(i, "GetSpectrum") for i in range(3)]       # one link per warm-up
+    assert values == [ctl_mod.spectrum_warmup_request(0)] * 3         # dev: program L = 0
+    assert quick < 0.25 and unknown < 0.25
+    assert ctl_mod.SPECTRUM_WARMUP_S <= hung < ctl_mod.SPECTRUM_WARMUP_S + 0.5
     lines = [r.getMessage() for r in caplog.records]
-    assert sum(m.startswith("spectrum warm-up: connected to camilladsp at") for m in lines) == 2
-    assert sum(m.startswith("spectrum warm-up: the engine answered in") for m in lines) == 1
-    assert sum(m.startswith("spectrum warm-up: no answer within") for m in lines) == 1
+    assert sum(m.startswith("spectrum warm-up: connected to camilladsp at") for m in lines) == 3
+    said = [m for m in lines if m.startswith(tuple(
+        f"spectrum warm-up: {s}" for s in ("the engine answered", "refused", "no answer")))]
+    assert len(said) == 3, said
+    assert said[0].startswith("spectrum warm-up: the engine answered in")
+    assert said[0].endswith("(No audio data available), Main still muted")
+    assert said[1].startswith("spectrum warm-up: refused in") and "unknown variant" in said[1]
+    assert said[2].startswith("spectrum warm-up: no answer within")
 
 
 def test_unmute_pressed_while_link_down_is_dropped_but_mute_is_kept(tmp_path: Path) -> None:
