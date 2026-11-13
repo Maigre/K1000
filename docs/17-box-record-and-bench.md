@@ -29,8 +29,10 @@ was written before the box was powered, and corrects it. Each figure says whethe
   kernel's count of frames in transit to the M4 moved by the same amount. The first power-on of
   the day (24.35 ms where a reboot gives 20.2) is probably the same thing. The readout does not
   include that figure yet.
-- **Still open:** the night run at the candidate (chunk 64 / target 128, about 7 ms), a few real
-  power cycles, and Thomas's ear on the result.
+- **The night run passed (section 9, added 13 Nov).** 16 hours at chunk 64 / target 128 on the new
+  engine: 185 loop measurements, every one at 7.59 ms, no dropout, no restart.
+- **Still open:** a few real power cycles, a short dropout the engine can log just after a start
+  (section 9), and Thomas's ear on the result.
 
 ## 2. The gig night, from the box's logs
 
@@ -256,10 +258,53 @@ baseline. Not proven: that a real power-on times like a reboot, and the 1.5 s ra
 
 ## 8. Still to do
 
-1. The night run at the candidate setting on the new engine, with the readout logging.
+1. The night run at the candidate setting on the new engine, with the readout logging: done,
+   section 9.
 2. Add the kernel's transit figure to the readout, so that a shift in the USB stream shows on
    the box; check the first power-on with it; and see whether upstream would measure its level
    with it (a draft for Thomas to send).
 3. A few real power cycles: the power-on delay (24.35 ms once), and the boot times.
 4. Thomas listens: beatmatching at the new setting, the ramp.
 5. The decisions of section 5.
+6. The dropout just after a start (section 9): try a first spectrum request while the box is
+   still muted, and count starts with and without it.
+
+## 9. The night run, 12 to 13 Nov
+
+The box as at a gig, on the code of section 6 with the faster boot of section 7: the new engine,
+chunk 64 / target 128, pink noise through the loop as the program, two phone-like clients
+connected and reading. From 17:03 to 09:21, 16 h 17 min. Every 5 minutes the noise stopped for a
+loop measurement of the delay in to out; a second logger sampled the engine every 10 s.
+
+| | Result | |
+|---|---|---|
+| Delay in to out | 7.593 ms on each of the 185 measurements, and again at the end | measured |
+| Readout on the box | "about 7.8 ms" on each of its 97 ten-minute journal lines | read |
+| Engine buffer | 181 to 182 frames in 5,866 samples | read |
+| Frames in USB transit to the M4 | 48 or 60 (49 once) | read |
+| Dropouts | None in the engine's log; the engine Running in every sample | read |
+| Restarts | None, engine or control service; the two clients never had to reconnect | read |
+| Clipped samples | 0 | read |
+| Engine load | 3.1 to 6.8 % | read |
+| Temperature | 57.4 to 62.8 °C, never throttled | read |
+
+The delay did not move by one thousandth of a millisecond. That is expected, not luck: the M4 is
+both the input and the output, on one clock, so once a stream has started only a dropout or a
+shift in the USB stream can move the delay, and the night had neither. Each measurement is a new
+one (its noise figure differs every time).
+
+What the night does not cover: starts (the delay differs from one start to the next, 6.6 to
+7.8 ms, section 3.3), real power cycles, edits from a phone during the run (section 3.4 covered
+them for minutes, not hours), and heat in a closed case or in the sun.
+
+**After the run** the box was moved to `main` (`b35e568`, the same code with the faster boot
+landed). First measurement on the restarted engine: 6.781 ms three times, readout 6.8 ms, buffer
+137 frames.
+
+**One thing seen at that restart.** The engine logged one playback underrun 3.5 s after its
+start: 0.8 s after the ramp had reached full level, and 0.1 s after the box's spectrum reader
+connected to the engine. It is the stall of section 3.2. The new engine gets its delay back from
+it (the 6.78 ms above was measured after it), but with a program playing it is a short gap just
+after the sound has come in. In the engine logs kept since this code went on the box, 2 starts
+out of 5 show it (3.5 and 4.2 s after the start) and one more has an underrun at 6.2 s; the start
+of the night run shows none. Not heard, and not measured as audio yet.
