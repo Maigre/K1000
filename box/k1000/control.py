@@ -81,8 +81,8 @@ import yaml
 from . import dspconfig as dc
 from .cdsp import CdspError, CdspNoConfig, CdspUnavailable
 from .dspconfig import FADER_MAIN, FADER_SUBS, FADER_TOPS, Fader, FaderMute, Op, Rebuild, SetValue
-from .latency import (DROPOUT_READ_S, ENGINE_LOG, LIMIT_MS, DropoutCounter, LatencyWatch,
-                      latency_limit_ms)
+from .latency import (DROPOUT_READ_S, ENGINE_LOG, LIMIT_MS, TRANSIT_READ_S, DropoutCounter,
+                      LatencyWatch, latency_limit_ms, read_transit)
 from .profiles import (PROC_ASOUND, PROFILE_NAMES, Profile, ProfileChoice, card_id, card_present,
                        load_profile)
 from .state import (BOOL_FIELDS, CHOICES, DELAY_FIELDS, N_SYS_PEQ, RANGES, REBUILD_FIELDS,
@@ -993,6 +993,9 @@ class Controller:
         self.status.latency_limit_ms = self.latency.limit_ms
         self.dropouts = DropoutCounter(paths.engine_log) if paths.engine_log is not None else None
         self.dropout_s = DROPOUT_READ_S
+        # D-018: the frames in USB transit below the engine (a worker thread). Injectable for tests.
+        self.read_transit: Callable[[str], tuple[int, float] | None] = read_transit
+        self.transit_s = TRANSIT_READ_S
 
     # ------------------------------------------------------------------ lifecycle
     @property
@@ -1025,7 +1028,8 @@ class Controller:
         loop = asyncio.get_running_loop()
         for coro, name in ((self._worker(), "k1000-apply"), (self._poll_loop(), "k1000-poll"),
                            (self._meter_loop(), "k1000-meter"), (self._persist_loop(), "k1000-persist"),
-                           (self._ui_loop(), "k1000-ui"), (self._dropout_loop(), "k1000-dropouts")):
+                           (self._ui_loop(), "k1000-ui"), (self._dropout_loop(), "k1000-dropouts"),
+                           (self._transit_loop(), "k1000-transit")):
             self._tasks.append(loop.create_task(coro, name=name))
         self._refresh_device()
         already = bool(getattr(self.client, "connected", False))
@@ -3562,7 +3566,8 @@ class Controller:
     def _note_latency(self, est: Any, level: Any) -> None:
         """D-018: the poll's engine state and buffer level -> the readout (and its journal line)."""
         r = self.latency.note(est, level,
-                              self.latency.io_share(getattr(self.profile, "io_latency_ms", None)))
+                              self.latency.io_share(getattr(self.profile, "io_latency_ms", None)),
+                              getattr(self.profile, "io_transit_ms", None))
         view = ((None, True, False, None) if r is None
                 else (r.ms, r.io_ms is not None, r.over, r.level))
         st = self.status
@@ -3589,6 +3594,25 @@ class Controller:
                 self.status.dropouts = n
                 self._changed()
             await asyncio.sleep(self.dropout_s)
+
+    async def _transit_loop(self) -> None:
+        """D-018: the kernel's frames in USB transit to the playback device (latency.read_transit),
+        read in a worker thread every `transit_s` (a /proc read of a stream can wait for its open
+        or close). Nothing is read unless the engine runs and the profile knows io_latency_ms and
+        io_transit_ms; the next poll shows the figure."""
+        while True:
+            p, t = self.profile, None
+            if (self.status.engine == "Running" and p.io_latency_ms is not None
+                    and p.io_transit_ms is not None):
+                try:
+                    t = await asyncio.to_thread(self.read_transit, p.playback_device)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:   # noqa: BLE001 - a figure must never stop the controller
+                    self._log_once(("transit", type(e).__name__), logging.WARNING,
+                                   "USB transit of %s not read: %s", p.playback_device, e)
+            self.latency.note_usb(t)
+            await asyncio.sleep(self.transit_s)
 
     async def _meter_loop(self) -> None:
         while True:

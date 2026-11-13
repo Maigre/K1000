@@ -1,14 +1,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The D-018 latency readout (k1000/latency.py): the estimate, its journal lines, the dropout
-count read from the engine's live log, and where it shows (the controller's status, the box's
-status bar, the phone's protocol 2). No engine, no hardware: what only the box can prove (the
-estimate against the loop cable, the real log's rotation) is listed in latency.py's docstring."""
+"""The D-018 latency readout (k1000/latency.py): the estimate, its journal lines, the frames in
+USB transit read from the kernel (fixture files, no /proc), the dropout count read from the
+engine's live log, and where it shows (the controller's status, the box's status bar, the phone's
+protocol 2). No engine, no hardware: what only the box can prove (the estimate against the loop
+cable, the real log's rotation, the transit at other chunks) is listed in latency.py's docstring."""
 from __future__ import annotations
 
 import asyncio
 import dataclasses
 import logging
 import os
+import random
 import re
 import threading
 from pathlib import Path
@@ -21,7 +23,7 @@ from k1000 import state as st
 from k1000.cdsp import CdspError
 from k1000.control import Controller, Paths, Status
 from k1000.latency import (DropoutCounter, LatencyWatch, Reading, io_share_ms, latency_limit_ms,
-                           run_devices, scan)
+                           read_transit, run_devices, scan, stream_dir, usb_shift_ms)
 from k1000.profiles import load_profile, load_settings
 from k1000.ui import pages
 from k1000.ui.input_map import Focus
@@ -104,6 +106,24 @@ def test_io_latency_is_a_profile_number() -> None:
         assert p.io_latency_ms == 2.3 and any("io_latency_ms" in w for w in p.warnings), junk
 
 
+def test_io_transit_is_a_profile_number() -> None:
+    """The transit io_latency_ms was measured with: built in for the m4, so a settings file
+    written before it (io_latency_ms alone) counts the transit unchanged; `null` turns it off."""
+    assert load_profile("m4", {}, probe=False).io_transit_ms == 1.0
+    assert load_profile("dev", {}).io_transit_ms is None
+    shipped = load_settings(BOX / "etc" / "k1000.yaml")
+    assert load_profile("m4", shipped, probe=False).io_transit_ms == 1.0
+    assert load_profile("dev", shipped).io_transit_ms is None
+    older = {"profiles": {"m4": {"chunksize": 64, "target_level": 128, "io_latency_ms": 2.3}}}
+    p = load_profile("m4", older, probe=False)
+    assert (p.io_latency_ms, p.io_transit_ms, p.warnings) == (2.3, 1.0, [])
+    assert load_profile("m4", {"profiles": {"m4": {"io_transit_ms": None}}}, probe=False).io_transit_ms is None
+    assert load_profile("m4", {"profiles": {"m4": {"io_transit_ms": 2}}}, probe=False).io_transit_ms == 2.0
+    for junk in ("1.0", True, -1, 51, float("nan")):
+        p = load_profile("m4", {"profiles": {"m4": {"io_transit_ms": junk}}}, probe=False)
+        assert p.io_transit_ms == 1.0 and any("io_transit_ms" in w for w in p.warnings), junk
+
+
 # ======================================================================= the journal
 class Clock:
     def __init__(self) -> None:
@@ -150,6 +170,261 @@ def test_journal_lines_at_connect_on_a_move_and_every_ten_minutes(caplog: Any) -
     w.note_config(CFG)
     w.note("Running", 793, 3.8)                                 # reconnected: a line again
     assert len(lines()) == 5
+
+
+# ======================================================================= the USB transit
+# The kernel's files, read on the box with the engine playing (docs/17 §9): fill = 256 - 75 = 181
+# frames (the engine's level that night), transit = 241 - 181 = 60.
+STATUS = """state: RUNNING
+owner_pid   : 544211
+trigger_time: 58770.748315426
+tstamp      : 0.000000000
+delay       : 241
+avail       : 75
+avail_max   : 259
+-----
+hw_ptr      : 41463499
+appl_ptr    : 41463680
+"""
+HW_PARAMS = """access: RW_INTERLEAVED
+format: S32_LE
+subformat: STD
+channels: 4
+rate: 48000 (48000/1)
+period_size: 32
+buffer_size: 256
+"""
+M4_64 = {"devices": {"chunksize": 64, "samplerate": 48000}}
+
+
+def _stream(root: Path, status: str = STATUS, hw: str = HW_PARAMS, card: str = "M4") -> Path:
+    d = root / card / "pcm0p" / "sub0"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "status").write_text(status)
+    (d / "hw_params").write_text(hw)
+    return d
+
+
+def test_the_stream_follows_the_playback_device(tmp_path: Path) -> None:
+    m4 = tmp_path / "M4" / "pcm0p" / "sub0"
+    for name in ("hw:M4", " hw:M4 ", "hw:M4,0", "hw:M4,0,0", "hw:CARD=M4", "hw:CARD=M4,DEV=0",
+                 "hw:CARD=M4,DEV=0,SUBDEV=-1", "plughw:M4", "plughw:CARD=M4,DEV=0"):
+        assert stream_dir(name, tmp_path) == m4, name
+    assert stream_dir("hw:1,0", tmp_path) == tmp_path / "card1" / "pcm0p" / "sub0"
+    assert stream_dir("hw:CARD=M4,DEV=1,SUBDEV=2", tmp_path) == tmp_path / "M4" / "pcm1p" / "sub2"
+    assert stream_dir("hw:M4") == Path("/proc/asound/M4/pcm0p/sub0")
+    for other in ("default", "dmix:M4", "sysdefault:CARD=M4", "front:M4", "pulse", "hw:", "hw:M4,x",
+                  "hw:../M4", "hw:M4,0,0,0", "hw:CARD=M4,FOO=1", "hw:M4,DEV=0", "hw:CARD=,DEV=0",
+                  "", None, 4):
+        assert stream_dir(other, tmp_path) is None, other               # type: ignore[arg-type]
+
+
+def test_the_transit_is_the_kernel_delay_beyond_the_buffer_fill(tmp_path: Path) -> None:
+    d = _stream(tmp_path)
+    assert read_transit("hw:M4", tmp_path) == (60, 48000.0)             # the box's sample
+    assert read_transit("hw:CARD=M4,DEV=0", tmp_path) == (60, 48000.0)
+    (d / "status").write_text(STATUS.replace("241", "325"))
+    assert read_transit("hw:M4", tmp_path) == (144, 48000.0)            # the load test's figure
+    (d / "hw_params").write_text(HW_PARAMS.replace("48000", "96000"))
+    assert read_transit("hw:M4", tmp_path) == (144, 96000.0)            # the stream's own rate
+    (d / "hw_params").write_text(HW_PARAMS)
+    for state in ("XRUN", "PREPARED", "SETUP", "DRAINING", "PAUSED", "SUSPENDED"):
+        (d / "status").write_text(STATUS.replace("RUNNING", state))
+        assert read_transit("hw:M4", tmp_path) is None, state           # only a running stream
+    for status, hw in (("closed\n", "closed\n"),                        # no stream open
+                       (STATUS.replace("241", "x"), HW_PARAMS),
+                       (STATUS.replace("avail       : 75\n", ""), HW_PARAMS),
+                       (STATUS, HW_PARAMS.replace("buffer_size", "buffer")),
+                       (STATUS, HW_PARAMS.replace("rate: 48000 (48000/1)", "rate:")),
+                       (STATUS, HW_PARAMS.replace("48000 (48000/1)", "0")),
+                       (STATUS.replace("241", "100"), HW_PARAMS),       # below the fill: not sane
+                       ("", "")):
+        _stream(tmp_path, status, hw)
+        assert read_transit("hw:M4", tmp_path) is None, (status, hw)
+    _stream(tmp_path)
+    (d / "hw_params").unlink()
+    assert read_transit("hw:M4", tmp_path) is None
+    assert read_transit("hw:card9", tmp_path) is None                   # no such card
+    assert read_transit("default", tmp_path) is None
+
+
+def test_the_reading_jitter_never_moves_the_readout(caplog: Any) -> None:
+    """The night run (docs/17 §9), chunk 64 / target 128: for 16 h the transit read 48 or 60
+    frames (49 once) while the loop measured the same delay every time. The readout stays at what
+    the engine's level gives, and the journal gets only its ten-minute lines."""
+    clock = Clock()
+    w = LatencyWatch(10.0, clock=clock)
+    caplog.set_level(logging.INFO, logger="k1000.latency")
+    w.note_config(M4_64)
+    io = w.io_share(2.3)
+    rng = random.Random(1213)
+    reads = ([48, 60] * 20 + [60, 60, 48, 48] * 10 + [48, 48, 60, 60, 60, 48, 49, 60]
+             + [rng.choice((48, 60)) for _ in range(3000)])
+    for frames in (48, 60, 48):                     # the figure before the engine's first average
+        w.note_usb((frames, 48000.0))
+    shown: set[Any] = set()
+    for frames in reads:
+        w.note_usb((frames, 48000.0))
+        r = w.note("Running", 182, io, 1.0)
+        assert r is not None
+        shown.add((r.ms, r.usb_ms))
+        clock.t += 1.0
+    assert shown == {(7.8, 0.0)}                    # the readout of the night, unchanged
+    lines = [x.getMessage() for x in caplog.records if x.name == "k1000.latency"]
+    assert len(lines) == 1 + (len(reads) - 1) // int(lat.LOG_EVERY_S)   # the first, then ten-minute
+    assert all(re.fullmatch(r"latency: buffer=182 frames, usb=(48|60) frames, about 7\.8 ms in "
+                            r"to out \(limit 10\.0\)", x) for x in lines), lines
+    assert not any(re.search("usb=49", x) for x in lines)
+
+
+def test_a_shift_in_the_usb_stream_shows_within_three_reads(caplog: Any) -> None:
+    """The load test of docs/17 §3.4, chunk 64 / target 64: the transit went from 48 to 144
+    frames with the engine's level unchanged, and the delay measured through the loop from 6.11
+    to 7.99 ms. Level 103 gives 6.1 ms (calculated to match). The readout moves by 2.0 ms on the
+    third read of the new figure, with a journal line (more than a chunk: 1.3 ms); a single
+    stray read moves nothing."""
+    clock = Clock()
+    w = LatencyWatch(10.0, clock=clock)
+    caplog.set_level(logging.INFO, logger="k1000.latency")
+
+    def lines() -> list[str]:
+        return [x.getMessage() for x in caplog.records if x.name == "k1000.latency"]
+
+    w.note_config(M4_64)
+    io = w.io_share(2.3)
+    for f in (48, 60, 48):
+        w.note_usb((f, 48000.0))
+
+    def poll(frames: int) -> Reading:
+        w.note_usb((frames, 48000.0))
+        clock.t += 1.0
+        r = w.note("Running", 103, io, 1.0)
+        assert r is not None
+        return r
+
+    assert [poll(f).ms for f in (48, 60, 500, 48, 60, 48, 60)] == [6.1] * 7
+    assert lines() == ["latency: buffer=103 frames, usb=48 frames, about 6.1 ms in to out "
+                       "(limit 10.0)"]
+    assert [poll(f).ms for f in (144, 156, 144)] == [6.1, 6.1, 8.1]
+    assert w.reading is not None and w.reading.usb == 144 and w.reading.usb_ms == pytest.approx(2.0)
+    assert lines()[-1] == ("latency: buffer=103 frames, usb=144 frames, about 8.1 ms in to out "
+                           "(limit 10.0)")
+    assert [poll(f).ms for f in (156, 144, 156, 144, 156)] == [8.1] * 5     # its own jitter
+    assert len(lines()) == 2
+    assert [poll(f).ms for f in (48, 60, 48)] == [8.1, 8.1, 6.1]            # and back
+    assert len(lines()) == 3 and "usb=60 frames, about 6.1 ms" in lines()[-1]
+
+
+def test_a_shift_follows_the_journal_rule_of_the_level(caplog: Any) -> None:
+    """The journal gets a line when the estimate moves by more than a chunk, whatever moved it:
+    at chunk 128 (2.7 ms) the same 2 ms shift shows at once and waits for the ten-minute line."""
+    clock = Clock()
+    w = LatencyWatch(10.0, clock=clock)
+    caplog.set_level(logging.INFO, logger="k1000.latency")
+
+    def logged() -> list[str]:
+        return [x.getMessage() for x in caplog.records if x.name == "k1000.latency"]
+
+    w.note_config({"devices": {"chunksize": 128, "samplerate": 48000}})
+    io = w.io_share(2.3)
+    for f in (48, 60, 48):
+        w.note_usb((f, 48000.0))
+    first = w.note("Running", 173, io, 1.0)
+    for f in (144, 144, 144):
+        w.note_usb((f, 48000.0))
+    clock.t += 3.0
+    r = w.note("Running", 173, io, 1.0)
+    assert first is not None and r is not None and (first.ms, r.ms) == (9.2, 11.2)
+    assert logged() == [first.line()]
+    clock.t += lat.LOG_EVERY_S
+    w.note("Running", 173, io, 1.0)
+    assert logged() == [first.line(), r.line()] and "usb=144 frames, about 11.2 ms" in r.line()
+
+
+def test_without_its_reference_the_readout_is_the_engine_level_alone(caplog: Any) -> None:
+    """No io_transit_ms, or no io_latency_ms (the floor), or no figure: the readout and its
+    journal line are what they were before the transit was read."""
+    w = LatencyWatch(10.0, clock=Clock())
+    caplog.set_level(logging.INFO, logger="k1000.latency")
+    w.note_config(M4_64)
+    io = w.io_share(2.3)
+    for f in (144, 144, 144):
+        w.note_usb((f, 48000.0))
+    assert w.usb == 144
+    before = Reading(103, 64, 48000.0, io_ms=io)
+    assert w.note("Running", 103, io) == before                          # no reference
+    assert w.note("Running", 103, io, None) == before
+    floor = w.note("Running", 103, None, 1.0)                            # the engine's share alone
+    assert floor == Reading(103, 64, 48000.0, io_ms=None) and floor.line().count("usb") == 0
+    w.note_usb(None)                                                     # the stream stopped
+    assert w.usb is None and w.note("Running", 103, io, 1.0) == before
+    lines = [x.getMessage() for x in caplog.records if x.name == "k1000.latency"]
+    assert lines and not any("usb" in x for x in lines)
+    assert usb_shift_ms(48, 48000.0, 1.0) == 0.0 and usb_shift_ms(60, 48000.0, 1.0) == 0.0
+    assert usb_shift_ms(144, 48000.0, 1.0) == pytest.approx(2.0)
+    assert usb_shift_ms(0, 48000.0, 1.0) == pytest.approx(-1.0)
+    assert usb_shift_ms(96, 96000.0, 1.0) == 0.0                         # 1 ms at 96 kHz too
+
+
+def test_the_transit_figure_starts_over_with_each_stream() -> None:
+    w = LatencyWatch()
+    for f in (144, 144, 144):
+        w.note_usb((f, 48000.0))
+    assert w.usb is None                                    # no running config yet: no figure
+    w.note_config(M4_64)
+    w.note_usb((144, 48000.0))
+    w.note_usb((144, 48000.0))
+    assert w.usb is None                                    # USB_NEED reads first
+    w.note_usb((144, 48000.0))
+    assert w.usb == 144
+    w.note_usb((48, 96000.0))                               # not the running config's rate
+    assert w.usb is None
+    for f in (48, 60, 48):
+        w.note_usb((f, 48000.0))
+    assert w.usb == 48
+    w.note_usb(None)                                        # not running, closed, unreadable
+    w.note_usb((144, 48000.0))
+    assert w.usb is None                                    # the old reads are gone
+    for f in (144, 144):
+        w.note_usb((f, 48000.0))
+    assert w.usb == 144
+    w.lost()
+    assert w.usb is None
+    w.note_config({"devices": {"chunksize": 64, "samplerate": 96000}})
+    for f in (96, 120, 96):
+        w.note_usb((f, 96000.0))
+    assert w.usb == 96
+    r = w.note("Running", 300, w.io_share(2.3), 1.0)
+    assert r is not None and r.samplerate == 96000.0 and r.usb_ms == 0.0   # 1.0 ms at 96 kHz
+    for f in (192, 192, 192):
+        w.note_usb((f, 96000.0))
+    r = w.note("Running", 300, w.io_share(2.3), 1.0)
+    assert r is not None and r.usb_ms == pytest.approx(1.0)
+
+
+def test_the_first_line_without_the_figure_gets_one_with_it(caplog: Any) -> None:
+    """A K1000 restart under a playing engine: the level comes at the first poll, the transit
+    three reads later. One more line then; a stream that stops and comes back adds none."""
+    clock = Clock()
+    w = LatencyWatch(10.0, clock=clock)
+    caplog.set_level(logging.INFO, logger="k1000.latency")
+    w.note_config(M4_64)
+    io = w.io_share(2.3)
+    w.note("Running", 182, io, 1.0)
+    for f in (48, 60, 48):
+        w.note_usb((f, 48000.0))
+        clock.t += 1.0
+        w.note("Running", 182, io, 1.0)
+    w.note_usb(None)
+    w.note("Running", 182, io, 1.0)
+    for f in (60, 48, 60):
+        w.note_usb((f, 48000.0))
+        clock.t += 1.0
+        w.note("Running", 182, io, 1.0)
+    lines = [x.getMessage() for x in caplog.records if x.name == "k1000.latency"]
+    assert lines == ["latency: buffer=182 frames, about 7.8 ms in to out (limit 10.0)",
+                     "latency: buffer=182 frames, usb=48 frames, about 7.8 ms in to out "
+                     "(limit 10.0)"]
 
 
 # ======================================================================= the dropout count
@@ -315,10 +590,11 @@ class LevelClient(FakeClient):
         return await super().command(name, timeout, **fields)
 
 
-def make(tmp_path: Path, *, io: float | None = 2.3, settings: dict[str, Any] | None = None,
+def make(tmp_path: Path, *, io: float | None = 2.3, transit: float | None = None,
+         settings: dict[str, Any] | None = None,
          engine_log: Path | None = None) -> tuple[Controller, LevelClient]:
     s = st.State()
-    profile = dataclasses.replace(DEV, io_latency_ms=io)
+    profile = dataclasses.replace(DEV, io_latency_ms=io, io_transit_ms=transit)
     client = LevelClient(dc.generate(profile, s))
     ctl = Controller(client, profile, s, Paths(tmp_path / "state.json", tmp_path / "active.yml",
                                                engine_log), settings=settings,
@@ -393,6 +669,81 @@ def test_a_lost_link_clears_the_readout_and_the_next_one_is_logged(tmp_path: Pat
     run(body())
     lines = [r.getMessage() for r in caplog.records if r.name == "k1000.latency"]
     assert len(lines) == 2
+
+
+def test_the_transit_is_read_in_a_worker_thread_while_the_engine_runs(tmp_path: Path,
+                                                                      caplog: Any) -> None:
+    caplog.set_level(logging.INFO, logger="k1000.latency")
+    calls: list[tuple[str, str]] = []
+    frames = [48]
+
+    def reader(device: str) -> tuple[int, float] | None:
+        calls.append((device, threading.current_thread().name))
+        return frames[0], 48000.0
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, transit=1.0)
+        ctl.read_transit = reader                                    # type: ignore[assignment]
+        ctl.transit_s = 0.01
+        await boot(ctl)
+        await until(lambda: ctl.latency.usb == 48, what="the transit figure")
+        await ctl.poll_once()
+        assert (ctl.status.latency_ms, ctl.status.buffer_level) == (20.1, 536)   # 1.0 ms: as before
+        v = ctl.version
+        frames[0] = 144
+        await until(lambda: ctl.latency.usb == 144, what="the shift")
+        await ctl.poll_once()
+        assert ctl.status.latency_ms == 22.1 and ctl.version > v
+        cl.engine_state = "Paused"
+        await ctl.poll_once()
+        await until(lambda: ctl.latency.usb is None, what="no stream, no figure")
+        n = len(calls)
+        await asyncio.sleep(0.05)
+        assert len(calls) == n                                       # nothing read meanwhile
+        await ctl.stop()
+
+    run(body())
+    assert {d for d, _ in calls} == {DEV.playback_device}
+    assert threading.main_thread().name not in {t for _, t in calls}
+    lines = [r.getMessage() for r in caplog.records if r.name == "k1000.latency"]
+    # The last line names the transit; the 2 ms shift, less than chunk 256, wrote none.
+    assert lines[-1] == "latency: buffer=536 frames, usb=48 frames, about 20.1 ms in to out (limit 10.0)"
+
+
+def test_no_reference_nothing_read_and_a_failed_read_is_no_figure(tmp_path: Path,
+                                                                    caplog: Any) -> None:
+    calls: list[str] = []
+
+    def reader(device: str) -> tuple[int, float] | None:
+        calls.append(device)
+        return 144, 48000.0
+
+    def broken(device: str) -> tuple[int, float] | None:
+        raise RuntimeError("boom")
+
+    async def body() -> None:
+        for io, transit in ((2.3, None), (None, 1.0)):              # either missing: no read
+            ctl, _cl = make(tmp_path, io=io, transit=transit)
+            ctl.read_transit = reader                                # type: ignore[assignment]
+            ctl.transit_s = 0.01
+            await boot(ctl)
+            await ctl.poll_once()
+            await asyncio.sleep(0.05)
+            assert calls == [] and ctl.latency.usb is None
+            await ctl.stop()
+        ctl, _cl = make(tmp_path, transit=1.0)
+        ctl.read_transit = broken                                    # type: ignore[assignment]
+        ctl.transit_s = 0.01
+        await boot(ctl)
+        await asyncio.sleep(0.05)
+        await ctl.poll_once()
+        assert ctl.latency.usb is None and ctl.status.latency_ms == 20.1
+        await ctl.stop()
+
+    caplog.set_level(logging.WARNING, logger="k1000.control")
+    run(body())
+    warned = [r.getMessage() for r in caplog.records if "USB transit" in r.getMessage()]
+    assert len(warned) == 1 and "boom" in warned[0]                  # once, not every second
 
 
 def test_the_dropout_count_comes_from_a_worker_thread(tmp_path: Path) -> None:

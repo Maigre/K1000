@@ -17,11 +17,30 @@ Why it is shaped like this:
   GetBufferLevel; chunksize and samplerate come from the running config the poll already reads.
   The engine refreshes the level about every 10 s (its adjust period) and reads 0 until its first
   average: no reading then.
+- **The frames in USB transit, below the engine** (docs/17 §3.4, §9). The kernel holds frames on
+  their way to the interface that the engine's level does not count: its playback stream
+  status (`/proc/asound/<card>/pcm<dev>p/sub<n>/status`) gives `delay` = the buffer fill plus
+  them, so transit = `delay` - (`buffer_size` - `avail`). On the bench a load test moved it from
+  48 to 144 frames (+2.0 ms at 48 kHz) while the level stayed put, and the delay measured through
+  the loop moved by 1.9 ms. `io_latency_ms` was measured with 1.0 ms in transit (48 frames at
+  48 kHz); the profile says so (`io_transit_ms`), and the readout adds what the transit holds
+  beyond it. Read once a second, only while the engine runs, in a worker thread: the kernel
+  answers a /proc read of a stream under the stream's open lock, which a USB device's open or
+  close holds for as long as they take (from the ALSA source, not measured). The figure is the
+  median of the last USB_READS reads and moves, and counts, only beyond USB_STEP_MS: the reading
+  jitters between 48 and 60 frames with the delay constant (16 h, docs/17 §9), and that never
+  moves the readout. No `io_transit_ms`, no `io_latency_ms`, a device name that is not `hw:` or
+  `plughw:`, a stream not RUNNING or a file not readable: the readout of the engine's level
+  alone, as before, and nothing in the journal. The 48 frames were read at chunk 64 only: that
+  the transit is the same at other chunks is not measured yet (if not, the readout at those
+  chunks is off by the difference).
 - **It informs, it never acts.** Above `engine.latency_limit_ms` (k1000.yaml, 10 ms by default:
   D-018) the readout is flagged; nothing mutes, restarts or changes the sound.
 - **A gig leaves a trace in the journal**: one line at the first reading after K1000 connects to
-  the engine, one each time the estimate moves by more than one chunk from the last line, and one
-  every LOG_EVERY_S otherwise.
+  the engine, one each time the estimate moves by more than one chunk from the last line, one
+  when the transit figure first comes in after a line without it, and one every LOG_EVERY_S
+  otherwise. A line names the transit frames (`usb=`) when the readout counts them, so that a
+  move can be told apart: in the engine (`buffer=`) or below it (`usb=`).
 - **Dropouts since the engine started** (`DropoutCounter`): the engine writes one line per
   dropout in its live log (`camilladsp -o`, rotated at every start and every 256 kB). The lines
   are counted with k1000-soak.sh's words, read from where the last read stopped, in a worker
@@ -40,13 +59,17 @@ Why it is shaped like this:
 """
 from __future__ import annotations
 
+import collections
 import logging
 import math
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
+
+from .profiles import PROC_ASOUND
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +89,14 @@ ROTATE_SIZE = 256000             # camilladsp.service's --log_rotate_size (a tes
 READ_CHUNK = 64 * 1024
 MAX_LINE = 64 * 1024             # a line longer than this is not one of the engine's
 MAX_BACK_BYTES = 2 * 1024 * 1024  # the first read goes back through at most this much rotated log
+# The frames in USB transit (see above): read this often while the engine runs; the figure is the
+# median of the last USB_READS reads once USB_NEED are in, and moves only by more than
+# USB_STEP_MS, which is also how far from the profile's `io_transit_ms` it must be to count. The
+# reading jitter is 12 frames, 0.25 ms at 48 kHz (docs/17 §9); the shift of docs/17 §3.4, 2.0 ms.
+TRANSIT_READ_S = 1.0
+USB_READS = 5
+USB_NEED = 3
+USB_STEP_MS = 0.4
 
 
 def latency_limit_ms(settings: Any) -> float:
@@ -101,6 +132,79 @@ def run_devices(cfg: Any) -> tuple[int, float] | None:
     return chunk, float(rate)
 
 
+def usb_shift_ms(frames: int, samplerate: float, ref_ms: float) -> float:
+    """What `frames` in USB transit add to the profile's `io_latency_ms`, measured with `ref_ms`
+    in transit: 0 within USB_STEP_MS of it (the reading's jitter)."""
+    d = frames / samplerate * 1000.0 - ref_ms
+    return d if abs(d) > USB_STEP_MS else 0.0
+
+
+_HW_NAME = re.compile(r"(?:plug)?hw:(.+)")
+_CARD_NAME = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def stream_dir(device: str, proc_root: str | Path = PROC_ASOUND) -> Path | None:
+    """The kernel's folder for the playback stream behind an ALSA name: `hw:M4`, `hw:M4,0`,
+    `hw:CARD=M4,DEV=0` and `plughw:M4` -> <proc_root>/M4/pcm0p/sub0; `hw:1,0` -> card1/pcm0p/sub0.
+    Any other name (`default`, a plugin such as dmix, which buffers on its own) -> None."""
+    m = _HW_NAME.fullmatch(device.strip()) if isinstance(device, str) else None
+    if m is None:
+        return None
+    args = [a.strip() for a in m.group(1).split(",")]
+    if any("=" in a for a in args):
+        kw: dict[str, str] = {}
+        for a in args:
+            k, sep, v = a.partition("=")
+            if not sep:
+                return None
+            kw[k.strip().upper()] = v.strip()
+        card, dev, sub = kw.pop("CARD", ""), kw.pop("DEV", "0"), kw.pop("SUBDEV", "0")
+        if kw:
+            return None
+    elif len(args) <= 3:
+        card, dev, sub = (args + ["0", "0"])[:3]
+    else:
+        return None
+    if sub == "-1":
+        sub = "0"                         # "any": the first, the only one on a USB interface
+    if not _CARD_NAME.fullmatch(card) or not dev.isdigit() or not sub.isdigit():
+        return None
+    return (Path(proc_root) / (f"card{card}" if card.isdigit() else card)
+            / f"pcm{int(dev)}p" / f"sub{int(sub)}")
+
+
+def _fields(text: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        k, sep, v = line.partition(":")
+        if sep:
+            out.setdefault(k.strip(), v.strip())
+    return out
+
+
+def read_transit(device: str, proc_root: str | Path = PROC_ASOUND) -> tuple[int, float] | None:
+    """(frames in USB transit, the stream's rate) of the RUNNING playback stream behind `device`:
+    its status's `delay` minus the buffer fill (`buffer_size` from hw_params, minus `avail`).
+    None: no such stream, not running ("closed" is the whole file then), not readable as
+    expected. Blocking reads: run it in a worker thread."""
+    d = stream_dir(device, proc_root)
+    if d is None:
+        return None
+    try:
+        status = _fields((d / "status").read_text())
+        if status.get("state") != "RUNNING":
+            return None
+        hw = _fields((d / "hw_params").read_text())
+        delay, avail, size = int(status["delay"]), int(status["avail"]), int(hw["buffer_size"])
+        rate = float(hw["rate"].split()[0])
+    except (OSError, KeyError, ValueError, IndexError):
+        return None
+    frames = delay - (size - avail)
+    if frames < 0 or not 0.0 < rate < math.inf:
+        return None
+    return frames, rate
+
+
 @dataclass(frozen=True)
 class Reading:
     """One estimate: the playback buffer level (frames) and what it means in ms."""
@@ -110,6 +214,8 @@ class Reading:
     samplerate: float
     io_ms: float | None          # the interface's share (the profile's), None = not known
     limit_ms: float = LIMIT_MS
+    usb: int | None = None       # frames in USB transit, when the readout counts them
+    usb_ms: float = 0.0          # what they add beyond the profile's io_transit_ms (`usb_shift_ms`)
 
     @property
     def engine_ms(self) -> float:
@@ -117,8 +223,9 @@ class Reading:
 
     @property
     def ms(self) -> float:
-        """In to out, 0.1 ms: the engine's share plus the interface's when known."""
-        return round(self.engine_ms + (self.io_ms or 0.0), 1)
+        """In to out, 0.1 ms: the engine's share plus the interface's when known, and what the
+        USB transit holds beyond the interface's measured share."""
+        return round(self.engine_ms + (self.io_ms or 0.0) + self.usb_ms, 1)
 
     @property
     def chunk_ms(self) -> float:
@@ -133,13 +240,15 @@ class Reading:
         if self.io_ms is None:
             return (f"latency: buffer={self.level} frames, at least {self.ms:.1f} ms in to out "
                     f"(engine only, the interface not known; limit {self.limit_ms:.1f})")
-        return (f"latency: buffer={self.level} frames, about {self.ms:.1f} ms in to out "
+        usb = "" if self.usb is None else f"usb={self.usb} frames, "
+        return (f"latency: buffer={self.level} frames, {usb}about {self.ms:.1f} ms in to out "
                 f"(limit {self.limit_ms:.1f})")
 
 
 class LatencyWatch:
     """The last reading, and when the journal gets a line. `note_config` with every running
-    config read, `note` with every poll, `lost` when the engine link goes."""
+    config read, `note` with every poll, `note_usb` with every read of the USB transit, `lost`
+    when the engine link goes."""
 
     def __init__(self, limit_ms: float = LIMIT_MS,
                  clock: Callable[[], float] = time.monotonic) -> None:
@@ -149,6 +258,8 @@ class LatencyWatch:
         self.reading: Reading | None = None
         self._logged: Reading | None = None      # the last line's reading (None: none on this link)
         self._logged_at = -math.inf
+        self._usb_reads: collections.deque[int] = collections.deque(maxlen=USB_READS)
+        self.usb: int | None = None              # frames in USB transit as shown (None: no figure)
 
     def note_config(self, cfg: Any) -> None:
         d = run_devices(cfg)
@@ -160,6 +271,24 @@ class LatencyWatch:
         self._devices = None
         self.reading = None
         self._logged = None
+        self.note_usb(None)
+
+    def note_usb(self, read: tuple[int, float] | None) -> None:
+        """One read of the USB transit (`read_transit`). The figure is the median of the last
+        USB_READS reads once USB_NEED are in, and it moves only by more than USB_STEP_MS. None,
+        or a stream at another rate than the running config's, clears it: the next stream's
+        figure starts over."""
+        if read is None or self._devices is None or read[1] != self._devices[1]:
+            self._usb_reads.clear()
+            self.usb = None
+            return
+        frames, rate = read
+        self._usb_reads.append(frames)
+        if len(self._usb_reads) < USB_NEED:
+            return
+        median = sorted(self._usb_reads)[(len(self._usb_reads) - 1) // 2]
+        if self.usb is None or abs(median - self.usb) > USB_STEP_MS * rate / 1000.0:
+            self.usb = median
 
     def io_share(self, io_latency_ms: float | None) -> float | None:
         """`io_share_ms` for the running chunk and rate (the profile's figure alone until the
@@ -168,14 +297,21 @@ class LatencyWatch:
             return io_latency_ms
         return io_share_ms(io_latency_ms, *self._devices)
 
-    def note(self, engine_state: Any, level: Any, io_ms: float | None) -> Reading | None:
+    def note(self, engine_state: Any, level: Any, io_ms: float | None,
+             usb_ref_ms: float | None = None) -> Reading | None:
         """One poll: the engine's state and its GetBufferLevel value (None = not read) -> the
-        reading to show (None = none: not running, no average yet, config not read yet)."""
+        reading to show (None = none: not running, no average yet, config not read yet).
+        `usb_ref_ms`: the profile's `io_transit_ms`; the transit counts only with it and `io_ms`."""
         r = None
         if (engine_state == "Running" and self._devices is not None
                 and isinstance(level, (int, float)) and not isinstance(level, bool)
                 and math.isfinite(level) and level >= 1):
-            r = Reading(int(round(level)), *self._devices, io_ms=io_ms, limit_ms=self.limit_ms)
+            chunk, rate = self._devices
+            usb, usb_ms = None, 0.0
+            if io_ms is not None and usb_ref_ms is not None and self.usb is not None:
+                usb, usb_ms = self.usb, usb_shift_ms(self.usb, rate, usb_ref_ms)
+            r = Reading(int(round(level)), chunk, rate, io_ms=io_ms, limit_ms=self.limit_ms,
+                        usb=usb, usb_ms=usb_ms)
         self.reading = r
         if r is not None and self._due(r):
             log.info("%s", r.line())
@@ -188,7 +324,9 @@ class LatencyWatch:
             return True                                    # the first reading on this link
         if (r.chunksize, r.samplerate, r.io_ms) != (last.chunksize, last.samplerate, last.io_ms):
             return True
-        if abs(r.engine_ms - last.engine_ms) > r.chunk_ms:
+        if r.usb is not None and last.usb is None:
+            return True                                    # the transit figure came in
+        if abs(r.engine_ms + r.usb_ms - last.engine_ms - last.usb_ms) > r.chunk_ms:
             return True                                    # moved by more than one chunk
         return self._clock() - self._logged_at >= LOG_EVERY_S
 

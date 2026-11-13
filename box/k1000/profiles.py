@@ -102,6 +102,10 @@ TARGET_LEVEL_RANGE = target_level_range(CHUNKSIZE)  # (64, 1536)
 # The interface's own share of the delay in to out (converters + USB), ms, measured through a
 # loop cable: the latency readout (latency.py, D-018) adds it to the engine's share. None = not
 # known: the readout then shows the engine's share alone, marked as a floor.
+# io_transit_ms: the part of it that sat in USB transit when it was measured, as the kernel
+# counts it (latency.read_transit); the readout adds what the transit holds beyond it. None = not
+# known: the transit is not read and the readout is the engine's level plus io_latency_ms alone.
+# Both are measured together, at one sample rate: a new loop measurement of one needs the other.
 IO_LATENCY_RANGE = (0.0, 50.0)
 
 
@@ -179,6 +183,7 @@ class Profile:
     target_level: int | None = None
     chunksize: int = CHUNKSIZE
     io_latency_ms: float | None = None
+    io_transit_ms: float | None = None
 
 
 _DEFAULTS: dict[str, dict[str, Any]] = {
@@ -188,18 +193,20 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         capture_channels=2, playback_channels=2,
         capture_format="S32_LE", playback_format="S32_LE",
         input_map=(0, 1), output_map=(0, 1),
-        audition=True, pinned=False, probe=False, io_latency_ms=None,
+        audition=True, pinned=False, probe=False, io_latency_ms=None, io_transit_ms=None,
     ),
     # MOTU M4: counts/format are assumptions until probed (4-ch capture assumed).
     # Program from line inputs 3-4; out1/2 = tops, out3/4 = subs. io_latency_ms: the M4's
     # converters + USB, measured through the loop cable on 12 Nov at chunk 32 to 256 on both
     # engines (2.3 ms; the 3.8 ms of 16 Oct held a quarter of chunk 256, see latency.io_share_ms).
+    # io_transit_ms: 1.0, the kernel's 48 frames in USB transit at 48 kHz that the 2.3 ms held
+    # (read at chunk 64, docs/17 §3.4 and §9).
     "m4": dict(
         capture_device="hw:M4", playback_device="hw:M4",
         capture_channels=4, playback_channels=4,
         capture_format=None, playback_format=None,
         input_map=(2, 3), output_map=(2, 3, 0, 1),
-        audition=False, pinned=True, probe=True, io_latency_ms=2.3,
+        audition=False, pinned=True, probe=True, io_latency_ms=2.3, io_transit_ms=1.0,
     ),
 }
 PROFILE_NAMES: tuple[str, ...] = tuple(_DEFAULTS)
@@ -536,7 +543,7 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
     capture_format, playback_format, input_map [L, R], output_map [phys1..physN], probe,
     chunksize (frames: one of CHUNKSIZES, default 256), target_level (frames, default one chunk,
     `target_level_range(chunksize)`: 64..1536 at chunk 256),
-    io_latency_ms (ms, 0..50, null = not known).
+    io_latency_ms (ms, 0..50, null = not known), io_transit_ms (ms, 0..50, null = not known).
     `probe` None = profile default (m4 probes, dev does not: its facts are proven and the box's
     HiFiBerry is shared). Probed channel counts beat configured ones the device refuses.
     `name` is normalised ('M4' -> 'm4'); only an unknown name raises (ProfileError). Malformed
@@ -647,13 +654,16 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
                         f"maximum); using {clamped}")
         tl = clamped
 
-    io = ov.get("io_latency_ms", d["io_latency_ms"])          # null = not known
-    if io is not None and (isinstance(io, bool) or not isinstance(io, (int, float))
-                           or not IO_LATENCY_RANGE[0] <= io <= IO_LATENCY_RANGE[1]):
-        warnings.append(f"{name}: io_latency_ms {io!r} is not a number of ms in "
-                        f"{IO_LATENCY_RANGE[0]:g}..{IO_LATENCY_RANGE[1]:g}; "
-                        f"using {d['io_latency_ms']}")
-        io = d["io_latency_ms"]
+    io_ms: dict[str, float | None] = {}
+    for key in ("io_latency_ms", "io_transit_ms"):
+        io = ov.get(key, d[key])                                  # null = not known
+        if io is not None and (isinstance(io, bool) or not isinstance(io, (int, float))
+                               or not IO_LATENCY_RANGE[0] <= io <= IO_LATENCY_RANGE[1]):
+            warnings.append(f"{name}: {key} {io!r} is not a number of ms in "
+                            f"{IO_LATENCY_RANGE[0]:g}..{IO_LATENCY_RANGE[1]:g}; "
+                            f"using {d[key]}")
+            io = d[key]
+        io_ms[key] = None if io is None else float(io)
 
     for w in warnings:
         log.warning("%s", w)
@@ -665,5 +675,5 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
         input_map=imap_t, output_map=omap_t,
         audition=d["audition"], pinned=d["pinned"], probe=do_probe,
         present=present, warnings=warnings, target_level=tl, chunksize=cs,
-        io_latency_ms=None if io is None else float(io),
+        io_latency_ms=io_ms["io_latency_ms"], io_transit_ms=io_ms["io_transit_ms"],
     )
