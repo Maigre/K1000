@@ -3,7 +3,8 @@
 2026-11-12, the box on the desk bench with a loop cable (its own analog output into M4 LINE IN 3,
 M4 OUT 1 into LINE IN 4), nothing else plugged. This follows `docs/16-post-gig-audit.md`, which
 was written before the box was powered, and corrects it. Each figure says whether it was
-**measured** on the box, **read** in a log or in source code, or **calculated**.
+**measured** on the box, **read** in a log or in source code, or **calculated**. Sections 9 to 13
+were added on 13 Nov.
 
 ## 1. Summary
 
@@ -31,8 +32,16 @@ was written before the box was powered, and corrects it. Each figure says whethe
   include that figure yet.
 - **The night run passed (section 9, added 13 Nov).** 16 hours at chunk 64 / target 128 on the new
   engine: 185 loop measurements, every one at 7.59 ms, no dropout, no restart.
-- **Still open:** a few real power cycles, a short dropout the engine can log just after a start
-  (section 9), and Thomas's ear on the result.
+- **13 Nov: the box runs at 24-bit / 96 kHz, chunk 128 / target 256 (D-022, section 10).** 6.1 to
+  7.6 ms in to out over 22 starts, 6.42 ms steady and no dropout under load (measured). The sample
+  rate is now a setting.
+- **13 Nov: the dropout just after a start now falls while the box is still muted (section 11).**
+  Before, 14 engine starts out of 14 logged it (measured); with the fix, in 42 starts none of the
+  underruns came after the ramp had begun.
+- **13 Nov: the readout counts the frames in USB transit (section 12).** It agrees with the loop
+  within 0.2 ms at rest. That it follows a real shift is not proven: none happened on the day.
+- **Still open:** a night run at 96 kHz (started 13 Nov, 19:56), a few real power cycles, and
+  Thomas's ear on the result.
 
 ## 2. The gig night, from the box's logs
 
@@ -258,16 +267,19 @@ baseline. Not proven: that a real power-on times like a reboot, and the 1.5 s ra
 
 ## 8. Still to do
 
-1. The night run at the candidate setting on the new engine, with the readout logging: done,
-   section 9.
-2. Add the kernel's transit figure to the readout, so that a shift in the USB stream shows on
-   the box; check the first power-on with it; and see whether upstream would measure its level
-   with it (a draft for Thomas to send).
-3. A few real power cycles: the power-on delay (24.35 ms once), and the boot times.
+1. The night run at the candidate setting on the new engine, with the readout logging: done at
+   48 kHz, section 9. At 96 kHz: started 13 Nov, 19:56.
+2. The kernel's transit figure in the readout: done, section 12. Left: see it follow a real
+   shift, and the first power-on with it. The note for upstream is drafted for Thomas to send.
+3. A few real power cycles: the power-on delay (24.35 ms once, at the old setting), and the boot
+   times.
 4. Thomas listens: beatmatching at the new setting, the ramp.
 5. The decisions of section 5.
-6. The dropout just after a start (section 9): try a first spectrum request while the box is
-   still muted, and count starts with and without it.
+6. The dropout just after a start: done, section 11.
+7. Where the pinned engine binary is hosted, so that a fresh card needs neither Docker nor a
+   running box (section 13): Thomas decides.
+8. The engine service starts before the M4 exists at some boots and is started again a second
+   later (section 10): to look at, it may cost up to a second of boot.
 
 ## 9. The night run, 12 to 13 Nov
 
@@ -308,3 +320,128 @@ it (the 6.78 ms above was measured after it), but with a program playing it is a
 after the sound has come in. In the engine logs kept since this code went on the box, 2 starts
 out of 5 show it (3.5 and 4.2 s after the start) and one more has an underrun at 6.2 s; the start
 of the night run shows none. Not heard, and not measured as audio yet.
+
+## 10. 96 kHz, 13 Nov
+
+D-018 wished for 24-bit / 96 kHz. The M4 offers it, and its converters are 24-bit at every rate.
+The rate was a constant in the code (48 kHz), so the first measurements were made with a
+bench-only patch of that constant, on the code of section 9.
+
+Four engine starts per setting, then forced 15 and 50 ms freezes, then 45 s at rest (measured,
+whole system, new engine):
+
+| Chunk : target at 96 kHz | In to out | Starts with a dropout in the first seconds | After the freezes | At rest |
+|---|---|---|---|---|
+| 256 : 512 | 11.3 to 11.4 ms | 0 of 4 | 10.9 to 11.0 ms | no dropout |
+| 128 : 256 | 6.2 to 7.5 ms | 3 of 4 | 6.5 to 6.6 ms | no dropout |
+| 128 : 128 | 4.9 to 6.1 ms | 4 of 4 | 5.1 ms | no dropout |
+| 64 : 128 | 3.1 to 4.5 ms | 4 of 4 | 4.2 to 4.4 ms | no dropout |
+| 64 : 64 | 3.7 to 3.8 ms | 4 of 4 | 3.5 ms | no dropout |
+
+The engine's load was 4 to 8 %, the box at 61 to 62 °C. Under phone edits, four CPU hogs and
+SD-card writes, 128 : 256 stayed at 6.76 ms and 128 : 128 at 6.14 ms, with no dropout (measured).
+The formula of section 3.5 holds at 96 kHz with 1.9 ms for the M4's own share (median of 30
+measurements, 1.88 to 2.18; it is 2.3 ms at 48 kHz).
+
+**Decision D-022 (Thomas, 13 Nov): 96 kHz at chunk 128 / target 256 is the box's main setting.**
+It keeps the same margin in time as 48 kHz at 64 / 128, which passed the night run.
+
+**The rate as a setting.** `profiles.<name>.samplerate` in `k1000.yaml`, 48000 or 96000 for the
+M4, read once when the control service starts. A settings file without the key runs 48 kHz with
+its own figures, so a box keeps its setting through an update until its file is edited. The
+manual (chapter 3) has the five lines to write, and the five lines to go back.
+
+**On the box with that code**, its own file edited to the five lines of D-022 (measured):
+
+| | Result |
+|---|---|
+| What runs | The engine reports 96000 Hz, chunk 128, target 256; the kernel shows 96000 Hz, S32_LE. Saved delays untouched. `k1000-m4-bringup.sh`: no failure |
+| 14 engine starts | 6.19 to 7.46 ms |
+| 6 starts of the engine and the control service together | 6.14 to 7.63 ms |
+| Load test (quiet, phone edits, four CPU hogs, SD-card writes) | 6.42 ms at each phase, no dropout, 62 °C |
+| 2 boots (a reboot in place of the switch) | Full level 14.3 and 14.5 s after power-on; 6.38 and 7.39 ms |
+| Readout against the loop | 6.3 for 6.26 ms, 6.4 for 6.38 ms, 7.2 for 7.39 ms |
+
+The delay differs from one start to the next because the engine settles at a different buffer
+level each time (251 to 372 frames here). All of them are under the 10 ms of D-018.
+
+At the last of those boots the engine service started before the M4 existed for the kernel, gave
+up, and was started again by systemd a second later (read in the journal). The start that
+follows is normal. Whether this happens at every boot, and what it costs, is not measured.
+
+Not done at 96 kHz: a night run (started 13 Nov at 19:56 from the second boot, at 7.39 ms), real
+power cycles, a phone on the box, the ear.
+
+## 11. The dropout just after a start
+
+**Before the fix** (code of section 9, 48 kHz, chunk 64 / target 128): 14 engine starts out of 14
+logged a playback underrun in the first seconds (measured). At 96 kHz it was 3 or 4 starts out
+of 4 at every setting under 256 : 512 (section 10).
+
+**The cause** (read in the engine's source, upstream `next5` at `0930f9b`): the engine keeps a
+buffer of 262,144 values per channel for its spectrum. It allocates that buffer on the audio
+thread, at the first chunk after the first spectrum request of a run. That is the stall of
+section 3.2. The control service asked for the spectrum when its displays started, which the
+faster boot of section 7 had moved to after the ramp.
+
+**The fix**: on a freshly started engine, the control service now asks once for the spectrum
+while Main is still muted, on a connection of its own, and waits at most 0.3 s for the answer.
+Then it ramps. An engine that is already playing is left alone.
+
+**With the fix** (measured, the time of each dropout line of the engine's log against the
+control service's journal):
+
+| | Starts | Underrun lines after the ramp had begun |
+|---|---|---|
+| 48 kHz, 64 / 128, engine starts | 14 | 0 |
+| 48 kHz, 64 / 128, engine and control service together | 6 | 0 |
+| 96 kHz, 128 / 256, engine starts | 14 | 0 |
+| 96 kHz, 128 / 256, engine and control service together | 6 | 0 |
+| 96 kHz, 128 / 256, boots | 2 | 0 |
+
+On an engine start the underrun comes 0.04 to 0.08 s after the engine's first log line, more
+than a second before the ramp. When both start together, as at a boot, it comes at least 0.17 s
+before the ramp begins. One start of the 42 shows one more line 0.27 s into the ramp: the engine
+dropping 128 frames (1.3 ms) that arrived late, with Main at about −33 dB. Seven hours at rest on
+this code at 48 kHz: no dropout (read).
+
+The underrun itself still happens, muted. It is what makes the buffer level, and so the delay,
+differ from one start to the next (6.6 to 7.9 ms at 48 kHz, 6.1 to 7.6 ms at 96 kHz). Only a
+change in the engine would remove it.
+
+## 12. The USB transit in the readout
+
+The readout now reads what the kernel holds in USB transit to the M4 (section 3.4): a worker
+thread reads the stream's status 20 times a second. One read costs 88 µs of CPU on the box,
+about 0.2 % of one core (measured). Seven hours with it running: no dropout (read).
+
+Single reads do not sit on one value (measured, the engine at rest):
+
+| Setting | Reads | Where they fall |
+|---|---|---|
+| 48 kHz, chunk 64 | 3,620 | 60 frames 46 %, 72 frames 52 %, 12 frames 1 % |
+| 96 kHz, chunk 128, three starts | 820 each | 96 frames about 46 %, 120 frames about 50 %, 24 frames about 3 % |
+| 96 kHz, chunk 128, one start | 820 | 120 frames 74 %, 144 frames 11 %, 24 frames 14 % |
+
+A pair of values 0.25 ms apart, and a small group one millisecond lower. A median flips between
+the two values of the pair: the first version of the reader used one, and read 7.1 ms for seven
+hours where the loop measured 6.68 ms. The figure is now the mean of the reads near their
+median. On the data above it gives 1.13 ms at rest at both rates, and 1.28 ms on the one start
+where the loop also measured 0.16 ms more. The readout adds what the figure holds beyond
+1.13 ms, and counts nothing within 0.4 ms of it.
+
+Not proven: that the readout follows a real shift. The load test at chunk 64 / target 64 was run
+again on 13 Nov and no shift happened: 5.22 ms at every phase, readout 5.3 ms.
+
+## 13. The engine a fresh card gets
+
+`box/bootstrap.sh` installed the old engine and would have put it back on a box that runs the
+new one. It now installs the pinned build of D-019 from a local file, after checking its
+checksum; it leaves a box that already runs it alone; and the old engine comes back only with
+`--old-engine`. On the desk box (read): the engine's checksum is the pinned one, and a dry run
+says "nothing to do".
+
+The build recipe now pins its Rust toolchain and base image. Built again from an empty cache, it
+gave the same checksum a third time. There is still no download address for the binary: a fresh
+card needs the recipe (Docker) or a copy from a box that runs it. Where to host it is Thomas's
+decision.
