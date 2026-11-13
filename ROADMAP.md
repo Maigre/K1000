@@ -4,7 +4,7 @@ Where K1000 stands, what comes next and in which order, and the gates that were 
 gig (Sunday 18 October) with what became of each. Decisions live in `DECISIONS.md`. Each phase
 below keeps its own dated progress lines.
 
-*Status as of Thu 2026-11-12.* **The box played its first gig on Sun 18 Oct**, running `025b8f8`
+*Status as of Fri 2026-11-13.* **The box played its first gig on Sun 18 Oct**, running `025b8f8`
 (live UI v1 with D-015 to D-017; D-016's features off by default) on CamillaDSP 5.0.0-beta.1,
 chunk 256, `target_level` 512. The owner's report: **beatmatching against the speakers was
 impossible.** The review is [`docs/16-post-gig-audit.md`](docs/16-post-gig-audit.md). Its §2
@@ -12,8 +12,9 @@ theory, a delay that grows after each engine dropout, was checked against the bo
 is **not confirmed for that night**: the engine logged no dropout, and the box ran at its base
 delay of about 20 ms. The logs also show heavy output clipping. The decisions of 12 Nov: D-018
 (10 ms or less in to out, never growing, shown on the box), D-019 (an engine built from upstream's
-fixed branch, pinned once it passes on the desk box) and D-020 (no new features until the latency
-is closed). The bench results are in `docs/17-box-record-and-bench.md`: the new engine reaches 5 to 8 ms where the current one never gets under 12.5. Two gates have no record of
+fixed branch, pinned: the night run passed, `docs/17` §9) and D-020 (no new features until the
+latency is closed). The bench results are in `docs/17-box-record-and-bench.md`: the new engine
+reaches 5 to 8 ms where 5.0.0-beta.1 never gets under 12.5. Two gates have no record of
 having run before the gig: the overnight soak on the M4 at the show setting, and the USB drills.
 
 ## At a glance
