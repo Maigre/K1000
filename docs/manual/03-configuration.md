@@ -46,10 +46,11 @@ profiles:
     input_map: [2, 3]
     output_map: [TopL, TopR, SubL, SubR]
     probe: true
-    chunksize: 256               # the default; measured steps down are D-018's work
-    target_level: 512            # D-010: margin over USB; to come down by measurement (D-018)
-    io_latency_ms: 2.3           # the M4's share of the delay in to out (D-018 readout)
-    io_transit_ms: {64: 1.0}     # the USB transit it was measured with, per chunk (the readout adds a shift)
+    samplerate: 96000            # D-022: 24-bit / 96 kHz is the box's main setting (48000: the fallback)
+    chunksize: 128               # D-022
+    target_level: 256            # D-022: 6.2 to 7.5 ms in to out, measured 13 Nov
+    io_latency_ms: 1.9           # the M4's share of the delay in to out at 96 kHz (D-018 readout)
+    io_transit_ms: {128: 1.13}   # the USB transit it was measured with, per chunk (the readout adds a shift)
 
 controls:
   encoders: [0, 1, 2, 3]
@@ -102,7 +103,9 @@ phone:
 the HiFiBerry, which is not wired to the speakers.
 
 Changing the profile changes the audio device: about a second of silence, then the 1.5 s ramp.
-Bench only.
+Bench only. A profile that runs another sample rate than the one running is not switched to
+(hint `M4 IS 96 kHz: PIN IT IN k1000.yaml`): the rate is read once, when k1000 starts
+([§4](#4-profiles), `samplerate`).
 
 ## 4. `profiles`
 
@@ -116,10 +119,11 @@ One section per profile. Every key is optional: a missing key keeps the built-in
 | `input_map` | `[L, R]`: the capture channels (0-based) that carry the program | `[0, 1]` | `[2, 3]` = LINE IN 3 and 4 |
 | `output_map` | One entry per physical output, in order: which logical channel it carries. `SubL`, `SubR`, `TopL`, `TopR` (or 0–3) | (not used: `dev` has an audition mixer) | `[TopL, TopR, SubL, SubR]` = out1 Top L, out2 Top R, out3 Sub L, out4 Sub R. The Sunday patch (D-012) feeds both subs from out3 (SETUP › SUBS › Mono L+R ON makes out3 = out4 = the L+R sum); out4 is spare |
 | `probe` | `true` / `false` | `false` (the HiFiBerry is never opened by the probe) | `true` |
-| `chunksize` | Frames: 64, 128, 256, 512 or 1024 | 256 | 256 |
-| `target_level` | Frames, 64 to 6 × `chunksize` (64–1536 at 256) | one chunk (256) | 512 (D-010; the code default is one chunk) |
-| `io_latency_ms` | ms, 0–50, or `null` (not known) | `null`: the delay readout shows the engine's share alone, as `≥` | 2.3 (the M4's converters and USB, loop-measured 12 Nov at chunk 32 to 256; the readout adds a quarter chunk to it, the average by which the buffer level reads low) |
-| `io_transit_ms` | `{chunksize: ms}`, each ms 0–50, or `null` (not known) | `null`: the USB transit is not read | `{64: 1.0}` (the kernel's 48 frames in USB transit at 48 kHz, read at chunk 64 while `io_latency_ms` was measured; read at no other chunk). At a chunk named here the readout reads the transit and adds what it holds beyond this figure, see below |
+| `samplerate` | Hz: `48000` or `96000` (`dev`: `48000` only), the rates measured with the profile's interface | 48000 | 96000 with no settings file (D-022), **48000 in a file that does not name it**, see below |
+| `chunksize` | Frames: 64, 128, 256, 512 or 1024 | 256 | 128 at 96 kHz (D-022), 256 at 48 kHz |
+| `target_level` | Frames, 64 to 6 × `chunksize` (64–1536 at 256) | one chunk (256) | 256 at 96 kHz with chunk 128 (D-022), else one chunk |
+| `io_latency_ms` | ms, 0–50, or `null` (not known) | `null`: the delay readout shows the engine's share alone, as `≥` | 1.9 at 96 kHz (loop-measured 13 Nov, median of 30), 2.3 at 48 kHz (12 Nov, chunk 32 to 256): the M4's converters and USB; the readout adds a quarter chunk to it, the average by which the buffer level reads low |
+| `io_transit_ms` | `{chunksize: ms}`, each ms 0–50, or `null` (not known) | `null`: the USB transit is not read | `{128: 1.13}` at 96 kHz, `{64: 1.13}` at 48 kHz: the USB transit at rest as the readout reads it, at the only chunk where it was read at that rate. At a chunk named here the readout reads the transit and adds what it holds beyond this figure, see below |
 
 Details:
 
@@ -138,18 +142,57 @@ Details:
 - **Any `input_map` or `output_map` problem** (a bad entry, too many entries, a logical channel
   routed nowhere) raises the alert `k1000.yaml ROUTING FIXED UP (SEE LOG)`. The journal says what
   was fixed.
+- **`samplerate`** is the engine's sample rate (D-022). The M4 runs 96 kHz or 48 kHz, 24-bit
+  either way (its converters are 24-bit at every rate); the HiFiBerry `dev` profile runs 48 kHz.
+  Any other value is refused: the journal says so and the profile runs 48 kHz. It is read once,
+  when k1000 starts, and written to the engine at its next start: **restart k1000, then
+  camilladsp** ([§9](#9-what-needs-a-restart)). Until camilladsp restarts the screen says
+  `DEVICES CHANGED (GUI)` and the delay readout shows the engine's share alone, as `≥`. The rate
+  also sets the defaults of `chunksize`, `target_level`, `io_latency_ms` and `io_transit_ms`
+  (the table above): each figure was measured at one rate and is never used at the other.
+  - **No settings file** (or one that does not parse): the built-in values, the M4 at 96 kHz,
+    chunk 128, target 256, `io_latency_ms` 1.9, `io_transit_ms` `{128: 1.13}`.
+  - **A file that does not name `samplerate`** runs 48 kHz, with the figures it names and the
+    48 kHz values for the rest. Every file written before D-022 is a 48 kHz file: the desk box's,
+    with `chunksize: 64`, `target_level: 128` and `io_latency_ms: 2.3`, comes up as it was. Its
+    engine config is byte for byte the one before D-022 (tested).
+  - **Saved delays** are kept in ms in `state.json` and never rewritten by a rate change. Going
+    to 96 kHz, every delay is a whole number of samples there too: the same delay. Going back to
+    48 kHz, a delay set at 96 kHz to an odd number of samples plays as the nearest 48 kHz sample,
+    at most 0.01 ms off; the stored value stays, so at 96 kHz again it plays exactly as set. The
+    fine step of ALIGN's delay is one sample at the running rate: 0.0104 ms at 96 kHz.
+  - **The proven fallback** (a 16 h night run passed on it, [`docs/17`](../17-box-record-and-bench.md)
+    §9): write these five lines in the `m4` section in place of the D-022 ones, then restart
+    k1000, then camilladsp:
+
+    ```yaml
+    samplerate: 48000
+    chunksize: 64
+    target_level: 128
+    io_latency_ms: 2.3
+    io_transit_ms: {64: 1.13}
+    ```
+
+  - Measured on the box on 13 Nov at 96 kHz (whole system, the pinned engine, loop cable): chunk
+    128 / target 256 gave 6.2 to 7.5 ms in to out over four engine starts, and 6.76 ms with no
+    dropout under phone edits, four CPU hogs and SD-card writes; the engine's load 4 to 8 %.
+    Proven by tests: the engine config, delays, waits, spectrum, curves and phone hellos follow
+    the setting at both rates. Not yet verified at 96 kHz: a night run, the dropout just after a
+    start (3 starts of 4), and the ear (D-022).
 - **`chunksize` and `target_level`** are the engine's buffer, and its share of the in-to-out
   delay: about one chunk plus the target level (D-018 asks 10 ms or less in to out;
-  [`docs/16`](../16-post-gig-audit.md) §3.3). Measured on 16 Oct at 256 + 512: 20.3 ms in to out,
-  16.5 ms of it in the engine. Both are engine device settings, so they apply **at the next engine
-  start** only, never at show time ([§9](#9-what-needs-a-restart)).
-  - **`chunksize`** is how many frames the engine processes at a time (256 = 5.3 ms at 48 kHz):
-    64, 128, 256, 512 or 1024. Smaller is less delay and more processor load. Any other value is
-    refused: 256 is used and the journal says so. The click-safe steps and the engine checks
-    K1000 times by the chunk follow it (12 ms apart up to 256, 24 ms at 512, 48 ms at 1024).
+  [`docs/16`](../16-post-gig-audit.md) §3.3). Measured on 16 Oct at 256 + 512 at 48 kHz: 20.3 ms
+  in to out, 16.5 ms of it in the engine. Both are engine device settings, so they apply **at the
+  next engine start** only, never at show time ([§9](#9-what-needs-a-restart)).
+  - **`chunksize`** is how many frames the engine processes at a time (128 = 1.3 ms at 96 kHz,
+    256 = 5.3 ms at 48 kHz): 64, 128, 256, 512 or 1024. Smaller is less delay and more processor
+    load. Any other value is refused: the rate's default is used and the journal says so. The
+    click-safe steps and the engine checks K1000 times by the chunk follow it and the rate (12 ms
+    apart up to 256 frames at 48 kHz or 512 at 96 kHz, then 2.25 chunks).
   - **`target_level`** is what CamillaDSP keeps in the playback buffer when the next chunk
-    arrives, in frames (256 = 5.3 ms). Without it: one chunk. A USB interface may need more margin
-    against dropouts: the shipped `m4` value is 512 (~10.7 ms). The range is 64 to 6 × `chunksize`,
+    arrives, in frames (256 = 2.7 ms at 96 kHz, 5.3 ms at 48 kHz). Without it: 256 at 96 kHz with
+    chunk 128 (D-022), else one chunk. A USB interface may need more margin against dropouts. The
+    range is 64 to 6 × `chunksize`,
     the most CamillaDSP documents as usable (`(2 + queuelimit) × chunksize`, `queuelimit` left at
     its default 4): 64–384 at chunk 64, 64–768 at 128, 64–1536 at 256, 64–3072 at 512, 64–6144 at
     1024. A value outside is clamped, with a journal line. The engine's device buffer is 4 ×
@@ -160,25 +203,36 @@ Details:
   count; at the smallest buffer a load test moved them by 2 ms with the level unchanged
   ([`docs/17`](../17-box-record-and-bench.md) §3.4). At a chunk that `io_transit_ms` names, the
   control service reads them from `/proc/asound/<card>/pcm0p/sub0/status` (`delay` minus the
-  buffer fill), 20 reads each second, and adds to the readout what the median of the last 100
-  reads holds beyond the figure for that chunk, so that such a shift shows on the box within
-  about 5 s. What it adds moves only by more than 0.4 ms, and is 0 within 0.4 ms of the figure:
-  the bench's medians of 3 s of reads moved between 48 and 60 frames (0.25 ms) with the delay
-  constant. So the readout can be off by up to 0.4 ms of what the transit holds, either way.
-  Only a `hw:` or `plughw:` device is read. `null`, a chunk not named, or a transit that cannot
-  be read: the readout as before, and nothing in the journal.
-  - The figure was read at chunk 64 only. At 128 or 256 the transit at rest may differ, and the
-    readout's quarter chunk may already hold the difference, so it is not counted there until a
-    reading at rest at that chunk is added (`{64: 1.0, 256: …}`, frames ÷ rate in kHz).
+  buffer fill), 20 reads each second, and adds to the readout what the last 100 reads hold beyond
+  the figure for that chunk, so that such a shift shows on the box within about 5 s. The figure
+  of the reads is their mean, without the reads more than 0.6 ms from their median: single reads
+  at rest fall in a pair of values 0.25 ms apart, about half each, plus a low group one USB frame
+  (1 ms) below with 1 to 14 % of them (read on the box on 13 Nov at both rates). The median
+  flipped between the two values of the pair and moved the readout by 0.5 ms with the delay
+  constant; this figure does not, and it followed the loop within 0.05 ms. What the readout adds
+  moves only by more than 0.4 ms, and is 0 within 0.4 ms of the figure for the chunk. So the
+  readout can be off by up to 0.4 ms of what the transit holds, either way. The journal names it
+  as `usb=<frames> frames` (one decimal). Only a `hw:` or `plughw:` device is read. `null`, a
+  chunk not named, an engine at another rate than the profile's, or a transit that cannot be
+  read: the readout as before, and nothing in the journal.
+  - The figure was read at rest at chunk 64 at 48 kHz and chunk 128 at 96 kHz only: 1.13 ms
+    both. At 96 kHz it comes from the reads of 13 Nov (three engine starts of four; the fourth
+    read 1.28 ms with the loop 0.16 ms higher): confirm it with a reading at rest. At another
+    chunk the transit at rest may differ, and the readout's quarter chunk may already hold the
+    difference, so it is not counted there until a reading at rest at that chunk is added
+    (`{128: 1.13, 256: …}`, frames ÷ rate in kHz).
   - After a new loop measurement of `io_latency_ms`, read the transit at the same time and write
-    both: an `io_latency_ms` other than the built-in 2.3 without `io_transit_ms` turns the
-    transit off. Both are 48 kHz figures.
-  - Proven by tests on copies of the kernel's files. Not yet verified on the box: the readout
-    against the loop during a shift, how far single reads spread, the cost on the Pi.
+    both: an `io_latency_ms` other than the built-in figure of the rate (1.9 at 96 kHz, 2.3 at
+    48 kHz) without `io_transit_ms` turns the transit off. Both are figures of the rate they
+    were measured at: a change of `samplerate` needs both measured again at the new rate, or the
+    built-in ones (leave both keys out).
+  - Proven by tests on copies of the kernel's files and on the read distributions of 13 Nov.
+    Not yet verified on the box: the new figure against the loop over a long run, the readout
+    during a shift, the cost on the Pi.
 - **`dev` only:** the 4 logical outputs are folded onto the HiFiBerry's 2. SETUP › BOX › Audition (dev)
   picks `sum` (each side = top + sub at −6 dB each), `tops` or `subs`.
 
-The fixed parts, not configurable: 48 kHz, no rate adjustment, Main capped at 0 dB
+The fixed parts, not configurable: no rate adjustment, Main capped at 0 dB
 (`volume_limit`), and fader ramps of 100 ms (Main and the group faders: master and balance answer
 the hand, and the mute fades over 0.1 s). An engine still running an older config with another
 ramp shows `DEVICES CHANGED (GUI)` until its next start.
@@ -343,7 +397,7 @@ touch the engine:
 | `controls`, `engine.*`, `spectrum.*`, `ui.*`, `phone.*` | `sudo systemctl restart k1000` | Nothing. `boot_gain_db`/`boot_ramp_s` apply at the next fresh engine start. The screen and knobs pause for a few seconds; an open Laptop access closes |
 | `profile`, or a profile's device or channel counts | Restart k1000 | K1000 switches the engine to the new device: about 1 s of silence, then the 1.5 s ramp. **Bench only** |
 | `input_map`, `output_map` | Restart k1000 | K1000 rebuilds the engine's pipeline with Main muted around it. Possible click. **Bench only** |
-| `chunksize`, `target_level`, a format | Restart k1000, then `sudo systemctl restart camilladsp` | k1000 rewrites `active.yml`; the screen may say `DEVICES CHANGED (GUI)` until the engine restarts. The engine restart is about 1 s of silence, then the ramp |
+| `samplerate`, `chunksize`, `target_level`, a format | Restart k1000, then `sudo systemctl restart camilladsp` | k1000 rewrites `active.yml`; the screen may say `DEVICES CHANGED (GUI)` until the engine restarts (after a `samplerate` change the delay readout is a floor, `≥`, until then). The engine restart is about 1 s of silence, then the ramp |
 | The phone certificate | Restart k1000 | Nothing; phones reconnect by themselves |
 
 ## 10. The state files
@@ -422,11 +476,11 @@ A `state.json` saved before D-016 loads with the three features off and their de
 build ignores the keys.
 
 "Off" for the Lo-Cut and the sub low-pass is a frequency move (10 Hz and 20 kHz), never a pipeline
-change. Delays are applied in whole samples at 48 kHz.
+change. Delays are applied in whole samples at the engine's rate (96 or 48 kHz, `samplerate`).
 
 **The two delays are one knob** (D-011). ALIGN E2 (E3 until D-015) shows
-`sub_delay_ms − top_delay_ms`: 0.1 ms a click, one sample (1/48 ms) with the push, stopping one
-click on `ALIGNED` (0) before crossing to the other side. A knob move sets the late side and zeroes
+`sub_delay_ms − top_delay_ms`: 0.1 ms a click, one sample (1/96 ms at 96 kHz) with the push,
+stopping one click on `ALIGNED` (0) before crossing to the other side. A knob move sets the late side and zeroes
 the other. Both set (written by hand, by CamillaGUI or by a build before D-011) would delay every
 speaker by the smaller one with nothing on the screen (sub 2.0 / top 0.5 shows `1.50 ms` and plays
 the whole PA 0.5 ms late), so K1000 takes that common part out wherever settings come in: when it

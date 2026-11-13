@@ -419,6 +419,42 @@ sudo systemctl restart k1000        # k1000 regenerates active.yml for that devi
   the HiFiBerry.
 - When the `profile:` line is absent, k1000 uses the last profile chosen on the SETUP page.
 
+## Sample rate: 96 kHz, 48 kHz the fallback (D-022)
+
+The engine's rate is `profiles.m4.samplerate` in `/etc/k1000/k1000.yaml`, with the buffer and
+the M4's measured share beside it. D-022's main setting (`box/etc/k1000.yaml` ships it, and a box
+with no settings file runs it):
+
+```yaml
+    samplerate: 96000
+    chunksize: 128
+    target_level: 256
+    io_latency_ms: 1.9
+    io_transit_ms: {128: 1.13}
+```
+
+The proven fallback (a 16 h night run passed on it, `docs/17` §9): the same five lines as
+`samplerate: 48000`, `chunksize: 64`, `target_level: 128`, `io_latency_ms: 2.3`,
+`io_transit_ms: {64: 1.13}`. **A file without `samplerate` runs 48 kHz** with the figures it
+names: every file written before D-022 comes up as it was. Only 48000 and 96000 are accepted
+(the dev HiFiBerry: 48000); anything else is refused in the journal and runs 48 kHz.
+
+A change, between shows:
+
+```sh
+sudo nano /etc/k1000/k1000.yaml           # the lines above, in the m4 section
+sudo systemctl restart k1000              # reads the rate once; rewrites active.yml
+sudo systemctl restart camilladsp         # the engine opens the M4 at the new rate (~1 s of silence, then the ramp)
+journalctl -u k1000 -b | grep -E "engine sample rate|samplerate|latency:"
+grep -A3 '^devices' /var/lib/k1000/active.yml
+cat /proc/asound/M4/pcm0p/sub0/hw_params  # rate: 96000 (96000/1)
+```
+
+Between the two restarts the screen says `DEVICES CHANGED (GUI)` and the delay readout is a floor
+(`≥`): the M4's figures belong to the new rate. Saved delays are kept in ms and play the same at
+96 kHz; at 48 kHz a delay set at 96 kHz plays at most 0.01 ms off (the stored value stays). The
+manual has the details (`docs/manual/03-configuration.md` §4).
+
 ## MOTU M4 bring-up (Tuesday)
 
 Speakers OFF, or their XLRs unplugged, for all of it.

@@ -24,8 +24,9 @@ and a phone on the box's own Wi-Fi.
 
 - **A fixed-slot DSP pipeline**: input trim, 8-band system EQ, a live EQ layer (4 bells + low and
   high shelves) on top of it, the sub/top split (optional mono subs), polarity and delay per group
-  (whole samples at 48 kHz), a 12 dB/oct Lo-Cut on the tops, an optional sub low-pass, sub/top
-  balance, four output trims, master and mute. Every show-time move is a parameter write or a
+  (whole samples at the engine's rate: a `k1000.yaml` setting, 96 kHz since D-022, 48 kHz the
+  fallback), a 12 dB/oct Lo-Cut on the tops, an optional sub low-pass, sub/top balance, four
+  output trims, master and mute. Every show-time move is a parameter write or a
   ramped fader, never a pipeline rebuild. Three optional blocks, all off by default (D-016,
   deployed the day before the gig; each is kept or dropped by ear): **de-harsh** (a dynamic cut
   around 2.7 kHz that acts only on hard attacks), **sub loudness** (more sub as the master goes

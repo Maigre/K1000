@@ -99,9 +99,10 @@ Where the delay is: **ALIGN E2, DELAY** (bottom left; E3 until D-015), one setti
 side (D-011), locked until a **B2 hold** unlocks it (30 s of idle locks it again). Clockwise from 0 delays the **subs** (subs
 nearer the audience: `SUBS LATER`), anticlockwise from 0 delays the **tops** (tops nearer:
 `TOPS LATER`); up to 50 ms either way, and only the late side is delayed. 0.1 ms per click, push
-held = one sample (1/48 ms); after 2.5 s at rest the first click only wakes it. The screen shows
-the distance too (`SUBS LATER · 0.81 m`). Turning through zero stops one click on `ALIGNED`.
-Delays are whole samples at 48 kHz.
+held = one sample (1/96 ms at 96 kHz, 1/48 ms at 48 kHz); after 2.5 s at rest the first click
+only wakes it. The screen shows the distance too (`SUBS LATER · 0.81 m`). Turning through zero
+stops one click on `ALIGNED`.
+Delays are whole samples at the engine's rate (96 kHz, or 48 kHz on the fallback setting).
 
 **Check with the mic:**
 

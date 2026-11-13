@@ -14,8 +14,11 @@ delay of about 20 ms. The logs also show heavy output clipping. The decisions of
 (10 ms or less in to out, never growing, shown on the box), D-019 (an engine built from upstream's
 fixed branch, pinned: the night run passed, `docs/17` §9) and D-020 (no new features until the
 latency is closed). The bench results are in `docs/17-box-record-and-bench.md`: the new engine
-reaches 5 to 8 ms where 5.0.0-beta.1 never gets under 12.5. Two gates have no record of
-having run before the gig: the overnight soak on the M4 at the show setting, and the USB drills.
+reaches 5 to 8 ms where 5.0.0-beta.1 never gets under 12.5. On 13 Nov, D-022 made 24-bit / 96 kHz
+at chunk 128 / target 256 the main setting (6.2 to 7.5 ms in to out measured on the desk); the
+sample rate is a setting of `k1000.yaml` in the code, with 48 kHz at 64 / 128 kept as the proven
+fallback. Two gates have no record of having run before the gig: the overnight soak on the M4 at
+the show setting, and the USB drills.
 
 ## At a glance
 
@@ -25,7 +28,7 @@ having run before the gig: the overnight soak on the M4 at the show setting, and
 | 1 — v0 for the gig | A trustworthy, bypassable head for Sunday | **played the gig** 18/10 (`025b8f8`): code, Lite, power-cut drill; M4 live 16/10 (loop-tested: routing, levels, 20.3 ms), buttons confirmed, 3 A PSU. **Skipped**: the USB drills and the M4 soak (no record of either before the gig) | ~~Fri 16 rig test~~ held 16–17/10 |
 | 2 — Live UI v1 | Every live control on one page, EQ curve over a spectrum; phone PWA | **played the gig**: UI v1 accepted on the box 13/10, D-017 in the build that played; the Android app 0.2.2 drove the box at the rig 17/10 (a Pixel) | ~~Wed 14 freeze~~ not held (D-016, D-017 went in on 17/10); ~~Fri go/no-go~~ no per-item record |
 | 3 — Field trial | The gig is the first outing; debrief | **played** Sun 18/10; beatmatching on the speakers impossible (the owner's report) | ~~debrief Mon 19~~ the review is `docs/16` (12/11); bench results in `docs/17` (forthcoming) |
-| Now — Latency | D-018: 10 ms or less in to out, never growing, shown on the box | **open** (13/11): the desk box runs D-019's engine at chunk 64 / target 128, about 7 ms, shown on its screen; the night run passed (16 h, 185 loop measurements at 7.59 ms, no dropout: `docs/17` §9). Left: real power cycles, a dropout the engine can log just after a start, the USB-level figure in the readout, beatmatching by ear | D-020: met on the box after a night run, and beatmatched on it |
+| Now — Latency | D-018: 10 ms or less in to out, never growing, shown on the box | **open** (13/11): the desk box runs D-019's engine at 48 kHz, chunk 64 / target 128, about 7 ms, shown on its screen; the night run passed (16 h, 185 loop measurements at 7.59 ms, no dropout: `docs/17` §9). D-022 (13/11): 96 kHz at chunk 128 / target 256 becomes the main setting, 6.2 to 7.5 ms measured on the desk; the rate is a `k1000.yaml` setting in the code (tested, not yet deployed). Left at 96 kHz: a night run, the dropout just after a start (3 starts of 4), the USB transit at rest read with the new reader, real power cycles, beatmatching by ear | D-020: met on the box after a night run, and beatmatched on it |
 | 4 — Assist & measurement | Spectrum tools, suggest-notch, phone mic as a measurement input | steps 1-2 pulled in for the tests (Thomas, 14/10): on the box `6a537bb`; the rest waits until the latency is closed (D-020) | — |
 | 5 — Road-proofing | Read-only root, enclosure, power, spare surface | after the gig | — |
 
@@ -278,6 +281,12 @@ Progress:
   of about 20 ms. The logs also show heavy output clipping. Decided the same day: D-018 (the
   latency requirement), D-019 (the engine build), D-020 (no new features until the latency is
   closed). The bench results are in `docs/17-box-record-and-bench.md`. The hardware shape is not decided yet.
+- 2026-11-13 — D-022: 24-bit / 96 kHz at chunk 128 / target 256 is the box's main setting (the
+  whole box measured at 96 kHz on the desk: 6.2 to 7.5 ms in to out over four starts, steady under
+  load). In the code the sample rate is now `profiles.<name>.samplerate` in `k1000.yaml`, with the
+  M4's figures per rate (1.9 ms at 96 kHz, 2.3 ms at 48 kHz); a file without the key stays at
+  48 kHz. The USB transit readout reads a figure that no longer flips between two values. Proven
+  by tests at both rates; on the box: not yet (deploy, then a night run at 96 kHz).
 
 ## Phase 4 — Assist & measurement
 

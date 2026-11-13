@@ -241,7 +241,7 @@ The system settings you set before the doors and leave alone: balance, the sub/t
 | Knob | Does | Step | Fine (push held) |
 |---|---|---|---|
 | E1 **MASTER** | As on SHOW | 0.5 dB | — |
-| E2 **DELAY** | Which side is late, and by how much: clockwise from 0 the **subs**, anticlockwise the **tops**, up to 50 ms either way. The size big, the side and the distance over it (`SUBS LATER · 0.81 m`, `TOPS LATER · 0.43 m`, `ALIGNED`) | 0.1 ms | 1 sample (1/48 ms) |
+| E2 **DELAY** | Which side is late, and by how much: clockwise from 0 the **subs**, anticlockwise the **tops**, up to 50 ms either way. The size big, the side and the distance over it (`SUBS LATER · 0.81 m`, `TOPS LATER · 0.43 m`, `ALIGNED`) | 0.1 ms | 1 sample (1/96 ms at 96 kHz, 1/48 ms at 48 kHz) |
 | E3 **BALANCE** | Subs against tops, −12 … +12 dB; + = subs up. Subs get +b/2, tops −b/2 (`subs +1.5 · tops -1.5`) | 0.5 dB | — |
 | E4 **LO-CUT** | The tops' high-pass, 12 dB/oct, 20 … 300 Hz | 2 Hz, speeds up (8 Hz on a fast spin) | 1 Hz |
 
