@@ -18,7 +18,8 @@
 # 5.0.0-beta.1 never got under 12.5 ms, and the delay comes back after an underrun.
 set -eu
 PIN=0930f9bbfefa34a7b47c47497575f231dbe22b48
-# sha256 of the binary this script gives for the pin (built twice on 2026-11-12, same result);
+# sha256 of the binary this script gives for the pin (built twice on 2026-11-12, and on
+# 2026-11-13 from an empty Docker cache with the pinned Dockerfile: the same result each time);
 # it is the binary that was measured on the box.
 PIN_SHA256=dd4106c927a5de2b31776cc28d797a3f42fb9b7d02deb928f45a6feee057d43c
 commit=${1:-$PIN}
@@ -53,5 +54,5 @@ sum=$(sha256sum "$out/camilladsp" | cut -d" " -f1)
 echo "$sum  $out/camilladsp"
 if [ "$commit" = "$PIN" ]; then
   if [ "$sum" = "$PIN_SHA256" ]; then echo "this is the binary measured on the box (docs/17)"
-  else echo "NOT the measured binary (expected $PIN_SHA256): a different toolchain or lock; measure it before a show" >&2; fi
+  else echo "NOT the measured binary (expected $PIN_SHA256): a different toolchain or lock; measure it before a show, or take the measured one from a box that runs it (box/README.md, The engine build)" >&2; fi
 fi

@@ -2179,6 +2179,14 @@ def test_bootstrap_pins_the_engine_that_build_sh_makes():
         assert re.fullmatch(r"[0-9a-f]{64}", _pinned(var)), var
 
 
+def test_engine_build_pins_its_toolchain_and_base_image():
+    """build.sh's PIN_SHA256 is one compiler's output: a moving `stable` toolchain or an unpinned base
+    image would make it print "NOT the measured binary", and bootstrap refuse the file, on a later day."""
+    docker = (BOX / "tools" / "engine-build" / "Dockerfile").read_text()
+    assert re.search(r"^FROM debian:trixie-slim@sha256:[0-9a-f]{64}$", docker, re.M)
+    assert re.search(r"--default-toolchain \d+\.\d+\.\d+ ", docker)
+
+
 def _bootstrap_box(tmp: Path, with_ap: bool = False, installed: str = "*", engine: str | None = "pinned",
                    pin_url: str = "") -> tuple[Path, Path, dict]:
     """bootstrap.sh next to a fake install.sh/k1000-lean.sh; fake dpkg says `installed` (a case
