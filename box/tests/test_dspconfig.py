@@ -2504,16 +2504,58 @@ def test_samplerate_defaults_no_file_is_d022_a_file_without_the_key_is_48_khz():
 def test_samplerate_outside_the_measured_ones_is_refused_like_a_bad_chunksize(bad):
     """Only the rates measured on the box (48 and 96 kHz on the M4; 48 kHz on the dev HiFiBerry).
     Anything else: a warning naming the value and the rates, and the rate the key's absence gives
-    (a file: 48 kHz with the file's figures). Never an exception: k1000 must not crash-loop."""
+    (a file: 48 kHz), with that rate's built-in interface figures: the file's were written for
+    the rate it meant, which is not the one that runs. Its buffer is kept (frames: at 48 kHz it
+    holds more time than at 96). Never an exception: k1000 must not crash-loop."""
     p = pf.load_profile("m4", _rate_file(samplerate=bad, **DESK_48K), probe=False)
-    assert (p.samplerate, p.chunksize, p.target_level, p.io_latency_ms) == (48000, 64, 128, 2.3)
+    assert (p.samplerate, p.chunksize, p.target_level, p.io_latency_ms, p.io_transit_ms) == (
+        48000, 64, 128, 2.3, {64: 1.13})
     assert any(f"samplerate {bad!r} refused" in w and "48000 or 96000 Hz" in w and "using 48000" in w
                for w in p.warnings), p.warnings
+    # D-022's five lines with a rate k1000 cannot take: never the 96 kHz figures at 48 kHz
+    p = pf.load_profile("m4", _rate_file(samplerate=bad, chunksize=128, target_level=256,
+                                         io_latency_ms=1.9, io_transit_ms={128: 1.13}),
+                        probe=False)
+    assert (p.samplerate, p.chunksize, p.target_level, p.io_latency_ms, p.io_transit_ms) == (
+        48000, 128, 256, 2.3, {64: 1.13})
+    assert any(f"samplerate {bad!r} refused" in w and "without the file's io_latency_ms and "
+               "io_transit_ms" in w and "this profile's at 48000 Hz instead" in w
+               for w in p.warnings), p.warnings
+    from k1000.latency import LatencyWatch
+    w = LatencyWatch()
+    w.note_config(d.generate(p, State(profile="m4")))
+    assert w.io_share(p.io_latency_ms, p.samplerate) == pytest.approx(2.3 + 0.25 * 128 / 48)
+    assert w.usb_ref(p.io_transit_ms, p.samplerate) is None      # no reading at rest at 128
     q = pf.load_profile("dev", {"profiles": {"dev": {"samplerate": bad}}}, probe=False)
     assert q.samplerate == 48000 and any("samplerate" in w and "runs 48000 Hz" in w
                                          for w in q.warnings)
     q = pf.load_profile("dev", {"profiles": {"dev": {"samplerate": 96000}}}, probe=False)
     assert q.samplerate == 48000 and any("samplerate 96000 refused" in w for w in q.warnings)
+
+
+@pytest.mark.parametrize("sec,rate,io", [
+    # the desk box's file with only the rate line added: 2.3 ms is the 48 kHz figure
+    ({**DESK_48K, "samplerate": 96000}, 96000, 2.3),
+    # D-022's lines without the rate line: 1.9 ms is the 96 kHz figure, and the file runs 48 kHz
+    ({"chunksize": 128, "target_level": 256, "io_latency_ms": 1.9,
+      "io_transit_ms": {128: 1.13}}, 48000, 1.9),
+])
+def test_an_io_figure_of_the_other_rate_is_used_as_written_and_said(sec, rate, io):
+    """A file's io_latency_ms is its own and is used as written, but one that is the M4's
+    built-in figure at the OTHER rate most likely stayed behind when the rate line changed alone
+    (or went missing): the journal says so. This rate's own figure, or another number, is
+    silent."""
+    p = pf.load_profile("m4", _rate_file(**sec), probe=False)
+    assert (p.samplerate, p.io_latency_ms) == (rate, io)
+    other = 144000 - rate
+    assert [w for w in p.warnings if "io_latency_ms" in w] == [
+        f"m4: io_latency_ms {io:g} is this interface's figure at {other} Hz and the profile runs "
+        f"{rate} Hz (its figure: {2.3 if rate == 48000 else 1.9} ms): a figure belongs to its "
+        "rate; write io_latency_ms and io_transit_ms measured at this rate, or leave both out"]
+    for fine in ({**DESK_48K}, {**DESK_48K, "io_latency_ms": 2.1},
+                 {"samplerate": 96000, "io_latency_ms": 1.9}, {"samplerate": 96000,
+                                                               "io_latency_ms": 2.0}):
+        assert not pf.load_profile("m4", _rate_file(**fine), probe=False).warnings, fine
 
 
 @pytest.mark.parametrize("profile_key", list(golden.PROFILES))

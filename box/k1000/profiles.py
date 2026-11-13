@@ -609,7 +609,10 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
     key existed is a 48 kHz file. The other buffer and interface keys default to the
     built-in figures of THAT rate (`_RATE_DEFAULTS`), so a 48 kHz file never gets 96 kHz figures
     and the reverse. A rate the profile was not measured at is refused like a bad chunksize: a
-    warning, and the rate the key's absence gives.
+    warning, and the rate the key's absence gives, with that rate's built-in io_latency_ms and
+    io_transit_ms (the file's were written for the rate it meant); its chunksize and
+    target_level are kept. A file's io_latency_ms that is another rate's built-in figure is used
+    as written, with a warning.
     `probe` None = profile default (m4 probes, dev does not: its facts are proven and the box's
     HiFiBerry is shared). Probed channel counts beat configured ones the device refuses.
     `prober` None = `probe_alsa` at the profile's rate.
@@ -637,12 +640,20 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
                and SETTINGS_ERROR not in overrides)
     rate_default = DEFAULT_SAMPLERATE if written else _BUILTIN_RATE[name]
     sr = ov.get("samplerate")
+    # A refused rate: the file's interface figures were written for the rate it meant, not the
+    # one the run takes, so they are not used (that rate's built-in ones are). Its buffer is
+    # kept: frames, valid at any rate, and at 48 kHz it holds more time, never less.
+    refused = False
     if sr is None:                       # absent or `null`: see the docstring
         sr = rate_default
     elif isinstance(sr, bool) or not isinstance(sr, int) or sr not in rates:
+        refused = True
+        own = [k for k in ("io_latency_ms", "io_transit_ms") if k in ov]
         warnings.append(f"{name}: samplerate {sr!r} refused: this profile runs "
                         f"{' or '.join(str(r) for r in rates)} Hz (the rates measured with its "
-                        f"interface); using {rate_default}")
+                        f"interface); using {rate_default}"
+                        + (f", without the file's {' and '.join(own)} (figures of the rate it "
+                           f"meant): this profile's at {rate_default} Hz instead" if own else ""))
         sr = rate_default
     fig = rates[sr]
 
@@ -743,17 +754,28 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
         tl = clamped
 
     io_default = fig["io_latency_ms"]
-    io = ov.get("io_latency_ms", io_default)                  # null = not known
+    io = io_default if refused else ov.get("io_latency_ms", io_default)    # null = not known
     if io is not None and (isinstance(io, bool) or not isinstance(io, (int, float))
                            or not IO_LATENCY_RANGE[0] <= io <= IO_LATENCY_RANGE[1]):
         warnings.append(f"{name}: io_latency_ms {io!r} is not a number of ms in "
                         f"{IO_LATENCY_RANGE[0]:g}..{IO_LATENCY_RANGE[1]:g}; "
                         f"using {io_default}")
         io = io_default
+    elif io is not None and io != io_default:
+        # The file's own figure is used as written. One that is another rate's built-in figure
+        # (the M4: 2.3 ms is 48 kHz's, 1.9 ms 96 kHz's) most likely stayed behind when the rate
+        # changed alone, or went without its rate line: the journal says so.
+        other = [r for r, f in rates.items()
+                 if r != sr and f["io_latency_ms"] is not None and io == f["io_latency_ms"]]
+        if other:
+            warnings.append(f"{name}: io_latency_ms {io:g} is this interface's figure at "
+                            f"{other[0]} Hz and the profile runs {sr} Hz (its figure: "
+                            f"{io_default} ms): a figure belongs to its rate; write io_latency_ms "
+                            "and io_transit_ms measured at this rate, or leave both out")
     # The built-in transit belongs to the built-in io_latency_ms: a file with a figure of its own
     # and no io_transit_ms has no transit to count from.
     tr_default = fig["io_transit_ms"] if io == io_default else None
-    tr = ov.get("io_transit_ms", tr_default)                    # null = not known
+    tr = tr_default if refused else ov.get("io_transit_ms", tr_default)    # null = not known
     try:
         transit = _io_transit(tr)
     except ValueError:
