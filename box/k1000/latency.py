@@ -28,22 +28,22 @@ Why it is shaped like this:
   read of a stream under the PCM's open mutex, which a USB device's open or close holds for as
   long as they take (recalled from the ALSA source, sound/core/pcm.c,
   `snd_pcm_substream_proc_status_read`; not read again here, not measured). Once a second, a
-  burst of USB_BURST reads about USB_GAP_S apart; the figure is the median of the last USB_POOL
-  reads of one stream (the bench's figures were medians of 3 s of reads every 50 ms), and it
-  moves, and counts, only beyond USB_STEP_MS. Those medians read 48 or 60 frames for 16 h with
-  the delay constant (docs/17 §9), and that never moves the readout. How far single reads spread
-  is not measured. As recalled from the USB audio driver (sound/usb/pcm.c, `snd_usb_pcm_delay`),
-  its figure drops by one USB frame's worth (1 ms) once a frame has begun since the last URB
-  came back, so single reads may sit in two groups 1 ms apart: the median of 100 reads holds
-  while the smaller group stays under about a third of them (models in the tests). A new
-  stream (its `trigger_time` changed: a restart, an underrun's recovery) starts the figure over.
-  Each read also resets the stream's `avail_max` in the kernel (recalled from pcm_native.c,
-  `snd_pcm_status64`): nothing in K1000 reads it. No `io_transit_ms`, no `io_latency_ms`, a
-  device name that is not `hw:` or
-  `plughw:`, a stream not RUNNING or a file not readable: the readout of the engine's level
-  alone, as before, and nothing in the journal. The 48 frames were read at chunk 64 only: that
-  the transit is the same at other chunks is not measured yet (if not, the readout at those
-  chunks is off by the difference).
+  burst of USB_BURST reads about USB_GAP_S apart; the figure is the median of the last
+  USB_POOL reads of one stream (the bench's figures were medians of 3 s of reads every 50 ms).
+  What the readout counts for it is one band USB_STEP_MS wide (`LatencyWatch.note`): never more
+  than that away from the figure's own shift, and 0 at rest. Those medians read 48 or 60 frames
+  for 16 h with the delay constant (docs/17 §9), and that never moves the readout. How far
+  single reads spread is not measured. As recalled from the USB audio driver (sound/usb/pcm.c,
+  `snd_usb_pcm_delay`), its figure drops by one USB frame's worth (1 ms) once a frame has begun
+  since the last URB came back, so single reads may sit in two groups 1 ms apart: the median of
+  100 reads holds while the smaller group stays under about a third of them (models in the
+  tests). A new stream (its `trigger_time` changed: a restart, an underrun's recovery) starts
+  the figure over. Each read also resets the stream's `avail_max` in the kernel (recalled from
+  pcm_native.c, `snd_pcm_status64`): nothing in K1000 reads it. No `io_transit_ms`, no
+  `io_latency_ms`, a device name that is not `hw:` or `plughw:`, a stream not RUNNING or a file
+  not readable: the readout of the engine's level alone, as before, and nothing in the journal.
+  The 48 frames were read at chunk 64 only: that the transit is the same at other chunks is not
+  measured yet (if not, the readout at those chunks is off by the difference).
 - **It informs, it never acts.** Above `engine.latency_limit_ms` (k1000.yaml, 10 ms by default:
   D-018) the readout is flagged; nothing mutes, restarts or changes the sound.
 - **A gig leaves a trace in the journal**: one line at the first reading after K1000 connects to
@@ -103,10 +103,10 @@ MAX_BACK_BYTES = 2 * 1024 * 1024  # the first read goes back through at most thi
 # The frames in USB transit (see above): every TRANSIT_READ_S while the engine runs, USB_BURST
 # reads about USB_GAP_S apart; the figure is the median of the last USB_POOL reads of one stream
 # (five bursts, about 6 s: the bench's figures were medians of 3 s of reads every 50 ms) once
-# USB_NEED are in (three bursts). It moves only by more than USB_STEP_MS, which is also how far
-# from the profile's `io_transit_ms` it must be to count. Those 3 s medians read 48 or 60 frames
-# for 16 h with the delay constant, 0.25 ms apart at 48 kHz (docs/17 §9); the shift of docs/17
-# §3.4 was 2.0 ms.
+# USB_NEED are in (three bursts). What the readout counts for it moves only by more than
+# USB_STEP_MS, and is 0 within USB_STEP_MS of the profile's `io_transit_ms` (one band:
+# `LatencyWatch.note`). Those 3 s medians read 48 or 60 frames for 16 h with the delay constant,
+# 0.25 ms apart at 48 kHz (docs/17 §9); the shift of docs/17 §3.4 was 2.0 ms.
 TRANSIT_READ_S = 1.0
 USB_BURST = 20
 USB_GAP_S = 0.01
@@ -147,13 +147,6 @@ def run_devices(cfg: Any) -> tuple[int, float] | None:
             or rate <= 0:
         return None
     return chunk, float(rate)
-
-
-def usb_shift_ms(frames: int, samplerate: float, ref_ms: float) -> float:
-    """What `frames` in USB transit add to the profile's `io_latency_ms`, measured with `ref_ms`
-    in transit: 0 within USB_STEP_MS of it (the reading's jitter)."""
-    d = frames / samplerate * 1000.0 - ref_ms
-    return d if abs(d) > USB_STEP_MS else 0.0
 
 
 _HW_NAME = re.compile(r"(?:plug)?hw:(.+)")
@@ -267,7 +260,7 @@ class Reading:
     io_ms: float | None          # the interface's share (the profile's), None = not known
     limit_ms: float = LIMIT_MS
     usb: int | None = None       # frames in USB transit, when the readout counts them
-    usb_ms: float = 0.0          # what they add beyond the profile's io_transit_ms (`usb_shift_ms`)
+    usb_ms: float = 0.0          # what they add beyond the profile's io_transit_ms (`note`)
 
     @property
     def engine_ms(self) -> float:
@@ -312,7 +305,8 @@ class LatencyWatch:
         self._logged_at = -math.inf
         self._usb_reads: collections.deque[int] = collections.deque(maxlen=USB_POOL)
         self._usb_stream: str | None = None      # the start (trigger_time) of the reads' stream
-        self.usb: int | None = None              # frames in USB transit as shown (None: no figure)
+        self.usb: int | None = None              # frames in USB transit: the median (None: none)
+        self._usb_ms = 0.0                       # what the readout counts for them (`note`)
 
     def note_config(self, cfg: Any) -> None:
         d = run_devices(cfg)
@@ -328,24 +322,22 @@ class LatencyWatch:
 
     def note_usb(self, burst: Burst | None) -> None:
         """One burst of reads of the USB transit (`read_transits`). The figure is the median of
-        the last USB_POOL reads once USB_NEED are in, and it moves only by more than USB_STEP_MS.
-        None, or a stream at another rate than the running config's, clears it; a new stream
-        (another start) starts it over: no read of one stream counts for the next."""
+        the last USB_POOL reads once USB_NEED are in. None, or a stream at another rate than the
+        running config's, clears it; a new stream (another start) starts it over: no read of one
+        stream counts for the next."""
         if (burst is None or not burst[0] or self._devices is None
                 or burst[1] != self._devices[1]):
             self._usb_reads.clear()
             self._usb_stream = self.usb = None
+            self._usb_ms = 0.0
             return
-        frames, rate, stream = burst
+        frames, _rate, stream = burst
         if stream != self._usb_stream:
             self._usb_reads.clear()
-            self._usb_stream, self.usb = stream, None
+            self._usb_stream, self.usb, self._usb_ms = stream, None, 0.0
         self._usb_reads.extend(frames)
-        if len(self._usb_reads) < USB_NEED:
-            return
-        median = sorted(self._usb_reads)[(len(self._usb_reads) - 1) // 2]
-        if self.usb is None or abs(median - self.usb) > USB_STEP_MS * rate / 1000.0:
-            self.usb = median
+        if len(self._usb_reads) >= USB_NEED:
+            self.usb = sorted(self._usb_reads)[(len(self._usb_reads) - 1) // 2]
 
     def io_share(self, io_latency_ms: float | None) -> float | None:
         """`io_share_ms` for the running chunk and rate (the profile's figure alone until the
@@ -358,17 +350,25 @@ class LatencyWatch:
              usb_ref_ms: float | None = None) -> Reading | None:
         """One poll: the engine's state and its GetBufferLevel value (None = not read) -> the
         reading to show (None = none: not running, no average yet, config not read yet).
-        `usb_ref_ms`: the profile's `io_transit_ms`; the transit counts only with it and `io_ms`."""
+        `usb_ref_ms`: the profile's `io_transit_ms`; the transit counts only with it and `io_ms`.
+        What it counts is one band wide: it moves when the figure's own shift from the reference
+        is more than USB_STEP_MS away from it, to that shift, or to 0 when that shift is itself
+        within USB_STEP_MS of the reference. So it is never more than USB_STEP_MS from the
+        figure's shift, and it is 0 at rest."""
         r = None
         if (engine_state == "Running" and self._devices is not None
                 and isinstance(level, (int, float)) and not isinstance(level, bool)
                 and math.isfinite(level) and level >= 1):
             chunk, rate = self._devices
-            usb, usb_ms = None, 0.0
+            usb = None
             if io_ms is not None and usb_ref_ms is not None and self.usb is not None:
-                usb, usb_ms = self.usb, usb_shift_ms(self.usb, rate, usb_ref_ms)
+                usb, d = self.usb, self.usb / rate * 1000.0 - usb_ref_ms
+                if abs(d - self._usb_ms) > USB_STEP_MS:
+                    self._usb_ms = d if abs(d) > USB_STEP_MS else 0.0
+            else:
+                self._usb_ms = 0.0
             r = Reading(int(round(level)), chunk, rate, io_ms=io_ms, limit_ms=self.limit_ms,
-                        usb=usb, usb_ms=usb_ms)
+                        usb=usb, usb_ms=self._usb_ms)
         self.reading = r
         if r is not None and self._due(r):
             log.info("%s", r.line())

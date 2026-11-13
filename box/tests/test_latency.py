@@ -23,7 +23,7 @@ from k1000 import state as st
 from k1000.cdsp import CdspError
 from k1000.control import Controller, Paths, Status
 from k1000.latency import (DropoutCounter, LatencyWatch, Reading, io_share_ms, latency_limit_ms,
-                           read_transit, run_devices, scan, stream_dir, usb_shift_ms)
+                           read_transit, run_devices, scan, stream_dir)
 from k1000.profiles import load_profile, load_settings
 from k1000.ui import pages
 from k1000.ui.input_map import Focus
@@ -430,10 +430,53 @@ def test_without_its_reference_the_readout_is_the_engine_level_alone(caplog: Any
     assert w.usb is None and w.note("Running", 103, io, 1.0) == before
     lines = [x.getMessage() for x in caplog.records if x.name == "k1000.latency"]
     assert lines and not any("usb" in x for x in lines)
-    assert usb_shift_ms(48, 48000.0, 1.0) == 0.0 and usb_shift_ms(60, 48000.0, 1.0) == 0.0
-    assert usb_shift_ms(144, 48000.0, 1.0) == pytest.approx(2.0)
-    assert usb_shift_ms(0, 48000.0, 1.0) == pytest.approx(-1.0)
-    assert usb_shift_ms(96, 96000.0, 1.0) == 0.0                         # 1 ms at 96 kHz too
+
+
+def test_the_counted_shift_is_never_more_than_one_band_off() -> None:
+    """One band, not two: what the readout counts moves when the figure's own shift from the
+    reference is more than USB_STEP_MS away from it, to that shift, or to 0 when that shift is
+    within USB_STEP_MS of the reference. Settled on 60 frames (0.25 ms, counted as 0), a transit
+    that then sits at 79 (0.65 ms) is counted: two stacked dead bands, the figure's and the
+    reference's, hid it (second reading of the branch). Whatever the figure does, what is
+    counted stays within USB_STEP_MS of it."""
+    def first(frames: int, rate: float = 48000.0) -> float:
+        w = LatencyWatch(10.0, clock=Clock())
+        w.note_config({"devices": {"chunksize": 64, "samplerate": rate}})
+        for _ in range(3):
+            w.note_usb(burst(frames, rate=rate))
+        r = w.note("Running", 103, w.io_share(2.3), 1.0)
+        assert r is not None and r.usb == frames
+        return r.usb_ms
+
+    assert lat.USB_STEP_MS == 0.4                                        # 19.2 frames at 48 kHz
+    assert first(48) == first(60) == first(67) == first(29) == 0.0
+    assert first(68) == pytest.approx(20 / 48) and first(28) == pytest.approx(-20 / 48)
+    assert first(144) == pytest.approx(2.0) and first(0) == pytest.approx(-1.0)
+    assert first(96, 96000.0) == 0.0 and first(192, 96000.0) == pytest.approx(1.0)
+
+    w = LatencyWatch(10.0, clock=Clock())
+    w.note_config(M4_64)
+    io = w.io_share(2.3)
+    for _ in range(5):
+        w.note_usb(burst(60))
+    base = w.note("Running", 103, io, 1.0)
+    assert base is not None and (base.usb, base.usb_ms, base.ms) == (60, 0.0, 6.1)
+    for _ in range(3):
+        w.note_usb(burst(79))
+    r = w.note("Running", 103, io, 1.0)
+    assert r is not None and r.usb == 79 and r.usb_ms == pytest.approx(31 / 48) and r.ms == 6.8
+
+    rng = random.Random(1214)
+    v, moved = 48, set()
+    for _ in range(5000):                           # a figure that wanders, a burst at a time
+        v = min(300, max(0, v + rng.choice((-24, -12, -6, 0, 0, 6, 12, 24))))
+        w.note_usb(burst(v))
+        r = w.note("Running", 103, io, 1.0)
+        assert r is not None and r.usb is not None
+        assert abs(r.usb_ms - (r.usb / 48.0 - 1.0)) <= lat.USB_STEP_MS + 1e-9, (r.usb, r.usb_ms)
+        assert r.usb_ms == 0.0 or abs(r.usb_ms) > lat.USB_STEP_MS
+        moved.add(r.usb_ms)
+    assert len(moved) > 20                          # it did move, many times
 
 
 def test_the_transit_figure_starts_over_with_each_stream() -> None:
