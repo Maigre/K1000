@@ -2644,6 +2644,7 @@ def test_bootstrap_puts_the_old_engine_back_only_with_old_engine(tmp_path):
     # the pinned build stays, whatever tarball is given
     r, _ = _bootstrap_run(tmp_path / "a", CAMILLADSP_TARBALL=str(tgz))
     assert r.returncode == 0 and "the pinned build (D-019): nothing to do" in r.stdout, r.stdout + r.stderr
+    assert "CAMILLADSP_TARBALL is the old engine's tarball: it is used with --old-engine only." in r.stdout
     assert _cdsp(tmp_path / "a").read_text().count(PIN_SHA256) == 1
     # without the pinned build, the tarball alone is a stop that names --old-engine
     r, calls = _bootstrap_run(tmp_path / "b", engine="other", CAMILLADSP_TARBALL=str(tgz))
@@ -2673,6 +2674,13 @@ def test_bootstrap_puts_the_old_engine_back_only_with_old_engine(tmp_path):
     # --old-engine with internet: from the release, checked after the download
     r, _ = _bootstrap_run(tmp_path / "f", "--dry-run", "--old-engine", lean_out=DRY_LEAN, engine=None)
     assert f"from {_pinned('CDSP_OLD_URL')} (sha256 checked after the download)\n" in r.stdout, r.stdout
+    # the second bring-up run, after the power cycle, needs the option again (without it: the stop)
+    lean = CLOUD_INIT_ON + "k1000-lean: 0 changes\n"
+    r, _ = _bootstrap_run(tmp_path / "g", "--old-engine", engine="old", lean_out=lean)
+    assert ("cloud-init is still on (see above): after the next power cycle, run bootstrap.sh once more "
+            "(with --old-engine again) to turn it off\n") in r.stdout, r.stdout + r.stderr
+    r, _ = _bootstrap_run(tmp_path / "h", lean_out=lean)
+    assert "run bootstrap.sh once more to turn it off\n" in r.stdout, r.stdout + r.stderr
 
 
 @pytest.mark.parametrize("case, want", [

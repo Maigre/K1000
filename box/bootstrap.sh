@@ -215,6 +215,9 @@ fi
 # What to do was decided above, before anything changed.
 if [ $ENGINE = keep ]; then
   note "engine: $("$CDSP" --version 2>&1 | head -n 1), $have_is: nothing to do"
+  if [ $OLD_ENGINE = 0 ] && [ -n "${CAMILLADSP_TARBALL:-}" ]; then
+    note "CAMILLADSP_TARBALL is the old engine's tarball: it is used with --old-engine only."
+  fi
 else
   what="the pinned build (D-019, next5 ${CDSP_PIN:0:7})"
   [ $ENGINE = pin ] || what="the OLD engine, 5.0.0-beta.1 (--old-engine)"
@@ -341,7 +344,8 @@ else
   note "the panel shows K1000, and Main ramps in to the saved level. Profile: sudo nano /etc/k1000/k1000.yaml"
 fi
 if [ $DRY = 0 ] && grep -q 'cloud-init left on' "$TMP/lean.log"; then
-  note "cloud-init is still on (see above): after the next power cycle, run bootstrap.sh once more to turn it off"
+  again=; [ $OLD_ENGINE = 0 ] || again=" (with --old-engine again)"
+  note "cloud-init is still on (see above): after the next power cycle, run bootstrap.sh once more$again to turn it off"
 fi
 if [ $OLD_ENGINE = 1 ]; then note "WARNING: --old-engine, CamillaDSP 5.0.0-beta.1: $CDSP_OLD_LATE"; fi
 if [ $AP_FAILED = 1 ]; then
