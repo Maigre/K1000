@@ -4,7 +4,8 @@
 Two layers:
 * unit tests against `FakeClient`, an in-memory engine with the CamillaClient surface the
   controller uses: ops emitted per action, clamping, the balance macro, the boot ramp, mute
-  priority, setup-action refusal, adoption of external edits, reconnect rules, persistence;
+  priority, setup-action refusal, adoption of external edits, reconnect rules, persistence,
+  the spectrum warm-up (`Analyser`: the engine's spectrum allocations, beta.1 and next5);
 * `engine` tests against a real camilladsp (SignalGenerator -> File /dev/null, never the ALSA
   card) on the private port $K1000_CONTROL_TEST_PORT (default 12346): the controller in-process through a scripted show, an engine
   kill + restart (muted restart -> ramp), and `python3 -m k1000` as a subprocess killed and
@@ -18,6 +19,7 @@ import asyncio
 import copy
 import inspect
 import json
+import logging
 import math
 import os
 import signal
@@ -478,6 +480,363 @@ def test_engine_restart_while_running_is_ramped_in_again(tmp_path: Path) -> None
         await ctl.stop()
 
     run(body())
+
+
+# ======================================================================= spectrum warm-up
+ENGINES = ("beta1", "next5")
+SPECTRUM_FREQS = [10.0 * 2000.0 ** (i / 263) for i in range(264)]
+
+
+class Analyser:
+    """The engine's spectrum analyser as its audio threads meet it (CamillaDSP spectrum.rs and
+    lib.rs `push_*_audio_buffer`; 5.0.0-beta.1 and next5 0930f9b). The first GetSpectrum that
+    passes validation sets a sticky "requested" flag: one for both sides on beta.1, one per side
+    on next5. The audio thread of a flagged side then allocates its ring buffer, once per engine
+    run: the stall. Requests and allocations go into the controller's FakeClient log as
+    ("spectrum", who, side) and ("alloc", side), between the ramp's writes, so a test reads their
+    order. Answers as the engine does: "No audio data available" while the side has no buffer,
+    then a spectrum. `restart()`: a new engine run, nothing flagged."""
+
+    def __init__(self, log: list[tuple[Any, ...]], engine: str) -> None:
+        assert engine in ENGINES
+        self.log, self.engine = log, engine
+        self.run = 0
+        self.flagged: set[str] = set()
+        self.allocated: set[str] = set()
+        self.refusal: Exception | None = None     # raised before the flag (a refused request)
+        self.hang = False                         # never answers
+
+    def restart(self) -> None:
+        self.run += 1
+        self.flagged.clear()
+        self.allocated.clear()
+
+    async def get_spectrum(self, value: dict[str, Any], who: str) -> Any:
+        if self.hang:
+            await asyncio.Event().wait()
+        if self.refusal is not None:
+            raise self.refusal
+        side = value["side"]
+        self.log.append(("spectrum", who, side))
+        had = side in self.allocated
+        self.flagged |= {"capture", "playback"} if self.engine == "beta1" else {side}
+        for s in sorted(self.flagged - self.allocated):
+            self.allocated.add(s)
+            self.log.append(("alloc", s))
+        if not had:
+            raise CdspError("GetSpectrum", "InvalidRequestError", "No audio data available")
+        return {"frequencies": SPECTRUM_FREQS, "magnitudes": [-60.0] * len(SPECTRUM_FREQS)}
+
+
+class SpectrumLink:
+    """A connection of its own to the fake engine (the CamillaClient surface of the warm-up and
+    of the spectrum task): up while the engine is up and still runs the run it connected to.
+    `held`: it cannot connect (a reconnect back-off); `gate`: connect() waits for it."""
+
+    def __init__(self, cl: FakeClient, an: Analyser, who: str,
+                 gate: asyncio.Event | None = None) -> None:
+        self.cl, self.an, self.who, self.gate = cl, an, who, gate
+        self.run: int | None = None
+        self.held = False
+        self.closed = 0
+
+    @property
+    def connected(self) -> bool:
+        return self.cl.connected and self.run == self.an.run
+
+    async def connect(self, timeout: float | None = None) -> bool:
+        if self.gate is not None:
+            await self.gate.wait()
+        if not self.held and self.cl.connected:
+            self.run = self.an.run
+        return self.connected
+
+    async def command(self, name: str, timeout: float | None = None, **fields: Any) -> Any:
+        if not self.connected:
+            raise CdspUnavailable("fake spectrum link down")
+        if name == "GetSpectrum":
+            return await self.an.get_spectrum(fields["value"], self.who)
+        if name == "GetCaptureSignalRmsSince":
+            return [-20.0] * 4
+        raise CdspError(name, "Invalid", "fake: unknown")
+
+    async def close(self) -> None:
+        self.closed += 1
+        self.run = None
+
+
+def make_warm(tmp_path: Path, engine: str, **kw: Any) -> tuple[Controller, FakeClient, Analyser,
+                                                                list[SpectrumLink]]:
+    """A controller over a fresh fake engine with its analyser, wired as __main__ wires it: the
+    warm-up's links (built per warm-up, kept in the list) and every wait of the controller
+    logged as ("sleep", s) in the engine's log."""
+    ctl, cl = make(tmp_path, kw.pop("state", State(master_db=-6.0)), **kw)
+    an = Analyser(cl.log, engine)
+    links: list[SpectrumLink] = []
+
+    def factory() -> SpectrumLink:
+        links.append(SpectrumLink(cl, an, "warmup"))
+        return links[-1]
+
+    async def logged_sleep(s: float) -> None:
+        cl.log.append(("sleep", s))
+        await asyncio.sleep(0)
+
+    ctl.warmup_client = factory
+    ctl._sleep = logged_sleep
+    return ctl, cl, an, links
+
+
+async def boot_as_main(ctl: Controller, cl: FakeClient, an: Analyser) -> tuple[Any, SpectrumLink]:
+    """__main__'s order: the controller, its first sync (the boot ramp included), then the
+    spectrum task on its own link, polling while SHOW is on screen."""
+    from k1000 import __main__ as main_mod
+    from k1000.rta import SpectrumTask
+
+    await ctl.start()
+    assert await main_mod.hold_for_engine(ctl, asyncio.Event(), hold_s=5.0, poll_s=0.002)
+    link = SpectrumLink(cl, an, "task")
+    task = SpectrumTask("ws://fake", wanted=ctl.spectrum_wanted,
+                        channels=lambda: list(ctl.profile.input_map), publish=ctl.set_spectrum,
+                        client_factory=lambda url: link)
+    ctl.rta = task
+    task.start()
+    return task, link
+
+
+def asked(log: list[tuple[Any, ...]], who: str) -> int:
+    return sum(1 for e in log if e[0] == "spectrum" and e[1] == who)
+
+
+def allocations_before_the_unmute(log: list[tuple[Any, ...]]) -> tuple[set[str], int, int]:
+    """(sides allocated, index of the last allocation, index of Main's unmute) in `log`."""
+    unmute = log.index(("mute", 0, False))
+    allocs = [i for i, e in enumerate(log) if e[0] == "alloc"]
+    assert allocs, log
+    return {log[i][1] for i in allocs}, max(allocs), unmute
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_a_fresh_engines_first_spectrum_request_falls_before_the_ramp(tmp_path: Path,
+                                                                     engine: str) -> None:
+    """Boot: the warm-up asks while Main is muted, so the allocation (the stall) falls before
+    the unmute, with the ramp's park wait between them; the spectrum task's polls afterwards
+    allocate nothing. Before the warm-up, the task's first poll came after the ramp."""
+    async def body() -> None:
+        ctl, cl, an, links = make_warm(tmp_path, engine)
+        task, link = await boot_as_main(ctl, cl, an)
+        await until(lambda: task.polls >= 2, what="spectrum polls")
+        log = cl.log
+        sides, last_alloc, unmute = allocations_before_the_unmute(log)
+        assert last_alloc < unmute
+        assert sides == ({"capture", "playback"} if engine == "beta1" else {"capture"})
+        first = next(i for i, e in enumerate(log) if e[0] == "spectrum")
+        assert log[first] == ("spectrum", "warmup", "capture")
+        assert asked(log, "warmup") == 1 and asked(log, "task") >= 2
+        assert ("mute", 0, False) not in log[:first]            # Main still muted when asked
+        waited = sum(e[1] for e in log[first:unmute] if e[0] == "sleep")
+        assert waited >= dc.GUARD_WAIT_S                        # time for the stall to pass
+        assert [ln.closed for ln in links] == [1] and not links[0].connected
+        assert cl.faders[0] == {"volume": -6.0, "mute": False}
+        await task.stop()
+        await ctl.stop()
+
+    run(body())
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_engine_restart_the_spectrum_task_reconnecting_late_allocates_nothing(tmp_path: Path,
+                                                                              engine: str) -> None:
+    """camilladsp restarts while k1000 runs. The spectrum task's own link reconnects with its
+    back-off, here after the ramp: the warm-up has already asked, so its poll stalls nothing."""
+    async def body() -> None:
+        ctl, cl, an, links = make_warm(tmp_path, engine)
+        task, link = await boot_as_main(ctl, cl, an)
+        await until(lambda: task.polls >= 1, what="spectrum polls")
+        ctl.save_now()
+        active = yaml.safe_load((tmp_path / "active.yml").read_text())
+        mark = len(cl.log)
+        link.held = True
+        an.restart()
+        await cl.restart(active)
+        await until(lambda: ctl.engine_ready and not ctl.ramping
+                    and cl.faders[0] == {"volume": -6.0, "mute": False}, what="ramped in again")
+        link.held = False
+        await until(lambda: asked(cl.log[mark:], "task") >= 2, what="the task polls the new run")
+        after = cl.log[mark:]
+        sides, last_alloc, unmute = allocations_before_the_unmute(after)
+        assert last_alloc < unmute
+        assert sides == ({"capture", "playback"} if engine == "beta1" else {"capture"})
+        assert asked(after, "warmup") == 1 and len(links) == 2
+        await task.stop()
+        await ctl.stop()
+
+    run(body())
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_engine_restart_the_spectrum_task_asking_first_still_allocates_before_the_ramp(
+        tmp_path: Path, engine: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The other order: the task's link is back first and polls while the controller still
+    syncs (here its warm-up link is slow to connect). Its request is the one that allocates,
+    still while Main is muted; the warm-up then finds nothing left to allocate."""
+    monkeypatch.setattr(ctl_mod, "SPECTRUM_WARMUP_S", 3.0)
+
+    async def body() -> None:
+        ctl, cl, an, links = make_warm(tmp_path, engine)
+        task, link = await boot_as_main(ctl, cl, an)
+        await until(lambda: task.polls >= 1, what="spectrum polls")
+        ctl.save_now()
+        active = yaml.safe_load((tmp_path / "active.yml").read_text())
+        gate = asyncio.Event()
+
+        def slow() -> SpectrumLink:
+            links.append(SpectrumLink(cl, an, "warmup", gate=gate))
+            return links[-1]
+
+        ctl.warmup_client = slow
+        mark = len(cl.log)
+        an.restart()
+        await cl.restart(active)
+        await until(lambda: asked(cl.log[mark:], "task") >= 1, what="the task asks first")
+        assert ("mute", 0, False) not in cl.log[mark:]
+        gate.set()
+        await until(lambda: ctl.engine_ready and not ctl.ramping
+                    and cl.faders[0] == {"volume": -6.0, "mute": False}, what="ramped in again")
+        after = cl.log[mark:]
+        reqs = [e[1] for e in after if e[0] == "spectrum"]
+        assert reqs[0] == "task" and "warmup" in reqs
+        sides, last_alloc, unmute = allocations_before_the_unmute(after)
+        assert last_alloc < unmute
+        assert last_alloc < next(i for i, e in enumerate(after) if e[:2] == ("spectrum", "warmup"))
+        await task.stop()
+        await ctl.stop()
+
+    run(body())
+
+
+@pytest.mark.parametrize("warmed", [True, False])
+def test_k1000_restart_on_a_playing_engine_sends_no_warm_up(tmp_path: Path, warmed: bool) -> None:
+    """The watchdog case: the engine keeps playing, nothing is fresh, so nothing is asked before
+    the spectrum task's own polls (asked while playing, a first request would be heard). An
+    engine K1000 brought in was warmed at its start: those polls allocate nothing."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-6.0), playing=True)
+        an = Analyser(cl.log, "next5")
+        if warmed:
+            an.flagged, an.allocated = {"capture"}, {"capture"}
+        built: list[int] = []
+        ctl.warmup_client = lambda: built.append(1)   # type: ignore[func-returns-value]
+        task, link = await boot_as_main(ctl, cl, an)
+        await until(lambda: asked(cl.log, "task") >= 2, what="spectrum polls")
+        assert built == []
+        assert not any(e[0] in ("fader", "mute") and e[1] == 0 for e in cl.log), cl.log
+        assert any(e[0] == "alloc" for e in cl.log) is (not warmed)
+        await task.stop()
+        await ctl.stop()
+
+    run(body())
+
+
+def test_no_warm_up_when_k1000_yaml_disables_the_spectrum(tmp_path: Path) -> None:
+    async def body() -> None:
+        ctl, cl, an, links = make_warm(tmp_path, "next5", settings={"spectrum": {"enabled": False}})
+        await boot(ctl)
+        assert links == [] and not any(e[0] in ("spectrum", "alloc") for e in cl.log)
+        assert cl.faders[0] == {"volume": -6.0, "mute": False}
+        await ctl.stop()
+
+    run(body())
+
+
+@pytest.mark.parametrize("fault", ["refused", "not running", "hangs", "no link", "no client"])
+def test_a_warm_up_without_an_answer_never_holds_the_ramp(
+        tmp_path: Path, fault: str, caplog: pytest.LogCaptureFixture) -> None:
+    """An engine that refuses the request, answers nothing, or cannot be reached on a second
+    link: the ramp goes on, at most SPECTRUM_WARMUP_S later, and the warm-up's link is closed."""
+    async def body() -> float:
+        ctl, cl, an, links = make_warm(tmp_path, "next5")
+        if fault == "refused":
+            an.refusal = CdspError("GetSpectrum", "Invalid", "unknown variant `GetSpectrum`")
+        elif fault == "not running":
+            an.refusal = CdspError("GetSpectrum", "ProcessingNotRunningError")
+        elif fault == "hangs":
+            an.hang = True
+        elif fault == "no link":
+            make_link = ctl.warmup_client
+
+            def held() -> SpectrumLink:
+                ln = make_link()          # type: ignore[misc]
+                ln.held = True
+                return ln
+
+            ctl.warmup_client = held
+        else:
+            def broken() -> Any:
+                raise OSError("no client")
+
+            ctl.warmup_client = broken
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
+        await boot(ctl)
+        dt = loop.time() - t0
+        assert cl.faders[0] == {"volume": -6.0, "mute": False}
+        assert all(ln.closed == 1 for ln in links)
+        await ctl.stop()
+        return dt
+
+    with caplog.at_level(logging.INFO, logger="k1000.control"):
+        dt = run(body())
+    assert dt < ctl_mod.SPECTRUM_WARMUP_S + 0.5
+    said = [r.getMessage() for r in caplog.records if "spectrum warm-up" in r.getMessage()]
+    assert len(said) == 1, said
+    answered = fault in ("refused", "not running")
+    assert said[0].startswith("spectrum warm-up: the engine answered" if answered
+                              else "spectrum warm-up: no answer within 0.3 s")
+
+
+def test_the_warm_up_asks_what_the_spectrum_task_asks() -> None:
+    from k1000 import rta
+    for ch in (0, 1, 2, 3):
+        assert ctl_mod.spectrum_warmup_request(ch) == rta.spectrum_request(ch)
+
+
+def test_the_warm_up_on_a_real_socket(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """__main__'s warm-up client (a CamillaClient of its own) against a websocket engine
+    stand-in: one GetSpectrum on a second connection, named in the journal, closed; an engine
+    that never answers costs SPECTRUM_WARMUP_S, and the ramp goes on."""
+    from k1000 import __main__ as main_mod
+    from test_cdsp import FakeEngine
+
+    async def body() -> tuple[float, float, list[tuple[int, str]], list[Any]]:
+        eng = FakeEngine()
+        await eng.start()
+        try:
+            out = []
+            for hang in (False, True):
+                if hang:
+                    eng.hang_once.add("GetSpectrum")
+                ctl, cl = make(tmp_path / str(hang), State(master_db=-6.0))
+                ctl.warmup_client = main_mod.spectrum_warmup_client(eng.url)
+                loop = asyncio.get_running_loop()
+                t0 = loop.time()
+                await boot(ctl)
+                out.append(loop.time() - t0)
+                assert cl.faders[0] == {"volume": -6.0, "mute": False}
+                await ctl.stop()
+            return out[0], out[1], list(eng.on_conn), [m.get("value") for m in eng.log]
+        finally:
+            await eng.stop()
+
+    with caplog.at_level(logging.INFO):
+        quick, hung, on_conn, values = run(body())
+    assert on_conn == [(0, "GetSpectrum"), (1, "GetSpectrum")]      # one link per warm-up
+    assert values == [ctl_mod.spectrum_warmup_request(0)] * 2         # dev: program L = 0
+    assert quick < 0.25 and ctl_mod.SPECTRUM_WARMUP_S <= hung < ctl_mod.SPECTRUM_WARMUP_S + 0.5
+    lines = [r.getMessage() for r in caplog.records]
+    assert sum(m.startswith("spectrum warm-up: connected to camilladsp at") for m in lines) == 2
+    assert sum(m.startswith("spectrum warm-up: the engine answered in") for m in lines) == 1
+    assert sum(m.startswith("spectrum warm-up: no answer within") for m in lines) == 1
 
 
 def test_unmute_pressed_while_link_down_is_dropped_but_mute_is_kept(tmp_path: Path) -> None:
