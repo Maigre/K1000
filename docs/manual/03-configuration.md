@@ -260,8 +260,15 @@ SETUP › LIVE EQ › Spectrum is ON.
   buffers: its audio stalls once, and the playback often underruns. With `enabled: true`, K1000
   makes that request itself when it finds a freshly started engine, while Main is still muted,
   just before the ramp; the stall falls in the ramp's 0.15 s wait before the unmute. It costs the
-  boot one short request (at most 0.3 s: with no answer by then, the ramp goes on). Done with
-  Spectrum OFF too: it can be switched on mid-show. Proven by tests, not yet on the box
+  boot one short request (milliseconds; with no answer within 0.3 s the ramp goes on, and closing
+  that link has the same bound: 0.6 s at the very worst). Done with Spectrum OFF and with no
+  screen too: it can be switched on, or a phone can look, mid-show. So the engine's analyser runs
+  the whole run where nothing asked before (a copy of each capture chunk, 1 MiB per channel; on
+  5.0.0-beta.1 the playback side too, and its underrun can leave extra delay for the run).
+  `enabled: false` is the way to have none of it. K1000 asks, and so warms, only the capture
+  side: an engine built from upstream `next5` allocates each side at its own first request, so
+  a spectrum asked on the playback side (CamillaGUI's, if it does) stalls the audio once, at
+  full level. Proven by tests, not yet on the box
   ([`box/README.md`](../../box/README.md), SHOW spectrum).
 
 ## 8. `phone`

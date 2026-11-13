@@ -612,17 +612,37 @@ while SHOW is displayed and SETUP › LIVE EQ › Spectrum is ON (`docs/03-v0-ar
   asked): the audio stalls and the playback often underruns, once. So when k1000 finds a freshly
   started engine, it asks once (`GetSpectrum`, capture side, program L, on a connection opened for
   that request alone), while Main is still muted, then ramps in; the stall falls in the ramp's
-  0.15 s wait before the unmute. No answer within 0.3 s: it ramps in anyway (`spectrum warm-up: no
-  answer` in the journal). Not after a k1000 restart on a playing engine (it was warmed at its own
-  start). Before this, the spectrum task asked first, after the ramp: an underrun 3.5 to 4.2 s
-  after the engine start, past full level, on 2 starts out of 5 (`docs/17` §9).
-  **Proven by tests** (a fake engine that records the request, the allocation and the ramp in
-  one order, with beta.1's and `next5`'s behaviour; the real client on a socket, about 1 ms on
-  the dev machine): the request and the allocation come before the unmute, with the ramp's wait
-  between them, at boot and after an engine restart, whichever spectrum client asks first.
-  **Not yet verified on the box**: that the engine's underrun now falls before
-  `boot ramp: start`, and what the warm-up costs there (the journal's `spectrum warm-up: the
-  engine answered in N ms`).
+  0.15 s wait before the unmute. Warmed, the journal reads `spectrum warm-up: the engine answered
+  in N ms (No audio data available)`. Refused before the engine took the request (no active
+  config, an engine without `GetSpectrum`: `spectrum warm-up: refused … nothing warmed`), or no
+  answer within 0.3 s (`spectrum warm-up: no answer`): it ramps in anyway, and the first spectrum
+  poll may then cause the dropout. Cost: one request (milliseconds); at worst 0.3 s, and closing
+  that link has the same bound again: 0.6 s at the very worst. Not after a k1000 restart on a
+  playing engine (it was warmed at its own start). Before this, the spectrum task asked first,
+  after the ramp: an underrun 3.5 to 4.2 s after the engine start, past full level, on 2 starts
+  out of 5 (`docs/17` §9).
+  - It is done with Spectrum OFF and with no screen too (it can be switched on, or a phone can
+    look, mid-show), so the engine's analyser now runs for the whole run where nothing ever asked
+    before: a copy of each capture chunk (each playback chunk too on 5.0.0-beta.1) and 1 MiB per
+    channel. On 5.0.0-beta.1 its underrun can also leave the +13 to +15 ms backlog of `docs/17`
+    §3.1 for the whole run; `next5` trims it. `enabled: false` is the way to have none of it.
+  - In the engine log, a fresh start now shows the warm-up's link closing (`WARN … Lost
+    connection`: it is aborted, not closed with a handshake) and, on `next5`, maybe one `Dropped N
+    frames that arrived late after a playback restart` up to half a second after the underrun,
+    that is after `boot ramp: start`, at the ramp's first steps (about −40 to −30 dB): the same
+    event, not a second one.
+  - K1000 warms only the side it asks for (capture). On `next5` each side is allocated at its
+    own first request: CamillaGUI's spectrum, if it asks the playback side, stalls the audio once
+    at full level. Not during a show.
+  - **Proven by tests** (a fake engine that records the request, the allocation and the ramp in
+    one order, with beta.1's and `next5`'s behaviour; the real client on a socket, about 1 ms on
+    the dev machine): the request comes before the unmute, with the ramp's wait between them, at
+    boot and after an engine restart, whichever spectrum client asks first; the journal says
+    warmed only for the engine's answers that follow its flag. The fake allocates at the
+    request; the real engine allocates at the next chunk of each flagged side, so the tests do
+    not prove when the stall happens. **Not yet verified on the box**: that the engine's
+    underrun now falls before `boot ramp: start`, and what the warm-up costs there (the
+    journal's `spectrum warm-up: the engine answered in N ms (No audio data available)`).
 - After an engine start the spectrum comes back by itself within a few seconds: its link
   reconnects (back-off up to 2 s) and waits for the engine to read `Running`, then the engine's
   analyser (warmed up before the ramp) fills its buffer in well under a second

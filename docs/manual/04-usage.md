@@ -582,7 +582,9 @@ on/off. It has no spectrum.
 - Stay on **SHOW**. Master on E1; ring control with B3, E4 (gain), E3 (Q).
 - Leave ALIGN locked and SETUP alone, except Reset live EQ / Undo reset and, if needed, the D-016
   numbers (De-harsh freq and thresh, Loudness boost and ref, AUX level): they move without a click.
-- No CamillaGUI Apply, and Laptop access closed.
+- No CamillaGUI Apply, and Laptop access closed. Not CamillaGUI's spectrum either: if it asks the
+  engine's playback side, which K1000 does not warm up, an engine built from upstream `next5`
+  stalls once at full level ([chapter 3 §7](03-configuration.md#7-spectrum)).
 - Never Mono L+R, Profile, Audition, De-harsh, Loudness or AUX IN: they rebuild the pipeline (a
   click).
 - `NO SPECTRUM`: SETUP › LIVE EQ › Spectrum off; the sound is not affected.
