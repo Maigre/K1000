@@ -5863,7 +5863,7 @@ def test_switching_a_band_with_a_cut_ends_the_reset_undo_a_flat_one_does_not(tmp
 
 
 # ======================================================================= D-016
-M4 = load_profile("m4", {}, probe=False)
+M4 = load_profile("m4", {}, probe=False)          # no settings file: D-022's 96 kHz set
 
 
 def make_m4(tmp_path: Path, state: State | None = None, **kw: Any) -> tuple[Controller, FakeClient]:
@@ -5880,6 +5880,25 @@ def make_m4(tmp_path: Path, state: State | None = None, **kw: Any) -> tuple[Cont
     opts.update(kw)
     ctl = Controller(client, M4, st, Paths(tmp_path / "state.json", tmp_path / "active.yml"), **opts)
     return ctl, client
+
+
+def test_align_at_96_khz_moves_one_96_khz_sample(tmp_path: Path) -> None:
+    """D-022 on the M4 (96 kHz): ALIGN's fine step is one sample of the run's rate, written as
+    one config write on that grid, under the dip of the late group."""
+    async def body() -> None:
+        ctl, cl = make_m4(tmp_path, State(sub_delay_ms=0.25))
+        await boot(ctl)
+        assert engine_rate() == 96000 and cl.cfg["devices"]["samplerate"] == 96000
+        n = len(cl.log)
+        ctl.nudge("align_delay_ms", 1, True)
+        assert await ctl.settle(3.0)
+        sub, top = _engine_delays(cl)
+        assert (sub, top) == (round(0.25 + 1 / 96, 6), 0.0) and delay_samples(sub) == 25
+        assert nomark(cl.log[n:]) == [("mute", 1, True), ("set", SUB_DELAY_PTR, sub),
+                                      ("mute", 1, False)]
+        await ctl.stop()
+
+    run(body())
 
 
 def test_structure_fields_are_every_rebuild_field_but_the_profile() -> None:

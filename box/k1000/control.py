@@ -838,7 +838,11 @@ class Controller:
         # which the config, the delays, the waits, the spectrum, the curves and the phones' hello
         # all read): set here, once per run of the service (__main__ builds one Controller). A
         # SETUP switch to a profile at another rate is refused (`_rebuild`): a restart changes it.
-        set_engine_rate(getattr(profile, "samplerate", DEFAULT_SAMPLERATE))
+        try:
+            set_engine_rate(getattr(profile, "samplerate", DEFAULT_SAMPLERATE))
+        except ValueError as e:      # load_profile never gives one; never a crash loop either
+            log.error("profile %s: %s; running %d Hz", profile.name, e, DEFAULT_SAMPLERATE)
+            set_engine_rate(DEFAULT_SAMPLERATE)
         log.info("engine sample rate: %d Hz (profile %s)", engine_rate(), profile.name)
         self.paths = paths
         self.settings: dict[str, Any] = settings if isinstance(settings, dict) else {}

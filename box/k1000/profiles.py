@@ -19,6 +19,13 @@ k1000 restart would see a device "difference", and fixing a device difference re
 devices (an audible drop). So `format` is written only when set explicitly (or proven, `dev`);
 otherwise CamillaDSP auto-selects (S32_LE first). The probe validates and decides channel counts,
 which a `hw:` device does not negotiate.
+
+Why the sample rate is a profile setting (D-022): it belongs to the device, like the buffer and
+the interface's measured share, and the profile is built once when the control service starts,
+so the rate is read once and a change takes a restart. A profile runs only the rates it was
+measured at, each with its own built-in figures (`_RATE_DEFAULTS`). A settings file that names
+no rate is a 48 kHz file (every file written before D-022), so it keeps its own 48 kHz figures;
+only a box with no usable settings file takes the built-in rate (the M4: 96 kHz).
 """
 from __future__ import annotations
 
