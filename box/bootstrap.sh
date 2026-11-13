@@ -86,7 +86,10 @@ for arg in "$@"; do
   esac
 done
 
-CHANGES=0 GUI_FAILED=0 AP_FAILED=0
+CHANGES=0 GUI_FAILED=0 AP_FAILED=0 TMP=
+# The detached run (below) leaves its exit status for the terminal that follows it, whatever stops
+# it: the checks and the engine decision before step 1 included.
+trap 'rc=$?; if [ -n "$TMP" ]; then rm -rf "$TMP"; fi; if [ -n "${K1000_BOOTSTRAP_RC:-}" ]; then echo "$rc" > "$K1000_BOOTSTRAP_RC"; fi' EXIT
 note() { printf 'k1000-bootstrap: %s\n' "$*"; }
 die() { printf 'k1000-bootstrap: ERROR: %s\n' "$*" >&2; exit 1; }
 would() { CHANGES=$((CHANGES + 1)); note "would: $*"; }
@@ -171,7 +174,8 @@ if [ $DRY = 0 ] && [ -z "${INVOCATION_ID:-}" ] && [ "${K1000_BOOTSTRAP_FOREGROUN
   mkdir -p "$LOGDIR"
   : > "$log"
   envs=()
-  for e in CAMILLADSP_BINARY CAMILLADSP_TARBALL CAMILLAGUI_TARBALL K1000_REVISION; do
+  # K1000_BOOTSTRAP_CDSP too: the unit decides on the engine the terminal decided on
+  for e in CAMILLADSP_BINARY CAMILLADSP_TARBALL CAMILLAGUI_TARBALL K1000_REVISION K1000_BOOTSTRAP_CDSP; do
     if [ -n "${!e:-}" ]; then envs+=("--setenv=$e=${!e}"); fi
   done
   systemd-run --quiet --collect --unit="$unit" -p "StandardOutput=append:$log" -p "StandardError=append:$log" \
@@ -183,9 +187,7 @@ if [ $DRY = 0 ] && [ -z "${INVOCATION_ID:-}" ] && [ "${K1000_BOOTSTRAP_FOREGROUN
   [ -s "$rcf" ] || die "$unit ended without an exit status (killed?): read $log"
   exit "$(cat "$rcf")"
 fi
-TMP=$(mktemp -d)
-# The detached run also leaves its exit status for the terminal that follows it (above).
-trap 'rc=$?; rm -rf "$TMP"; if [ -n "${K1000_BOOTSTRAP_RC:-}" ]; then echo "$rc" > "$K1000_BOOTSTRAP_RC"; fi' EXIT
+TMP=$(mktemp -d)     # removed by the EXIT trap (top)
 
 # --- 1. apt: package lists, operator tools --------------------------------------------------------
 # apt-get update only when something has to be installed: a re-run on a finished card at a gig

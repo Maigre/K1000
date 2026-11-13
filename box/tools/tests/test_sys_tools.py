@@ -2270,6 +2270,46 @@ def test_bootstrap_without_an_engine_to_install_stops_before_it_detaches(tmp_pat
     assert "running as the systemd unit" not in r.stdout
 
 
+@pytest.mark.parametrize("binary", ["kept", "vanished"])
+def test_bootstrap_detached_unit_acts_on_the_same_engine_and_always_leaves_its_status(tmp_path, binary):
+    """The unit really runs here: a fake systemd-run starts the script in / with only the
+    --setenv variables (and INVOCATION_ID), appending to the log the terminal follows. The unit
+    gets the engine path the terminal decided on, and a stop in the engine decision (the binary
+    gone between the terminal's check and the unit's) still leaves the exit status: the terminal
+    shows the reason, not "ended without an exit status"."""
+    box, fb, env = _bootstrap_box(tmp_path, engine="old")
+    (box / "bootstrap.sh").chmod(0o755)                     # the unit runs it by its path
+    build = _fake_engine(tmp_path / "out" / "camilladsp", "pinned")
+    _bin(fb, "id", 'echo 0\n')
+    vanish = f'rm -f "{build}"\n' if binary == "vanished" else ""
+    run = fb / "systemd-run"
+    run.write_text('#!/bin/bash\n'
+                   f'echo "systemd-run $*" >> "{tmp_path}/calls"\n'
+                   'envs=() log=\nwhile [ $# -gt 0 ]; do\n  case $1 in\n'
+                   '    --setenv=*) envs+=("${1#--setenv=}") ;;\n'
+                   '    -p) shift; case $1 in StandardOutput=append:*) log=${1#StandardOutput=append:} ;; esac ;;\n'
+                   '    -*) ;;\n    *) break ;;\n  esac\n  shift\ndone\n'
+                   # never let a unit loose on the real /usr/local/bin/camilladsp
+                   'case " ${envs[*]} " in *" K1000_BOOTSTRAP_CDSP="*) ;; *) echo "no K1000_BOOTSTRAP_CDSP" >> "$log"; exit 0 ;; esac\n'
+                   + vanish +
+                   '(cd / && env -i PATH="$PATH" INVOCATION_ID=fake-unit "${envs[@]}" "$@" >> "$log" 2>&1) || true\n')
+    run.chmod(0o755)
+    env = dict(env, K1000_BOOTSTRAP_LOGDIR=str(tmp_path / "logs"), CAMILLADSP_BINARY="out/camilladsp")
+    r = subprocess.run(["bash", str(box / "bootstrap.sh")], capture_output=True, text=True, env=env, cwd=tmp_path)
+    assert f"--setenv=K1000_BOOTSTRAP_CDSP={_cdsp(tmp_path)} " in (tmp_path / "calls").read_text()
+    rcs = list((tmp_path / "logs").glob("run-*.rc"))
+    assert len(rcs) == 1 and "without an exit status" not in r.stderr, r.stdout + r.stderr
+    if binary == "kept":
+        assert r.returncode == 0 and rcs[0].read_text() == "0\n", r.stdout + r.stderr
+        assert _engine_left(tmp_path, "pinned")
+        assert (f"installed {_cdsp(tmp_path)}: CamillaDSP 5.0.0-beta.2 (0930f9b), the pinned build (D-019, next5 0930f9b) "
+                "(it replaces the old engine, 5.0.0-beta.1)\n") in r.stdout
+    else:
+        assert r.returncode == 1 and rcs[0].read_text() == "1\n", r.stdout + r.stderr
+        assert f"ERROR: CAMILLADSP_BINARY={build}: no such file. Nothing was changed" in r.stdout
+        assert _engine_left(tmp_path, "old") and "RAN-INSTALL" not in r.stdout
+
+
 def _ssh_block(tmp: Path, journal: str, sshd_ok: bool = True, keys: int = 1, dry: int = 0) -> tuple[subprocess.CompletedProcess, Path]:
     text = BOOTSTRAP.read_text()
     start = text.index("# --- 4. SSH: keys only")
