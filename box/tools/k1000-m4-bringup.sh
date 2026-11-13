@@ -318,7 +318,8 @@ if run_rate is None:
     run_rate = 48000 if (settings_err is None and cfg) else 96000
     say("INFO", f"samplerate: not set -> {run_rate} Hz"
                 + (" (a file without the key)" if run_rate == 48000 else " (the built-in)"))
-elif isinstance(run_rate, bool) or run_rate not in (48000, 96000):
+elif isinstance(run_rate, bool) or not isinstance(run_rate, int) or run_rate not in (48000, 96000):
+    # k1000's own check (profiles.load_profile): a whole number, so 96000.0 is refused too
     say("FAIL", f"samplerate {run_rate!r}: k1000 refuses it (48000 or 96000) and runs 48000")
     run_rate = 48000
 else:

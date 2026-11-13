@@ -1277,6 +1277,8 @@ def test_bringup_flags_settings_the_m4_cannot_honour(tmp_path):
     ("    samplerate: 48000\n", ["PASS  samplerate: 48000 Hz", "PASS  playback: 48000 Hz offered"]),
     ("    samplerate: 44100\n", ["FAIL  samplerate 44100: k1000 refuses it (48000 or 96000) and "
                                  "runs 48000", "PASS  playback: 48000 Hz offered"]),
+    ("    samplerate: 96000.0\n", ["FAIL  samplerate 96000.0: k1000 refuses it (48000 or 96000) "
+                                   "and runs 48000", "PASS  playback: 48000 Hz offered"]),
     (None, ["INFO  samplerate: not set -> 96000 Hz (the built-in)", "PASS  capture: 96000 Hz offered"]),
 ])
 def test_bringup_checks_the_rate_k1000_will_run(tmp_path, m4_rate, want):
