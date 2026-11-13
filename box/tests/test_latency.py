@@ -195,6 +195,16 @@ period_size: 32
 buffer_size: 256
 """
 M4_64 = {"devices": {"chunksize": 64, "samplerate": 48000}}
+STREAM = "58770.748315426"          # the sample's trigger_time: one start of the stream
+JIT = (48, 60) * (lat.USB_BURST // 2)        # a burst at rest: the night's two figures
+SHIFT = (144, 156) * (lat.USB_BURST // 2)    # the same, 96 frames deeper (docs/17 §3.4)
+
+
+def burst(frames: int | tuple[int, ...], rate: float = 48000.0,
+          stream: str = STREAM) -> lat.Burst:
+    """One burst of reads of one stream: `frames` USB_BURST times, or the reads given."""
+    reads = (frames,) * lat.USB_BURST if isinstance(frames, int) else tuple(frames)
+    return reads, rate, stream
 
 
 def _stream(root: Path, status: str = STATUS, hw: str = HW_PARAMS, card: str = "M4") -> Path:
@@ -221,13 +231,15 @@ def test_the_stream_follows_the_playback_device(tmp_path: Path) -> None:
 
 def test_the_transit_is_the_kernel_delay_beyond_the_buffer_fill(tmp_path: Path) -> None:
     d = _stream(tmp_path)
-    assert read_transit("hw:M4", tmp_path) == (60, 48000.0)             # the box's sample
-    assert read_transit("hw:CARD=M4,DEV=0", tmp_path) == (60, 48000.0)
+    assert read_transit("hw:M4", tmp_path) == (60, 48000.0, STREAM)     # the box's sample
+    assert read_transit("hw:CARD=M4,DEV=0", tmp_path) == (60, 48000.0, STREAM)
     (d / "status").write_text(STATUS.replace("241", "325"))
-    assert read_transit("hw:M4", tmp_path) == (144, 48000.0)            # the load test's figure
+    assert read_transit("hw:M4", tmp_path) == (144, 48000.0, STREAM)    # the load test's figure
     (d / "hw_params").write_text(HW_PARAMS.replace("48000", "96000"))
-    assert read_transit("hw:M4", tmp_path) == (144, 96000.0)            # the stream's own rate
+    assert read_transit("hw:M4", tmp_path) == (144, 96000.0, STREAM)    # the stream's own rate
     (d / "hw_params").write_text(HW_PARAMS)
+    (d / "status").write_text(STATUS.replace(f"trigger_time: {STREAM}\n", ""))
+    assert read_transit("hw:M4", tmp_path) == (60, 48000.0, "")         # no start: still a figure
     for state in ("XRUN", "PREPARED", "SETUP", "DRAINING", "PAUSED", "SUSPENDED"):
         (d / "status").write_text(STATUS.replace("RUNNING", state))
         assert read_transit("hw:M4", tmp_path) is None, state           # only a running stream
@@ -248,41 +260,99 @@ def test_the_transit_is_the_kernel_delay_beyond_the_buffer_fill(tmp_path: Path) 
     assert read_transit("default", tmp_path) is None
 
 
-def test_the_reading_jitter_never_moves_the_readout(caplog: Any) -> None:
-    """The night run (docs/17 §9), chunk 64 / target 128: for 16 h the transit read 48 or 60
-    frames (49 once) while the loop measured the same delay every time. The readout stays at what
-    the engine's level gives, and the journal gets only its ten-minute lines."""
-    clock = Clock()
-    w = LatencyWatch(10.0, clock=clock)
-    caplog.set_level(logging.INFO, logger="k1000.latency")
-    w.note_config(M4_64)
-    io = w.io_share(2.3)
-    rng = random.Random(1213)
-    reads = ([48, 60] * 20 + [60, 60, 48, 48] * 10 + [48, 48, 60, 60, 60, 48, 49, 60]
-             + [rng.choice((48, 60)) for _ in range(3000)])
-    for frames in (48, 60, 48):                     # the figure before the engine's first average
-        w.note_usb((frames, 48000.0))
-    shown: set[Any] = set()
-    for frames in reads:
-        w.note_usb((frames, 48000.0))
-        r = w.note("Running", 182, io, 1.0)
+def test_a_burst_reads_one_stream_between_short_sleeps(tmp_path: Path) -> None:
+    """USB_BURST reads about USB_GAP_S apart (slept in the worker thread that runs the burst, each
+    gap drawn from 0.5 to 1.5 x), all of one stream: a restart or a stop during the burst gives
+    no burst at all. hw_params is read once a burst: the rate and buffer size of a stream change
+    only with a new start."""
+    d = _stream(tmp_path)
+    slept: list[float] = []
+    delays = [(241, 253, 289)[i % 3] for i in range(lat.USB_BURST - 1)]
+
+    def sleep(s: float) -> None:                    # the stream moves on between two reads
+        (d / "status").write_text(STATUS.replace("241", str(delays[len(slept)])))
+        (d / "hw_params").unlink(missing_ok=True)
+        slept.append(s)
+
+    b = lat.read_transits("hw:M4", tmp_path, sleep=sleep)
+    assert b == ((60, *(x - 181 for x in delays)), 48000.0, STREAM)
+    assert len(slept) == lat.USB_BURST - 1
+    assert all(0.5 * lat.USB_GAP_S <= s < 1.5 * lat.USB_GAP_S for s in slept), slept
+    assert len(set(slept)) > 1                                  # not one fixed gap
+    assert (lat.USB_BURST, lat.USB_GAP_S) == (20, 0.01)    # about 0.19 s of a worker thread a second
+
+    def change_at(k: int, text: str) -> Any:
+        n = [0]
+
+        def sleep(s: float) -> None:
+            n[0] += 1
+            if n[0] == k:
+                (d / "status").write_text(text)
+        return sleep
+
+    for text in (STATUS.replace(STREAM, "58801.000000001"),    # restarted between two reads
+                 "closed\n", STATUS.replace("RUNNING", "XRUN"),
+                 STATUS.replace("241", "100")):                 # below the fill: not sane
+        _stream(tmp_path)
+        assert lat.read_transits("hw:M4", tmp_path, sleep=change_at(4, text)) is None, text
+    _stream(tmp_path)
+    assert lat.read_transits("hw:M4", tmp_path, reads=0) is None
+    slept.clear()
+    assert lat.read_transits("default", tmp_path, sleep=slept.append) is None and slept == []
+    assert lat.read_transits("hw:M4", tmp_path, reads=1, sleep=slept.append) == ((60,), 48000.0,
+                                                                                  STREAM)
+    assert slept == []
+
+
+def _hour(w: LatencyWatch, clock: Clock, reads: Any, level: int, io: float | None,
+          n: int = 3600) -> set[tuple[float, float]]:
+    """`n` bursts of `reads()` single reads, one a second, each followed by a poll: the
+    (readout, USB share) pairs shown."""
+    shown: set[tuple[float, float]] = set()
+    for _ in range(n):
+        w.note_usb(burst(tuple(reads() for _ in range(lat.USB_BURST))))
+        r = w.note("Running", level, io, 1.0)
         assert r is not None
         shown.add((r.ms, r.usb_ms))
         clock.t += 1.0
-    assert shown == {(7.8, 0.0)}                    # the readout of the night, unchanged
-    lines = [x.getMessage() for x in caplog.records if x.name == "k1000.latency"]
-    assert len(lines) == 1 + (len(reads) - 1) // int(lat.LOG_EVERY_S)   # the first, then ten-minute
-    assert all(re.fullmatch(r"latency: buffer=182 frames, usb=(48|60) frames, about 7\.8 ms in "
-                            r"to out \(limit 10\.0\)", x) for x in lines), lines
-    assert not any(re.search("usb=49", x) for x in lines)
+    return shown
 
 
-def test_a_shift_in_the_usb_stream_shows_within_three_reads(caplog: Any) -> None:
+def test_the_spread_of_the_reads_never_moves_the_readout(caplog: Any) -> None:
+    """The night run (docs/17 §9), chunk 64 / target 128: for 16 h the transit read 48 or 60
+    frames (49 once), as medians of 3 s of reads, while the loop measured the same delay every
+    time. How far single reads spread is not measured: here they spread as those medians, over
+    a whole USB millisecond (36 to 72 frames, and 36/48/60/72), and with a quarter of them in a
+    second group one USB frame (48 frames) lower or higher (models, not box data). In every case
+    an hour of bursts keeps the readout at what the engine's level gives, and the journal gets
+    only its ten-minute lines. (With a third of them in such a group, the models move the
+    readout by 1 ms and back less than once an hour on average: latency.py says why it matters.)"""
+    caplog.set_level(logging.INFO, logger="k1000.latency")
+    rng = random.Random(1213)
+    for reads in (lambda: rng.choice((48, 60)), lambda: rng.randint(36, 72),
+                  lambda: rng.choice((36, 48, 48, 60, 60, 72)),
+                  lambda: rng.choice((48, 60, 48, 60, 48, 60, 0, 12)),
+                  lambda: rng.choice((48, 60, 48, 60, 48, 60, 96, 108))):
+        caplog.clear()
+        clock = Clock()
+        w = LatencyWatch(10.0, clock=clock)
+        w.note_config(M4_64)
+        io = w.io_share(2.3)
+        for _ in range(3):                          # the figure before the engine's first average
+            w.note_usb(burst(JIT))
+        assert _hour(w, clock, reads, 182, io) == {(7.8, 0.0)}    # the readout of the night
+        lines = [x.getMessage() for x in caplog.records if x.name == "k1000.latency"]
+        assert len(lines) == 1 + (3600 - 1) // int(lat.LOG_EVERY_S)   # the first, then ten-minute
+        assert all(re.fullmatch(r"latency: buffer=182 frames, usb=\d+ frames, about 7\.8 ms in "
+                                r"to out \(limit 10\.0\)", x) for x in lines), lines
+
+
+def test_a_shift_in_the_usb_stream_shows_within_three_bursts(caplog: Any) -> None:
     """The load test of docs/17 §3.4, chunk 64 / target 64: the transit went from 48 to 144
     frames with the engine's level unchanged, and the delay measured through the loop from 6.11
     to 7.99 ms. Level 103 gives 6.1 ms (calculated to match). The readout moves by 2.0 ms on the
-    third read of the new figure, with a journal line (more than a chunk: 1.3 ms); a single
-    stray read moves nothing."""
+    third burst of the new figure, with a journal line (more than a chunk: 1.3 ms); a stray
+    burst moves nothing."""
     clock = Clock()
     w = LatencyWatch(10.0, clock=clock)
     caplog.set_level(logging.INFO, logger="k1000.latency")
@@ -292,26 +362,26 @@ def test_a_shift_in_the_usb_stream_shows_within_three_reads(caplog: Any) -> None
 
     w.note_config(M4_64)
     io = w.io_share(2.3)
-    for f in (48, 60, 48):
-        w.note_usb((f, 48000.0))
+    for _ in range(4):
+        w.note_usb(burst(JIT))
 
-    def poll(frames: int) -> Reading:
-        w.note_usb((frames, 48000.0))
+    def poll(frames: int | tuple[int, ...]) -> Reading:
+        w.note_usb(burst(frames))
         clock.t += 1.0
         r = w.note("Running", 103, io, 1.0)
         assert r is not None
         return r
 
-    assert [poll(f).ms for f in (48, 60, 500, 48, 60, 48, 60)] == [6.1] * 7
+    assert [poll(f).ms for f in (JIT, 500, JIT, JIT, JIT, JIT)] == [6.1] * 6
     assert lines() == ["latency: buffer=103 frames, usb=48 frames, about 6.1 ms in to out "
                        "(limit 10.0)"]
-    assert [poll(f).ms for f in (144, 156, 144)] == [6.1, 6.1, 8.1]
+    assert [poll(SHIFT).ms for _ in range(3)] == [6.1, 6.1, 8.1]
     assert w.reading is not None and w.reading.usb == 144 and w.reading.usb_ms == pytest.approx(2.0)
     assert lines()[-1] == ("latency: buffer=103 frames, usb=144 frames, about 8.1 ms in to out "
                            "(limit 10.0)")
-    assert [poll(f).ms for f in (156, 144, 156, 144, 156)] == [8.1] * 5     # its own jitter
+    assert [poll(SHIFT).ms for _ in range(5)] == [8.1] * 5                  # its own spread
     assert len(lines()) == 2
-    assert [poll(f).ms for f in (48, 60, 48)] == [8.1, 8.1, 6.1]            # and back
+    assert [poll(JIT).ms for _ in range(3)] == [8.1, 8.1, 6.1]              # and back
     assert len(lines()) == 3 and "usb=60 frames, about 6.1 ms" in lines()[-1]
 
 
@@ -327,11 +397,11 @@ def test_a_shift_follows_the_journal_rule_of_the_level(caplog: Any) -> None:
 
     w.note_config({"devices": {"chunksize": 128, "samplerate": 48000}})
     io = w.io_share(2.3)
-    for f in (48, 60, 48):
-        w.note_usb((f, 48000.0))
+    for _ in range(3):
+        w.note_usb(burst(JIT))
     first = w.note("Running", 173, io, 1.0)
-    for f in (144, 144, 144):
-        w.note_usb((f, 48000.0))
+    for _ in range(3):
+        w.note_usb(burst(144))
     clock.t += 3.0
     r = w.note("Running", 173, io, 1.0)
     assert first is not None and r is not None and (first.ms, r.ms) == (9.2, 11.2)
@@ -348,8 +418,8 @@ def test_without_its_reference_the_readout_is_the_engine_level_alone(caplog: Any
     caplog.set_level(logging.INFO, logger="k1000.latency")
     w.note_config(M4_64)
     io = w.io_share(2.3)
-    for f in (144, 144, 144):
-        w.note_usb((f, 48000.0))
+    for _ in range(3):
+        w.note_usb(burst(144))
     assert w.usb == 144
     before = Reading(103, 64, 48000.0, io_ms=io)
     assert w.note("Running", 103, io) == before                          # no reference
@@ -368,57 +438,75 @@ def test_without_its_reference_the_readout_is_the_engine_level_alone(caplog: Any
 
 def test_the_transit_figure_starts_over_with_each_stream() -> None:
     w = LatencyWatch()
-    for f in (144, 144, 144):
-        w.note_usb((f, 48000.0))
+    for _ in range(3):
+        w.note_usb(burst(144))
     assert w.usb is None                                    # no running config yet: no figure
     w.note_config(M4_64)
-    w.note_usb((144, 48000.0))
-    w.note_usb((144, 48000.0))
-    assert w.usb is None                                    # USB_NEED reads first
-    w.note_usb((144, 48000.0))
+    w.note_usb(burst(144))
+    w.note_usb(burst(144))
+    assert w.usb is None and lat.USB_NEED == 3 * lat.USB_BURST     # three bursts first
+    w.note_usb(burst(144))
     assert w.usb == 144
-    w.note_usb((48, 96000.0))                               # not the running config's rate
+    w.note_usb(burst(48, rate=96000.0))                     # not the running config's rate
     assert w.usb is None
-    for f in (48, 60, 48):
-        w.note_usb((f, 48000.0))
+    for _ in range(3):
+        w.note_usb(burst(JIT))
     assert w.usb == 48
     w.note_usb(None)                                        # not running, closed, unreadable
-    w.note_usb((144, 48000.0))
+    w.note_usb(burst(144))
     assert w.usb is None                                    # the old reads are gone
-    for f in (144, 144):
-        w.note_usb((f, 48000.0))
+    for _ in range(2):
+        w.note_usb(burst(144))
     assert w.usb == 144
+    w.note_usb(burst(()))                                   # an empty burst counts as none
+    assert w.usb is None
     w.lost()
     assert w.usb is None
     w.note_config({"devices": {"chunksize": 64, "samplerate": 96000}})
-    for f in (96, 120, 96):
-        w.note_usb((f, 96000.0))
+    for _ in range(3):
+        w.note_usb(burst((96, 120) * (lat.USB_BURST // 2), rate=96000.0))
     assert w.usb == 96
     r = w.note("Running", 300, w.io_share(2.3), 1.0)
     assert r is not None and r.samplerate == 96000.0 and r.usb_ms == 0.0   # 1.0 ms at 96 kHz
-    for f in (192, 192, 192):
-        w.note_usb((f, 96000.0))
+    for _ in range(3):
+        w.note_usb(burst(192, rate=96000.0))
     r = w.note("Running", 300, w.io_share(2.3), 1.0)
     assert r is not None and r.usb_ms == pytest.approx(1.0)
 
 
+def test_a_restart_between_two_bursts_starts_the_figure_over() -> None:
+    """The stream restarts between two bursts, with no failed read between them (the engine
+    restarted within a second): its start changed, so the old stream's reads are dropped at
+    once, and the new stream's figure needs its own three bursts."""
+    w = LatencyWatch(10.0, clock=Clock())
+    w.note_config(M4_64)
+    for _ in range(5):
+        w.note_usb(burst(144))
+    assert w.usb == 144
+    shown = []
+    for _ in range(3):
+        w.note_usb(burst(JIT, stream="58801.000000001"))
+        shown.append(w.usb)
+    assert shown == [None, None, 48]
+
+
 def test_the_first_line_without_the_figure_gets_one_with_it(caplog: Any) -> None:
     """A K1000 restart under a playing engine: the level comes at the first poll, the transit
-    three reads later. One more line then; a stream that stops and comes back adds none."""
+    three bursts later. One more line then; a stream that stops and comes back adds none."""
     clock = Clock()
     w = LatencyWatch(10.0, clock=clock)
     caplog.set_level(logging.INFO, logger="k1000.latency")
     w.note_config(M4_64)
     io = w.io_share(2.3)
     w.note("Running", 182, io, 1.0)
-    for f in (48, 60, 48):
-        w.note_usb((f, 48000.0))
+    for _ in range(3):
+        w.note_usb(burst(JIT))
         clock.t += 1.0
         w.note("Running", 182, io, 1.0)
     w.note_usb(None)
     w.note("Running", 182, io, 1.0)
-    for f in (60, 48, 60):
-        w.note_usb((f, 48000.0))
+    for _ in range(3):
+        w.note_usb(burst(JIT[::-1], stream="58801.000000001"))
         clock.t += 1.0
         w.note("Running", 182, io, 1.0)
     lines = [x.getMessage() for x in caplog.records if x.name == "k1000.latency"]
@@ -677,9 +765,9 @@ def test_the_transit_is_read_in_a_worker_thread_while_the_engine_runs(tmp_path: 
     calls: list[tuple[str, str]] = []
     frames = [48]
 
-    def reader(device: str) -> tuple[int, float] | None:
+    def reader(device: str) -> lat.Burst | None:
         calls.append((device, threading.current_thread().name))
-        return frames[0], 48000.0
+        return burst(frames[0])
 
     async def body() -> None:
         ctl, cl = make(tmp_path, transit=1.0)
@@ -714,11 +802,11 @@ def test_no_reference_nothing_read_and_a_failed_read_is_no_figure(tmp_path: Path
                                                                     caplog: Any) -> None:
     calls: list[str] = []
 
-    def reader(device: str) -> tuple[int, float] | None:
+    def reader(device: str) -> lat.Burst | None:
         calls.append(device)
-        return 144, 48000.0
+        return burst(144)
 
-    def broken(device: str) -> tuple[int, float] | None:
+    def broken(device: str) -> lat.Burst | None:
         raise RuntimeError("boom")
 
     async def body() -> None:

@@ -24,12 +24,22 @@ Why it is shaped like this:
   48 to 144 frames (+2.0 ms at 48 kHz) while the level stayed put, and the delay measured through
   the loop moved by 1.9 ms. `io_latency_ms` was measured with 1.0 ms in transit (48 frames at
   48 kHz); the profile says so (`io_transit_ms`), and the readout adds what the transit holds
-  beyond it. Read once a second, only while the engine runs, in a worker thread: the kernel
-  answers a /proc read of a stream under the stream's open lock, which a USB device's open or
-  close holds for as long as they take (from the ALSA source, not measured). The figure is the
-  median of the last USB_READS reads and moves, and counts, only beyond USB_STEP_MS: the reading
-  jitters between 48 and 60 frames with the delay constant (16 h, docs/17 §9), and that never
-  moves the readout. No `io_transit_ms`, no `io_latency_ms`, a device name that is not `hw:` or
+  beyond it. Read only while the engine runs, in a worker thread: the kernel answers a /proc
+  read of a stream under the PCM's open mutex, which a USB device's open or close holds for as
+  long as they take (recalled from the ALSA source, sound/core/pcm.c,
+  `snd_pcm_substream_proc_status_read`; not read again here, not measured). Once a second, a
+  burst of USB_BURST reads about USB_GAP_S apart; the figure is the median of the last USB_POOL
+  reads of one stream (the bench's figures were medians of 3 s of reads every 50 ms), and it
+  moves, and counts, only beyond USB_STEP_MS. Those medians read 48 or 60 frames for 16 h with
+  the delay constant (docs/17 §9), and that never moves the readout. How far single reads spread
+  is not measured. As recalled from the USB audio driver (sound/usb/pcm.c, `snd_usb_pcm_delay`),
+  its figure drops by one USB frame's worth (1 ms) once a frame has begun since the last URB
+  came back, so single reads may sit in two groups 1 ms apart: the median of 100 reads holds
+  while the smaller group stays under about a third of them (models in the tests). A new
+  stream (its `trigger_time` changed: a restart, an underrun's recovery) starts the figure over.
+  Each read also resets the stream's `avail_max` in the kernel (recalled from pcm_native.c,
+  `snd_pcm_status64`): nothing in K1000 reads it. No `io_transit_ms`, no `io_latency_ms`, a
+  device name that is not `hw:` or
   `plughw:`, a stream not RUNNING or a file not readable: the readout of the engine's level
   alone, as before, and nothing in the journal. The 48 frames were read at chunk 64 only: that
   the transit is the same at other chunks is not measured yet (if not, the readout at those
@@ -63,6 +73,7 @@ import collections
 import logging
 import math
 import os
+import random
 import re
 import time
 from dataclasses import dataclass
@@ -89,14 +100,20 @@ ROTATE_SIZE = 256000             # camilladsp.service's --log_rotate_size (a tes
 READ_CHUNK = 64 * 1024
 MAX_LINE = 64 * 1024             # a line longer than this is not one of the engine's
 MAX_BACK_BYTES = 2 * 1024 * 1024  # the first read goes back through at most this much rotated log
-# The frames in USB transit (see above): read this often while the engine runs; the figure is the
-# median of the last USB_READS reads once USB_NEED are in, and moves only by more than
-# USB_STEP_MS, which is also how far from the profile's `io_transit_ms` it must be to count. The
-# reading jitter is 12 frames, 0.25 ms at 48 kHz (docs/17 §9); the shift of docs/17 §3.4, 2.0 ms.
+# The frames in USB transit (see above): every TRANSIT_READ_S while the engine runs, USB_BURST
+# reads about USB_GAP_S apart; the figure is the median of the last USB_POOL reads of one stream
+# (five bursts, about 6 s: the bench's figures were medians of 3 s of reads every 50 ms) once
+# USB_NEED are in (three bursts). It moves only by more than USB_STEP_MS, which is also how far
+# from the profile's `io_transit_ms` it must be to count. Those 3 s medians read 48 or 60 frames
+# for 16 h with the delay constant, 0.25 ms apart at 48 kHz (docs/17 §9); the shift of docs/17
+# §3.4 was 2.0 ms.
 TRANSIT_READ_S = 1.0
-USB_READS = 5
-USB_NEED = 3
+USB_BURST = 20
+USB_GAP_S = 0.01
+USB_POOL = 5 * USB_BURST
+USB_NEED = 3 * USB_BURST
 USB_STEP_MS = 0.4
+_gaps = random.Random()          # each gap is 0.5 to 1.5 x USB_GAP_S (see read_transits)
 
 
 def latency_limit_ms(settings: Any) -> float:
@@ -173,7 +190,14 @@ def stream_dir(device: str, proc_root: str | Path = PROC_ASOUND) -> Path | None:
             / f"pcm{int(dev)}p" / f"sub{int(sub)}")
 
 
-def _fields(text: str) -> dict[str, str]:
+def _fields(path: Path) -> dict[str, str]:
+    """The `key: value` lines of a small /proc file, in one read (a Path.read_text costs ten
+    times as much CPU, measured off the box)."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        text = os.read(fd, 4096).decode("ascii", "replace")
+    finally:
+        os.close(fd)
     out: dict[str, str] = {}
     for line in text.splitlines():
         k, sep, v = line.partition(":")
@@ -182,27 +206,55 @@ def _fields(text: str) -> dict[str, str]:
     return out
 
 
-def read_transit(device: str, proc_root: str | Path = PROC_ASOUND) -> tuple[int, float] | None:
-    """(frames in USB transit, the stream's rate) of the RUNNING playback stream behind `device`:
-    its status's `delay` minus the buffer fill (`buffer_size` from hw_params, minus `avail`).
-    None: no such stream, not running ("closed" is the whole file then), not readable as
-    expected. Blocking reads: run it in a worker thread."""
+# One burst of reads (`read_transits`): (frames of each read, the stream's rate, its start).
+Burst = tuple[tuple[int, ...], float, str]
+
+
+def read_transits(device: str, proc_root: str | Path = PROC_ASOUND, *, reads: int = USB_BURST,
+                  gap_s: float = USB_GAP_S, sleep: Callable[[float], None] = time.sleep
+                  ) -> Burst | None:
+    """`reads` reads of the frames in USB transit of the RUNNING playback stream behind
+    `device`: each its status's `delay` minus the buffer fill (`buffer_size` from hw_params, read
+    once, minus `avail`). -> (the frames, the stream's rate, its `trigger_time`). The trigger
+    time changes at each start of the stream (a restart, an underrun's recovery; the rate cannot
+    change without one): it tells one stream's reads from the next's. Each gap is 0.5 to 1.5 x
+    `gap_s`, at random, so that the reads fall anywhere in the USB's 1 ms frame and not always at
+    the same point of it. None: no such stream, not running ("closed" is the whole file then),
+    not readable as expected, or restarted during the burst. Blocking, about (reads - 1) x
+    `gap_s`: run it in a worker thread."""
     d = stream_dir(device, proc_root)
     if d is None:
         return None
+    frames: list[int] = []
+    size, rate, stream = 0, 0.0, ""
     try:
-        status = _fields((d / "status").read_text())
-        if status.get("state") != "RUNNING":
-            return None
-        hw = _fields((d / "hw_params").read_text())
-        delay, avail, size = int(status["delay"]), int(status["avail"]), int(hw["buffer_size"])
-        rate = float(hw["rate"].split()[0])
+        for i in range(reads):
+            if i:
+                sleep(gap_s * (0.5 + _gaps.random()))
+            status = _fields(d / "status")
+            if status.get("state") != "RUNNING":
+                return None
+            if i == 0:
+                hw = _fields(d / "hw_params")
+                size, rate = int(hw["buffer_size"]), float(hw["rate"].split()[0])
+                stream = status.get("trigger_time", "")
+                if not 0.0 < rate < math.inf:
+                    return None
+            elif status.get("trigger_time", "") != stream:
+                return None
+            n = int(status["delay"]) - (size - int(status["avail"]))
+            if n < 0:
+                return None
+            frames.append(n)
     except (OSError, KeyError, ValueError, IndexError):
         return None
-    frames = delay - (size - avail)
-    if frames < 0 or not 0.0 < rate < math.inf:
-        return None
-    return frames, rate
+    return (tuple(frames), rate, stream) if frames else None
+
+
+def read_transit(device: str, proc_root: str | Path = PROC_ASOUND) -> tuple[int, float, str] | None:
+    """One read of `read_transits`: (frames in USB transit, the stream's rate, its start)."""
+    b = read_transits(device, proc_root, reads=1)
+    return None if b is None else (b[0][0], b[1], b[2])
 
 
 @dataclass(frozen=True)
@@ -247,8 +299,8 @@ class Reading:
 
 class LatencyWatch:
     """The last reading, and when the journal gets a line. `note_config` with every running
-    config read, `note` with every poll, `note_usb` with every read of the USB transit, `lost`
-    when the engine link goes."""
+    config read, `note` with every poll, `note_usb` with every burst of reads of the USB
+    transit, `lost` when the engine link goes."""
 
     def __init__(self, limit_ms: float = LIMIT_MS,
                  clock: Callable[[], float] = time.monotonic) -> None:
@@ -258,7 +310,8 @@ class LatencyWatch:
         self.reading: Reading | None = None
         self._logged: Reading | None = None      # the last line's reading (None: none on this link)
         self._logged_at = -math.inf
-        self._usb_reads: collections.deque[int] = collections.deque(maxlen=USB_READS)
+        self._usb_reads: collections.deque[int] = collections.deque(maxlen=USB_POOL)
+        self._usb_stream: str | None = None      # the start (trigger_time) of the reads' stream
         self.usb: int | None = None              # frames in USB transit as shown (None: no figure)
 
     def note_config(self, cfg: Any) -> None:
@@ -273,17 +326,21 @@ class LatencyWatch:
         self._logged = None
         self.note_usb(None)
 
-    def note_usb(self, read: tuple[int, float] | None) -> None:
-        """One read of the USB transit (`read_transit`). The figure is the median of the last
-        USB_READS reads once USB_NEED are in, and it moves only by more than USB_STEP_MS. None,
-        or a stream at another rate than the running config's, clears it: the next stream's
-        figure starts over."""
-        if read is None or self._devices is None or read[1] != self._devices[1]:
+    def note_usb(self, burst: Burst | None) -> None:
+        """One burst of reads of the USB transit (`read_transits`). The figure is the median of
+        the last USB_POOL reads once USB_NEED are in, and it moves only by more than USB_STEP_MS.
+        None, or a stream at another rate than the running config's, clears it; a new stream
+        (another start) starts it over: no read of one stream counts for the next."""
+        if (burst is None or not burst[0] or self._devices is None
+                or burst[1] != self._devices[1]):
             self._usb_reads.clear()
-            self.usb = None
+            self._usb_stream = self.usb = None
             return
-        frames, rate = read
-        self._usb_reads.append(frames)
+        frames, rate, stream = burst
+        if stream != self._usb_stream:
+            self._usb_reads.clear()
+            self._usb_stream, self.usb = stream, None
+        self._usb_reads.extend(frames)
         if len(self._usb_reads) < USB_NEED:
             return
         median = sorted(self._usb_reads)[(len(self._usb_reads) - 1) // 2]

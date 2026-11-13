@@ -81,8 +81,8 @@ import yaml
 from . import dspconfig as dc
 from .cdsp import CdspError, CdspNoConfig, CdspUnavailable
 from .dspconfig import FADER_MAIN, FADER_SUBS, FADER_TOPS, Fader, FaderMute, Op, Rebuild, SetValue
-from .latency import (DROPOUT_READ_S, ENGINE_LOG, LIMIT_MS, TRANSIT_READ_S, DropoutCounter,
-                      LatencyWatch, latency_limit_ms, read_transit)
+from .latency import (DROPOUT_READ_S, ENGINE_LOG, LIMIT_MS, TRANSIT_READ_S, Burst,
+                      DropoutCounter, LatencyWatch, latency_limit_ms, read_transits)
 from .profiles import (PROC_ASOUND, PROFILE_NAMES, Profile, ProfileChoice, card_id, card_present,
                        load_profile)
 from .state import (BOOL_FIELDS, CHOICES, DELAY_FIELDS, N_SYS_PEQ, RANGES, REBUILD_FIELDS,
@@ -994,7 +994,7 @@ class Controller:
         self.dropouts = DropoutCounter(paths.engine_log) if paths.engine_log is not None else None
         self.dropout_s = DROPOUT_READ_S
         # D-018: the frames in USB transit below the engine (a worker thread). Injectable for tests.
-        self.read_transit: Callable[[str], tuple[int, float] | None] = read_transit
+        self.read_transit: Callable[[str], Burst | None] = read_transits
         self.transit_s = TRANSIT_READ_S
 
     # ------------------------------------------------------------------ lifecycle
@@ -3596,9 +3596,10 @@ class Controller:
             await asyncio.sleep(self.dropout_s)
 
     async def _transit_loop(self) -> None:
-        """D-018: the kernel's frames in USB transit to the playback device (latency.read_transit),
-        read in a worker thread every `transit_s` (a /proc read of a stream can wait for its open
-        or close). Nothing is read unless the engine runs and the profile knows io_latency_ms and
+        """D-018: the kernel's frames in USB transit to the playback device, a burst of reads
+        (latency.read_transits) in a worker thread every `transit_s` (a /proc read of a stream can
+        wait for its open or close; the burst sleeps between its reads there, never here).
+        Nothing is read unless the engine runs and the profile knows io_latency_ms and
         io_transit_ms; the next poll shows the figure."""
         while True:
             p, t = self.profile, None
