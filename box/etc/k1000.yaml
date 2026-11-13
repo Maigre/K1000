@@ -30,11 +30,14 @@ profiles:
     # target 256, 6.2 to 7.5 ms in to out measured on the desk, the box's main setting). Device
     # settings: read when k1000 starts, written to the engine at its next start (restart k1000,
     # then camilladsp), never at show time.
-    # samplerate: 96000 or 48000 Hz, the two rates measured with the M4; any other value is
-    # refused (the journal says so, and 48000 is used). A file WITHOUT this key runs 48000 (every
+    # samplerate: 96000 or 48000 Hz, the two rates measured with the M4; any other value (96000.0
+    # included) is refused: the journal says so, and 48000 is used with the M4's 48 kHz
+    # io_latency_ms / io_transit_ms, not the ones below. A file WITHOUT this key runs 48000 (every
     # file written before D-022 is a 48 kHz file), with the 48 kHz figures for what it does not
-    # name; no file at all runs the built-in values below. Saved delays are kept in ms: at 96 kHz
-    # they play the same; a delay set at 96 kHz plays at most 0.01 ms off at 48 kHz.
+    # name; no file at all, or one that does not parse, runs the built-in values below. Change the
+    # five lines together: a rate line alone keeps figures of the other rate (the journal warns).
+    # Saved delays are kept in ms and never rewritten by a rate change: at 96 kHz they play the
+    # same; a delay set at 96 kHz plays at most half a 48 kHz sample (0.0104 ms) off at 48 kHz.
     # chunksize: frames processed at a time, 64, 128, 256, 512 or 1024 (2.7 ms per 256 frames at
     # 96 kHz, 5.3 ms at 48 kHz); any other value is refused (the rate's default is used: 128 at
     # 96 kHz, 256 at 48 kHz; the journal says so).

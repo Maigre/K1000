@@ -436,8 +436,12 @@ with no settings file runs it):
 The proven fallback (a 16 h night run passed on it, `docs/17` §9): the same five lines as
 `samplerate: 48000`, `chunksize: 64`, `target_level: 128`, `io_latency_ms: 2.3`,
 `io_transit_ms: {64: 1.13}`. **A file without `samplerate` runs 48 kHz** with the figures it
-names: every file written before D-022 comes up as it was. Only 48000 and 96000 are accepted
-(the dev HiFiBerry: 48000); anything else is refused in the journal and runs 48 kHz.
+names: every file written before D-022 comes up as it was. **Change the five lines together**:
+a rate line alone keeps the other rate's figures (the journal warns when `io_latency_ms` is the
+M4's figure at the other rate). Only 48000 and 96000 are accepted, as whole numbers (the dev
+HiFiBerry: 48000); anything else, `96000.0` too, is refused in the journal and runs 48 kHz with
+the M4's 48 kHz interface figures, not the file's. A file that does not parse runs the built-in
+values: 96 kHz on the M4.
 
 A change, between shows:
 
@@ -451,9 +455,10 @@ cat /proc/asound/M4/pcm0p/sub0/hw_params  # rate: 96000 (96000/1)
 ```
 
 Between the two restarts the screen says `DEVICES CHANGED (GUI)` and the delay readout is a floor
-(`≥`): the M4's figures belong to the new rate. Saved delays are kept in ms and play the same at
-96 kHz; at 48 kHz a delay set at 96 kHz plays at most 0.01 ms off (the stored value stays). The
-manual has the details (`docs/manual/03-configuration.md` §4).
+(`≥`): the M4's figures belong to the new rate. k1000 then takes no delay from the old engine and
+writes none to it on its own. Saved delays are kept in ms, never rewritten by the change, and play
+the same at 96 kHz; at 48 kHz a delay set at 96 kHz plays at most half a sample (0.0104 ms) off
+(the stored value stays). The manual has the details (`docs/manual/03-configuration.md` §4).
 
 ## MOTU M4 bring-up (Tuesday)
 
@@ -738,6 +743,9 @@ The tool writes one line every 10 s:
   printed as a `note:` with its time, never as a failure (fixed after the 2026-10-13 acceptance,
   whose summary exited 1 on an underrun from the night before);
 - restarts of camilladsp (`restarts`: a crash, or a lost device) or of k1000 (`k1000_restarts`);
+- a playback buffer more than 5.3 ms above where the soak started, at the rate the soak measured
+  (256 frames at 48 kHz, 512 at 96 kHz; `K1000_SOAK_BUFFER_RISE` sets it in frames): the engine
+  holding a backlog after a dropout;
 - `state` other than `Running` (`Paused` = CamillaDSP's silence pause, which K1000 leaves off, so
   a silent input still reads `Running`; `DOWN` = no engine websocket), k1000
   not active, Main muted, clipped samples;

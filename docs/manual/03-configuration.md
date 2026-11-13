@@ -144,23 +144,38 @@ Details:
   was fixed.
 - **`samplerate`** is the engine's sample rate (D-022). The M4 runs 96 kHz or 48 kHz, 24-bit
   either way (its converters are 24-bit at every rate); the HiFiBerry `dev` profile runs 48 kHz.
-  Any other value is refused: the journal says so and the profile runs 48 kHz. It is read once,
+  Any other value is refused, `96000.0` and `"96000"` too: the journal says so and the profile
+  runs 48 kHz, with the M4's 48 kHz `io_latency_ms` and `io_transit_ms` and not the file's
+  (written for the rate the file meant); the file's `chunksize` and `target_level` are kept. It is read once,
   when k1000 starts, and written to the engine at its next start: **restart k1000, then
   camilladsp** ([§9](#9-what-needs-a-restart)). Until camilladsp restarts the screen says
   `DEVICES CHANGED (GUI)` and the delay readout shows the engine's share alone, as `≥`. The rate
   also sets the defaults of `chunksize`, `target_level`, `io_latency_ms` and `io_transit_ms`
   (the table above): each figure was measured at one rate and is never used at the other.
   - **No settings file** (or one that does not parse): the built-in values, the M4 at 96 kHz,
-    chunk 128, target 256, `io_latency_ms` 1.9, `io_transit_ms` `{128: 1.13}`.
+    chunk 128, target 256, `io_latency_ms` 1.9, `io_transit_ms` `{128: 1.13}`. So a typo that
+    breaks a 48 kHz file brings the M4 up at 96 kHz at the next engine start.
   - **A file that does not name `samplerate`** runs 48 kHz, with the figures it names and the
     48 kHz values for the rest. Every file written before D-022 is a 48 kHz file: the desk box's,
     with `chunksize: 64`, `target_level: 128` and `io_latency_ms: 2.3`, comes up as it was. Its
     engine config is byte for byte the one before D-022 (tested).
+  - **Change the five lines together** (`samplerate`, `chunksize`, `target_level`,
+    `io_latency_ms`, `io_transit_ms`). A `samplerate` line added or removed alone keeps figures
+    of the other rate, which k1000 uses as written: an `io_latency_ms` that is the M4's figure at
+    the other rate (2.3 at 96 kHz, 1.9 at 48 kHz) gets a journal warning.
   - **Saved delays** are kept in ms in `state.json` and never rewritten by a rate change. Going
     to 96 kHz, every delay is a whole number of samples there too: the same delay. Going back to
     48 kHz, a delay set at 96 kHz to an odd number of samples plays as the nearest 48 kHz sample,
-    at most 0.01 ms off; the stored value stays, so at 96 kHz again it plays exactly as set. The
-    fine step of ALIGN's delay is one sample at the running rate: 0.0104 ms at 96 kHz.
+    at most half a sample (0.0104 ms) off; the stored value stays, so at 96 kHz again it plays
+    exactly as set. Between the restart of k1000 and that of camilladsp, the engine still plays
+    the old rate's config: k1000 takes no delay from it and writes none to it on its own; a delay
+    moved then is written on the new rate's grid and plays at the old rate's nearest sample,
+    within 0.02 ms of what was set. The fine step of ALIGN's delay is one sample at the running
+    rate: 0.0104 ms at 96 kHz.
+  - **The phone's mic** is analysed at 48 kHz, the rate the phone records at, whatever the box
+    runs: at 96 kHz the engine's spectrum has the same bins (5.86 Hz) and window (171 ms) as at
+    48 kHz, so RESPONSE and the mic PEAK compare like with like. The EQ curves on the phone and
+    on the screen are drawn at the box's rate.
   - **The proven fallback** (a 16 h night run passed on it, [`docs/17`](../17-box-record-and-bench.md)
     §9): write these five lines in the `m4` section in place of the D-022 ones, then restart
     k1000, then camilladsp:
@@ -177,8 +192,9 @@ Details:
     128 / target 256 gave 6.2 to 7.5 ms in to out over four engine starts, and 6.76 ms with no
     dropout under phone edits, four CPU hogs and SD-card writes; the engine's load 4 to 8 %.
     Proven by tests: the engine config, delays, waits, spectrum, curves and phone hellos follow
-    the setting at both rates. Not yet verified at 96 kHz: a night run, the dropout just after a
-    start (3 starts of 4), and the ear (D-022).
+    the setting at both rates, and between the two restarts no saved delay is rewritten. Not yet
+    verified at 96 kHz: a night run, the dropout just after a start (3 starts of 4), the ear
+    (D-022), and a phone connected to a 96 kHz box.
 - **`chunksize` and `target_level`** are the engine's buffer, and its share of the in-to-out
   delay: about one chunk plus the target level (D-018 asks 10 ms or less in to out;
   [`docs/16`](../16-post-gig-audit.md) §3.3). Measured on 16 Oct at 256 + 512 at 48 kHz: 20.3 ms
