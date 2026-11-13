@@ -20,7 +20,7 @@ import argparse, json, math, os, subprocess, sys, time, wave
 import numpy as np
 import websockets.sync.client as wsc
 
-FS = 48000
+FS = 48000                   # the test signals' rate, played on the HiFiBerry (not the engine's)
 HB = "hw:sndrpihifiberry"
 TMP = "/tmp/k1000-m4loop"
 
@@ -165,8 +165,9 @@ def main():
     time.sleep(3.0)
     f, p_src = spectrum(e, a.src, 10.0, 20000.0, 400, a.avg)
     f2, p_ret = spectrum(e, a.ret, 10.0, 20000.0, 400, a.avg)
-    # 0.75 Hz -> a 65536-point window (1.4 s) and 24000 bins: the comb of a delay up to 150 ms
-    # stays resolved (checked by m4loop_sim.py; 1.5 Hz / 12000 bins lost it above 100 ms).
+    # 0.75 Hz -> a 65536-point window at 48 kHz, 131072 at 96 kHz (1.4 s either way) and 24000
+    # bins: the comb of a delay up to 150 ms stays resolved (checked by m4loop_sim.py at 48 kHz;
+    # 1.5 Hz / 12000 bins lost it above 100 ms).
     fl, p_all = spectrum(e, None, 0.75, 10500.0, 24000, a.avg)
     pn = e.cmd("GetCaptureSignalRmsSince", 2.0)
     if pr:
@@ -181,9 +182,11 @@ def main():
         res["latency_warning"] = "no clear comb (snr < 10): do not trust latency_ms"
     lvl = e.cmd("GetBufferLevel")
     res["buffer_level_frames"] = lvl
-    chunk = int(json.loads(e.cmd("GetConfigJson"))["devices"]["chunksize"])
+    dev = json.loads(e.cmd("GetConfigJson"))["devices"]
+    chunk, rate = int(dev["chunksize"]), float(dev["samplerate"])   # the engine's (D-022)
     res["chunksize_frames"] = chunk
-    res["engine_buffers_ms"] = round((chunk + lvl) / FS * 1000, 2)
+    res["samplerate_hz"] = int(rate)
+    res["engine_buffers_ms"] = round((chunk + lvl) / rate * 1000, 2)
     print(json.dumps(res, indent=1))
 
 
