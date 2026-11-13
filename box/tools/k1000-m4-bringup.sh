@@ -38,7 +38,7 @@ APLAY=${K1000_BRINGUP_APLAY:-aplay}
 ARECORD=${K1000_BRINGUP_ARECORD:-arecord}
 SYSTEMCTL=${K1000_BRINGUP_SYSTEMCTL:-systemctl}
 TTY_IN=${K1000_BRINGUP_TTY:-/dev/tty}
-RATE=48000
+RATE=48000        # the identification tone's rate (the engine is stopped then); section 5 checks k1000's
 TONE_DBFS=-40
 
 usage() { sed -n '3,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; }
@@ -168,9 +168,10 @@ def parse_stream(text):
     return out
 
 
-def rate_ok(d):
+def rate_ok(d, r=None):
+    r = rate if r is None else r
     rates = d.get("rates") or []
-    return any(lo <= rate <= hi for lo, hi in rates) if rates else None
+    return any(lo <= r <= hi for lo, hi in rates) if rates else None
 
 
 def rates_text(d):
@@ -310,6 +311,18 @@ if pin == "m4":
     say("PASS", "profile: m4 (pinned, the gig rule)")
 else:
     say("INFO", f"profile: {pin!r}: switch to m4 once this report has no FAIL (section 8)")
+# The rate k1000 runs the M4 at (D-022, k1000/profiles.py load_profile): the file's `samplerate`;
+# a file without it, 48000 (every file written before D-022); no usable file, the built-in 96000.
+run_rate = m4.get("samplerate")
+if run_rate is None:
+    run_rate = 48000 if (settings_err is None and cfg) else 96000
+    say("INFO", f"samplerate: not set -> {run_rate} Hz"
+                + (" (a file without the key)" if run_rate == 48000 else " (the built-in)"))
+elif isinstance(run_rate, bool) or run_rate not in (48000, 96000):
+    say("FAIL", f"samplerate {run_rate!r}: k1000 refuses it (48000 or 96000) and runs 48000")
+    run_rate = 48000
+else:
+    say("PASS", f"samplerate: {run_rate} Hz")
 pb, cp = stream.get("playback") or {}, stream.get("capture") or {}
 counts = {}
 for sec, d in (("playback", pb), ("capture", cp)):
@@ -344,11 +357,11 @@ for sec, d in (("playback", pb), ("capture", cp)):
         say("PASS", f"{sec}_format: {fmt} (offered)")
     else:
         say("FAIL", f"{sec}_format: {fmt} is not offered ({d.get('fmts')}); set it to null")
-    ok = rate_ok(d)
+    ok = rate_ok(d, run_rate)
     if ok is True:
-        say("PASS", f"{sec}: {rate} Hz offered")
+        say("PASS", f"{sec}: {run_rate} Hz offered")
     elif ok is False:
-        say("FAIL", f"{sec}: {rate} Hz NOT offered ({rates_text(d)})")
+        say("FAIL", f"{sec}: {run_rate} Hz NOT offered ({rates_text(d)})")
 imap = prof["input_map"]
 ncap = counts.get("capture") or 4
 if (isinstance(imap, list) and len(imap) == 2 and all(isinstance(i, int) and not isinstance(i, bool)

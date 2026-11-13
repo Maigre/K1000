@@ -1219,7 +1219,8 @@ def test_bringup_checks_a_free_m4(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     out = r.stdout
     for needle in ("PASS  card M4 registered (card1), USB 07fd:000b", "playback_channels: null (probe) -> 4",
-                   "CamillaDSP picks S32_LE", "48000 Hz offered", "input_map [2, 3]",
+                   "CamillaDSP picks S32_LE", "PASS  samplerate: 96000 Hz",
+                   "PASS  playback: 96000 Hz offered", "input_map [2, 3]",
                    "out1 Top L, out2 Top R, out3 Sub L, out4 Sub R", "UNCONFIRMED",
                    "MONITOR knob", "INPUT MONITOR MIX", "MON 1 / MON 2 / 3-4", "RESULT: 0 FAIL"):
         assert needle in out, (needle, out)
@@ -1267,6 +1268,25 @@ def test_bringup_flags_settings_the_m4_cannot_honour(tmp_path):
     for needle in ("PASS  profile: m4", "capture_channels: 2 is not offered",
                    "playback_format: S16_LE is not offered", "input_map [4, 5]: the M4 has capture channels 0-3",
                    "needs 4 entries", "INFO  controls:"):
+        assert needle in out, (needle, out)
+
+
+@pytest.mark.parametrize("m4_rate,want", [
+    ("", ["INFO  samplerate: not set -> 48000 Hz (a file without the key)",
+          "PASS  capture: 48000 Hz offered"]),
+    ("    samplerate: 48000\n", ["PASS  samplerate: 48000 Hz", "PASS  playback: 48000 Hz offered"]),
+    ("    samplerate: 44100\n", ["FAIL  samplerate 44100: k1000 refuses it (48000 or 96000) and "
+                                 "runs 48000", "PASS  playback: 48000 Hz offered"]),
+    (None, ["INFO  samplerate: not set -> 96000 Hz (the built-in)", "PASS  capture: 96000 Hz offered"]),
+])
+def test_bringup_checks_the_rate_k1000_will_run(tmp_path, m4_rate, want):
+    """D-022: section 5 checks the rate k1000 runs the M4 at, as k1000 reads it: the file's
+    `samplerate`, 48000 for a file without it, the built-in 96000 without a file."""
+    box = M4Box(tmp_path, settings="profile: m4\nprofiles:\n  m4:\n    probe: true\n" + (m4_rate or ""))
+    if m4_rate is None:
+        box.settings.unlink()
+    out = box.run().stdout
+    for needle in want:
         assert needle in out, (needle, out)
 
 
