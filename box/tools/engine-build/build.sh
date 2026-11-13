@@ -10,6 +10,9 @@
 # OUT_DIR/Cargo.lock (the dependency versions it was built with: upstream commits no lock file,
 # so the lock of the measured build is kept beside this script as Cargo.lock.<commit>).
 # Install on the box: copy the binary to /usr/local/bin/camilladsp (mode 755), restart camilladsp.
+# On a fresh card, box/bootstrap.sh installs it: CAMILLADSP_BINARY=<path to out/camilladsp>. It
+# pins the same commit and sha256 as PIN and PIN_SHA256 below (its CDSP_PIN, CDSP_PIN_SHA256):
+# change the two files together; a test holds them equal.
 #
 # The pin. Bench of 2026-11-12 on the box (docs/17): 0930f9b reaches 5 to 8 ms in to out where
 # 5.0.0-beta.1 never got under 12.5 ms, and the delay comes back after an underrun.

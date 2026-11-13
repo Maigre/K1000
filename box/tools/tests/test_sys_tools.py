@@ -2132,21 +2132,62 @@ def test_install_boot_turns_i2c_on_and_loads_i2c_dev_at_boot_once(tmp_path, conf
 
 
 # --------------------------------------------------------------------------- bootstrap.sh
-def test_bootstrap_pins_camilladsp_by_tarball_and_binary_hash():
+def _pinned(var: str, text: str | None = None) -> str:
+    return re.search(rf"^{var}=(\S*)$", BOOTSTRAP.read_text() if text is None else text, re.M).group(1)
+
+
+PIN_SHA256 = _pinned("CDSP_PIN_SHA256")
+OLD_TGZ_SHA256 = _pinned("CDSP_OLD_TGZ_SHA256")
+# A fake engine per kind: its sha256 (what the fake sha256sum reads in it) and its --version line.
+ENGINES = {"pinned": (PIN_SHA256, "CamillaDSP 5.0.0-beta.2 (0930f9b)"),
+           "old": (_pinned("CDSP_OLD_BIN_SHA256"), "CamillaDSP 5.0.0-beta.1 (48bcd28)"),
+           "other": ("ab" * 32, "CamillaDSP 5.0.0-beta.2 (1234567)")}
+ENGINE_IS = {None: "no engine", "pinned": "the pinned build (D-019)", "old": "the old engine, 5.0.0-beta.1",
+             "other": "another build (CamillaDSP 5.0.0-beta.2 (1234567), sha256 abababababab...)"}
+# sha256sum FILE: FILE.sha256 when there is one (a tarball), else the "# sha256" line of a fake engine,
+# else the real sum.
+FAKE_SHA256SUM = ('[ -r "$1" ] || { echo "sha256sum: $1: No such file or directory" >&2; exit 1; }\n'
+                  'if [ -f "$1.sha256" ]; then s=$(cat "$1.sha256"); else s=$(sed -n "s/^# sha256 //p" "$1" | head -n 1); fi\n'
+                  'if [ -z "$s" ]; then s=$(/usr/bin/sha256sum "$1" | cut -d" " -f1); fi\necho "$s  $1"\n')
+
+
+def _fake_engine(path: Path, kind: str) -> Path:
+    sha, version = ENGINES[kind]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/bin/sh\n# sha256 {sha}\necho '{version}'\n")
+    path.chmod(0o755)
+    return path
+
+
+def test_bootstrap_never_upgrades_or_reboots():
     text = BOOTSTRAP.read_text()
-    assert "releases/download/v5.0.0-beta.1/camilladsp-linux-aarch64.tar.gz" in text
-    for var in ("CDSP_TGZ_SHA256", "CDSP_BIN_SHA256"):
-        assert re.search(rf"^{var}=[0-9a-f]{{64}}$", text, re.M), var
     assert "upgrade" not in re.sub(r"#.*", "", text)        # never apt upgrade
     assert not re.search(r"^\s*(sudo\s+)?(reboot|systemctl\s+reboot|shutdown)", text, re.M)
 
 
-def _bootstrap_box(tmp: Path, with_ap: bool = False, installed: str = "*") -> tuple[Path, Path, dict]:
+def test_bootstrap_pins_the_engine_that_build_sh_makes():
+    """D-019: the commit and the binary's sha256 are the same in bootstrap.sh and in the build recipe,
+    so build.sh's "this is the binary measured on the box" and bootstrap's check agree. The old
+    engine stays pinned by its release tarball and binary."""
+    text = BOOTSTRAP.read_text()
+    build = (BOX / "tools" / "engine-build" / "build.sh").read_text()
+    assert re.fullmatch(r"[0-9a-f]{40}", _pinned("PIN", build)) and _pinned("CDSP_PIN") == _pinned("PIN", build)
+    assert re.fullmatch(r"[0-9a-f]{64}", PIN_SHA256) and PIN_SHA256 == _pinned("PIN_SHA256", build)
+    assert re.search(r"^CDSP_PIN_URL=", text, re.M)         # the one place for a download, once hosted
+    assert _pinned("CDSP_OLD_URL").endswith("/releases/download/v5.0.0-beta.1/camilladsp-linux-aarch64.tar.gz")
+    for var in ("CDSP_OLD_TGZ_SHA256", "CDSP_OLD_BIN_SHA256"):
+        assert re.fullmatch(r"[0-9a-f]{64}", _pinned(var)), var
+
+
+def _bootstrap_box(tmp: Path, with_ap: bool = False, installed: str = "*", engine: str | None = "pinned",
+                   pin_url: str = "") -> tuple[Path, Path, dict]:
     """bootstrap.sh next to a fake install.sh/k1000-lean.sh; fake dpkg says `installed` (a case
-    pattern) is installed. Returns (box dir, fake bin dir, env)."""
+    pattern) is installed. The engine is a fake of kind `engine` (None: none) at tmp/usr-local-bin;
+    `install` copies, `curl` serves tmp/download. `pin_url` fills CDSP_PIN_URL in the copy.
+    Returns (box dir, fake bin dir, env)."""
     box = tmp / "box"
     (box / "tools").mkdir(parents=True)
-    shutil.copy(BOOTSTRAP, box / "bootstrap.sh")
+    (box / "bootstrap.sh").write_text(BOOTSTRAP.read_text().replace("\nCDSP_PIN_URL=\n", f"\nCDSP_PIN_URL={pin_url}\n"))
     helptext = "#   sudo ./install.sh --boot ...\n" + ("#   sudo ./install.sh --ap   access point\n" if with_ap else "")
     (box / "install.sh").write_text(f'#!/bin/sh\ncase $1 in --help) printf "{helptext}" ;; '
                                     '--deps) printf "python3-qrcode\\npython3-smbus2\\n" ;; *) echo RAN-INSTALL "$@" ;; esac\n')
@@ -2156,8 +2197,18 @@ def _bootstrap_box(tmp: Path, with_ap: bool = False, installed: str = "*") -> tu
     fb = tmp / "bin"
     fb.mkdir()
     _bin(fb, "dpkg", f'case $1 in --print-architecture) echo arm64 ;; -s) case $2 in {installed}) exit 0 ;; esac; exit 1 ;; esac\n')
-    env = {k: v for k, v in os.environ.items() if k != "INVOCATION_ID"}
-    return box, fb, dict(env, PATH=f"{fb}:/usr/bin:/bin")
+    cdsp = tmp / "usr-local-bin" / "camilladsp"
+    cdsp.parent.mkdir(parents=True, exist_ok=True)
+    if engine is not None:
+        _fake_engine(cdsp, engine)
+    _bin(fb, "sha256sum", FAKE_SHA256SUM)
+    _bin(fb, "install", 'while [ $# -gt 2 ]; do shift; done\ncp "$1" "$2" && chmod 755 "$2"\n')
+    _bin(fb, "curl", f'echo "curl $*" >> "{tmp}/curl-calls"\n'
+                     'while [ $# -gt 0 ]; do case $1 in -o) out=$2; shift ;; esac; shift; done\n'
+                     f'[ -f "{tmp}/download" ] || exit 6\ncp "{tmp}/download" "$out"\n')
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("INVOCATION_ID", "CAMILLADSP_BINARY", "CAMILLADSP_TARBALL")}
+    return box, fb, dict(env, PATH=f"{fb}:/usr/bin:/bin", K1000_BOOTSTRAP_CDSP=str(cdsp))
 
 
 @pytest.mark.parametrize("with_ap", [False, True])
@@ -2171,9 +2222,8 @@ def test_bootstrap_dry_run_runs_install_then_lean_and_uses_ap_when_offered(tmp_p
     flags = "--boot --headless --ap" if with_ap else "--boot --headless"
     assert f"would run: install.sh {flags} (" in out          # said, not counted (it has no dry run)
     assert "lean --dry-run" in out
-    m = re.search(r"k1000-bootstrap: dry run: (\d+) changes", out)
-    pinned = Path("/usr/local/bin/camilladsp").exists() and "pinned build, nothing to do" in out
-    assert m and int(m.group(1)) == (0 if pinned else 1) + 3, out
+    assert "engine: CamillaDSP 5.0.0-beta.2 (0930f9b), the pinned build (D-019): nothing to do" in out
+    assert "k1000-bootstrap: dry run: 3 changes" in out, out   # lean's 3, the pinned engine none
 
 
 def test_bootstrap_runs_apt_update_only_when_a_package_is_missing(tmp_path):
@@ -2189,21 +2239,35 @@ def test_bootstrap_runs_apt_update_only_when_a_package_is_missing(tmp_path):
 
 
 def test_bootstrap_real_run_detaches_into_a_systemd_unit(tmp_path):
-    box, fb, env = _bootstrap_box(tmp_path)
+    box, fb, env = _bootstrap_box(tmp_path, engine="old")
+    _fake_engine(tmp_path / "out" / "camilladsp", "pinned")
     _bin(fb, "id", 'echo 0\n')
     logdir = tmp_path / "logs"
     _bin(fb, "systemd-run", f'echo "systemd-run $*" >> "{tmp_path}/calls"\n'
                             'for a in "$@"; do case $a in --setenv=K1000_BOOTSTRAP_RC=*) rc=${a#--setenv=K1000_BOOTSTRAP_RC=} ;; '
                             'StandardOutput=append:*) log=${a#StandardOutput=append:} ;; esac; done\n'
                             'echo "k1000-bootstrap: 0 changes: this card is already a K1000" >> "$log"\necho 0 > "$rc"\n')
-    env = dict(env, K1000_BOOTSTRAP_LOGDIR=str(logdir), K1000_REVISION="abc1234")
-    r = subprocess.run(["bash", str(box / "bootstrap.sh")], capture_output=True, text=True, env=env)
+    env = dict(env, K1000_BOOTSTRAP_LOGDIR=str(logdir), K1000_REVISION="abc1234", CAMILLADSP_BINARY="out/camilladsp")
+    r = subprocess.run(["bash", str(box / "bootstrap.sh"), "--no-ap"], capture_output=True, text=True, env=env, cwd=tmp_path)
     assert r.returncode == 0, r.stdout + r.stderr
     call = (tmp_path / "calls").read_text()
     assert "--collect" in call and "--unit=k1000-bootstrap-" in call and "--setenv=K1000_REVISION=abc1234" in call
-    assert call.rstrip().endswith(f"{box.resolve()}/bootstrap.sh")
+    # the unit starts in /: the engine binary is handed on by its full path
+    assert f"--setenv=CAMILLADSP_BINARY={tmp_path.resolve()}/out/camilladsp " in call
+    assert call.rstrip().endswith(f"{box.resolve()}/bootstrap.sh --no-ap")
     assert "running as the systemd unit k1000-bootstrap-" in r.stdout and "already a K1000" in r.stdout
     assert "RAN-INSTALL" not in r.stdout                     # nothing ran in the SSH session itself
+
+
+def test_bootstrap_without_an_engine_to_install_stops_before_it_detaches(tmp_path):
+    box, fb, env = _bootstrap_box(tmp_path, engine="old")
+    _bin(fb, "id", 'echo 0\n')
+    _bin(fb, "systemd-run", f'echo "systemd-run $*" >> "{tmp_path}/calls"\n')
+    r = subprocess.run(["bash", str(box / "bootstrap.sh")], capture_output=True, text=True,
+                       env=dict(env, K1000_BOOTSTRAP_LOGDIR=str(tmp_path / "logs")))
+    assert r.returncode == 1 and "no engine to install" in r.stderr, r.stdout + r.stderr
+    assert not (tmp_path / "calls").exists() and not (tmp_path / "logs").exists()
+    assert "running as the systemd unit" not in r.stdout
 
 
 def _ssh_block(tmp: Path, journal: str, sshd_ok: bool = True, keys: int = 1, dry: int = 0) -> tuple[subprocess.CompletedProcess, Path]:
@@ -2260,7 +2324,6 @@ def test_bootstrap_ssh_dry_run_writes_nothing(tmp_path):
 
 # --------------------------------------------------------------------------- bootstrap container test (F1-F6)
 # Findings of the bootstrap run on a fresh Raspberry Pi OS Lite card in an emulated container.
-CDSP_PIN = re.search(r"^CDSP_BIN_SHA256=([0-9a-f]{64})$", BOOTSTRAP.read_text(), re.M).group(1)
 INSTALL_DONE = "k1000-install: deployed abc1234: 0 changes\n"
 CLOUD_INIT_ON = ("k1000-lean: cloud-init left on: k1000-console.service has not run at this boot. "
                  "Without the guard, a faster boot starts k1000 before the panel registers\n")
@@ -2268,12 +2331,13 @@ CLOUD_INIT_ON = ("k1000-lean: cloud-init left on: k1000-console.service has not 
 
 def _bootstrap_run(tmp: Path, *args: str, install_out: str = INSTALL_DONE, install_rc: int = 0,
                    lean_out: str = "k1000-lean: 0 changes\n", installed: str = "*", with_ap: bool = True,
+                   engine: str | None = "pinned", pin_url: str = "",
                    **env_extra: str) -> tuple[subprocess.CompletedProcess, str]:
     """bootstrap.sh as root, in the foreground (K1000_BOOTSTRAP_FOREGROUND=1), on fakes only:
-    install.sh and k1000-lean.sh print what they are given (lean also its environment), CamillaDSP
-    is the pinned build, k1000 has no SSH key (step 4 only warns), apt-get and systemd-run only
-    record their calls. Returns (the run, the recorded calls)."""
-    box, fb, env = _bootstrap_box(tmp, with_ap, installed)
+    install.sh and k1000-lean.sh print what they are given (lean also its environment), the engine
+    is a fake of kind `engine` (default: the pinned build), k1000 has no SSH key (step 4 only
+    warns), apt-get and systemd-run only record their calls. Returns (the run, the recorded calls)."""
+    box, fb, env = _bootstrap_box(tmp, with_ap, installed, engine, pin_url)
     calls = tmp / "calls"
     calls.write_text("")
     (tmp / "install.out").write_text(install_out)
@@ -2286,7 +2350,6 @@ def _bootstrap_run(tmp: Path, *args: str, install_out: str = INSTALL_DONE, insta
         '#!/bin/sh\necho "lean K1000_LEAN_FOREGROUND=${K1000_LEAN_FOREGROUND:-unset} '
         f'INVOCATION_ID=${{INVOCATION_ID:-unset}} $*" >> "{calls}"\ncat "{tmp}/lean.out"\n')
     _bin(fb, "id", '[ "$1" = -u ] && { echo 0; exit 0; }\nexit 1\n')
-    _bin(fb, "sha256sum", f'echo "{CDSP_PIN}  $1"\n')
     _bin(fb, "apt-get", f'echo "DEBIAN_FRONTEND=${{DEBIAN_FRONTEND:-unset}} apt-get $*" >> "{calls}"\n')
     _bin(fb, "systemd-run", f'echo "systemd-run $*" >> "{calls}"\nexit 1\n')
     _bin(fb, "journalctl", "exit 0\n")
@@ -2426,6 +2489,184 @@ def test_bootstrap_dry_run_on_a_finished_card_is_0_changes(tmp_path):
     (tmp_path / "noap2" / "apetc" / "ap.info").write_text("ssid=K1000\nband=a\nstate=down\n")
     r, _ = _bootstrap_run(tmp_path / "noap2", "--dry-run", "--no-ap", lean_out=lean)
     assert "already marked down" in r.stdout and "dry run: 0 changes" in r.stdout, r.stdout
+
+
+# --------------------------------------------------------------------------- bootstrap: the engine (D-019)
+DRY_LEAN = "k1000-lean: dry run: 0 changes\n"
+OLD_WARNING = ("WARNING: --old-engine, CamillaDSP 5.0.0-beta.1: it does NOT meet D-018's 10 ms in to out: "
+               "never under 12.5 ms, and 13 to 15 ms more after one dropout (docs/17)")
+
+
+def _cdsp(tmp: Path) -> Path:
+    return tmp / "usr-local-bin" / "camilladsp"
+
+
+def _engine_left(tmp: Path, kind: str | None) -> bool:
+    """The fake engine of kind `kind` is still the one in place (None: still none)."""
+    return _cdsp(tmp).read_text().count(ENGINES[kind][0]) == 1 if kind else not _cdsp(tmp).exists()
+
+
+def _only_warnings(out: str) -> bool:
+    """Before step 1 a run prints only its checks' warnings (not trixie, no SSH key)."""
+    return all(line.startswith("k1000-bootstrap: WARNING: ") for line in out.splitlines())
+
+
+def _old_tarball(tmp: Path, sha: str = OLD_TGZ_SHA256) -> Path:
+    """The 5.0.0-beta.1 release tarball, faked: a fake old engine named camilladsp in it, and the
+    tarball's sha256 (for the fake sha256sum) beside it."""
+    import tarfile
+    eng = _fake_engine(tmp / "rel" / "camilladsp", "old")
+    tgz = tmp / "rel" / "camilladsp-linux-aarch64.tar.gz"
+    with tarfile.open(tgz, "w:gz") as t:
+        t.add(eng, arcname="camilladsp")
+    eng.unlink()
+    Path(f"{tgz}.sha256").write_text(sha + "\n")
+    return tgz
+
+
+@pytest.mark.parametrize("dry", [False, True], ids=["run", "dry"])
+def test_bootstrap_keeps_the_pinned_engine_and_never_reads_a_given_binary(tmp_path, dry):
+    """The second bring-up run, after a power cycle: the CAMILLADSP_BINARY of the first may be gone."""
+    bindir = _cdsp(tmp_path).parent
+    args = ("--dry-run",) if dry else ()
+    r, calls = _bootstrap_run(tmp_path, *args, lean_out=DRY_LEAN if dry else "k1000-lean: 0 changes\n",
+                              CAMILLADSP_BINARY=str(tmp_path / "gone" / "camilladsp"))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "engine: CamillaDSP 5.0.0-beta.2 (0930f9b), the pinned build (D-019): nothing to do\n" in r.stdout
+    assert ("dry run: 0 changes" if dry else "0 changes: this card is already a K1000") in r.stdout
+    assert _cdsp(tmp_path).read_text().count(PIN_SHA256) == 1 and sorted(p.name for p in bindir.iterdir()) == ["camilladsp"]
+    assert "WARNING: --old-engine" not in r.stdout and not (tmp_path / "curl-calls").exists()
+
+
+@pytest.mark.parametrize("dry", [False, True], ids=["run", "dry"])
+@pytest.mark.parametrize("engine", [None, "old", "other"])
+def test_bootstrap_without_the_pinned_engine_or_a_binary_stops_before_any_change(tmp_path, engine, dry):
+    """A fresh card, the old engine, another build: no silent install of the old engine, nothing
+    changed (not even apt, though i2c-tools is missing), and the way to the pinned build."""
+    args = ("--no-ap", "--dry-run") if dry else ("--no-ap",)
+    r, calls = _bootstrap_run(tmp_path, *args, engine=engine, installed="python3-qrcode|python3-smbus2")
+    assert r.returncode == 1, r.stdout + r.stderr
+    err = r.stderr
+    assert (f"k1000-bootstrap: ERROR: no engine to install: this box has {ENGINE_IS[engine]} at {_cdsp(tmp_path)}, "
+            "and no CAMILLADSP_BINARY was given. Nothing was changed.\n") in err
+    assert "box/tools/engine-build/build.sh" in err and "scp out/camilladsp k1000:/tmp/camilladsp" in err
+    assert f"sudo CAMILLADSP_BINARY=/tmp/camilladsp {(tmp_path / 'box').resolve()}/bootstrap.sh {' '.join(args)}  " in err
+    assert "add --old-engine: it does NOT meet D-018's 10 ms in to out" in err
+    assert calls == "" and _only_warnings(r.stdout)           # no apt, no install.sh, no lean: nothing ran
+    assert _engine_left(tmp_path, engine) and not (tmp_path / "curl-calls").exists()
+
+
+@pytest.mark.parametrize("engine", [None, "old", "other"])
+def test_bootstrap_installs_the_pinned_engine_from_a_local_binary(tmp_path, engine):
+    """Offline: the binary build.sh made. The dry run says it, the run does it, a re-run keeps it."""
+    build = _fake_engine(tmp_path / "out" / "camilladsp", "pinned")
+    r, _ = _bootstrap_run(tmp_path, "--dry-run", lean_out=DRY_LEAN, engine=engine, CAMILLADSP_BINARY=str(build))
+    assert r.returncode == 0, r.stdout + r.stderr
+    replaces = f"; it replaces {ENGINE_IS[engine]}" if engine else ""
+    assert (f"would: install CamillaDSP, the pinned build (D-019, next5 0930f9b), into {_cdsp(tmp_path)} "
+            f"from {build} (sha256 checked{replaces})\n") in r.stdout
+    assert "dry run: 1 changes" in r.stdout
+    assert _engine_left(tmp_path, engine)
+
+    r, _ = _bootstrap_run(tmp_path / "real", engine=engine, CAMILLADSP_BINARY=str(build))
+    assert r.returncode == 0, r.stdout + r.stderr
+    cdsp = _cdsp(tmp_path / "real")
+    assert cdsp.read_text() == build.read_text() and os.access(cdsp, os.X_OK)
+    replaced = f" (it replaces {ENGINE_IS[engine]})" if engine else ""
+    assert (f"installed {cdsp}: CamillaDSP 5.0.0-beta.2 (0930f9b), the pinned build (D-019, next5 0930f9b)"
+            f"{replaced}\n") in r.stdout
+    assert "k1000-bootstrap: 1 changes. Now power-cycle the box" in r.stdout
+    assert not list(cdsp.parent.glob("*.k1000-new")) and not (tmp_path / "real" / "curl-calls").exists()
+    assert "--old-engine" not in r.stdout
+
+
+@pytest.mark.parametrize("dry", [False, True], ids=["run", "dry"])
+@pytest.mark.parametrize("given", ["other", "missing"])
+def test_bootstrap_refuses_a_binary_that_is_not_the_pinned_build(tmp_path, given, dry):
+    path = tmp_path / "out" / "camilladsp"
+    if given == "other":
+        _fake_engine(path, "other")
+    args = ("--dry-run",) if dry else ()
+    r, calls = _bootstrap_run(tmp_path, *args, engine="old", CAMILLADSP_BINARY=str(path))
+    assert r.returncode == 1 and calls == "" and _only_warnings(r.stdout), r.stdout + r.stderr
+    if given == "other":
+        assert (f"ERROR: CAMILLADSP_BINARY={path} is not the pinned build (sha256 {'ab' * 32}, expected "
+                f"{PIN_SHA256}). Nothing was changed.") in r.stderr
+        assert "this is the binary measured on the box" in r.stderr
+    else:
+        assert f"ERROR: CAMILLADSP_BINARY={path}: no such file. Nothing was changed" in r.stderr
+    assert _engine_left(tmp_path, "old")
+
+
+def test_bootstrap_puts_the_old_engine_back_only_with_old_engine(tmp_path):
+    """The fallback: its tarball alone never installs it; --old-engine does, and says what it costs."""
+    tgz = _old_tarball(tmp_path)
+    # the pinned build stays, whatever tarball is given
+    r, _ = _bootstrap_run(tmp_path / "a", CAMILLADSP_TARBALL=str(tgz))
+    assert r.returncode == 0 and "the pinned build (D-019): nothing to do" in r.stdout, r.stdout + r.stderr
+    assert _cdsp(tmp_path / "a").read_text().count(PIN_SHA256) == 1
+    # without the pinned build, the tarball alone is a stop that names --old-engine
+    r, calls = _bootstrap_run(tmp_path / "b", engine="other", CAMILLADSP_TARBALL=str(tgz))
+    assert r.returncode == 1 and calls == "", r.stdout + r.stderr
+    assert "CAMILLADSP_TARBALL is the old engine's tarball: it is used with --old-engine only." in r.stderr
+    # --old-engine, dry: said, with the warning, nothing changed
+    r, _ = _bootstrap_run(tmp_path / "c", "--dry-run", "--old-engine", lean_out=DRY_LEAN, CAMILLADSP_TARBALL=str(tgz))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (f"would: install CamillaDSP, the OLD engine, 5.0.0-beta.1 (--old-engine), into {_cdsp(tmp_path / 'c')} "
+            f"from {tgz} (sha256 checked; it replaces the pinned build (D-019))\n") in r.stdout
+    assert r.stdout.count(OLD_WARNING) == 2 and r.stdout.rstrip().endswith(OLD_WARNING)
+    assert _cdsp(tmp_path / "c").read_text().count(PIN_SHA256) == 1
+    # --old-engine, offline from the tarball: installed, and said twice, the last line included
+    r, _ = _bootstrap_run(tmp_path / "d", "--old-engine", CAMILLADSP_TARBALL=str(tgz))
+    assert r.returncode == 0, r.stdout + r.stderr
+    cdsp = _cdsp(tmp_path / "d")
+    assert cdsp.read_text().count(ENGINES["old"][0]) == 1
+    assert (f"installed {cdsp}: CamillaDSP 5.0.0-beta.1 (48bcd28), the OLD engine, 5.0.0-beta.1 (--old-engine) "
+            "(it replaces the pinned build (D-019))\n") in r.stdout
+    assert r.stdout.count(OLD_WARNING) == 2 and r.stdout.rstrip().endswith(OLD_WARNING)
+    assert not (tmp_path / "d" / "curl-calls").exists()
+    # --old-engine on the old engine: kept, still warned
+    r, _ = _bootstrap_run(tmp_path / "e", "--old-engine", engine="old")
+    assert r.returncode == 0 and "0 changes: this card is already a K1000" in r.stdout, r.stdout + r.stderr
+    assert "engine: CamillaDSP 5.0.0-beta.1 (48bcd28), the old engine, 5.0.0-beta.1: nothing to do\n" in r.stdout
+    assert r.stdout.count(OLD_WARNING) == 2
+    # --old-engine with internet: from the release, checked after the download
+    r, _ = _bootstrap_run(tmp_path / "f", "--dry-run", "--old-engine", lean_out=DRY_LEAN, engine=None)
+    assert f"from {_pinned('CDSP_OLD_URL')} (sha256 checked after the download)\n" in r.stdout, r.stdout
+
+
+@pytest.mark.parametrize("case, want", [
+    ("both", "--old-engine and CAMILLADSP_BINARY name two different engines: give one. Nothing was changed"),
+    ("bad-tarball", "is not the 5.0.0-beta.1 release tarball (missing, or another sha256). Nothing was changed"),
+])
+def test_bootstrap_old_engine_refusals_change_nothing(tmp_path, case, want):
+    tgz = _old_tarball(tmp_path, sha=OLD_TGZ_SHA256 if case == "both" else "cd" * 32)
+    extra = {"CAMILLADSP_BINARY": str(_fake_engine(tmp_path / "out" / "camilladsp", "pinned"))} if case == "both" else {}
+    r, calls = _bootstrap_run(tmp_path, "--old-engine", engine="other", CAMILLADSP_TARBALL=str(tgz), **extra)
+    assert r.returncode == 1 and want in r.stderr and calls == "", r.stdout + r.stderr
+    assert _engine_left(tmp_path, "other")
+
+
+def test_bootstrap_downloads_the_pinned_build_once_its_url_is_filled_in(tmp_path):
+    """CDSP_PIN_URL is empty until the hosting is decided; filled in, the download is checked like a
+    local binary, and a wrong download installs nothing."""
+    url = "https://downloads.example.org/k1000/camilladsp"
+    r, _ = _bootstrap_run(tmp_path / "dry", "--dry-run", lean_out=DRY_LEAN, engine=None, pin_url=url)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (f"would: install CamillaDSP, the pinned build (D-019, next5 0930f9b), into {_cdsp(tmp_path / 'dry')} "
+            f"from {url} (sha256 checked after the download)\n") in r.stdout
+    assert not (tmp_path / "dry" / "curl-calls").exists()
+    for sub, kind, rc in (("ok", "pinned", 0), ("bad", "other", 1)):
+        tmp = tmp_path / sub
+        _fake_engine(tmp / "download", kind)
+        r, calls = _bootstrap_run(tmp, engine=None, pin_url=url)
+        assert r.returncode == rc, r.stdout + r.stderr
+        assert url in (tmp / "curl-calls").read_text()
+        if rc == 0:
+            assert _cdsp(tmp).read_text().count(PIN_SHA256) == 1 and f"installed {_cdsp(tmp)}: " in r.stdout
+        else:
+            assert f"CamillaDSP binary hash mismatch ({url}): nothing installed" in r.stderr
+            assert not _cdsp(tmp).exists() and "install " not in calls
 
 
 def test_bootstrap_installs_its_tools_without_debconf_prompts(tmp_path):

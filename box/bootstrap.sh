@@ -10,13 +10,23 @@
 #                                               marked down (net/setup-ap.sh --down): a spare card
 #                                               after a phone no-go. Later runs, with or without
 #                                               --no-ap, keep it down; setup-ap.sh --up lifts it
+#   sudo /opt/k1000-src/bootstrap.sh --old-engine  the old engine instead of the pinned build:
+#                                               CamillaDSP 5.0.0-beta.1 from its release, the
+#                                               fallback that played the gig of 18 Oct. It does NOT
+#                                               meet D-018's 10 ms (step 2)
 #
 # The card must already have the k1000 user with its SSH key (Raspberry Pi Imager settings), and
 # the box needs internet (apt, GitHub). Steps, each one skipped when already done:
 #   1. apt-get update, only when a package K1000 needs is missing (TOOLS below, install.sh --deps),
 #      then the operator tools listed in TOOLS (install.sh installs its own APT_DEPS in step 3)
-#   2. CamillaDSP 5.0.0-beta.1 -> /usr/local/bin/camilladsp: the release tarball and the binary are
-#      both checked against pinned sha256 sums (the version string alone cannot tell builds apart)
+#   2. The engine -> /usr/local/bin/camilladsp: the pinned build of D-019, CamillaDSP from upstream
+#      `next5` at 0930f9b, made by tools/engine-build/build.sh and checked against its pinned
+#      sha256 (the version string alone cannot tell builds apart). No release carries it, so there
+#      is no download yet: give the binary with CAMILLADSP_BINARY. A box that runs it keeps it. A
+#      box with another engine or none, and no binary given: the run stops before it changes
+#      anything, and says how to build and give it. --old-engine installs 5.0.0-beta.1 instead
+#      (its release tarball and binary checked against their own sums): never under 12.5 ms in to
+#      out, and 13 to 15 ms more after one dropout (docs/17)
 #   3. install.sh --boot --headless --ap: the K1000 units, the ZynScreen overlay, I2C for the knobs,
 #      CamillaGUI (pinned by hash in install.sh), boot to the console, the phone's access point and
 #      its fence (D-007, net/setup-ap.sh; the phone certificate is a separate step: README). A no-go
@@ -35,29 +45,42 @@
 # K1000_BOOTSTRAP_FOREGROUND=1 runs in place, k1000-lean.sh included (it never detaches when
 # bootstrap.sh runs it).
 #
-# CAMILLADSP_TARBALL=<path> installs CamillaDSP from a local copy of the release tarball (offline);
+# CAMILLADSP_BINARY=<path> installs the engine from the binary tools/engine-build/build.sh made
+# (offline too; not read on a box that already runs the pinned build);
+# CAMILLADSP_TARBALL=<path> gives the old engine's release tarball (offline; --old-engine only);
 # CAMILLAGUI_TARBALL=<path> does the same for CamillaGUI (passed on to install.sh);
 # K1000_REVISION=<text> is passed on to install.sh (what /opt/k1000/REVISION records).
 set -euo pipefail
 
 SRC=$(cd "$(dirname "$0")" && pwd -P)
-# CamillaDSP v5.0.0-beta.1, linux aarch64 (D-004): the binary on the first box came from this
-# tarball (same sha256), and reports "CamillaDSP 5.0.0-beta.1 (48bcd28)".
-CDSP_URL=https://github.com/HEnquist/camilladsp/releases/download/v5.0.0-beta.1/camilladsp-linux-aarch64.tar.gz
-CDSP_TGZ_SHA256=ebecf0c1cfaff12cd93bee033f45b71784f9f7efec34814b9f72fbb29876b493
-CDSP_BIN_SHA256=d74325130dc323a67468523704fa8e815c6de7ca656788b7c3a36a3d51391ff5
-CDSP=/usr/local/bin/camilladsp
+# The engine (D-019): upstream CamillaDSP, branch next5, at this commit, built for the box by
+# tools/engine-build/build.sh (its PIN and PIN_SHA256 are these two). It reports
+# "CamillaDSP 5.0.0-beta.2 (0930f9b)". The sha256 is the binary's: the build that was measured.
+CDSP_PIN=0930f9bbfefa34a7b47c47497575f231dbe22b48
+CDSP_PIN_SHA256=dd4106c927a5de2b31776cc28d797a3f42fb9b7d02deb928f45a6feee057d43c
+# >>> HOSTING OF THE PINNED BUILD: not decided yet (the owner's call). Once it is, the URL of the
+# binary itself (not an archive) goes here; it is checked against CDSP_PIN_SHA256 above, like a
+# CAMILLADSP_BINARY file. Empty: no download, a fresh card needs CAMILLADSP_BINARY.
+CDSP_PIN_URL=
+# The old engine, with --old-engine only: CamillaDSP v5.0.0-beta.1, linux aarch64 (D-004), the
+# engine of the gig of 18 Oct. Its binary reports "CamillaDSP 5.0.0-beta.1 (48bcd28)".
+CDSP_OLD_URL=https://github.com/HEnquist/camilladsp/releases/download/v5.0.0-beta.1/camilladsp-linux-aarch64.tar.gz
+CDSP_OLD_TGZ_SHA256=ebecf0c1cfaff12cd93bee033f45b71784f9f7efec34814b9f72fbb29876b493
+CDSP_OLD_BIN_SHA256=d74325130dc323a67468523704fa8e815c6de7ca656788b7c3a36a3d51391ff5
+CDSP_OLD_LATE="it does NOT meet D-018's 10 ms in to out: never under 12.5 ms, and 13 to 15 ms more after one dropout (docs/17)"
+CDSP=${K1000_BOOTSTRAP_CDSP:-/usr/local/bin/camilladsp}     # override: tests only
 # Operator tools that Raspberry Pi OS Lite lacks: i2cdetect for the knob board (I2C 0x20).
 TOOLS=(i2c-tools)
 SSHD_KEYONLY=/etc/ssh/sshd_config.d/10-k1000-keyonly.conf
 LOGDIR=${K1000_BOOTSTRAP_LOGDIR:-/var/log/k1000-bootstrap}     # override: tests only
 ARGS=("$@")
 
-DRY=0 NO_AP=0
+DRY=0 NO_AP=0 OLD_ENGINE=0
 for arg in "$@"; do
   case $arg in
     --dry-run) DRY=1 ;;
     --no-ap) NO_AP=1 ;;
+    --old-engine) OLD_ENGINE=1 ;;
     -h|--help) awk 'NR > 2 && /^#/ { sub(/^# ?/, ""); print; next } NR > 2 { exit }' "$0"; exit 0 ;;
     *) echo "bootstrap.sh: unknown option '$arg' (try --help)" >&2; exit 2 ;;
   esac
@@ -75,6 +98,52 @@ grep -q '^VERSION_CODENAME=trixie' /etc/os-release || note "WARNING: not trixie 
 KEYS_OK=0
 if id k1000 >/dev/null 2>&1 && [ -s ~k1000/.ssh/authorized_keys ]; then KEYS_OK=1; else
   note "WARNING: no k1000 login user with an SSH key: create it with Raspberry Pi Imager (install.sh would make a system user without a login)"
+fi
+
+# --- the engine: what step 2 does, decided before anything changes --------------------------------
+# A run that has no engine to install stops here, before apt and before it detaches: the same words
+# in a dry run and in a real one, and nothing changed. Never the old engine without --old-engine.
+sha256_of() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1 || true; }
+engine_is() {     # what $CDSP holds, in words, from its sha256 ($1)
+  if [ -z "$1" ]; then echo "no engine"
+  elif [ "$1" = "$CDSP_PIN_SHA256" ]; then echo "the pinned build (D-019)"
+  elif [ "$1" = "$CDSP_OLD_BIN_SHA256" ]; then echo "the old engine, 5.0.0-beta.1"
+  else echo "another build ($("$CDSP" --version 2>&1 | head -n 1), sha256 ${1:0:12}...)"
+  fi
+}
+for e in CAMILLADSP_BINARY CAMILLADSP_TARBALL; do     # the detached run below starts in /
+  if [ -n "${!e:-}" ]; then printf -v "$e" %s "$(realpath -m -- "${!e}")"; fi
+done
+have=$(sha256_of "$CDSP")
+have_is=$(engine_is "$have")
+ENGINE=keep ENGINE_FROM=
+if [ $OLD_ENGINE = 1 ]; then
+  [ -z "${CAMILLADSP_BINARY:-}" ] || die "--old-engine and CAMILLADSP_BINARY name two different engines: give one. Nothing was changed"
+  if [ "$have" != "$CDSP_OLD_BIN_SHA256" ]; then
+    ENGINE=old ENGINE_FROM=${CAMILLADSP_TARBALL:-$CDSP_OLD_URL}
+    [ -z "${CAMILLADSP_TARBALL:-}" ] || [ "$(sha256_of "$CAMILLADSP_TARBALL")" = "$CDSP_OLD_TGZ_SHA256" ] \
+      || die "CAMILLADSP_TARBALL=$CAMILLADSP_TARBALL is not the 5.0.0-beta.1 release tarball (missing, or another sha256). Nothing was changed"
+  fi
+elif [ "$have" = "$CDSP_PIN_SHA256" ]; then
+  :     # kept; a CAMILLADSP_BINARY is not even read (a re-run after a power cycle may have lost it)
+elif [ -n "${CAMILLADSP_BINARY:-}" ]; then
+  sum=$(sha256_of "$CAMILLADSP_BINARY")
+  [ -n "$sum" ] || die "CAMILLADSP_BINARY=$CAMILLADSP_BINARY: no such file. Nothing was changed"
+  [ "$sum" = "$CDSP_PIN_SHA256" ] || die "CAMILLADSP_BINARY=$CAMILLADSP_BINARY is not the pinned build (sha256 $sum, expected $CDSP_PIN_SHA256). Nothing was changed. tools/engine-build/build.sh ends with \"this is the binary measured on the box\" when it made the pinned one"
+  ENGINE=pin ENGINE_FROM=$CAMILLADSP_BINARY
+elif [ -n "$CDSP_PIN_URL" ]; then
+  ENGINE=pin ENGINE_FROM=$CDSP_PIN_URL
+else
+  {
+    note "ERROR: no engine to install: this box has $have_is at $CDSP, and no CAMILLADSP_BINARY was given. Nothing was changed."
+    note "K1000 runs the pinned build of D-019, CamillaDSP from upstream next5 at ${CDSP_PIN:0:7}. No release carries it, so there is no download yet. Build it on a machine with Docker, from the repository, copy it to the box and give it:"
+    note "  box/tools/engine-build/build.sh     (its last line must be: this is the binary measured on the box)"
+    note "  scp out/camilladsp k1000:/tmp/camilladsp"
+    note "  sudo CAMILLADSP_BINARY=/tmp/camilladsp $SRC/$(basename "$0")${ARGS[*]:+ ${ARGS[*]}}     (on the box; K1000_REVISION as before)"
+    note "Or the old engine, CamillaDSP 5.0.0-beta.1 from its release, the fallback that played the gig of 18 Oct: add --old-engine: $CDSP_OLD_LATE."
+    if [ -n "${CAMILLADSP_TARBALL:-}" ]; then note "CAMILLADSP_TARBALL is the old engine's tarball: it is used with --old-engine only."; fi
+  } >&2
+  exit 1
 fi
 
 # --- detach from the terminal ---------------------------------------------------------------------
@@ -102,7 +171,7 @@ if [ $DRY = 0 ] && [ -z "${INVOCATION_ID:-}" ] && [ "${K1000_BOOTSTRAP_FOREGROUN
   mkdir -p "$LOGDIR"
   : > "$log"
   envs=()
-  for e in CAMILLADSP_TARBALL CAMILLAGUI_TARBALL K1000_REVISION; do
+  for e in CAMILLADSP_BINARY CAMILLADSP_TARBALL CAMILLAGUI_TARBALL K1000_REVISION; do
     if [ -n "${!e:-}" ]; then envs+=("--setenv=$e=${!e}"); fi
   done
   systemd-run --quiet --collect --unit="$unit" -p "StandardOutput=append:$log" -p "StandardError=append:$log" \
@@ -140,27 +209,43 @@ else
   fi
 fi
 
-# --- 2. CamillaDSP --------------------------------------------------------------------------------
-have=$(sha256sum "$CDSP" 2>/dev/null | cut -d' ' -f1 || true)
-if [ "$have" = "$CDSP_BIN_SHA256" ]; then
-  note "CamillaDSP: $("$CDSP" --version 2>&1 | head -n 1) (pinned build, nothing to do)"
-elif [ $DRY = 1 ]; then
-  would "install CamillaDSP 5.0.0-beta.1 into $CDSP (${have:+replacing a different build }from ${CAMILLADSP_TARBALL:-$CDSP_URL})"
+# --- 2. the engine --------------------------------------------------------------------------------
+# What to do was decided above, before anything changed.
+if [ $ENGINE = keep ]; then
+  note "engine: $("$CDSP" --version 2>&1 | head -n 1), $have_is: nothing to do"
 else
-  tgz=${CAMILLADSP_TARBALL:-$TMP/camilladsp.tar.gz}
-  if [ -z "${CAMILLADSP_TARBALL:-}" ]; then
-    note "downloading CamillaDSP 5.0.0-beta.1"
-    curl -fsSL --retry 3 -o "$tgz" "$CDSP_URL" || die "CamillaDSP download failed (offline? set CAMILLADSP_TARBALL=<tarball>)"
+  what="the pinned build (D-019, next5 ${CDSP_PIN:0:7})"
+  [ $ENGINE = pin ] || what="the OLD engine, 5.0.0-beta.1 (--old-engine)"
+  if [ $DRY = 1 ]; then
+    how="sha256 checked"
+    case $ENGINE_FROM in https://*|http://*) how="sha256 checked after the download" ;; esac
+    would "install CamillaDSP, $what, into $CDSP from $ENGINE_FROM ($how${have:+; it replaces $have_is})"
+  else
+    bin=$TMP/camilladsp want=$CDSP_PIN_SHA256
+    if [ $ENGINE = old ]; then
+      tgz=${CAMILLADSP_TARBALL:-$TMP/camilladsp.tar.gz} want=$CDSP_OLD_BIN_SHA256
+      if [ -z "${CAMILLADSP_TARBALL:-}" ]; then
+        note "downloading CamillaDSP 5.0.0-beta.1"
+        curl -fsSL --retry 3 -o "$tgz" "$CDSP_OLD_URL" || die "CamillaDSP download failed (offline? set CAMILLADSP_TARBALL=<tarball>)"
+      fi
+      [ "$(sha256_of "$tgz")" = "$CDSP_OLD_TGZ_SHA256" ] || die "CamillaDSP tarball hash mismatch: $tgz"
+      mkdir -p "$TMP/cdsp"
+      tar xzf "$tgz" -C "$TMP/cdsp" camilladsp || die "cannot unpack camilladsp from $tgz"
+      mv "$TMP/cdsp/camilladsp" "$bin"
+    elif [ -n "${CAMILLADSP_BINARY:-}" ]; then
+      cp "$CAMILLADSP_BINARY" "$bin"
+    else
+      note "downloading CamillaDSP, $what"
+      curl -fsSL --retry 3 -o "$bin" "$CDSP_PIN_URL" || die "CamillaDSP download failed (offline? set CAMILLADSP_BINARY=<path>, built by tools/engine-build/build.sh)"
+    fi
+    [ "$(sha256_of "$bin")" = "$want" ] || die "CamillaDSP binary hash mismatch ($ENGINE_FROM): nothing installed"
+    # A new file renamed into place: a running engine keeps its (old) binary until it restarts.
+    install -m 0755 -o root -g root "$bin" "$CDSP.k1000-new"
+    mv -f "$CDSP.k1000-new" "$CDSP"
+    CHANGES=$((CHANGES + 1)); note "installed $CDSP: $("$CDSP" --version 2>&1 | head -n 1), $what${have:+ (it replaces $have_is)}"
   fi
-  echo "$CDSP_TGZ_SHA256  $tgz" | sha256sum -c --quiet - || die "CamillaDSP tarball hash mismatch: $tgz"
-  mkdir -p "$TMP/cdsp"
-  tar xzf "$tgz" -C "$TMP/cdsp" camilladsp || die "cannot unpack camilladsp from $tgz"
-  echo "$CDSP_BIN_SHA256  $TMP/cdsp/camilladsp" | sha256sum -c --quiet - || die "CamillaDSP binary hash mismatch"
-  # A new file renamed into place: a running engine keeps its (old) binary until it restarts.
-  install -m 0755 -o root -g root "$TMP/cdsp/camilladsp" "$CDSP.k1000-new"
-  mv -f "$CDSP.k1000-new" "$CDSP"
-  CHANGES=$((CHANGES + 1)); note "installed $CDSP: $("$CDSP" --version 2>&1 | head -n 1)"
 fi
+if [ $OLD_ENGINE = 1 ]; then note "WARNING: --old-engine, CamillaDSP 5.0.0-beta.1: $CDSP_OLD_LATE"; fi
 
 # --- 3. K1000 itself ------------------------------------------------------------------------------
 flags=(--boot --headless)
@@ -256,6 +341,7 @@ fi
 if [ $DRY = 0 ] && grep -q 'cloud-init left on' "$TMP/lean.log"; then
   note "cloud-init is still on (see above): after the next power cycle, run bootstrap.sh once more to turn it off"
 fi
+if [ $OLD_ENGINE = 1 ]; then note "WARNING: --old-engine, CamillaDSP 5.0.0-beta.1: $CDSP_OLD_LATE"; fi
 if [ $AP_FAILED = 1 ]; then
   note "ERROR: the phone's access point is NOT set up: sudo /opt/k1000/net/setup-ap.sh --status, then run this again"
 fi
