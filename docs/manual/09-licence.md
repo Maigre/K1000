@@ -54,8 +54,9 @@ kind**, and in no event is any author or copyright holder liable for damages ari
 
 K1000 drives loudspeakers that can damage hearing and themselves. Read this before using it:
 
-- **It runs on a beta engine** (CamillaDSP 5.0.0-beta.1) and is a v0. Software fails. The design
-  aims at failing silent, not loud, but that is a design aim, not a guarantee.
+- **It runs on a beta engine** (a build of CamillaDSP's unreleased `next5` branch) and is a v0.
+  Software fails. The design aims at failing silent, not loud, but that is a design aim, not a
+  guarantee.
 - **Keep the bypass ready**: the cables that fed the speakers before K1000, in the case, labelled
   ([chapter 6](06-troubleshooting.md#4-the-bypass)).
 - **Speakers on last, off first.** Do the thump check with your own rig before trusting the power

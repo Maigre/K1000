@@ -81,10 +81,11 @@ Or check out an older commit on the laptop and update as above with `--start`.
 
 ### The engine and the OS
 
-- **CamillaDSP and CamillaGUI are pinned** (versions and sha256 sums in `box/bootstrap.sh` and
-  `box/install.sh`). Moving to another release is a code change: the v5 betas change the config
-  and websocket formats. Test it on the bench, with the test suite and a soak, never shortly
-  before a show.
+- **CamillaDSP and CamillaGUI are pinned** (the engine's commit and sha256 in `box/bootstrap.sh`
+  and `box/tools/engine-build/build.sh`, CamillaGUI's in `box/install.sh`). An update never touches
+  the engine: `install.sh` only warns when it is missing or not 5.x. Moving to another build or
+  release is a code change: the v5 betas change the config and websocket formats. Test it on the
+  bench, with the test suite and a soak, never shortly before a show.
 - **OS updates are manual**: the apt timers are off on purpose (no apt work during a show, no
   internet at gigs). Update on the bench, with time to test: `sudo apt update && sudo apt
   full-upgrade`, then `/opt/k1000/tools/k1000-lean.sh --check` **before** power-cycling, then a

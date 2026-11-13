@@ -16,6 +16,7 @@ All commands below run **on the laptop**, from a clone of the repository, unless
 
 - A laptop with `git`, `ssh` and `rsync`, and a clone of the repository.
 - An SSH key pair on the laptop.
+- Docker, on the laptop or on any other machine, to build the engine once (§3, about two minutes).
 - The box on **Ethernet**, on a network with internet.
 - **Speakers off**, or their XLRs unplugged, for the whole install.
 
@@ -53,9 +54,17 @@ a public-key login of `k1000` since the boot.
 
 ## 3. Run `bootstrap.sh`
 
+The engine first. K1000 runs a build of CamillaDSP from upstream's `next5` branch at a pinned
+commit (decision D-019): it reached 5 to 8 ms in to out on the bench, under D-018's 10 ms
+([`docs/17`](../17-box-record-and-bench.md)), and no release carries it yet, so there is nothing to
+download. `box/tools/engine-build/build.sh` builds it in a Docker container, from the
+repository's root. Built on another machine, copy its `out/camilladsp` to the laptop first.
+
 ```sh
+box/tools/engine-build/build.sh             # its last line must be: this is the binary measured on the box
+scp out/camilladsp k1000:/tmp/camilladsp
 rsync -a --delete --filter='P apk/' --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
-ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/bootstrap.sh"
+ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) CAMILLADSP_BINARY=/tmp/camilladsp /opt/k1000-src/bootstrap.sh"
 ```
 
 Raspberry Pi OS Lite already has `rsync` on the box side (checked on the 2026-10-06 image).
@@ -68,12 +77,29 @@ What it does, each step skipped when already done:
 | Step | What |
 |---|---|
 | 1. apt | `apt-get update` **only when** a package K1000 needs is missing, then the operator tools (`i2c-tools`) |
-| 2. CamillaDSP | 5.0.0-beta.1 into `/usr/local/bin/camilladsp`. The tarball and the binary are both checked against pinned sha256 sums |
+| 2. The engine | The pinned build of D-019 into `/usr/local/bin/camilladsp`, from `CAMILLADSP_BINARY`, checked against its pinned sha256. A box that already runs it keeps it and does not read the file. Any other engine (5.0.0-beta.1 included) or none, and no `CAMILLADSP_BINARY`: **the run stops before step 1**, changes nothing, and prints how to build and give the binary. A binary that is not the pinned build is refused the same way |
 | 3. K1000 | `install.sh --boot --headless --ap`: the services, the screen overlay, I²C for the knobs, CamillaGUI, boot to the console, the phone's Wi-Fi access point and its firewall ([§6](#6-installsh-reference)). An access point kept down by `setup-ap.sh --down` (or `--no-ap`) stays down |
 | 4. SSH | Keys only (`/etc/ssh/sshd_config.d/10-k1000-keyonly.conf`), checked with `sshd -t`, applied at the next boot. Skipped with a warning when no key login was seen |
 | 5. Lean OS | `tools/k1000-lean.sh`: no desktop leftovers, no apt timers, swap in RAM only, a quiet boot ([§7](#7-converting-a-desktop-card)) |
 
 It never reboots and never runs `apt upgrade`.
+
+**The old engine, only when asked.** `--old-engine` installs CamillaDSP 5.0.0-beta.1 from its
+release instead (its tarball and binary checked against their own pinned sums), over whatever
+engine is there, the pinned build included. It is the fallback, the engine of the gig of 18
+October, and it **does not meet the 10 ms of D-018**: it never gets under 12.5 ms in to out, and
+keeps 13 to 15 ms more after one dropout ([`docs/17`](../17-box-record-and-bench.md)). The run
+says so at step 2 and again at the end. Without `--old-engine`, the old engine never comes back:
+not on a re-run, not from its tarball.
+
+**A download, later.** Where a built engine is hosted is not decided. Once it is, its URL goes on
+the marked line `CDSP_PIN_URL=` in `box/bootstrap.sh`; a run with internet then downloads the
+binary and checks it against the same pinned sha256. Until then, `CAMILLADSP_BINARY` it is.
+
+What the tests prove, on fakes: each case above (kept, installed, the stop, a wrong binary,
+`--old-engine`, the download once a URL is set), dry runs included, and that the pin in
+`bootstrap.sh` is the one in `build.sh`. Not yet done on the box: a fresh card with
+`CAMILLADSP_BINARY`.
 
 **It survives a lost SSH session.** A real run starts itself again as a systemd unit,
 `k1000-bootstrap-<time>`, and your terminal only follows its log. If the session drops, the run
@@ -90,8 +116,10 @@ ssh k1000 'tail -f /var/log/k1000-bootstrap/run-<time>.log'
 |---|---|
 | `--dry-run` | Says what it would do, changes nothing. `install.sh` has no dry run, so its changes are not counted: a finished card dry-runs to `0 changes` |
 | `--no-ap` | Everything but the phone's access point, which is marked down (`setup-ap.sh --down`): a spare card after a phone no-go. Later runs, with or without `--no-ap`, keep it down; `sudo /opt/k1000/net/setup-ap.sh --up` lifts it |
+| `--old-engine` | Installs the old engine, CamillaDSP 5.0.0-beta.1, from its release: the fallback, which does not meet D-018's 10 ms (above) |
 | `--help` | Prints its header |
-| `CAMILLADSP_TARBALL=<path>` | Installs CamillaDSP from a local copy of the release tarball (offline) |
+| `CAMILLADSP_BINARY=<path>` | The engine: the binary `box/tools/engine-build/build.sh` made, on the box. Checked against the pinned sha256; not read when the pinned build is installed already |
+| `CAMILLADSP_TARBALL=<path>` | With `--old-engine` only: the old engine's release tarball, offline. Without `--old-engine` it installs nothing |
 | `CAMILLAGUI_TARBALL=<path>` | The same for CamillaGUI (passed on to `install.sh`) |
 | `K1000_REVISION=<text>` | What `/opt/k1000/REVISION` records (passed on to `install.sh`) |
 | `K1000_BOOTSTRAP_FOREGROUND=1` | Runs in place instead of as a unit (for a console on the box), `k1000-lean.sh` included |
@@ -101,7 +129,7 @@ Put the variables after `sudo`, as in the command above.
 | Exit | Meaning |
 |---|---|
 | 0 | Done. The last lines say `N changes. Now power-cycle the box`, `0 changes: this card is already a K1000`, or `0 changes; still to do: cloud-init off (below)` (after the first power cycle, §4) |
-| 1 | An error, printed. Nothing after it ran |
+| 1 | An error, printed. Nothing after it ran. `no engine to install` and a refused `CAMILLADSP_BINARY` stop before step 1: nothing changed |
 | 2 | Unknown option |
 | 3 | CamillaGUI is not installed (offline, or a hash mismatch). The access point may also have failed: read the `ERROR` lines at the end. Run again with internet or `CAMILLAGUI_TARBALL` |
 | 4 | The phone's access point is not set up. Everything else is. `sudo /opt/k1000/net/setup-ap.sh --status`, then run again |
@@ -119,7 +147,9 @@ It refuses anything that is not arm64.
    ```
 
    Expect `active` three times. The panel shows K1000, and Main ramps in to the saved level.
-3. **Run the bootstrap command once more**, then power-cycle again.
+3. **Run the bootstrap command once more**, then power-cycle again. The same command: it keeps
+   the engine now installed and no longer reads `CAMILLADSP_BINARY` (the copy in `/tmp` may be
+   gone after the power cycle).
 
 Why twice: the first run leaves **cloud-init** on. Turning it off makes the boot about 2.6 s
 faster, but then the K1000 service can start before the screen exists, and the Linux text console

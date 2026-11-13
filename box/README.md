@@ -8,7 +8,7 @@ D-009: pages SHOW · ALIGN · SETUP, the buttons, the screen states) in `docs/04
 
 | Unit | What | Depends on |
 |---|---|---|
-| `camilladsp.service` | the audio engine, CamillaDSP 5.0.0-beta.1, user `k1000`, real-time threads | nothing (audio never waits for the UI) |
+| `camilladsp.service` | the audio engine, CamillaDSP: the pinned build of D-019 (upstream `next5` at `0930f9b`, "The engine build" below), user `k1000`, real-time threads | nothing (audio never waits for the UI) |
 | `k1000.service` | `python3 -m k1000` in `/opt/k1000`: knobs, screen, state, persistence, and the phone page (https://10.42.0.1/, `k1000/web/`; ports 80/443/8080 on the AP address only) | wants the engine, copes when it is down |
 | `camillagui.service` | CamillaGUI v5 beta.2 on port 5005 (phone compact view, laptop editor) | nothing; lowest CPU priority, sandboxed |
 | `k1000-console.service` | at boot, waits for the ZynScreen's framebuffer, then keeps the Linux text console off it; done ~3 s later | nothing; k1000 wants it but never waits for it |
@@ -171,9 +171,16 @@ box/tools/engine-build/build.sh                 # -> out/camilladsp; says whethe
 scp out/camilladsp k1000:/tmp/ && ssh k1000 "sudo install -m 755 /tmp/camilladsp /usr/local/bin/camilladsp && camilladsp --version && sudo systemctl restart camilladsp"
 ```
 
-`camilladsp --version` names the commit (`5.0.0-beta.2 (0930f9b)`). The 5.0.0-beta.1 release
-binary still works with this K1000 and stays the fallback: its delay does not come back after an
-underrun, and no setting under chunk 256 holds on it (`docs/17`).
+`camilladsp --version` names the commit (`5.0.0-beta.2 (0930f9b)`). The commit and the binary's
+sha256 are pinned twice, in `build.sh` (`PIN`, `PIN_SHA256`) and in `bootstrap.sh` (`CDSP_PIN`,
+`CDSP_PIN_SHA256`), and a test holds them equal. A fresh card gets this binary from `bootstrap.sh`
+(`CAMILLADSP_BINARY=<path>`, "Fresh card (bootstrap)" below): it has no download yet, because no
+release carries it, and where a built binary is hosted is not decided. Once it is, its URL goes on
+the marked line `CDSP_PIN_URL=` of `bootstrap.sh`, checked against the same sha256.
+
+The 5.0.0-beta.1 release binary still works with this K1000 and stays the fallback, the engine
+of the gig of 18 Oct (`bootstrap.sh --old-engine`). It does not meet D-018's 10 ms: its delay does
+not come back after an underrun, and no setting under chunk 256 holds on it (`docs/17`).
 
 ## Lean OS (`tools/k1000-lean.sh`)
 
@@ -296,16 +303,20 @@ A spare or replacement gig card from nothing (D-006, step 3):
    refuses to take an interface that is a Wi-Fi client). Boot the box on Ethernet, on a network
    with internet. Log in once with your key (`ssh k1000 true`): bootstrap switches SSH to keys
    only only after it has seen that.
-2. From the repo on the laptop:
+2. From the repo on the laptop (the engine build needs Docker, on the laptop or any machine:
+   "The engine build" above; copy its `out/camilladsp` over if it was built elsewhere):
 
    ```sh
+   box/tools/engine-build/build.sh             # its last line must be: this is the binary measured on the box
+   scp out/camilladsp k1000:/tmp/camilladsp
    rsync -a --delete --filter='P apk/' --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
-   ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/bootstrap.sh"
+   ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) CAMILLADSP_BINARY=/tmp/camilladsp /opt/k1000-src/bootstrap.sh"
    ```
 
    It runs as a systemd unit (`k1000-bootstrap-<time>`, log in `/var/log/k1000-bootstrap/`), so a
    lost session does not stop it. It runs `apt-get update` only when a package is missing,
-   installs CamillaDSP 5.0.0-beta.1 (tarball and binary checked against pinned sha256 sums), runs
+   installs the engine from `CAMILLADSP_BINARY` (the pinned build of D-019, checked against its
+   pinned sha256; a box that already runs it keeps it and does not read the file), runs
    `install.sh --boot --headless --ap` (CamillaGUI is pinned there; `--ap` brings up the phone's
    access point, the certificate is the separate step under "Deploy"), switches SSH to keys only (`/etc/ssh/sshd_config.d/10-k1000-keyonly.conf`, the
    first box's file, checked with `sshd -t`, applied at the next boot), then
@@ -323,13 +334,28 @@ A spare or replacement gig card from nothing (D-006, step 3):
    map). Copy the main card's file over (profile pin, the confirmed `controls:`), then
    `sudo systemctl restart k1000`.
 
-- A re-run changes nothing: `0 changes: this card is already a K1000`.
+- A re-run changes nothing: `0 changes: this card is already a K1000`. It needs no
+  `CAMILLADSP_BINARY` once the pinned build is installed (the copy in `/tmp` may be gone after the
+  power cycle).
+- **No engine to install, nothing changed.** A box with another engine (5.0.0-beta.1 included) or
+  none, and no `CAMILLADSP_BINARY`: the run stops before apt and before anything else (exit 1),
+  and says how to build and give the binary. A `CAMILLADSP_BINARY` that is not the pinned build
+  (another sha256) is refused the same way. A dry run stops with the same words.
 - `--dry-run` says what it would do and changes nothing.
 - `--no-ap`: everything but the phone's access point, which is marked down (a spare card after a
   phone no-go); later runs, with or without `--no-ap`, keep it down (`setup-ap.sh --up` lifts it).
-- Offline: `CAMILLADSP_TARBALL=<camilladsp-linux-aarch64.tar.gz>` and
-  `CAMILLAGUI_TARBALL=<camillagui_linux_aarch64.tar.gz>` (put them after `sudo`, like
+- `--old-engine`: the fallback, CamillaDSP 5.0.0-beta.1 from its release (tarball and binary
+  checked against their pinned sha256 sums), in place of whatever engine is there, the pinned
+  build included. It **does not meet D-018's 10 ms** (never under 12.5 ms, and 13 to 15 ms more
+  after one dropout, `docs/17`), and the run says so at step 2 and again at the end. Only with
+  this option: its tarball alone (`CAMILLADSP_TARBALL`) installs nothing.
+- Offline: `CAMILLADSP_BINARY` is a local file already;
+  `CAMILLAGUI_TARBALL=<camillagui_linux_aarch64.tar.gz>`, and with `--old-engine`
+  `CAMILLADSP_TARBALL=<camilladsp-linux-aarch64.tar.gz>` (put them after `sudo`, like
   `K1000_REVISION`).
+- Proven by the tests (`tools/tests/test_sys_tools.py`, on fakes): each of these cases, and that the
+  pin equals `build.sh`'s. Not yet run on the box: a fresh card with `CAMILLADSP_BINARY`, and the
+  bootstrap's check of the box's own binary against the pin.
 
 ## Everyday commands (on the box)
 
@@ -660,8 +686,9 @@ cd /opt/k1000 && python3 -m pytest -q -p no:cacheprovider -m hw              # h
 (headless leftovers, I2C at boot, `--deps`, the phone certificate, `--ap`), the soak tool, the M4
 bring-up tool, `k1000-lean.sh` (the guard, the dry run, the boot-file edits, the power-cycle check,
 the cloud-init gate, the detached run), `bootstrap.sh` (apt only when needed, SSH keys only, the
-detached run, `--no-ap`), `net/setup-ap.sh` (its defaults, `--down` kept by later runs and `--up`,
-every option, both backends, the subnet and Wi-Fi-client refusals, a hostapd that dies after its
+detached run, `--no-ap`, the engine: the pinned build kept, installed from `CAMILLADSP_BINARY` or
+a download URL, the stop without either, `--old-engine`), `net/setup-ap.sh` (its defaults,
+`--down` kept by later runs and `--up`, every option, both backends, the subnet and Wi-Fi-client refusals, a hostapd that dies after its
 start, the fence's caps), the hostapd unit's refusals and `net/k1000-ap-guard.sh`, all against
 fakes (no service, card, package, network or speaker is touched). `tests/test_web.py`,
 `test_qr.py` and `test_phone_wiring.py` cover the phone page, its QR codes and its wiring into

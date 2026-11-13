@@ -26,9 +26,10 @@ how far it generalises.
 
 ## Status
 
-**v0, on a beta engine** (CamillaDSP 5.0.0-beta.1, decision D-004 in
-[`DECISIONS.md`](../../DECISIONS.md)), with the live UI v1 (D-009), the knob fixes and the phone
-page built and accepted on the author's box. The buttons and SETUP follow D-013 (B1 PAGE · B2
+**v0, on a beta engine**: a build of CamillaDSP's `next5` branch at a pinned commit (decision
+D-019 in [`DECISIONS.md`](../../DECISIONS.md); the gig of 18 October ran 5.0.0-beta.1, D-004),
+with the live UI v1 (D-009), the knob fixes and the phone page built and accepted on the author's
+box. The buttons and SETUP follow D-013 (B1 PAGE · B2
 BAND/UNLOCK · B3 NOTCH · B4 MUTE; SETUP by speaker floor), built on 2026-10-13: a box not yet
 updated still runs D-009's buttons (B2 mute, B3 band and unlock, B4 notch). It played its first
 gig on 18 October 2026 with the MOTU M4 (`025b8f8`). Beatmatching against the speakers was

@@ -57,7 +57,7 @@ this chapter is the map and the working habits.
 ## Architecture in one page
 
 ```
-camilladsp.service   CamillaDSP 5.0.0-beta.1, boots MUTED at -40 dB from /var/lib/k1000/active.yml
+camilladsp.service   CamillaDSP, next5 at 0930f9b (D-019), boots MUTED at -40 dB from /var/lib/k1000/active.yml
         ▲ websocket 127.0.0.1:1234
 k1000.service        python3 -m k1000: knobs, screen, phone page, state, persistence
         │ writes /var/lib/k1000/state.json + active.yml (atomic)

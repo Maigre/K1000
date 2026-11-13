@@ -55,8 +55,9 @@ and a phone on the box's own Wi-Fi.
 
 ## Status
 
-**v0, on a beta engine** (CamillaDSP 5.0.0-beta.1). It played its first gig on 18 October 2026,
-on the author's box with the MOTU M4 (`025b8f8`, chunk 256, `target_level` 512). Beatmatching
+**v0, on a beta engine**: a build of CamillaDSP's `next5` branch at a pinned commit (D-019). It
+played its first gig on 18 October 2026, on CamillaDSP 5.0.0-beta.1, on the author's box with the
+MOTU M4 (`025b8f8`, chunk 256, `target_level` 512). Beatmatching
 against the speakers was impossible there, so the latency is the open work now: 10 ms or less in to
 out, never growing, shown on the box (D-018), and no new features until then (D-020). The review
 is [`docs/16`](docs/16-post-gig-audit.md), the bench that followed is [`docs/17`](docs/17-box-record-and-bench.md); the [roadmap](ROADMAP.md) has the details. Use it with
@@ -84,8 +85,10 @@ as `k1000`, from the laptop:
 
 ```sh
 git clone https://github.com/Maigre/K1000 && cd K1000
+box/tools/engine-build/build.sh             # the engine (D-019), with Docker: no download exists yet
+scp out/camilladsp k1000:/tmp/camilladsp
 rsync -a --delete --filter='P apk/' --rsync-path="sudo rsync" box/ k1000:/opt/k1000-src/
-ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) /opt/k1000-src/bootstrap.sh"
+ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) CAMILLADSP_BINARY=/tmp/camilladsp /opt/k1000-src/bootstrap.sh"
 # power-cycle, run the bootstrap line once more, power-cycle again
 ssh k1000 'systemctl is-active camilladsp k1000 camillagui'
 ```

@@ -71,18 +71,19 @@ tops, and EQ. A 3rd and 4th UPA-1P ride on the loop outputs of the first two.
 |---|---|---|
 | OS | **Raspberry Pi OS Lite (64-bit)**, Debian 13 "trixie"; kernel 6.18 on the author's box | Raspberry Pi Imager |
 | Python | 3.13 (the OS's) | apt |
-| Engine | **CamillaDSP 5.0.0-beta.1**, linux aarch64 | `bootstrap.sh` downloads it from GitHub and checks the tarball and the binary against pinned sha256 sums |
+| Engine | **CamillaDSP from upstream's `next5` branch at `0930f9b`**, reports `5.0.0-beta.2 (0930f9b)`, linux aarch64 (decision D-019; it played no gig yet). The fallback: **5.0.0-beta.1**, which does not meet the 10 ms of D-018 | Built by `box/tools/engine-build/build.sh` (Docker), installed by `bootstrap.sh` from that file and checked against its pinned sha256: no release carries it, so no download yet. The fallback: `bootstrap.sh --old-engine`, from its GitHub release, pinned the same way |
 | Laptop editor | **CamillaGUI v5.0.0-beta.2** (its binary reports "5.0.0-beta.1") | `install.sh`, pinned by sha256 |
 | Python packages | python3-websockets, python3-smbus2, python3-libgpiod (gpiod 2.x API), python3-yaml, python3-pil, python3-numpy, python3-qrcode, python3-pytest | apt (`install.sh --deps` lists them) |
 | System tools | rsync, alsa-utils, fonts-dejavu-core, usbutils, hostapd, device-tree-compiler, i2c-tools | apt |
 
-Nothing is vendored: everything is installed from apt or from the projects' own releases.
+Nothing is vendored: everything is installed from apt or from the projects' own releases, except
+the engine, built from upstream's source at a pinned commit (`box/tools/engine-build/`).
 
 ## Network
 
 | When | Needs |
 |---|---|
-| Install and updates | Ethernet with internet: apt, and GitHub for CamillaDSP and CamillaGUI. Offline, give the tarballs with `CAMILLADSP_TARBALL` / `CAMILLAGUI_TARBALL` ([chapter 2](02-installation.md)); apt packages still need a mirror |
+| Install and updates | Ethernet with internet: apt, and GitHub for CamillaGUI (and for the old engine, with `--old-engine`). The engine is a local file (`CAMILLADSP_BINARY`). Offline, give the CamillaGUI tarball with `CAMILLAGUI_TARBALL` ([chapter 2](02-installation.md)); apt packages still need a mirror |
 | At the gig | **None.** The box makes its own Wi-Fi for the phone ("K1000", WPA2, 10.42.0.1/24). Ethernet is never touched by it |
 | The tune | A laptop for the system EQ. **The `/tune` page**: only over the **box's own Wi-Fi**, while SETUP › PHONE › Laptop access is open (2 h at most, [chapter 4 §5.1](04-usage.md#51-laptop-access-and-the-tune-page)) and with the phone servers on (`phone: enabled: true`). **CamillaGUI** (port 5005): over that Wi-Fi the same way, or on a **wired** network with the box. A laptop sharing its connection on the Ethernet cable must not use 10.42.0.0/24, the Wi-Fi's subnet (e.g. 10.43.0.1/24 instead) |
 
