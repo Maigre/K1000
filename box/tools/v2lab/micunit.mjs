@@ -347,7 +347,7 @@ function refSignal(n, rate) {
 run("spectrumrs", () => {
   const ref = JSON.parse(fs.readFileSync(new URL("./spectrum_ref.json", import.meta.url), "utf8"));
   const rows = [];
-  let ok = Object.keys(ref.rates).length === 2;
+  let ok = Object.keys(ref.rates).length === 3;
   for (const [rate, r] of Object.entries(ref.rates)) {
     const est = new R.EngineEstimator(+rate, ref.grid.f0, ref.grid.f1, ref.grid.n);
     const db = R.toDb(est.bands(refSignal(est.n, +rate)));
@@ -356,7 +356,7 @@ run("spectrumrs", () => {
     rows.push(rate + ": fft " + est.n + " / " + r.fft + ", worst " + worst.toFixed(4) + " dB");
     ok = ok && est.n === r.fft && r.db.length === 264 && worst <= 0.005;     // as built: 0.0001 dB; a Hann over n, not n - 1: 0.02
   }
-  check("the engine's estimator matches spectrum.rs re-done in numpy (spectrum_ref.json) within 0.005 dB on every bin, 48 and 44.1 kHz", ok, rows.join("; "));
+  check("the engine's estimator matches spectrum.rs re-done in numpy (spectrum_ref.json) within 0.005 dB on every bin, 48, 44.1 and 96 kHz", ok, rows.join("; "));
 });
 
 // The mic PEAK runs on the engine's numbers (mic.js: EngineEstimator, as the box): an 8 kHz tone

@@ -19,7 +19,9 @@ import sys
 import numpy as np
 
 MIN_F, MAX_F, N_BINS = 10.0, 20000.0, 264          # the box's grid (rta.py, hello.pgm)
-RATES = (48000, 44100)
+# The rates the page's mic analysis runs at: the box's (hello.pgm.rate: 48 kHz, 96 kHz since
+# D-022), or the phone's own when its audio refuses that one (44.1 kHz).
+RATES = (48000, 44100, 96000)
 
 
 def fft_length_for(min_freq: float, samplerate: int) -> int:
