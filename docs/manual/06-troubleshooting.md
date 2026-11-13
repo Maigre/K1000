@@ -252,6 +252,7 @@ Not something K1000 creates. Usual causes:
 |---|---|---|
 | A short dip when changing a delay or a polarity | Expected: the group is muted around the write | Do alignment before the show |
 | A click on SETUP › SUBS › Mono L+R, BOX › Profile or Audition, or D-016's TOPS › De-harsh, SUBS › Loudness, INPUT › AUX IN 1/2 | Expected: those rebuild the pipeline (hence `· MAY CLICK` and the choose-then-push) | Never during a show |
+| One underrun in the engine log about a second after an engine start, before k1000's `boot ramp: start` | Expected: K1000's spectrum warm-up. The engine's first spectrum request of a run stalls its audio once, and K1000 makes it while Main is muted ([chapter 3 §7](03-configuration.md#7-spectrum)) | Nothing. One after `boot ramp: start`, or `spectrum warm-up: no answer` in `journalctl -u k1000`: note the times |
 | Regular crackles or dropouts | Audio buffer underruns (xruns) | The engine log (below), `vcgencmd get_throttled`, a soak test. A larger `target_level` (512 or 768) gives the USB more margin ([chapter 3](03-configuration.md#4-profiles)) |
 | Knob moves | Should never click: gains move in 0.5 dB steps (0.1 dB on fixed gains), frequency and Q in small steps | If they do, note what and when |
 

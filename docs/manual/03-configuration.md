@@ -246,7 +246,7 @@ SETUP › LIVE EQ › Spectrum is ON.
 
 | Key | Values | Default | Meaning |
 |---|---|---|---|
-| `enabled` | `true` / `false` | `true` | `false` removes the spectrum entirely: no task, no second engine connection; SETUP › LIVE EQ › Spectrum reads `DISABLED`. The no-go switch if the spectrum misbehaves on your box. Only a real `false` turns it off |
+| `enabled` | `true` / `false` | `true` | `false` removes the spectrum entirely: no task, no second engine connection, no warm-up; SETUP › LIVE EQ › Spectrum reads `DISABLED`. The no-go switch if the spectrum misbehaves on your box. Only a real `false` turns it off. Turned back on: restart k1000, then the engine (`sudo systemctl restart camilladsp`, between shows), so that it is warmed up while muted |
 | `peak_floor_db` | −140 … −20 dBFS | −80 | No PEAK unless the peak band reaches this level (the engine's scale: 0 = a full-scale sine) |
 | `program_floor_db` | −140 … −20 dBFS | −60 | No PEAK unless the program's RMS (its two input channels, the last 0.5 s) reaches this level, with 3 dB of hysteresis. So no PEAK on silence or between tracks |
 
@@ -256,6 +256,13 @@ SETUP › LIVE EQ › Spectrum is ON.
 - **SETUP › LIVE EQ › Spectrum** (ON/off) is not configuration: it is saved in `state.json`
   (`spectrum_on`) and only stops the polling and the picture. `enabled: false` here is the stronger
   switch: the row then reads `DISABLED` and cannot be changed.
+- **The warm-up.** The engine's first spectrum request of a run makes it allocate its analyser's
+  buffers: its audio stalls once, and the playback often underruns. With `enabled: true`, K1000
+  makes that request itself when it finds a freshly started engine, while Main is still muted,
+  just before the ramp; the stall falls in the ramp's 0.15 s wait before the unmute. It costs the
+  boot one short request (at most 0.3 s: with no answer by then, the ramp goes on). Done with
+  Spectrum OFF too: it can be switched on mid-show. Proven by tests, not yet on the box
+  ([`box/README.md`](../../box/README.md), SHOW spectrum).
 
 ## 8. `phone`
 

@@ -24,7 +24,7 @@ phone (D-007) is `docs/06-phone.md`.
 The order at power-on:
 
 1. The engine starts **muted at −40 dB** from `/var/lib/k1000/active.yml`.
-2. k1000 connects to the engine, checks the config and, unless the state was saved muted, unmutes and ramps Main up to the saved level over about 1.5 s (`boot_ramp_s`; 3 s until 12/11) (saved muted: it stays muted, `READY · hold B4 to unmute`).
+2. k1000 connects to the engine, checks the config, asks the engine once for its spectrum (the warm-up, below), and, unless the state was saved muted, unmutes and ramps Main up to the saved level over about 1.5 s (`engine.boot_ramp_s`; 3 s until 12/11; saved muted: it stays muted, `READY · hold B4 to unmute`).
 3. The phone/laptop GUI comes up next to them.
 
 - If `active.yml` is missing or broken, the engine waits for a valid one, with no websocket
@@ -602,11 +602,31 @@ while SHOW is displayed and SETUP › LIVE EQ › Spectrum is ON (`docs/03-v0-ar
   left = off, D-017). Off, SHOW draws the curve alone and B3 still sets a notch up (`NO PEAK`: E4 down first,
   about −6 dB, then sweep E2 until the ring drops; at 0 dB the sweep is silent).
 - **Out entirely** (Friday's no-go, or anything odd): `spectrum: enabled: false` in
-  `/etc/k1000/k1000.yaml`, then `sudo systemctl restart k1000` between shows. No task and no second
-  connection; SETUP › LIVE EQ › Spectrum then reads `DISABLED` (read-only).
+  `/etc/k1000/k1000.yaml`, then `sudo systemctl restart k1000` between shows. No task, no second
+  connection and no warm-up; SETUP › LIVE EQ › Spectrum then reads `DISABLED` (read-only). Turned
+  back on, restart the engine too (`sudo systemctl restart camilladsp`, between shows): an engine
+  that has never been asked for its spectrum stalls at the first request, and only a fresh one
+  is warmed up while muted.
+- **The warm-up.** The engine's first spectrum request of a run makes its audio threads allocate
+  the analyser's buffers (1 MiB per channel; on 5.0.0-beta.1 both sides, on `next5` the side
+  asked): the audio stalls and the playback often underruns, once. So when k1000 finds a freshly
+  started engine, it asks once (`GetSpectrum`, capture side, program L, on a connection opened for
+  that request alone), while Main is still muted, then ramps in; the stall falls in the ramp's
+  0.15 s wait before the unmute. No answer within 0.3 s: it ramps in anyway (`spectrum warm-up: no
+  answer` in the journal). Not after a k1000 restart on a playing engine (it was warmed at its own
+  start). Before this, the spectrum task asked first, after the ramp: an underrun 3.5 to 4.2 s
+  after the engine start, past full level, on 2 starts out of 5 (`docs/17` §9).
+  **Proven by tests** (a fake engine that records the request, the allocation and the ramp in
+  one order, with beta.1's and `next5`'s behaviour; the real client on a socket, about 1 ms on
+  the dev machine): the request and the allocation come before the unmute, with the ramp's wait
+  between them, at boot and after an engine restart, whichever spectrum client asks first.
+  **Not yet verified on the box**: that the engine's underrun now falls before
+  `boot ramp: start`, and what the warm-up costs there (the journal's `spectrum warm-up: the
+  engine answered in N ms`).
 - After an engine start the spectrum comes back by itself within a few seconds: its link
-  reconnects (back-off up to 2 s) and waits for the engine to read `Running`, then CamillaDSP
-  5.0.0-beta.1's analyser fills its buffer in well under a second (`Insufficient data in buffer`,
+  reconnects (back-off up to 2 s) and waits for the engine to read `Running`, then the engine's
+  analyser (warmed up before the ramp) fills its buffer in well under a second
+  (`Insufficient data in buffer`,
   retried quietly every 0.4 s; fixed after the 2026-10-13 acceptance, which saw `NO SPECTRUM` for
   ~5 s). A grey `NO SPECTRUM` now means the engine really refused (or was still warming up after
   10 s, or gave no data for 30 s of warm-up answers): `journalctl -u k1000 | grep -i spectrum`.

@@ -62,9 +62,13 @@ controls:
   master_up_guard_db: 6.0
 
 # The SHOW page's program spectrum (D-009): GetSpectrum on a second engine connection, polled
-# ~10 times a second only while SHOW is displayed and SETUP > Spectrum is ON. `enabled: false`
-# removes it entirely (no second connection; SETUP > Spectrum then says so): the gig no-go
-# switch if Friday's rig test shows anything odd. Restart k1000 after a change.
+# ~10 times a second only while SHOW is displayed and SETUP > Spectrum is ON. The engine's first
+# spectrum request of a run stalls its audio once (it allocates its buffers), so k1000 also asks
+# once when the engine has just started, while Main is still muted, before the ramp (at most
+# 0.3 s). `enabled: false` removes it entirely (no second connection, no warm-up; SETUP >
+# Spectrum then says so): the gig no-go switch if Friday's rig test shows anything odd. Restart
+# k1000 after a change; after turning it back on, restart camilladsp too (between shows), or
+# its first request comes while the PA plays.
 # No PEAK pointer (and B4 keeps its NO PEAK case) unless the peak bin reaches `peak_floor_db`
 # (dBFS on the engine's peak-bin scale: 0 = a full-scale sine) AND the program's capture RMS
 # (input_map channels, last 0.5 s) reaches `program_floor_db`. -140 turns a gate off.
