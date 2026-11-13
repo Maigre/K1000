@@ -738,3 +738,19 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
 - **Proposed** (Claude): A with no delay, B, C and D together. Thomas decides, and decides by ear
   between the limiter kinds. Nothing is built.
 - **Constraint**: D-018's 10 ms. A look-ahead limiter costs 1 ms of it; the others cost none.
+
+## D-022 — Sample rate: 24-bit / 96 kHz at chunk 128 / target 256 · decided 2026-11-13
+
+- **Context**: D-018 wished for 24-bit/96 kHz. The box ran at 48 kHz, a constant in the code. On
+  13 Nov the whole box was measured at 96 kHz on the desk (`docs/17-box-record-and-bench.md` §10).
+  At chunk 128 / target 256: 6.2 to 7.5 ms in to out over four starts; 6.76 ms steady with no
+  dropout under phone edits, four CPU hogs and SD-card writes; the engine's load 5 to 6 %. The
+  M4's own share is 1.9 ms at 96 kHz (2.3 ms at 48 kHz). Its converters are 24-bit at both rates.
+- **Options**: stay at 48 kHz, chunk 64 / target 128 (7.6 ms, a night run passed) · 96 kHz at
+  128 / 256, which keeps the same margin in time · 96 kHz at a smaller buffer (128 / 128: 6.1 ms).
+- **Decision** (Thomas, 2026-11-13): **96 kHz at chunk 128 / target 256 is the box's main
+  setting.**
+- **Consequences**: the sample rate becomes a setting of `k1000.yaml` instead of a constant, and
+  `io_latency_ms` goes with it (1.9 at 96 kHz). 48 kHz at 64 / 128 stays the proven fallback.
+- **Still owed at this setting**: a night run, the dropout just after a start (3 starts of 4 at
+  96 kHz), and Thomas's ear (D-020's "closed").
