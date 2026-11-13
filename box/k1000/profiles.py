@@ -106,7 +106,8 @@ TARGET_LEVEL_RANGE = target_level_range(CHUNKSIZE)  # (64, 1536)
 # the kernel counts it (latency.read_transits), at each chunk where that was read; the readout
 # adds what the transit holds beyond it, at those chunks only. None = not known: the transit is
 # not read and the readout is the engine's level plus io_latency_ms alone. Both are measured
-# together, at one sample rate: a new loop measurement of one needs the other.
+# together, at one sample rate: a new loop measurement of one needs the other, and a k1000.yaml
+# that gives its own io_latency_ms without io_transit_ms gets None, not the built-in.
 IO_LATENCY_RANGE = (0.0, 50.0)
 
 
@@ -545,7 +546,7 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
     chunksize (frames: one of CHUNKSIZES, default 256), target_level (frames, default one chunk,
     `target_level_range(chunksize)`: 64..1536 at chunk 256),
     io_latency_ms (ms, 0..50, null = not known), io_transit_ms ({chunksize: ms, 0..50}, null =
-    not known).
+    not known; the built-in only with the built-in io_latency_ms).
     `probe` None = profile default (m4 probes, dev does not: its facts are proven and the box's
     HiFiBerry is shared). Probed channel counts beat configured ones the device refuses.
     `name` is normalised ('M4' -> 'm4'); only an unknown name raises (ProfileError). Malformed
@@ -663,7 +664,9 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
                         f"{IO_LATENCY_RANGE[0]:g}..{IO_LATENCY_RANGE[1]:g}; "
                         f"using {d['io_latency_ms']}")
         io = d["io_latency_ms"]
-    tr_default = d["io_transit_ms"]
+    # The built-in transit belongs to the built-in io_latency_ms: a file with a figure of its own
+    # and no io_transit_ms has no transit to count from.
+    tr_default = d["io_transit_ms"] if io == d["io_latency_ms"] else None
     tr = ov.get("io_transit_ms", tr_default)                    # null = not known
     try:
         transit = _io_transit(tr)

@@ -44,7 +44,8 @@ profiles:
     # this, so that a shift below the engine shows (docs/17 §3.4); within 0.4 ms of it counts as
     # nothing (the bench's 3 s medians moved by 0.25 ms with the delay constant). At any other
     # chunk, or null: not read, the readout as before. Measured with io_latency_ms, at 48 kHz: a
-    # new loop measurement of one needs the other read beside it.
+    # new loop measurement of one needs the other read beside it (an io_latency_ms of its own
+    # without this key turns the transit off).
     io_transit_ms: {64: 1.0}
 
 # Physical -> logical controls (MCP23017 indices, see docs/03-v0-architecture.md §1).

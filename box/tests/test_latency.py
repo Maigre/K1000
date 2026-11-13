@@ -130,6 +130,25 @@ def test_io_transit_is_a_profile_number_per_chunk() -> None:
         assert p.io_transit_ms == {64: 1.0} and any("io_transit_ms" in w for w in p.warnings), junk
 
 
+def test_an_io_latency_of_its_own_does_not_take_the_builtin_transit() -> None:
+    """The built-in 1.0 ms is what sat in transit when the built-in 2.3 ms was measured: a new
+    loop measurement written alone has no transit to count from, so none is read."""
+    def m4(**kw: Any) -> Any:
+        return load_profile("m4", {"profiles": {"m4": kw}}, probe=False)
+
+    p = m4(io_latency_ms=3.1)
+    assert (p.io_latency_ms, p.io_transit_ms, p.warnings) == (3.1, None, [])
+    assert m4(io_latency_ms=3.1, io_transit_ms={64: 1.2}).io_transit_ms == {64: 1.2}
+    assert m4(io_latency_ms=2.3).io_transit_ms == {64: 1.0}           # the built-in figure
+    p = m4(io_latency_ms="3.1")                                        # refused: the built-in
+    assert p.io_latency_ms == 2.3 and p.io_transit_ms == {64: 1.0}
+    assert m4(io_latency_ms=None).io_transit_ms is None
+    p = m4(io_latency_ms=3.1, io_transit_ms=1.2)
+    assert p.io_transit_ms is None and any("io_transit_ms" in w and "using None" in w
+                                           for w in p.warnings)
+    assert load_profile("dev", {"profiles": {"dev": {"io_latency_ms": 1.2}}}).io_transit_ms is None
+
+
 def test_the_transit_counts_only_at_a_chunk_its_reference_was_read() -> None:
     """The 48 frames were read at chunk 64 only. If the transit at rest differs at another chunk,
     the quarter chunk of the bench's fit may already hold the difference: there the transit is
