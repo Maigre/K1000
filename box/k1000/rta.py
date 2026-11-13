@@ -78,13 +78,15 @@ from typing import Any, Callable, Iterable
 import numpy as np
 
 from .cdsp import CdspError, CdspUnavailable
-from .state import SAMPLERATE
+from .state import engine_rate
 from .ui.eqgraph import RtaFrame, combine_power
 
 log = logging.getLogger(__name__)
 
-MIN_FREQ = 10.0              # the FFT length follows fs / min_freq: 10 Hz -> 8192 points at 48 kHz
+MIN_FREQ = 10.0              # the FFT length follows fs / min_freq: 10 Hz -> 8192 points at 48 kHz,
+                             # 16384 at 96 kHz: the same 5.9 Hz per FFT bin and 171 ms of audio
 MAX_FREQ = 20000.0
+ENGINE_RING_FRAMES = 262144  # the engine's spectrum ring buffer per channel (spectrum.rs, next5)
 BINS_PER_OCT = 24            # 1/24 octave: 264 bins from 10 Hz to 20 kHz (~5 kB per reply)
 N_BINS = int(round(math.log2(MAX_FREQ / MIN_FREQ) * BINS_PER_OCT)) + 1
 RATE_HZ = 10.0
@@ -103,7 +105,7 @@ KEEP_S = 1.5                 # not wanted for less than this: the picture and th
                              # still see the PEAK)
 # The engine's answers while its analyser warms up (any case; CamillaDSP 5.0.0-beta.1
 # spectrum.rs): before the first call set the sticky "requested" flag, and until the ring
-# buffer holds one FFT length (8192 frames at 48 kHz, 171 ms) after it.
+# buffer holds one FFT length (8192 frames at 48 kHz, 16384 at 96 kHz: 171 ms either way) after it.
 WARMUP_ANSWERS = ("no audio data", "insufficient data", "sample rate not available")
 FLOOR_DB = -140.0
 PEAK_FLOOR_DB = -80.0        # no PEAK below this (dBFS, the engine's peak-bin scale)
@@ -340,18 +342,23 @@ class Ballistics:
 
 # =========================================================================== RESPONSE windows
 def fft_length(rate: float, min_freq: float = MIN_FREQ) -> int:
-    """The engine's FFT length for GetSpectrum (spectrum.rs): the next power of two at or above
-    rate / min_freq (48 kHz, 10 Hz: 8192). The phone matches its mic's resolution to this."""
+    """The engine's FFT length for GetSpectrum (spectrum.rs `fft_length_for`): the next power of
+    two at or above rate / min_freq, at most its ring buffer, ENGINE_RING_FRAMES (10 Hz: 8192 at
+    48 kHz, 16384 at 96 kHz, 171 ms of audio either way). The phone matches its mic's
+    resolution to this."""
     need = max(1, int(math.ceil(float(rate) / float(min_freq) - 1e-9)))
     n = 1
     while n < need:
         n <<= 1
-    return n
+    return min(n, ENGINE_RING_FRAMES)
 
 
-def pgm_info(rate: float = SAMPLERATE, n_bins: int = N_BINS, win_s: float = PGM_WIN_S) -> dict[str, Any]:
-    """hello.pgm (docs/14 §3.1): the grid, the engine's rate and FFT length, its estimator and
-    the window, so the phone computes its mic spectrum the same way on the same bins."""
+def pgm_info(rate: float | None = None, n_bins: int = N_BINS,
+             win_s: float = PGM_WIN_S) -> dict[str, Any]:
+    """hello.pgm (docs/14 §3.1): the grid, the engine's rate (None: `engine_rate()`) and FFT
+    length, its estimator and the window, so the phone computes its mic spectrum the same way on
+    the same bins."""
+    rate = engine_rate() if rate is None else rate
     return {"v": PGM_VERSION, "n": int(n_bins), "f0": MIN_FREQ, "f1": MAX_FREQ, "rate": int(rate),
             "fft": fft_length(rate, MIN_FREQ), "est": PGM_ESTIMATOR, "win_s": float(win_s)}
 
@@ -517,7 +524,7 @@ class SpectrumTask:
 
     def pgm_info(self) -> dict[str, Any]:
         """hello.pgm for this task's grid (docs/14 §3.1)."""
-        return pgm_info(SAMPLERATE, self.n_bins, self.pgm.win_s)
+        return pgm_info(engine_rate(), self.n_bins, self.pgm.win_s)
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:

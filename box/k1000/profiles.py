@@ -31,6 +31,8 @@ from typing import Any, Callable
 
 import yaml
 
+from .state import DEFAULT_SAMPLERATE, SAMPLERATES
+
 log = logging.getLogger(__name__)
 
 SETTINGS_PATH = "/etc/k1000/k1000.yaml"
@@ -62,12 +64,12 @@ CDSP_FORMATS = frozenset(FORMAT_PREFERENCE)
 # profile in k1000.yaml (`profiles.<name>.chunksize`, `.target_level`). Both are device settings:
 # a change takes effect at the next ENGINE start (k1000 rewrites active.yml when it starts),
 # never at show time.
-# - chunksize: the frames the engine processes at a time. 256 (5.3 ms at 48 kHz) is the value
-#   measured on the bench (20.3 ms in to out with target_level 512); the others are steps to
-#   measure, a power of two each (the engine's FFT, its device buffer).
+# - chunksize: the frames the engine processes at a time, a power of two (the engine's FFT, its
+#   device buffer). Its time follows the rate: 256 frames are 5.3 ms at 48 kHz, 2.7 ms at 96 kHz.
 # - target_level: the frames left in the playback buffer when the next chunk arrives. Default
 #   one chunk (the engine's own default; 256 = the contract value, proven on the I2S HiFiBerry).
 #   A USB interface may need more margin against underruns, at the cost of latency.
+# Their built-in values depend on the profile's sample rate (`_RATE_DEFAULTS`, D-022).
 # The engine (5.0.0-beta.1, ALSA backend) sizes each device buffer as the power of two at or
 # above 3 x chunksize (src/alsa_backend/buffermanager.rs; a device whose minimum period is large
 # can make it bigger): 4 x chunksize, of which one chunk is being written, so a target up to
@@ -106,8 +108,9 @@ TARGET_LEVEL_RANGE = target_level_range(CHUNKSIZE)  # (64, 1536)
 # the kernel counts it (latency.read_transits), at each chunk where that was read; the readout
 # adds what the transit holds beyond it, at those chunks only. None = not known: the transit is
 # not read and the readout is the engine's level plus io_latency_ms alone. Both are measured
-# together, at one sample rate: a new loop measurement of one needs the other, and a k1000.yaml
-# that gives its own io_latency_ms without io_transit_ms gets None, not the built-in.
+# together, at one sample rate, the profile's (`samplerate`): a new loop measurement of one needs
+# the other, and a k1000.yaml that gives its own io_latency_ms without io_transit_ms gets None,
+# not the built-in. The readout never applies them to an engine running at another rate.
 IO_LATENCY_RANGE = (0.0, 50.0)
 
 
@@ -186,6 +189,10 @@ class Profile:
     chunksize: int = CHUNKSIZE
     io_latency_ms: float | None = None
     io_transit_ms: dict[int, float] | None = None
+    # The engine's sample rate (D-022), one of SAMPLERATES; io_latency_ms and io_transit_ms are
+    # figures measured at this rate. The Controller makes it the rate of the whole run
+    # (state.set_engine_rate).
+    samplerate: int = DEFAULT_SAMPLERATE
 
 
 _DEFAULTS: dict[str, dict[str, Any]] = {
@@ -195,23 +202,59 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         capture_channels=2, playback_channels=2,
         capture_format="S32_LE", playback_format="S32_LE",
         input_map=(0, 1), output_map=(0, 1),
-        audition=True, pinned=False, probe=False, io_latency_ms=None, io_transit_ms=None,
+        audition=True, pinned=False, probe=False,
     ),
     # MOTU M4: counts/format are assumptions until probed (4-ch capture assumed).
-    # Program from line inputs 3-4; out1/2 = tops, out3/4 = subs. io_latency_ms: the M4's
-    # converters + USB, measured through the loop cable on 12 Nov at chunk 32 to 256 on both
-    # engines (2.3 ms; the 3.8 ms of 16 Oct held a quarter of chunk 256, see latency.io_share_ms).
-    # io_transit_ms: 1.0 ms at chunk 64, the kernel's 48 frames in USB transit at 48 kHz that
-    # the 2.3 ms held (read at chunk 64 only, docs/17 §3.4 and §9).
+    # Program from line inputs 3-4; out1/2 = tops, out3/4 = subs.
     "m4": dict(
         capture_device="hw:M4", playback_device="hw:M4",
         capture_channels=4, playback_channels=4,
         capture_format=None, playback_format=None,
         input_map=(2, 3), output_map=(2, 3, 0, 1),
-        audition=False, pinned=True, probe=True, io_latency_ms=2.3, io_transit_ms={64: 1.0},
+        audition=False, pinned=True, probe=True,
     ),
 }
 PROFILE_NAMES: tuple[str, ...] = tuple(_DEFAULTS)
+
+# The sample rate (D-022). A profile runs only the rates it was measured at (the keys below; any
+# other `samplerate` in k1000.yaml is refused), and each rate brings its own built-in figures:
+# chunksize, target_level (None = one chunk; it goes with that chunk only), io_latency_ms and
+# io_transit_ms (the transit goes with that io_latency_ms only). A figure measured at one rate is
+# never used at another.
+# - dev, 48 kHz: the HiFiBerry as proven (no interface figures: the readout shows a floor).
+# - m4, 48 kHz: the figures before D-022. io_latency_ms 2.3: the M4's converters + USB, measured
+#   through the loop cable on 12 Nov at chunk 32 to 256 on both engines (the 3.8 ms of 16 Oct held
+#   a quarter of chunk 256, see latency.io_share_ms). io_transit_ms {64: 1.13}: the transit at
+#   rest that the 2.3 ms held, at chunk 64 (the only chunk where it was read, docs/17 §3.4 and
+#   §9), as the readout's figure gives it (latency.transit_figure: a pair of 48 / 60 frames).
+# - m4, 96 kHz (D-022, measured 13 Nov on the desk with the pinned next5 engine): chunk 128 /
+#   target 256, 6.2 to 7.5 ms in to out over four engine starts. io_latency_ms 1.9: the M4's
+#   share at 96 kHz (median 1.93 ms over 30 loop measurements). io_transit_ms {128: 1.13}: the
+#   readout's figure at rest on three engine starts of four (single reads of 96 / 120 frames);
+#   the fourth read 1.28 ms with the loop 0.16 ms higher. The best value from those reads, not a
+#   reading made for it: one made at rest at the deploy replaces it in k1000.yaml
+#   (`io_transit_ms: {128: <ms>}`).
+_RATE_DEFAULTS: dict[str, dict[int, dict[str, Any]]] = {
+    "dev": {48000: dict(chunksize=CHUNKSIZE, target_level=None, io_latency_ms=None,
+                        io_transit_ms=None)},
+    "m4": {48000: dict(chunksize=CHUNKSIZE, target_level=None, io_latency_ms=2.3,
+                       io_transit_ms={64: 1.13}),
+           96000: dict(chunksize=128, target_level=256, io_latency_ms=1.9,
+                       io_transit_ms={128: 1.13})},
+}
+# The rate of a box with NO settings file (load_settings -> {}), or one that does not parse: the
+# built-in defaults, D-022's 96 kHz on the M4. A settings file that names no `samplerate` runs
+# DEFAULT_SAMPLERATE (48 kHz) with the figures it names, the 48 kHz built-ins for the rest: every
+# k1000.yaml written before D-022 was a 48 kHz file, and its chunk, target and loop figures are
+# 48 kHz ones.
+_BUILTIN_RATE: dict[str, int] = {"dev": 48000, "m4": 96000}
+assert all(r in SAMPLERATES for rates in _RATE_DEFAULTS.values() for r in rates)
+assert all(DEFAULT_SAMPLERATE in rates for rates in _RATE_DEFAULTS.values())
+
+
+def profile_rates(name: str) -> tuple[int, ...]:
+    """The sample rates profile `name` runs (Hz): the ones it was measured at."""
+    return tuple(_RATE_DEFAULTS[name])
 
 
 # --------------------------------------------------------------------------- settings file
@@ -395,11 +438,13 @@ def card_present(device: str, proc_root: str | Path = PROC_ASOUND) -> bool | Non
     return (Path(proc_root) / cid).exists()
 
 
-def _dump(tool: str, device: str, timeout: float) -> tuple[str, int]:
+def _dump(tool: str, device: str, timeout: float,
+          rate: int = DEFAULT_SAMPLERATE) -> tuple[str, int]:
     # S16 mono + 1 s cap: if the device ever accepted these params it would play/record
     # 1 s of digital silence (/dev/zero as S16 is 0), never the full-scale DC that U8 zeros are.
+    # The table dumped is the device's whole range, whatever `rate` asks for after it.
     sink = "/dev/zero" if tool == "aplay" else "/dev/null"
-    cmd = [tool, "-D", device, "--dump-hw-params", "-f", "S16_LE", "-c", "1", "-r", "48000",
+    cmd = [tool, "-D", device, "--dump-hw-params", "-f", "S16_LE", "-c", "1", "-r", str(int(rate)),
            "-d", "1", sink]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -408,8 +453,10 @@ def _dump(tool: str, device: str, timeout: float) -> tuple[str, int]:
     return (p.stdout or "") + (p.stderr or ""), p.returncode
 
 
-def probe_alsa(device: str, timeout: float = 5.0, proc_root: str | Path = PROC_ASOUND) -> AlsaProbe:
-    """Probe what `device` accepts for playback and capture.
+def probe_alsa(device: str, timeout: float = 5.0, proc_root: str | Path = PROC_ASOUND, *,
+               rate: int = DEFAULT_SAMPLERATE) -> AlsaProbe:
+    """Probe what `device` accepts for playback and capture (`rate`: the profile's, which the
+    dump's open asks for; the ranges read do not depend on it).
 
     Order: /proc presence check (no PCM open) -> `aplay/arecord --dump-hw-params` -> if busy,
     the USB stream file. Never raises; failures are in `.error`.
@@ -420,7 +467,7 @@ def probe_alsa(device: str, timeout: float = 5.0, proc_root: str | Path = PROC_A
         return pr
     errors: list[str] = []
     for tool, attr in (("aplay", "playback"), ("arecord", "capture")):
-        text, _rc = _dump(tool, device, timeout)
+        text, _rc = _dump(tool, device, timeout, rate)
         hw = parse_hw_params(text)
         if hw is not None:
             setattr(pr, attr, hw)
@@ -537,18 +584,28 @@ def _section(name: str, overrides: Any, warnings: list[str]) -> dict[str, Any]:
 
 def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
                  probe: bool | None = None,
-                 prober: Callable[[str], AlsaProbe] = probe_alsa) -> Profile:
+                 prober: Callable[[str], AlsaProbe] | None = None) -> Profile:
     """Build a Profile from built-in defaults + k1000.yaml overrides (+ a device probe).
 
     `overrides` may be the whole settings dict (its `profiles.<name>` section is used) or that
-    section directly. Keys: capture_device, playback_device, capture_channels, playback_channels,
-    capture_format, playback_format, input_map [L, R], output_map [phys1..physN], probe,
-    chunksize (frames: one of CHUNKSIZES, default 256), target_level (frames, default one chunk,
-    `target_level_range(chunksize)`: 64..1536 at chunk 256),
+    section directly; None or {} = no settings file (`load_settings` of a missing file), and one
+    that carries SETTINGS_ERROR could not be used as written. Keys:
+    capture_device, playback_device, capture_channels, playback_channels, capture_format,
+    playback_format, input_map [L, R], output_map [phys1..physN], probe,
+    samplerate (Hz: one of `profile_rates(name)`, see below), chunksize (frames: one of
+    CHUNKSIZES), target_level (frames, `target_level_range(chunksize)`: 64..1536 at chunk 256),
     io_latency_ms (ms, 0..50, null = not known), io_transit_ms ({chunksize: ms, 0..50}, null =
     not known; the built-in only with the built-in io_latency_ms).
+    The sample rate (D-022): `samplerate` when given; else the built-in rate when no settings
+    file was read or it does not parse (m4: 96000: "missing or broken file = built-in
+    defaults"), and DEFAULT_SAMPLERATE (48000) when one was read, since a file written before the
+    key existed is a 48 kHz file. The other buffer and interface keys default to the
+    built-in figures of THAT rate (`_RATE_DEFAULTS`), so a 48 kHz file never gets 96 kHz figures
+    and the reverse. A rate the profile was not measured at is refused like a bad chunksize: a
+    warning, and the rate the key's absence gives.
     `probe` None = profile default (m4 probes, dev does not: its facts are proven and the box's
     HiFiBerry is shared). Probed channel counts beat configured ones the device refuses.
+    `prober` None = `probe_alsa` at the profile's rate.
     `name` is normalised ('M4' -> 'm4'); only an unknown name raises (ProfileError). Malformed
     overrides never raise: they become warnings and the built-in values are used. A settings
     dict from `load_settings` that carries SETTINGS_ERROR adds that error to `warnings`.
@@ -567,9 +624,27 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
     if probe is None and isinstance(ov.get("probe"), bool):
         do_probe = ov["probe"]
 
+    rates = _RATE_DEFAULTS[name]
+    # A settings file was read as written (not missing, not unusable): its figures are its own.
+    written = (isinstance(overrides, dict) and bool(overrides)
+               and SETTINGS_ERROR not in overrides)
+    rate_default = DEFAULT_SAMPLERATE if written else _BUILTIN_RATE[name]
+    sr = ov.get("samplerate")
+    if sr is None:                       # absent or `null`: see the docstring
+        sr = rate_default
+    elif isinstance(sr, bool) or not isinstance(sr, int) or sr not in rates:
+        warnings.append(f"{name}: samplerate {sr!r} refused: this profile runs "
+                        f"{' or '.join(str(r) for r in rates)} Hz (the rates measured with its "
+                        f"interface); using {rate_default}")
+        sr = rate_default
+    fig = rates[sr]
+
     present: bool | None = None
     pb_hw: HwParams | None = None
     cap_hw: HwParams | None = None
+    if prober is None:
+        def prober(device: str) -> AlsaProbe:
+            return probe_alsa(device, rate=sr)
     if do_probe:
         pr = prober(d["playback_device"])
         present = pr.present
@@ -596,10 +671,10 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
                                        d["capture_format"], cap_hw, warnings)
     d["playback_format"] = _pick_format(name, "playback", ov.get("playback_format"),
                                         d["playback_format"], pb_hw, warnings)
-    if cap_hw and cap_hw.rate_max and not (cap_hw.rate_min or 0) <= 48000 <= cap_hw.rate_max:
-        warnings.append(f"{name}: capture does not list 48000 Hz")
-    if pb_hw and pb_hw.rate_max and not (pb_hw.rate_min or 0) <= 48000 <= pb_hw.rate_max:
-        warnings.append(f"{name}: playback does not list 48000 Hz")
+    if cap_hw and cap_hw.rate_max and not (cap_hw.rate_min or 0) <= sr <= cap_hw.rate_max:
+        warnings.append(f"{name}: capture does not list {sr} Hz")
+    if pb_hw and pb_hw.rate_max and not (pb_hw.rate_min or 0) <= sr <= pb_hw.rate_max:
+        warnings.append(f"{name}: playback does not list {sr} Hz")
 
     # input map: program L/R from these capture channels
     imap = ov.get("input_map", d["input_map"])
@@ -637,19 +712,22 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
         if missing:
             warnings.append(f"{name}: not routed to any output: {', '.join(missing)}")
 
+    cs_default = fig["chunksize"]
     cs = ov.get("chunksize")
-    if cs is None:                       # absent or `null`: the default
-        cs = CHUNKSIZE
+    if cs is None:                       # absent or `null`: the rate's built-in chunk
+        cs = cs_default
     elif isinstance(cs, bool) or not isinstance(cs, int) or cs not in CHUNKSIZES:
         warnings.append(f"{name}: chunksize {cs!r} refused: it must be one of "
-                        f"{', '.join(str(c) for c in CHUNKSIZES)} frames; using {CHUNKSIZE}")
-        cs = CHUNKSIZE
+                        f"{', '.join(str(c) for c in CHUNKSIZES)} frames; using {cs_default}")
+        cs = cs_default
     lo, hi = target_level_range(cs)
-    tl = ov.get("target_level", cs)
+    # The built-in target belongs to the built-in chunk: with another chunk, one chunk.
+    tl_default = fig["target_level"] if (cs == cs_default and fig["target_level"]) else cs
+    tl = ov.get("target_level", tl_default)
     if isinstance(tl, bool) or not isinstance(tl, int):
         warnings.append(f"{name}: target_level {tl!r} is not a whole number of frames; "
-                        f"using {cs} (one chunk)")
-        tl = cs
+                        f"using {tl_default}" + (" (one chunk)" if tl_default == cs else ""))
+        tl = tl_default
     elif not lo <= tl <= hi:
         clamped = min(hi, max(lo, tl))
         warnings.append(f"{name}: target_level {tl} outside {lo}..{hi}, the range with chunksize "
@@ -657,16 +735,17 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
                         f"maximum); using {clamped}")
         tl = clamped
 
-    io = ov.get("io_latency_ms", d["io_latency_ms"])          # null = not known
+    io_default = fig["io_latency_ms"]
+    io = ov.get("io_latency_ms", io_default)                  # null = not known
     if io is not None and (isinstance(io, bool) or not isinstance(io, (int, float))
                            or not IO_LATENCY_RANGE[0] <= io <= IO_LATENCY_RANGE[1]):
         warnings.append(f"{name}: io_latency_ms {io!r} is not a number of ms in "
                         f"{IO_LATENCY_RANGE[0]:g}..{IO_LATENCY_RANGE[1]:g}; "
-                        f"using {d['io_latency_ms']}")
-        io = d["io_latency_ms"]
+                        f"using {io_default}")
+        io = io_default
     # The built-in transit belongs to the built-in io_latency_ms: a file with a figure of its own
     # and no io_transit_ms has no transit to count from.
-    tr_default = d["io_transit_ms"] if io == d["io_latency_ms"] else None
+    tr_default = fig["io_transit_ms"] if io == io_default else None
     tr = ov.get("io_transit_ms", tr_default)                    # null = not known
     try:
         transit = _io_transit(tr)
@@ -686,7 +765,7 @@ def load_profile(name: str, overrides: dict[str, Any] | None = None, *,
         input_map=imap_t, output_map=omap_t,
         audition=d["audition"], pinned=d["pinned"], probe=do_probe,
         present=present, warnings=warnings, target_level=tl, chunksize=cs,
-        io_latency_ms=None if io is None else float(io), io_transit_ms=transit,
+        io_latency_ms=None if io is None else float(io), io_transit_ms=transit, samplerate=sr,
     )
 
 

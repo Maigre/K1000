@@ -239,23 +239,90 @@ def test_delay_samples_mirrors_engine_rounding():
         assert st.delay_samples(ms) == n, ms
 
 
-def test_fine_delay_steps_are_exactly_one_sample_each():
+@pytest.mark.parametrize("rate", st.SAMPLERATES)
+def test_fine_delay_steps_are_exactly_one_sample_each(rate):
+    st.set_engine_rate(rate)
+    end = 50 * rate // 1000                              # 50 ms: 2400 samples at 48 kHz, 4800 at 96
     s = State()
     seen = [st.delay_samples(s.sub_delay_ms)]
-    for _ in range(2400):                                # 0 -> 50 ms one sample at a time
+    for _ in range(end):                                 # 0 -> 50 ms one sample at a time
         s.nudge("sub_delay_ms", 1, fine=True)
         seen.append(st.delay_samples(s.sub_delay_ms))
-    assert seen == list(range(2401))                     # no dead and no double detent, no drift
+    assert seen == list(range(end + 1))                  # no dead and no double detent, no drift
     s.sub_delay_ms = 0.3                                 # off-grid start (coarse steps): still +1 each
     n0 = st.delay_samples(0.3)
     for k in range(1, 50):
         s.nudge("sub_delay_ms", 1, fine=True)
         assert st.delay_samples(s.sub_delay_ms) == n0 + k
     s.sub_delay_ms = 0.0
+    per_coarse = {48000: (4, 5), 96000: (9, 10)}[rate]   # 0.1 ms = 4.8 or 9.6 samples
     for k in range(1, 30):                               # coarse 0.1 ms never lands on the same sample
         before = st.delay_samples(s.sub_delay_ms)
         s.nudge("sub_delay_ms", 1)
-        assert st.delay_samples(s.sub_delay_ms) - before in (4, 5)
+        assert st.delay_samples(s.sub_delay_ms) - before in per_coarse
+
+
+def test_delay_samples_at_96_khz():
+    """The same rounding (half up, whole samples) on the 96 kHz grid: one sample is 1/96 ms."""
+    st.set_engine_rate(96000)
+    for ms, n in ((0.0052, 0), (0.0053, 1), (0.010417, 1), (0.015625, 2), (1.0, 96),
+                  (1.009, 97), (50.0, 4800), (-1.0, 0), ("x", 0), (None, 0)):
+        assert st.delay_samples(ms) == n, ms
+
+
+def test_the_engine_rate_is_one_setting_read_at_use_never_a_copy():
+    """D-022: `set_engine_rate` is the one place the rate is set (the Controller, from its
+    profile); everything reads it at use. Only the measured rates are accepted, and the one-sample
+    fine step of every delay range follows."""
+    import importlib
+    assert st.engine_rate() == st.DEFAULT_SAMPLERATE == 48000 and st.SAMPLERATES == (48000, 96000)
+    for bad in (44100, 192000, 96000.0, True, "96000", None):
+        with pytest.raises(ValueError):
+            st.set_engine_rate(bad)
+    assert st.engine_rate() == 48000                     # a refusal changes nothing
+    for rate in (96000, 48000, 96000):
+        assert st.set_engine_rate(rate) == rate == st.engine_rate()
+        assert st.sample_ms() == 1000.0 / rate
+        for path in ("sub_delay_ms", "top_delay_ms", st.ALIGN_DELAY):
+            assert range_for(path).fine == 1000.0 / rate, path
+        assert RANGES["sub_delay_ms"] is range_for("sub_delay_ms")     # replaced in place
+    # No module keeps a copy of the rate made at import (the constants this replaced are gone).
+    for mod in ("state", "dspconfig", "control", "rta", "tune", "latency", "profiles",
+                "ui.eqgraph", "web.server"):
+        m = importlib.import_module(f"k1000.{mod}")
+        assert not {"SAMPLERATE", "SAMPLE_MS", "FS"} & set(vars(m)), mod
+
+
+@pytest.mark.parametrize("saved_at,run_at", [(48000, 96000), (96000, 48000)])
+def test_saved_delays_across_a_rate_change(tmp_path, saved_at, run_at):
+    """state.json keeps delays in ms (6 digits) and a rate change never rewrites them.
+    48 -> 96 kHz: a whole number of 48 kHz samples is a whole number of 96 kHz samples, the same
+    delay exactly. 96 -> 48 kHz: an odd number of 96 kHz samples plays as the nearest 48 kHz
+    sample (half a 48 kHz sample, 0.0104 ms, off at most); the stored value stays, so going back
+    to 96 kHz gives the exact delay again."""
+    from k1000 import dspconfig as dc
+    st.set_engine_rate(saved_at)
+    s = State()
+    for _ in range(301):                                 # 301 samples: odd, on the saved grid
+        s.nudge(st.ALIGN_DELAY, 1, fine=True)
+    saved_ms = s.sub_delay_ms
+    assert st.delay_samples(saved_ms) == 301
+    p = tmp_path / "state.json"
+    st.save_state_atomic(p, s)
+    st.set_engine_rate(run_at)
+    back = load_state(p)
+    assert back.sub_delay_ms == saved_ms                 # the stored value, untouched
+    played = dc.delay_on_grid(back.sub_delay_ms)         # what the engine gets at the new rate
+    assert st.delay_samples(played) == st.delay_samples(saved_ms)
+    if run_at > saved_at:                                # 301 at 48 kHz = 602 at 96: the same delay
+        assert st.delay_samples(saved_ms) == 602 and played == round(301 / 48.0, 6)
+    else:
+        assert st.delay_samples(saved_ms) in (150, 151)
+        assert abs(played - saved_ms) <= 1000.0 / 96000 + 1e-6
+    st.save_state_atomic(p, back)                        # a save at the new rate keeps it too
+    st.set_engine_rate(saved_at)
+    assert load_state(p).sub_delay_ms == saved_ms
+    assert st.delay_samples(load_state(p).sub_delay_ms) == 301
 
 
 # ----------------------------------------------------------------------------- D-011
@@ -324,7 +391,7 @@ def test_align_delay_is_sub_minus_top_and_not_a_stored_field():
     assert State().get(st.ALIGN_DELAY) == 0.0
     assert st.ALIGN_DELAY not in RANGES and st.ALIGN_DELAY not in State().to_dict()
     r = range_for(st.ALIGN_DELAY)
-    assert r is not None and (r.min, r.max, r.step, r.fine) == (-50.0, 50.0, 0.1, st.SAMPLE_MS)
+    assert r is not None and (r.min, r.max, r.step, r.fine) == (-50.0, 50.0, 0.1, st.sample_ms())
     assert State.from_dict({**State().to_dict(), st.ALIGN_DELAY: 9.0}) == State()   # ignored key
 
 
@@ -346,8 +413,10 @@ def test_align_delay_garbage_keeps_the_current_value():
         assert (s.sub_delay_ms, s.top_delay_ms) == (0.0, 1.25)
 
 
-def test_align_delay_stops_at_zero_before_crossing():
+@pytest.mark.parametrize("rate", st.SAMPLERATES)
+def test_align_delay_stops_at_zero_before_crossing(rate):
     """Crossing zero takes a click on exactly 0.00 (ALIGNED): the operator feels it."""
+    st.set_engine_rate(rate)
     s = State(sub_delay_ms=0.2)
     assert s.nudge(st.ALIGN_DELAY, -1) == 0.1
     assert s.nudge(st.ALIGN_DELAY, -1) == 0.0 and (s.sub_delay_ms, s.top_delay_ms) == (0.0, 0.0)
@@ -357,9 +426,9 @@ def test_align_delay_stops_at_zero_before_crossing():
     assert s.nudge(st.ALIGN_DELAY, 5) == 0.5 and (s.sub_delay_ms, s.top_delay_ms) == (0.5, 0.0)
     s = State(sub_delay_ms=0.05)                               # off the 0.1 grid (fine steps)
     assert s.nudge(st.ALIGN_DELAY, -1) == 0.0
-    s = State(top_delay_ms=st.SAMPLE_MS)                        # one sample: fine crosses too
+    s = State(top_delay_ms=st.sample_ms())                      # one sample: fine crosses too
     assert s.nudge(st.ALIGN_DELAY, 1, fine=True) == 0.0
-    assert s.nudge(st.ALIGN_DELAY, 1, fine=True) == round(st.SAMPLE_MS, 6)
+    assert s.nudge(st.ALIGN_DELAY, 1, fine=True) == round(st.sample_ms(), 6)
     assert st.delay_samples(s.sub_delay_ms) == 1 and s.top_delay_ms == 0.0
     s = State(sub_delay_ms=50.0)
     assert s.nudge(st.ALIGN_DELAY, 1) == 50.0                  # the ends clamp

@@ -85,9 +85,10 @@ from .latency import (DROPOUT_READ_S, ENGINE_LOG, LIMIT_MS, TRANSIT_READ_S, Burs
                       DropoutCounter, LatencyWatch, latency_limit_ms, read_transits)
 from .profiles import (PROC_ASOUND, PROFILE_NAMES, Profile, ProfileChoice, card_id, card_present,
                        load_profile)
-from .state import (BOOL_FIELDS, CHOICES, DELAY_FIELDS, N_SYS_PEQ, RANGES, REBUILD_FIELDS,
-                    SAMPLE_MS, State, atomic_write, common_delay_ms, delay_samples,
-                    drop_common_delay, effective_gain, is_band_on_path, load_state)
+from .state import (BOOL_FIELDS, CHOICES, DEFAULT_SAMPLERATE, DELAY_FIELDS, N_SYS_PEQ, RANGES,
+                    REBUILD_FIELDS, State, atomic_write, common_delay_ms, delay_samples,
+                    drop_common_delay, effective_gain, engine_rate, is_band_on_path, load_state,
+                    sample_ms, set_engine_rate)
 from .ui.input_map import (
     A_LAPTOP, ALL_PAGES, AUTO_HOME_PAGES, BELL_SLOTS, EDIT_HIGHLIGHT_S, F_AUX_GAIN, F_AUX_MODE,
     F_LOWCUT_ON, F_SPECTRUM_ON,
@@ -193,6 +194,8 @@ ENGINE_DOWN_STATES = ("Inactive", "Stalled")
 HINT_STILL_MUTED = "STILL MUTED · HOLD B4 TO UNMUTE"
 HINT_CONFIRM_SETUP = "MUTE OR CONFIRM ON SETUP (MAY CLICK)"
 HINT_PINNED = "PROFILE PINNED IN k1000.yaml"
+# A SETUP switch to a profile at another sample rate (D-022): the rate is read once, at start.
+HINT_PROFILE_RATE = "{name} IS {khz:g} kHz: PIN IT IN k1000.yaml"
 HINT_LIVE_RESET = "LIVE EQ RESET · UNDO IN SETUP"
 HINT_LIVE_FLAT = "LIVE EQ ALREADY FLAT"
 HINT_LIVE_RESTORED = "LIVE EQ RESTORED"
@@ -831,6 +834,12 @@ class Controller:
     ) -> None:
         self.client = client
         self.profile = profile
+        # D-022: the engine's sample rate for this whole run is this profile's (state.engine_rate,
+        # which the config, the delays, the waits, the spectrum, the curves and the phones' hello
+        # all read): set here, once per run of the service (__main__ builds one Controller). A
+        # SETUP switch to a profile at another rate is refused (`_rebuild`): a restart changes it.
+        set_engine_rate(getattr(profile, "samplerate", DEFAULT_SAMPLERATE))
+        log.info("engine sample rate: %d Hz (profile %s)", engine_rate(), profile.name)
         self.paths = paths
         self.settings: dict[str, Any] = settings if isinstance(settings, dict) else {}
         self.profile_choice = profile_choice
@@ -960,6 +969,7 @@ class Controller:
         # devices.chunksize of the running engine, as last read (None: not read yet). It differs
         # from the profile's after a k1000.yaml change until the engine restarts (`_two_chunks_s`).
         self._engine_chunk: int | None = None
+        self._engine_samplerate: float | None = None   # the running config's (D-022)
         self._marker_engine: float | None = None       # Aux4 as last read or written
         # Aux groups lowered (offset <= 0 dB under the balance macro) or muted outside K1000:
         # kept, shown, never raised or released by K1000.
@@ -2051,15 +2061,23 @@ class Controller:
     def _note_engine_chunk(self, live: Any) -> None:
         dev = live.get("devices") if isinstance(live, dict) else None
         cs = dev.get("chunksize") if isinstance(dev, dict) else None
+        sr = dev.get("samplerate") if isinstance(dev, dict) else None
         self._engine_chunk = cs if isinstance(cs, int) and not isinstance(cs, bool) and cs > 0 \
             else None
+        self._engine_samplerate = (float(sr) if isinstance(sr, (int, float))
+                                   and not isinstance(sr, bool) and math.isfinite(sr) and sr > 0
+                                   else None)
 
     def _two_chunks_s(self) -> float:
-        """The step and Running-check wait (dspconfig.two_chunks_s) for the larger of the
-        profile's chunk and the running engine's: a k1000.yaml chunk change waits for the next
-        engine start (a devices change), and until then the engine runs the old one."""
-        chunk = max(dc.engine_buffer(self.profile)[0], self._engine_chunk or 0)
-        return dc.two_chunks_s(chunk)
+        """The step and Running-check wait (dspconfig.two_chunks_s): the longer of the
+        profile's chunk at the run's rate and the running engine's chunk at its own rate. A
+        k1000.yaml chunk or rate change waits for the next engine start (a devices change), and
+        until then the engine runs the old ones."""
+        wait = dc.two_chunks_s(dc.engine_buffer(self.profile)[0], engine_rate())
+        if self._engine_chunk:
+            wait = max(wait, dc.two_chunks_s(self._engine_chunk,
+                                              self._engine_samplerate or engine_rate()))
+        return wait
 
     def _pending_ops(self) -> list[Op]:
         """What the worker still has to send (mute excluded: it has its own path)."""
@@ -2361,15 +2379,15 @@ class Controller:
         a = self._applied
         common = min(delay_samples(a.sub_delay_ms), delay_samples(a.top_delay_ms))
         if common > 0:
-            self._set_message("common", 4, MSG_COMMON_DELAY.format(ms=common * SAMPLE_MS))
+            self._set_message("common", 4, MSG_COMMON_DELAY.format(ms=common * sample_ms()))
             if common != self._common_seen:
                 log.warning("the engine plays the whole PA %.3f ms late (sub delay %.3f ms, top "
                             "delay %.3f ms): written out at the next mute, setup change or "
                             "engine start, never while the PA plays (the write dips both "
-                            "groups)", common * SAMPLE_MS, a.sub_delay_ms, a.top_delay_ms)
+                            "groups)", common * sample_ms(), a.sub_delay_ms, a.top_delay_ms)
         elif self._common_seen:
             log.info("the common delay of %.3f ms is out of the engine",
-                     self._common_seen * SAMPLE_MS)
+                     self._common_seen * sample_ms())
             self._set_message("common", 4, None)
             self._common_logged = None
         self._common_seen = common
@@ -2503,6 +2521,15 @@ class Controller:
             except Exception as e:   # noqa: BLE001 - ProfileError, probe failure...
                 log.error("profile %s cannot be loaded: %s", target.profile, e)
                 self._revert_setup(base, f"PROFILE {target.profile.upper()} FAILED")
+                return
+            rate = getattr(new_profile, "samplerate", DEFAULT_SAMPLERATE)
+            if rate != engine_rate():
+                log.error("profile %s runs at %d Hz and this run of k1000 at %d Hz: the rate is "
+                          "read once, when k1000 starts. To run %s: `profile: %s` in k1000.yaml, "
+                          "restart k1000, then camilladsp", target.profile, rate, engine_rate(),
+                          target.profile, target.profile)
+                self._revert_setup(base, HINT_PROFILE_RATE.format(name=target.profile.upper(),
+                                                                  khz=rate / 1000))
                 return
         expected = self._expected(target, new_profile)
         try:
@@ -3565,9 +3592,11 @@ class Controller:
 
     def _note_latency(self, est: Any, level: Any) -> None:
         """D-018: the poll's engine state and buffer level -> the readout (and its journal line)."""
+        p = self.profile
+        rate = getattr(p, "samplerate", DEFAULT_SAMPLERATE)    # what the figures were measured at
         r = self.latency.note(est, level,
-                              self.latency.io_share(getattr(self.profile, "io_latency_ms", None)),
-                              self.latency.usb_ref(getattr(self.profile, "io_transit_ms", None)))
+                              self.latency.io_share(getattr(p, "io_latency_ms", None), rate),
+                              self.latency.usb_ref(getattr(p, "io_transit_ms", None), rate))
         view = ((None, True, False, None) if r is None
                 else (r.ms, r.io_ms is not None, r.over, r.level))
         st = self.status
@@ -3600,11 +3629,13 @@ class Controller:
         (latency.read_transits) in a worker thread every `transit_s` (a /proc read of a stream can
         wait for its open or close; the burst sleeps between its reads there, never here).
         Nothing is read unless the engine runs and the profile knows io_latency_ms and
-        io_transit_ms at the running chunk; the next poll shows the figure."""
+        io_transit_ms at the running chunk and rate; the next poll shows the figure."""
         while True:
             p, t = self.profile, None
             if (self.status.engine == "Running" and p.io_latency_ms is not None
-                    and self.latency.usb_ref(p.io_transit_ms) is not None):
+                    and self.latency.usb_ref(p.io_transit_ms,
+                                             getattr(p, "samplerate", DEFAULT_SAMPLERATE))
+                    is not None):
                 try:
                     t = await asyncio.to_thread(self.read_transit, p.playback_device)
                 except asyncio.CancelledError:

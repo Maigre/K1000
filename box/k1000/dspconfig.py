@@ -53,8 +53,8 @@ from .profiles import CHUNKSIZE, CHUNKSIZES, LOGICAL_NAMES, Profile, target_leve
 from .state import (
     AUX_MIC_HP_HZ, AUX_MIC_HP_Q, AUX_MIC_PAN_DB, DEHARSH_ATTACK_MS, DEHARSH_Q, DEHARSH_RATIO,
     DEHARSH_RELEASE_MS, LOUD_HIGH_BOOST_DB, LOUD_LOW_FREQ_HZ, LOWCUT_OFF_HZ, LOWCUT_Q, N_LIVE_PEQ,
-    N_OUT, N_SYS_PEQ, RANGES, SAMPLE_MS, SAMPLERATE, SUB_LOWPASS_OFF_HZ, SUB_LOWPASS_Q, PeqBand,
-    ShelfBand, State, delay_samples, effective_gain,
+    N_OUT, N_SYS_PEQ, RANGES, SAMPLERATES, SUB_LOWPASS_OFF_HZ, SUB_LOWPASS_Q, PeqBand, ShelfBand,
+    State, delay_samples, effective_gain, engine_rate, sample_ms,
 )
 
 # devices.chunksize / target_level come from the profile (profiles.CHUNKSIZE, default 256, and
@@ -201,10 +201,22 @@ def effective_sub_lowpass_hz(s: State) -> float:
     return s.sub_lowpass_hz if s.sub_lowpass_on else SUB_LOWPASS_OFF_HZ
 
 
-def delay_on_grid(ms: Any) -> float:
-    """The ms value K1000 writes for a delay: a whole number of samples (6 digits, so the
-    engine's round-to-nearest gives back exactly that count)."""
-    return round(delay_samples(ms) * SAMPLE_MS, 6)
+def delay_on_grid(ms: Any, rate: float | None = None) -> float:
+    """The ms value K1000 writes for a delay: a whole number of samples at `rate` (None: the
+    engine rate of the run), 6 digits, so the engine's round-to-nearest gives back exactly that
+    count."""
+    if rate is None:
+        return round(delay_samples(ms) * sample_ms(), 6)
+    return round(delay_samples(ms, rate) * 1000.0 / rate, 6)
+
+
+def profile_rate(profile: Any) -> int:
+    """The sample rate a config for `profile` runs: its `samplerate` (profiles.load_profile, one
+    of state.SAMPLERATES), else the engine rate of the run (a profile built by hand without one).
+    In the service both are the same: the Controller sets the run's rate from its profile."""
+    r = getattr(profile, "samplerate", None)
+    return r if isinstance(r, int) and not isinstance(r, bool) and r in SAMPLERATES \
+        else engine_rate()
 
 
 def aux_on(state: State) -> bool:
@@ -232,11 +244,12 @@ def aux_inputs(profile: Profile, aux_mode: str) -> tuple[int, ...]:
     return spare_capture_channels(profile)[:2]
 
 
-def param_map(state: State) -> dict[str, Any]:
+def param_map(state: State, rate: float | None = None) -> dict[str, Any]:
     """Every config value K1000 owns, as {JSON pointer: value}, from the clamped state.
 
-    Delays are snapped to whole samples, so two states whose delays round to the same sample
-    count map to the same value and `diff_ops` emits nothing (no needless delay-line rebuild).
+    Delays are snapped to whole samples at `rate` (None: the engine rate of the run), so two
+    states whose delays round to the same sample count map to the same value and `diff_ops`
+    emits nothing (no needless delay-line rebuild).
     The optional blocks' values are owned only while their feature is on (module docstring):
     `aux_gain` gain (aux_mode "mic"/"line"), `dh_band` freq + `dh_comp` threshold (deharsh_on),
     `sub_loudness` reference_level + low_boost (loud_on). Kept in the state while off, written
@@ -254,10 +267,10 @@ def param_map(state: State) -> dict[str, Any]:
         m[_pp(name, "q")] = b.q
     m[_pp("sub_trim", "inverted")] = s.sub_inverted
     m[_pp("sub_lowpass", "freq")] = effective_sub_lowpass_hz(s)
-    m[_pp("sub_delay", "delay")] = delay_on_grid(s.sub_delay_ms)
+    m[_pp("sub_delay", "delay")] = delay_on_grid(s.sub_delay_ms, rate)
     m[_pp("top_trim", "inverted")] = s.top_inverted
     m[_pp("top_lowcut", "freq")] = effective_lowcut_hz(s)
-    m[_pp("top_delay", "delay")] = delay_on_grid(s.top_delay_ms)
+    m[_pp("top_delay", "delay")] = delay_on_grid(s.top_delay_ms, rate)
     for name, g in zip(OUT_TRIM, s.out_trim_db):
         m[_pp(name, "gain")] = g
     if aux_on(s):
@@ -517,12 +530,16 @@ def engine_buffer(profile: Any) -> tuple[int, int]:
 def generate(profile: Profile, state: State) -> dict[str, Any]:
     """The full CamillaDSP v5 config (a dict ready for `to_yaml` / `json.dumps`).
 
-    With aux_mode "off", loud_on and deharsh_on False, and the profile's chunksize at its
-    default 256, it is byte for byte f2671b0's config (key order included: the optional filters,
-    mixers and steps are inserted, never reordered).
+    With aux_mode "off", loud_on and deharsh_on False, the profile's chunksize and target at 256
+    and its rate at 48 kHz, it is byte for byte f2671b0's config (key order included: the
+    optional filters, mixers and steps are inserted, never reordered). `devices.samplerate` is
+    the profile's rate (`profile_rate`), and the delays are put on whole samples of that same
+    rate: one config never mixes two rates, whatever rate the process runs (the Controller
+    makes the two the same, D-022).
     """
     s = state.clamped()
-    pm = param_map(s)
+    rate = profile_rate(profile)
+    pm = param_map(s, rate)
     aux = aux_inputs(profile, s.aux_mode)
     chunksize, target_level = engine_buffer(profile)
 
@@ -614,7 +631,7 @@ def generate(profile: Profile, state: State) -> dict[str, Any]:
         "description": f"Generated by k1000 (profile {profile.name}). Owned parameters edited "
                        "in CamillaGUI are adopted; structure changes are overwritten.",
         "devices": {
-            "samplerate": SAMPLERATE,
+            "samplerate": rate,
             "chunksize": chunksize,
             "target_level": target_level,
             "enable_rate_adjust": False,
@@ -709,21 +726,28 @@ def diff_ops(old_state: State, new_state: State) -> list[Op]:
 # split into detent-sized steps, and delay/polarity changes are done under a muted group fader.
 STEP_WAIT_S = 0.012          # > 2 chunks of 256 @ 48 kHz: each step reaches the audio before the next
 # Aux fader mute ramp + margin. The margin also spans more than 2 chunks at the largest chunk
-# (1024: 43 ms), so it needs no per-chunk value (tested).
+# at the lowest rate (1024 at 48 kHz: 43 ms), so it needs no per-chunk value (tested).
 GUARD_WAIT_S = VOLUME_RAMP_MS / 1000.0 + 0.05
 
 
-def two_chunks_s(chunksize: Any = CHUNKSIZE) -> float:
-    """A wait spanning more than two chunks of `chunksize` at 48 kHz (2.25 chunks), never less
-    than STEP_WAIT_S, the 12 ms measured clean at chunk 256: the pace of click-safe steps (each
-    one reaches the audio before the next) and of the controller's two Running reads. 12 ms up
-    to chunk 256, then 24 ms at 512 and 48 ms at 1024. A smaller chunk keeps 12 ms: the steps
-    stay as fast as measured, never faster."""
+def two_chunks_s(chunksize: Any = CHUNKSIZE, rate: Any = None) -> float:
+    """A wait spanning more than two chunks of `chunksize` at `rate` (None: the engine rate of
+    the run; 2.25 chunks), never less than STEP_WAIT_S, the 12 ms measured clean at chunk 256 at
+    48 kHz: the pace of click-safe steps (each one reaches the audio before the next) and of the
+    controller's two Running reads. At 48 kHz 12 ms up to chunk 256, then 24 ms at 512 and 48 ms
+    at 1024; at 96 kHz 12 ms up to chunk 512, 24 ms at 1024. A shorter chunk keeps 12 ms: the
+    steps stay as fast as measured, never faster."""
     try:
         cs = int(chunksize)
     except (TypeError, ValueError, OverflowError):
         cs = CHUNKSIZE
-    return max(STEP_WAIT_S, round(2.25 * max(cs, 0) / SAMPLERATE, 6))
+    try:
+        fs = float(rate) if rate is not None else float(engine_rate())
+    except (TypeError, ValueError, OverflowError):
+        fs = float(engine_rate())
+    if not (math.isfinite(fs) and fs > 0):
+        fs = float(engine_rate())
+    return max(STEP_WAIT_S, round(2.25 * max(cs, 0) / fs, 6))
 
 Plan = list[tuple[float, list[Op]]]
 
@@ -970,7 +994,7 @@ def state_from_config(cfg_json: Any, faders: Any, base_state: State, *,
                 node.pop(parts[-1], None)
     skip_f = frozenset(skip_faders)
     s = base_state.copy()
-    sr = _num(_dict(cfg.get("devices")).get("samplerate")) or SAMPLERATE
+    sr = _num(_dict(cfg.get("devices")).get("samplerate")) or engine_rate()
 
     g = _gain_db(_params(cfg, "in_trim"))
     if g is not None:
@@ -1224,10 +1248,13 @@ def config_drift(live_cfg: Any, expected: dict[str, Any], *,
 
     Returns a `Drift(devices, rebuild, fixes, held)`; see `Drift` for what each one costs and
     when the controller may act on it. Call it after `state_from_config` so owned edits are
-    adopted, not reverted. Delays compare as whole samples (the engine's resolution), so a GUI
-    value like 1.009 ms against K1000's 1.0 ms (both 48 samples) is not a difference: a write
-    would rebuild the delay line and click for nothing. `skip_pointers`: values K1000 wrote in
-    the last ~0.2 s (a stale read must not trigger a redundant write).
+    adopted, not reverted. Delays compare as whole samples at the wanted rate (`expected`'s
+    devices.samplerate, the engine's resolution once it runs it), so a GUI value like 1.009 ms
+    against K1000's 1.0 ms (both 48 samples at 48 kHz) is not a difference: a write would
+    rebuild the delay line and click for nothing. A running
+    `devices.samplerate` other than the wanted one is a `devices` difference, like any other
+    device setting. `skip_pointers`: values K1000 wrote in the last ~0.2 s (a stale read must
+    not trigger a redundant write).
 
     Every mixer, filter and processor `expected` has is compared (the optional blocks
     included); the running config's extra ones are not, unless the pipeline uses them (then the
@@ -1256,12 +1283,14 @@ def config_drift(live_cfg: Any, expected: dict[str, Any], *,
     if lp != ep:
         rebuild.append("pipeline differs")
 
-    live_sr = _num(ld.get("samplerate")) or SAMPLERATE
+    live_sr = _num(ld.get("samplerate")) or engine_rate()
+    exp_sr = _num(ed.get("samplerate")) or engine_rate()
     fixes: list[SetValue] = []
     for section, kind, ptr in (("filters", "filter", _pp), ("processors", "processor", _proc_pp)):
         lsec = _dict(live.get(section))
         for name, ef in _dict(expected.get(section)).items():
-            fixes += _block_drift(kind, name, lsec.get(name), ef, ptr, skip, live_sr, rebuild)
+            fixes += _block_drift(kind, name, lsec.get(name), ef, ptr, skip, live_sr, exp_sr,
+                                  rebuild)
     return Drift(devices, rebuild, [] if rebuild else fixes, tuple(held))
 
 
@@ -1375,7 +1404,8 @@ def carry_mixer_cuts(name: str, live: Any, out: Any) -> None:
 
 
 def _block_drift(kind: str, name: str, f: Any, ef: dict[str, Any], ptr: Callable[[str, str], str],
-                 skip: frozenset[str], live_sr: float, rebuild: list[str]) -> list[SetValue]:
+                 skip: frozenset[str], live_sr: float, exp_sr: float,
+                 rebuild: list[str]) -> list[SetValue]:
     """One filter/processor of `config_drift`: structure problems go to `rebuild`, value
     differences come back as fixes (`ptr(name, key)` pointers)."""
     if not isinstance(f, dict):
@@ -1396,8 +1426,8 @@ def _block_drift(kind: str, name: str, f: Any, ef: dict[str, Any], ptr: Callable
         elif ptr(name, key) in skip:
             continue
         elif ef["type"] == "Delay" and key == "delay":
-            lms, ems = _delay_ms(lpar, live_sr), _delay_ms(epar, SAMPLERATE)
-            if lms is None or delay_samples(lms) != delay_samples(ems):
+            lms, ems = _delay_ms(lpar, live_sr), _delay_ms(epar, exp_sr)
+            if lms is None or delay_samples(lms, exp_sr) != delay_samples(ems, exp_sr):
                 differ.append(key)
         elif not _close(lv, ev):
             differ.append(key)

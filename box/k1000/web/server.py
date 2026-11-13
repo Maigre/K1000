@@ -88,7 +88,7 @@ from websockets.http11 import Request, Response
 
 from .. import __version__
 from ..control import MASTER_UP_WINDOW_S, NOTCH_NEAR_OCT, NOTCH_Q, UNDO_RESET_S
-from ..state import N_LIVE_PEQ, N_OUT, RANGES, SAMPLERATE, atomic_write, effective_gain, range_for
+from ..state import N_LIVE_PEQ, N_OUT, RANGES, atomic_write, effective_gain, engine_rate, range_for
 from ..tune import MAX_TEXT, TuneDesk
 from ..ui.input_map import (A_LAPTOP, A_RESET_LIVE, A_UNDO_RESET, BAND_CYCLE, BELL_SLOTS,
                             LIVE_SLOT_LABELS, LIVE_SLOT_SHORT, LIVE_SLOTS, PICK_WINDOW_S,
@@ -937,7 +937,8 @@ class PhoneBridge:
                 "build": build, "phone_on": phone_on, "ranges": ranges, "bands": list(LIVE_SLOTS),
                 "labels": list(LIVE_SLOT_LABELS), "short": list(LIVE_SLOT_SHORT),
                 "notch": {"gain": self.notch_gain_db, "q": self.notch_q},
-                "nudge": {k: list(v) for k, v in NUDGE_CAPS.items()}}
+                "nudge": {k: list(v) for k, v in NUDGE_CAPS.items()},
+                "fs": engine_rate()}      # the page's EQ curve, at the engine's rate (D-022)
 
     @staticmethod
     def state_message(snap: tuple[Any, Any, Any, Any], *, phone_on: bool, phones: int,
@@ -1193,7 +1194,7 @@ class PhoneBridge:
             "acts": list(ACTS_V2),
             "notch": {"q": round(NOTCH_Q, 3), "near_oct": round(NOTCH_NEAR_OCT, 4)},
             "unlock_s": self.unlock_s, "pick_window_s": PICK_WINDOW_S,
-            "undo_reset_s": UNDO_RESET_S, "fs": SAMPLERATE,
+            "undo_reset_s": UNDO_RESET_S, "fs": engine_rate(),
             "rta": {"enabled": getattr(ctl, "spectrum_enabled", True) is not False, "src": "PGM",
                     "hz": round(1.0 / RTA_MIN_INTERVAL_S, 1), "step_db": RTA_STEP_DB,
                     "idle_s": RTA_SUB_IDLE_S},

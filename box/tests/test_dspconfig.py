@@ -26,6 +26,7 @@ import yaml
 import dspconfig_golden as golden
 from k1000 import dspconfig as d
 from k1000 import profiles as pf
+from k1000 import state as kst
 from k1000.state import RANGES, State, delay_samples
 
 REPO_BOX = Path(__file__).resolve().parents[1]
@@ -38,8 +39,14 @@ def dev():
     return pf.load_profile("dev", probe=False)
 
 
+# A k1000.yaml that names no `samplerate` (every file written before D-022): 48 kHz and the 48 kHz
+# built-ins for what it does not name. `load_profile("m4", {})` / `None` is a box with NO settings
+# file: the built-in D-022 set (96 kHz, chunk 128, target 256).
+NO_RATE = {"profile": "m4"}
+
+
 def m4(**ov):
-    return pf.load_profile("m4", ov or None, probe=False)
+    return pf.load_profile("m4", ov or NO_RATE, probe=False)
 
 
 def extreme_state() -> State:
@@ -126,9 +133,11 @@ def _chunk(chunk, **more):
 
 
 def test_chunksize_per_profile_refuses_what_the_engine_should_not_get():
-    """docs/16 §3.3: the chunk becomes a per-profile setting like target_level. Absent or null:
-    256. Anything but 64, 128, 256, 512, 1024 is refused with a message, and 256 is used."""
-    assert pf.load_profile("m4", {}, probe=False).chunksize == 256
+    """docs/16 §3.3: the chunk becomes a per-profile setting like target_level. Absent or null in
+    a file that names no rate: 256 (the 48 kHz built-in). Anything but 64, 128, 256, 512, 1024 is
+    refused with a message, and the rate's built-in chunk is used."""
+    assert pf.load_profile("m4", NO_RATE, probe=False).chunksize == 256
+    assert pf.load_profile("m4", {}, probe=False).chunksize == 128      # no file: D-022's 96 kHz set
     assert pf.CHUNKSIZES == (64, 128, 256, 512, 1024) and pf.CHUNKSIZE == 256
     p = _chunk(None)
     assert p.chunksize == 256 and p.target_level == 256 and not p.warnings
@@ -143,38 +152,45 @@ def test_chunksize_per_profile_refuses_what_the_engine_should_not_get():
     assert (q.chunksize, q.target_level) == (256, 1536) and len(q.warnings) == 2
 
 
+@pytest.mark.parametrize("rate", [48000, 96000])
 @pytest.mark.parametrize("chunk", [64, 128, 256, 512, 1024])
-def test_one_config_per_chunk_size_and_what_follows_from_it(chunk):
+def test_one_config_per_chunk_size_and_what_follows_from_it(chunk, rate):
     """Each allowed chunk: the devices block carries it (an int: the engine refuses 256.0), the
     target defaults to one chunk and stays in 64 .. 6 x chunk ((2 + queuelimit 4) x chunk, the
     engine's documented usable maximum, under its own refusal at (4 + 4) x chunk), the step and
     Running-check wait spans more than 2 chunks and never drops under 12 ms, and nothing else in
-    the config moves."""
-    p = _chunk(chunk)
-    assert p.chunksize == chunk and not p.warnings
+    the config moves. At both rates (D-022): the wait is counted in time at the engine's rate,
+    and at 96 kHz chunk 128 the target defaults to D-022's 256."""
+    kst.set_engine_rate(rate)
+    p = _chunk(chunk, samplerate=rate)
+    assert p.chunksize == chunk and p.samplerate == rate and not p.warnings
     cfg = d.generate(p, State(profile="m4"))
     dv = cfg["devices"]
-    assert (dv["chunksize"], dv["target_level"]) == (chunk, chunk)
+    builtin_tl = 256 if (rate, chunk) == (96000, 128) else chunk      # D-022's 128 : 256
+    assert (dv["chunksize"], dv["target_level"]) == (chunk, builtin_tl)
     assert type(dv["chunksize"]) is int and type(dv["target_level"]) is int
     assert f"chunksize: {chunk}\n" in d.to_yaml(cfg)
     lo, hi = pf.target_level_range(chunk)
     assert (lo, hi) == (64, 6 * chunk) and hi < (4 + pf.QUEUELIMIT) * chunk
     assert pf.device_buffer_frames(chunk) == 4 * chunk        # the power of two >= 3 chunks
-    top = _chunk(chunk, target_level=hi)
+    top = _chunk(chunk, target_level=hi, samplerate=rate)
     assert top.target_level == hi and not top.warnings
     assert d.generate(top, State())["devices"]["target_level"] == hi
-    over = _chunk(chunk, target_level=hi + 1)
+    over = _chunk(chunk, target_level=hi + 1, samplerate=rate)
     assert over.target_level == hi
     assert any(f"outside 64..{hi}" in w and f"chunksize {chunk}" in w for w in over.warnings)
-    under = _chunk(chunk, target_level=63)
+    under = _chunk(chunk, target_level=63, samplerate=rate)
     assert under.target_level == 64 and under.warnings
-    wait = {64: 0.012, 128: 0.012, 256: 0.012, 512: 0.024, 1024: 0.048}[chunk]
-    assert d.two_chunks_s(chunk) == wait and wait > 2 * chunk / 48000
+    wait = {48000: {64: 0.012, 128: 0.012, 256: 0.012, 512: 0.024, 1024: 0.048},
+            96000: {64: 0.012, 128: 0.012, 256: 0.012, 512: 0.012, 1024: 0.024}}[rate][chunk]
+    assert d.two_chunks_s(chunk) == wait and wait > 2 * chunk / rate
     plan = d.smooth_ops(State(), State(lowcut_hz=150.0), step_wait_s=d.two_chunks_s(chunk))
     assert len(plan) > 2 and plan[0][0] == 0.0 and all(w == wait for w, _ in plan[1:])
-    assert d.GUARD_WAIT_S - d.VOLUME_RAMP_MS / 1000.0 > 2 * chunk / 48000   # its margin too
-    base = d.generate(pf.load_profile("m4", {}, probe=False), State(profile="m4"))
+    assert d.GUARD_WAIT_S - d.VOLUME_RAMP_MS / 1000.0 > 2 * chunk / rate   # its margin too
+    assert dv["samplerate"] == rate
+    base = d.generate(pf.load_profile("m4", NO_RATE, probe=False), State(profile="m4"))
     dv["chunksize"] = dv["target_level"] = 256
+    dv["samplerate"] = 48000
     assert cfg == base
 
 
@@ -323,7 +339,7 @@ def test_probe_missing_card_never_runs_aplay(tmp_path, monkeypatch):
 def test_probe_busy_falls_back_to_usb_stream(tmp_path, monkeypatch):
     (tmp_path / "M4").mkdir()
     (tmp_path / "M4" / "stream0").write_text(USB_STREAM)
-    monkeypatch.setattr(pf, "_dump", lambda tool, dev, t: (
+    monkeypatch.setattr(pf, "_dump", lambda tool, dev, t, rate=48000: (
         "aplay: main:850: audio open error: Device or resource busy", 1))
     pr = pf.probe_alsa("hw:M4", proc_root=tmp_path)
     assert pr.busy and pr.present and pr.source == "proc-stream"
@@ -1013,9 +1029,9 @@ def test_malformed_overrides_never_raise(ov):
 # --- finding: the devices block must not depend on whether the probe ran
 def test_m4_devices_block_is_the_same_probed_or_not():
     hw = pf.HwParams(4, 4, ["S32_LE", "S24_3_LE"], ["S32_LE", "S24_3LE"], 44100, 192000)
-    probed = pf.load_profile("m4", {}, prober=_fake_prober(pf.AlsaProbe("hw:M4", True, playback=hw, capture=hw)))
-    absent = pf.load_profile("m4", {}, prober=_fake_prober(pf.AlsaProbe("hw:M4", False)))
-    busy = pf.load_profile("m4", {}, prober=_fake_prober(pf.AlsaProbe("hw:M4", True, busy=True)))
+    probed = pf.load_profile("m4", NO_RATE, prober=_fake_prober(pf.AlsaProbe("hw:M4", True, playback=hw, capture=hw)))
+    absent = pf.load_profile("m4", NO_RATE, prober=_fake_prober(pf.AlsaProbe("hw:M4", False)))
+    busy = pf.load_profile("m4", NO_RATE, prober=_fake_prober(pf.AlsaProbe("hw:M4", True, busy=True)))
     cfgs = [d.generate(p, State(profile="m4"))["devices"] for p in (m4(), probed, absent, busy)]
     assert all(c == cfgs[0] for c in cfgs)
     assert "format" not in cfgs[0]["capture"] and "format" not in cfgs[0]["playback"]
@@ -2430,3 +2446,201 @@ def test_engine_aux_mix_cut_from_the_gui_is_held_and_a_restore_keeps_it(tmp_path
         live = json.loads(cmd("GetConfigJson")["value"])
         assert live["mixers"]["aux_mix"]["mapping"][0]["sources"][a1]["mute"] is True
         assert d.config_drift(live, exp).rebuild == []
+
+
+# ----------------------------------------------------------------- D-022: the sample rate setting
+def _rate_file(**sec):
+    """A k1000.yaml pinning m4, with these keys in its m4 section."""
+    return {"profile": "m4", "profiles": {"m4": dict(sec)}}
+
+
+# The desk box's own file on 13 Nov: the 48 kHz fallback written out, no rate key.
+DESK_48K = dict(chunksize=64, target_level=128, io_latency_ms=2.3)
+
+
+def test_samplerate_defaults_no_file_is_d022_a_file_without_the_key_is_48_khz():
+    """D-022: the M4's built-in set is 96 kHz, chunk 128, target 256, io 1.9 ms, transit
+    {128: 1.13}: what a box with NO settings file runs, or one whose file does not parse
+    ("missing or broken file = built-in defaults"). A settings file without `samplerate` is a
+    48 kHz file (every file before D-022): it runs 48 kHz with ITS figures, and the 48 kHz
+    built-ins for the rest, never 96 kHz with 48 kHz figures (the desk box's file)."""
+    for none in (None, {}, {pf.SETTINGS_ERROR: "k1000.yaml does not parse", "profile": "m4"}):
+        p = pf.load_profile("m4", none, probe=False)
+        assert (p.samplerate, p.chunksize, p.target_level, p.io_latency_ms, p.io_transit_ms) == \
+            (96000, 128, 256, 1.9, {128: 1.13}) and p.warnings == ([] if not none else [
+                "settings: k1000.yaml does not parse"])
+        q = pf.load_profile("dev", none, probe=False)
+        assert (q.samplerate, q.chunksize, q.target_level, q.io_latency_ms, q.io_transit_ms) == \
+            (48000, 256, 256, None, None)
+    desk = pf.load_profile("m4", _rate_file(**DESK_48K), probe=False)
+    assert (desk.samplerate, desk.chunksize, desk.target_level, desk.io_latency_ms,
+            desk.io_transit_ms) == (48000, 64, 128, 2.3, {64: 1.13}) and not desk.warnings
+    for no_rate in (NO_RATE, {"profile": "m4", "profiles": {"m4": {"capture_channels": 4}}},
+                    {"profile": "m4", "profiles": {"m4": {"samplerate": None}}}):
+        p = pf.load_profile("m4", no_rate, probe=False)
+        assert (p.samplerate, p.chunksize, p.target_level, p.io_latency_ms, p.io_transit_ms) == \
+            (48000, 256, 256, 2.3, {64: 1.13}), no_rate
+    # the rate named: that rate's built-ins for whatever the file does not name
+    p = pf.load_profile("m4", _rate_file(samplerate=96000), probe=False)
+    assert (p.samplerate, p.chunksize, p.target_level, p.io_latency_ms, p.io_transit_ms) == \
+        (96000, 128, 256, 1.9, {128: 1.13}) and not p.warnings
+    p = pf.load_profile("m4", _rate_file(samplerate=48000), probe=False)
+    assert (p.samplerate, p.chunksize, p.target_level, p.io_latency_ms, p.io_transit_ms) == \
+        (48000, 256, 256, 2.3, {64: 1.13}) and not p.warnings
+    # D-022's target goes with D-022's chunk; another chunk at 96 kHz gets one chunk
+    p = pf.load_profile("m4", _rate_file(samplerate=96000, chunksize=64), probe=False)
+    assert (p.chunksize, p.target_level, p.io_latency_ms) == (64, 64, 1.9)
+    # a figure of its own at 96 kHz without its transit: no transit (the built-in is 1.9's)
+    p = pf.load_profile("m4", _rate_file(samplerate=96000, io_latency_ms=2.0), probe=False)
+    assert (p.io_latency_ms, p.io_transit_ms) == (2.0, None)
+    # the transit reading at rest of the main session: a settings edit, nothing else
+    p = pf.load_profile("m4", _rate_file(samplerate=96000, io_transit_ms={128: 1.25}), probe=False)
+    assert (p.io_latency_ms, p.io_transit_ms) == (1.9, {128: 1.25}) and not p.warnings
+    assert pf.profile_rates("m4") == (48000, 96000) and pf.profile_rates("dev") == (48000,)
+
+
+@pytest.mark.parametrize("bad", [44100, 88200, 192000, 0, -96000, "96000", 96000.0, True, [96000],
+                                 {"rate": 96000}])
+def test_samplerate_outside_the_measured_ones_is_refused_like_a_bad_chunksize(bad):
+    """Only the rates measured on the box (48 and 96 kHz on the M4; 48 kHz on the dev HiFiBerry).
+    Anything else: a warning naming the value and the rates, and the rate the key's absence gives
+    (a file: 48 kHz with the file's figures). Never an exception: k1000 must not crash-loop."""
+    p = pf.load_profile("m4", _rate_file(samplerate=bad, **DESK_48K), probe=False)
+    assert (p.samplerate, p.chunksize, p.target_level, p.io_latency_ms) == (48000, 64, 128, 2.3)
+    assert any(f"samplerate {bad!r} refused" in w and "48000 or 96000 Hz" in w and "using 48000" in w
+               for w in p.warnings), p.warnings
+    q = pf.load_profile("dev", {"profiles": {"dev": {"samplerate": bad}}}, probe=False)
+    assert q.samplerate == 48000 and any("samplerate" in w and "runs 48000 Hz" in w
+                                         for w in q.warnings)
+    q = pf.load_profile("dev", {"profiles": {"dev": {"samplerate": 96000}}}, probe=False)
+    assert q.samplerate == 48000 and any("samplerate 96000 refused" in w for w in q.warnings)
+
+
+@pytest.mark.parametrize("profile_key", list(golden.PROFILES))
+def test_samplerate_48000_written_out_is_still_the_golden_config(profile_key):
+    """The precedent of chunksize: a file without the key and a file naming 48000 give today's
+    config, byte for byte (f2671b0's at 48 kHz), every state. The config is the profile's alone:
+    the same whatever rate the process was set to before (`dspconfig.profile_rate`)."""
+    name, ov = golden.PROFILES[profile_key]
+    sec = {**((ov or {}).get("profiles", {}).get(name, {})), "samplerate": 48000}
+    prof = pf.load_profile(name, {"profiles": {name: sec}}, probe=False)
+    assert prof.samplerate == 48000 and not prof.warnings
+    for run_rate in (48000, 96000):
+        kst.set_engine_rate(run_rate)
+        for state_key in golden.STATES:
+            want = golden.golden_path(profile_key, state_key).read_text(encoding="utf-8")
+            assert d.to_yaml(d.generate(prof, golden.STATES[state_key](State))) == want, state_key
+
+
+@pytest.mark.parametrize("state_key", list(golden.STATES))
+def test_d022_config_is_the_golden_one_but_for_three_device_values(state_key):
+    """At 96 kHz / 128 / 256 (no settings file, the built-in D-022 set) the engine config is the
+    48 kHz one but for devices.samplerate, chunksize and target_level: every filter, mixer,
+    pipeline step and value is the same, the delays included (each golden delay is a whole number
+    of 48 kHz samples, so a whole number of 96 kHz samples)."""
+    prof = pf.load_profile("m4", None, probe=False)
+    s = golden.STATES[state_key](State)
+    s.profile = "m4"
+    want = yaml.safe_load(golden.golden_path("m4", state_key).read_text(encoding="utf-8"))
+    want["devices"].update(samplerate=96000, chunksize=128, target_level=256)
+    for run_rate in (48000, 96000):          # the profile's rate, whatever the process was set to
+        kst.set_engine_rate(run_rate)
+        cfg = d.generate(prof, s)
+        want["title"] = cfg["title"]
+        assert cfg == want
+        assert "samplerate: 96000\n" in d.to_yaml(cfg)
+
+
+@pytest.mark.parametrize("rate", [48000, 96000])
+def test_every_filter_k1000_writes_is_valid_at_the_rate(rate):
+    """D-022, checked against the engine's own rules (camilladsp-schema biquad.rs `check_freq`:
+    0 < freq < samplerate / 2; loudness.rs: high_freq (default 3500 Hz) < samplerate / 2). Every
+    frequency K1000 can write, at the ends of every range and with every feature on, sits under
+    0.45 x the rate; time constants and delays are in ms (the engine converts them at its rate);
+    nothing is written in samples."""
+    kst.set_engine_rate(rate)
+    prof = pf.load_profile("m4", _rate_file(samplerate=rate), probe=False)
+    states = [extreme_state(), golden.STATES["tuned"](State)]
+    for s in states:
+        s.profile = "m4"
+        s.aux_mode, s.loud_on, s.deharsh_on = "mic", True, True
+        s.deharsh_hz = RANGES["deharsh_hz"].max
+        s.lowcut_on, s.sub_lowpass_on = False, False        # the parked 'off' frequencies
+    for s in states:
+        cfg = d.generate(prof, s)
+        assert cfg["devices"]["samplerate"] == rate
+        seen = 0
+        for name, f in {**cfg["filters"], **cfg.get("processors", {})}.items():
+            par = f["parameters"]
+            for key in ("freq", "low_freq", "high_freq"):
+                if key in par:
+                    assert 0 < par[key] < 0.45 * rate, (name, key, par[key])
+                    seen += 1
+            assert par.get("delay_unit", "ms") == "ms" and par.get("attack_unit", "ms") == "ms" \
+                and par.get("release_unit", "ms") == "ms", name
+            if f["type"] == "Loudness":
+                assert par.get("high_freq", 3500.0) < rate / 2
+        assert seen >= 18
+    for key, r in RANGES.items():
+        if r.unit == "Hz":
+            assert r.max < 0.45 * min(kst.SAMPLERATES), key
+
+
+@pytest.mark.parametrize("live_rate,want_rate", [(48000, 96000), (96000, 48000)])
+def test_a_live_rate_other_than_the_wanted_one_is_a_device_change(live_rate, want_rate):
+    """The engine still runs the old rate after a k1000.yaml rate change (until camilladsp
+    restarts): `devices.samplerate` differs, a `devices` drift (DEVICES CHANGED, fixed at the next
+    engine start), and nothing else: the filters and the delays match (compared as whole samples
+    at the wanted rate), so no pipeline rebuild and no delay write."""
+    s = State(profile="m4", sub_delay_ms=round(301 / 48.0, 6))   # on both grids
+    kst.set_engine_rate(live_rate)
+    live = d.generate(pf.load_profile("m4", _rate_file(samplerate=live_rate), probe=False), s)
+    kst.set_engine_rate(want_rate)
+    prof = pf.load_profile("m4", _rate_file(samplerate=want_rate), probe=False)
+    expected = d.generate(prof, s)
+    live["devices"]["chunksize"] = expected["devices"]["chunksize"]
+    live["devices"]["target_level"] = expected["devices"]["target_level"]
+    drift = d.config_drift(json.dumps(live), expected)
+    assert drift.devices == [f"devices.samplerate {live_rate} != {want_rate}"]
+    assert drift.rebuild == [] and drift.fixes == []
+    assert d.config_drift(json.dumps(expected), expected).clean
+    # a delay the live engine holds in samples (a CamillaGUI edit) is read at ITS rate
+    live["filters"]["sub_delay"]["parameters"].update(delay=301 * live_rate // 48000,
+                                                       delay_unit="samples")
+    adopted = d.state_from_config(json.dumps(live), None, s)
+    assert kst.delay_samples(adopted.sub_delay_ms) == kst.delay_samples(s.sub_delay_ms)
+
+
+def test_delays_are_put_on_whole_samples_of_the_engine_rate():
+    """One sample is the finest delay step at either rate: 1/48 ms at 48 kHz, 1/96 ms at 96."""
+    kst.set_engine_rate(96000)
+    s = State(profile="m4", sub_delay_ms=round(1 / 96.0, 6), top_delay_ms=0.0)
+    pm = d.param_map(s)
+    assert pm["/filters/sub_delay/parameters/delay"] == round(1 / 96.0, 6)
+    assert d.delay_on_grid(0.0157) == round(2 / 96.0, 6)
+    assert d.diff_ops(s, State(profile="m4", sub_delay_ms=0.0104)) == []      # same sample
+    assert d.diff_ops(s, State(profile="m4", sub_delay_ms=0.0157)) != []      # the next one
+    kst.set_engine_rate(48000)
+    assert d.param_map(s)["/filters/sub_delay/parameters/delay"] in (0.0, round(1 / 48.0, 6))
+    assert d.delay_on_grid(0.0157) == round(1 / 48.0, 6)
+
+
+def test_the_probe_asks_and_checks_the_profiles_rate(monkeypatch):
+    """The probe's dump opens the device at the profile's rate, and a device that does not list
+    that rate is said so (the old check named 48000 whatever the setting)."""
+    asked: list[tuple[str, int]] = []
+
+    def dump(tool, device, timeout, rate=48000):
+        asked.append((tool, rate))
+        return ("FORMAT: S32_LE\nCHANNELS: 4\nRATE: [44100 48000]\n", 1)
+
+    monkeypatch.setattr(pf, "_dump", dump)
+    monkeypatch.setattr(pf, "card_present", lambda device, proc_root=None: True)
+    p = pf.load_profile("m4", _rate_file(samplerate=96000), probe=True)
+    assert asked and all(r == 96000 for _t, r in asked)
+    assert "m4: capture does not list 96000 Hz" in p.warnings
+    assert "m4: playback does not list 96000 Hz" in p.warnings
+    asked.clear()
+    p = pf.load_profile("m4", _rate_file(samplerate=48000), probe=True)
+    assert asked and all(r == 48000 for _t, r in asked)
+    assert not any("does not list" in w for w in p.warnings)

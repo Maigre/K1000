@@ -30,7 +30,7 @@ import math
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -78,11 +78,30 @@ DEHARSH_RATIO = 3.0
 DEHARSH_ATTACK_MS = 1.0
 DEHARSH_RELEASE_MS = 80.0
 
-# The engine runs one fixed rate (contract §3). A Delay with `subsample: false` is a whole number
-# of samples, rounded to nearest (measured on 5.0.0-beta.1: 0.0104 ms -> 0, 0.0105 ms -> 1), so
-# one sample (1/48 ms) is the finest delay step that changes anything.
-SAMPLERATE = 48000
-SAMPLE_MS = 1000.0 / SAMPLERATE
+# The engine's sample rate (D-022): one rate for the whole run of the control service, the
+# profile's `samplerate` (profiles.load_profile), set by the Controller when it is built
+# (`set_engine_rate`) and read from here by everything that depends on it (`engine_rate()`,
+# `sample_ms()`, `delay_samples`, the delay ranges below): never copied at import, so nothing
+# keeps a stale value. Changing it takes a restart of the service, by design. SAMPLERATES are
+# the rates measured on the box, the only ones accepted; DEFAULT_SAMPLERATE is the rate of a
+# k1000.yaml that names none (every file written before D-022) and of a process that has not set
+# one (tools, tests).
+# A Delay with `subsample: false` is a whole number of samples, rounded to nearest (measured on
+# 5.0.0-beta.1 at 48 kHz: 0.0104 ms -> 0, 0.0105 ms -> 1), so one sample (1/48 ms at 48 kHz,
+# 1/96 ms at 96 kHz) is the finest delay step that changes anything.
+DEFAULT_SAMPLERATE = 48000
+SAMPLERATES: tuple[int, ...] = (48000, 96000)
+_engine_rate = DEFAULT_SAMPLERATE
+
+
+def engine_rate() -> int:
+    """The engine's sample rate for this run (Hz): DEFAULT_SAMPLERATE until `set_engine_rate`."""
+    return _engine_rate
+
+
+def sample_ms() -> float:
+    """One sample at the engine rate, in ms: the finest delay step that changes anything."""
+    return 1000.0 / _engine_rate
 
 DEFAULT_SYS_PEQ_FREQS = (63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0)
 DEFAULT_LIVE_PEQ_FREQS = (250.0, 1000.0, 2500.0, 5000.0)
@@ -151,12 +170,15 @@ RANGES: dict[str, Range] = {
     "master_db": Range(-80.0, 0.0, 0.5, default=-20.0, unit="dB"),
     "balance_db": Range(-12.0, 12.0, 0.5, default=0.0, unit="dB"),
     "input_trim_db": Range(-24.0, 12.0, 0.5, default=0.0, unit="dB"),
-    # 50 ms = 17 m of sub/top offset: more than any roaming setup needs. Fine = one sample: a
-    # finer step would often not change the (whole-sample) engine delay, yet still be written
-    # and rebuild the delay line, i.e. a click with no change in alignment. dspconfig sends the
-    # engine whole samples (`delay_samples`); 6 digits keep 1/48 ms steps from drifting.
-    "sub_delay_ms": Range(0.0, 50.0, 0.1, fine=SAMPLE_MS, default=0.0, digits=6, unit="ms"),
-    "top_delay_ms": Range(0.0, 50.0, 0.1, fine=SAMPLE_MS, default=0.0, digits=6, unit="ms"),
+    # 50 ms = 17 m of sub/top offset: more than any roaming setup needs. Fine = one sample at the
+    # engine rate (`set_engine_rate` puts it in): a finer step would often not change the
+    # (whole-sample) engine delay, yet still be written and rebuild the delay line, i.e. a click
+    # with no change in alignment. dspconfig sends the engine whole samples (`delay_samples`);
+    # 6 digits keep 1/48 or 1/96 ms steps from drifting.
+    "sub_delay_ms": Range(0.0, 50.0, 0.1, fine=1000.0 / DEFAULT_SAMPLERATE, default=0.0, digits=6,
+                          unit="ms"),
+    "top_delay_ms": Range(0.0, 50.0, 0.1, fine=1000.0 / DEFAULT_SAMPLERATE, default=0.0, digits=6,
+                          unit="ms"),
     # The Lo-Cut moves in Hz, not octaves (D-011, Thomas: "2 Hz per click"): 2 Hz per detent,
     # 1 Hz with the push held, on that grid (a value saved off it, e.g. 112.25, snaps on its first
     # move). Every other frequency stays logarithmic.
@@ -213,8 +235,28 @@ RANGES: dict[str, Range] = {
 ALIGN_DELAY = "align_delay_ms"
 DELAY_FIELDS: tuple[str, str] = ("sub_delay_ms", "top_delay_ms")
 VIRTUAL_RANGES: dict[str, Range] = {
-    ALIGN_DELAY: Range(-50.0, 50.0, 0.1, fine=SAMPLE_MS, default=0.0, digits=6, unit="ms"),
+    ALIGN_DELAY: Range(-50.0, 50.0, 0.1, fine=1000.0 / DEFAULT_SAMPLERATE, default=0.0, digits=6,
+                       unit="ms"),
 }
+# The ranges whose fine step is one sample: `set_engine_rate` replaces them (Range is frozen) in
+# RANGES / VIRTUAL_RANGES, which every reader looks up at use (`range_for`), never keeps.
+_SAMPLE_STEP_RANGES: tuple[tuple[dict[str, Range], str], ...] = (
+    (RANGES, "sub_delay_ms"), (RANGES, "top_delay_ms"), (VIRTUAL_RANGES, ALIGN_DELAY))
+
+
+def set_engine_rate(rate: Any) -> int:
+    """Set the engine's sample rate for this run (one of SAMPLERATES) and the one-sample fine step
+    of the delay ranges with it; returns it. ValueError for any other value (`load_profile` has
+    refused it before: this is the guard behind it). The Controller calls it when it is built,
+    with its profile's rate: once per run of the service."""
+    global _engine_rate
+    if isinstance(rate, bool) or not isinstance(rate, int) or rate not in SAMPLERATES:
+        raise ValueError(f"sample rate {rate!r}: K1000 runs "
+                         f"{' or '.join(map(str, SAMPLERATES))} Hz")
+    _engine_rate = rate
+    for table, key in _SAMPLE_STEP_RANGES:
+        table[key] = replace(table[key], fine=1000.0 / rate)
+    return rate
 
 BOOL_FIELDS: tuple[str, ...] = (
     "muted", "mono_subs", "sub_inverted", "top_inverted", "lowcut_on", "sub_lowpass_on",
@@ -500,15 +542,16 @@ def nudge_align_delay(value: Any, detents: int | float, fine: bool = False) -> f
     return new + 0.0
 
 
-def delay_samples(ms: Any) -> int:
-    """Whole samples the engine uses for a delay of `ms` (subsample off): round half up, >= 0."""
+def delay_samples(ms: Any, rate: float | None = None) -> int:
+    """Whole samples the engine uses for a delay of `ms` (subsample off) at `rate` (None: the
+    engine rate of the run): round half up, >= 0."""
     try:
         v = float(ms)
     except (TypeError, ValueError, OverflowError):
         return 0
     if not math.isfinite(v) or v <= 0.0:
         return 0
-    return int(math.floor(v * SAMPLERATE / 1000.0 + 0.5))
+    return int(math.floor(v * (_engine_rate if rate is None else rate) / 1000.0 + 0.5))
 
 
 def range_for(path: str) -> Range | None:

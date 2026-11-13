@@ -32,7 +32,8 @@ Why it is shaped like this:
   filters, in either kind of paste. The free-line form is for a hand-typed list only.
 - **A width in octaves becomes the Q of the SAME digital filter** EqualizerAPO and CamillaDSP's
   Peaking/Bandwidth compute (alpha = sin w0 * sinh(ln2/2 * BW * w0 / sin w0)), at the engine
-  rate: 1/(2 Q) = sinh(ln2/2 * BW * w0 / sin w0). Below a few kHz it is the textbook relation.
+  rate of the run (`state.engine_rate()`, 48 or 96 kHz): 1/(2 Q) = sinh(ln2/2 * BW * w0 / sin w0).
+  Below a few kHz it is the textbook relation at either rate.
 """
 from __future__ import annotations
 
@@ -44,8 +45,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
-from .state import (DEFAULT_SYS_PEQ_FREQS, N_SYS_PEQ, RANGES, SAMPLERATE, PeqBand, atomic_write,
-                    default_sys_peq)
+from .state import (DEFAULT_SYS_PEQ_FREQS, N_SYS_PEQ, RANGES, PeqBand, atomic_write,
+                    default_sys_peq, engine_rate)
 
 MAX_TEXT = 16000            # characters of pasted text the box reads (a 20-filter REW file is ~1.5 k)
 MAX_LINES = 400
@@ -117,9 +118,11 @@ def plan_bands(filters: Sequence[Filter]) -> list[PeqBand]:
     return out
 
 
-def q_for_bandwidth(octaves: float, freq: float, fs: float = SAMPLERATE) -> float:
+def q_for_bandwidth(octaves: float, freq: float, fs: float | None = None) -> float:
     """Q of the Peaking filter equal to a Peaking/Bandwidth filter `octaves` wide at `freq`
-    (EqualizerAPO's and CamillaDSP's bandwidth form, digital): 1/(2Q) = sinh(ln2/2 BW w0/sin w0)."""
+    (EqualizerAPO's and CamillaDSP's bandwidth form, digital, at `fs`; None: the engine rate):
+    1/(2Q) = sinh(ln2/2 BW w0/sin w0)."""
+    fs = float(engine_rate()) if fs is None else float(fs)
     w = 2.0 * math.pi * min(max(freq, 1.0), fs * 0.49) / fs
     return 1.0 / (2.0 * math.sinh(math.log(2.0) / 2.0 * octaves * w / math.sin(w)))
 
@@ -327,7 +330,7 @@ def band_dicts(bands: Sequence[Any]) -> list[dict[str, float]]:
 
 def curve(bands: Sequence[Any], points: int = 160) -> dict[str, list[float]]:
     """The summed response (dB) of the 8 peaking bands at `points` log-spaced frequencies,
-    exactly as the engine computes it (eqgraph: CamillaDSP's biquads at 48 kHz)."""
+    exactly as the engine computes it (eqgraph: CamillaDSP's biquads at the engine rate)."""
     from .ui import eqgraph as eg      # numpy + PIL: only when a preview is drawn
     import numpy as np
     f = np.geomspace(eg.F_LO, eg.F_HI, max(8, int(points)))

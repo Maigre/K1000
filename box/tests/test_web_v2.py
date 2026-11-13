@@ -36,6 +36,7 @@ from websockets.exceptions import ConnectionClosed
 
 from k1000.control import NOTCH_Q, Status
 from k1000.profiles import ProfileChoice
+from k1000 import state as st_mod
 from k1000.state import State
 from k1000.ui import input_map
 from k1000.ui.eqgraph import RtaFrame
@@ -114,7 +115,10 @@ def _v1_inputs() -> tuple[State, Status]:
 
 
 def test_v1_hello_state_and_allowlist_are_pinned() -> None:
-    """Protocol 1 as on main 04ddb34 (D-014 included), byte for byte: /ws is untouched."""
+    """Protocol 1 as on main 04ddb34 (D-014 included), byte for byte: /ws is untouched, but for
+    one key added at the end of hello, `fs`: the engine's sample rate, which the v1 page's EQ
+    curve is computed at (D-022; a v1 page that does not know it ignores it, and draws at
+    48 kHz)."""
     st, status = _v1_inputs()
 
     class Ctl:
@@ -126,7 +130,10 @@ def test_v1_hello_state_and_allowlist_are_pinned() -> None:
 
     hello = PhoneBridge(Ctl()).hello(True, "abc")
     assert hello.pop("server").startswith("k1000 ")
+    assert hello.pop("fs") == 48000 and list(hello)[-1] == "nudge"
     assert json.dumps(hello) == V1_HELLO
+    st_mod.set_engine_rate(96000)
+    assert PhoneBridge(Ctl()).hello(True, "abc")["fs"] == 96000
     assert json.dumps(PhoneBridge.state_message(("SHOW", st, status, None), phone_on=True,
                                                 phones=2, mute=(False, 5))) == V1_STATE
     assert json.dumps(PhoneBridge.meters_message(status)) == V1_METERS
@@ -172,7 +179,8 @@ def test_v1_socket_is_unchanged_beside_v2(tmp_path: Path) -> None:
         async with ws_connect(v1url(srv), origin=origin(srv)) as ws:
             hello = json.loads(await ws.recv())
             assert hello["v"] == 1 and list(hello) == ["t", "v", "server", "build", "phone_on", "ranges",
-                                                       "bands", "labels", "short", "notch", "nudge"]
+                                                       "bands", "labels", "short", "notch", "nudge",
+                                                       "fs"]      # fs: D-022, the one addition
             assert hello["build"] == srv.build != srv.build_v2
             st = await recv_until(ws, lambda m: m["t"] == "state")
             assert list(st) == list(json.loads(V1_STATE))
@@ -292,6 +300,8 @@ def test_fields_are_the_box_rules() -> None:
     d = f["align_delay_ms"]
     assert d["fine"] == pytest.approx(1000 / 48000) and d["step"] == 0.1 and d["stepper"] == [-10, -1, 1, 10]
     assert d["min"] == -50.0 and d["sticky"] == [0.0]
+    st_mod.set_engine_rate(96000)                   # D-022: one sample at the run's rate
+    assert web.fields_v2()["align_delay_ms"]["fine"] == pytest.approx(1000 / 96000)
     lc = f["lowcut_hz"]
     assert lc["snap"] is True and lc["step"] == 2.0 and lc["fine"] == 1.0 and lc["accel"] == {"up": 4, "down": 4}
     assert f["out_trim_db"]["paths"] == [f"out_trim_db.{i}" for i in range(4)]

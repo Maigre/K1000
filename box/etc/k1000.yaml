@@ -26,27 +26,46 @@ profiles:
     input_map: [2, 3]            # program L, R = M4 line inputs 3-4 (0-based capture channels)
     output_map: [TopL, TopR, SubL, SubR]   # physical out1..out4 <- logical channel
     probe: true
-    # The engine's buffer, its share of the in-to-out delay: about one chunk plus target_level
-    # (D-018: 10 ms or less in to out, chosen by measurement, docs/16 §3.3). Device settings:
-    # read when the engine starts, never at show time (restart k1000, then camilladsp).
-    # chunksize: frames processed at a time, 64, 128, 256 (default), 512 or 1024; any other
-    # value is refused (256 is used, the journal says so).
-    # target_level: frames left in the playback buffer when a chunk arrives; default one chunk;
-    # 64 up to 6 x chunksize (384 at 64, 768 at 128, 1536 at 256, 3072 at 512, 6144 at 1024),
-    # clamped with a journal line. Measured at 256 + 512: 20.3 ms in to out (16 Oct).
-    chunksize: 256
-    target_level: 512            # ~10.7 ms: the gig value (D-010), to come down by measurement (D-018)
-    io_latency_ms: 2.3           # the M4's converters + USB, loop-measured 12 Nov: the delay readout adds it (D-018)
+    # The sample rate and the engine's buffer (D-022, 13 Nov: 24-bit / 96 kHz at chunk 128 /
+    # target 256, 6.2 to 7.5 ms in to out measured on the desk, the box's main setting). Device
+    # settings: read when k1000 starts, written to the engine at its next start (restart k1000,
+    # then camilladsp), never at show time.
+    # samplerate: 96000 or 48000 Hz, the two rates measured with the M4; any other value is
+    # refused (the journal says so, and 48000 is used). A file WITHOUT this key runs 48000 (every
+    # file written before D-022 is a 48 kHz file), with the 48 kHz figures for what it does not
+    # name; no file at all runs the built-in values below. Saved delays are kept in ms: at 96 kHz
+    # they play the same; a delay set at 96 kHz plays at most 0.01 ms off at 48 kHz.
+    # chunksize: frames processed at a time, 64, 128, 256, 512 or 1024 (2.7 ms per 256 frames at
+    # 96 kHz, 5.3 ms at 48 kHz); any other value is refused (the rate's default is used: 128 at
+    # 96 kHz, 256 at 48 kHz; the journal says so).
+    # target_level: frames left in the playback buffer when a chunk arrives; default 256 at
+    # 96 kHz with chunk 128, else one chunk; 64 up to 6 x chunksize (384 at 64, 768 at 128, 1536
+    # at 256, 3072 at 512, 6144 at 1024), clamped with a journal line.
+    samplerate: 96000
+    chunksize: 128
+    target_level: 256
+    # io_latency_ms: the M4's converters + USB, loop-measured, at THIS rate: 1.9 at 96 kHz
+    # (13 Nov, median of 30), 2.3 at 48 kHz (12 Nov). The delay readout adds it (D-018).
+    io_latency_ms: 1.9
     # io_transit_ms: {chunksize: ms}, what sat in USB transit when io_latency_ms was measured, as
-    # the kernel counts it (/proc/asound/M4/pcm0p/sub0/status: delay - buffer fill), at each chunk
-    # where that was read: 48 frames at 48 kHz, at chunk 64 only. At a chunk named here the
-    # readout reads the transit (a burst of reads each second) and adds what it holds beyond
-    # this, so that a shift below the engine shows (docs/17 §3.4); within 0.4 ms of it counts as
-    # nothing (the bench's 3 s medians moved by 0.25 ms with the delay constant). At any other
-    # chunk, or null: not read, the readout as before. Measured with io_latency_ms, at 48 kHz: a
-    # new loop measurement of one needs the other read beside it (an io_latency_ms of its own
-    # without this key turns the transit off).
-    io_transit_ms: {64: 1.0}
+    # the readout's reader gives it (/proc/asound/M4/pcm0p/sub0/status: delay - buffer fill; the
+    # mean of 100 reads near their median), at each chunk where that was read at rest: 1.13 at
+    # chunk 128 at 96 kHz (the reads of 13 Nov; to confirm with a reading at rest), 1.13 at chunk
+    # 64 at 48 kHz. At a chunk named here the readout reads the transit (a burst of reads each
+    # second) and adds what it holds beyond this, so that a shift below the engine shows
+    # (docs/17 §3.4); within 0.4 ms of it counts as nothing. At any other chunk, or null: not
+    # read, the readout as before. Measured with io_latency_ms, at the same rate: a new loop
+    # measurement of one needs the other read beside it (an io_latency_ms of its own without this
+    # key turns the transit off).
+    io_transit_ms: {128: 1.13}
+    # THE PROVEN FALLBACK (a 16 h night run passed on it, docs/17 §9): 48 kHz, chunk 64, target
+    # 128, 7.6 ms in to out. To go back, replace the five lines above with these, then restart
+    # k1000, then camilladsp:
+    #   samplerate: 48000
+    #   chunksize: 64
+    #   target_level: 128
+    #   io_latency_ms: 2.3
+    #   io_transit_ms: {64: 1.13}
 
 # Physical -> logical controls (MCP23017 indices, see docs/03-v0-architecture.md §1).
 # UNCONFIRMED DEFAULTS until SETUP > Knob test (HWTEST) on the box has identified every button

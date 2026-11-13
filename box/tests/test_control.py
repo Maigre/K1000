@@ -47,7 +47,7 @@ from k1000.control import (
 from k1000.hw.mcp23017 import EncoderEvent, SwitchEvent
 from k1000.ui.input_map import Toggle
 from k1000.profiles import ProfileChoice, load_profile
-from k1000.state import RANGES, State, delay_samples
+from k1000.state import RANGES, State, delay_samples, engine_rate
 
 BOX = Path(__file__).resolve().parents[1]
 # The engine on PATH first (a dev machine: a wrapper running the Pi's binary), like test_dspconfig.
@@ -1557,7 +1557,8 @@ def test_setup_interrupted_by_an_engine_exit_is_reverted(tmp_path: Path) -> None
     """Switching to a profile whose device is absent: the engine exits during the upload
     (production unit, started from a file). The SETUP fields go back; nothing saved the new one."""
     async def body() -> None:
-        m4 = load_profile("m4", {}, probe=False)
+        # A settings file that names no samplerate: the M4 at 48 kHz, dev's rate (D-022).
+        m4 = load_profile("m4", {"profile": "dev"}, probe=False)
         ctl, cl = make(tmp_path, State(), playing=True, profile_loader=lambda name: m4)
         await boot(ctl)
 
@@ -1571,6 +1572,29 @@ def test_setup_interrupted_by_an_engine_exit_is_reverted(tmp_path: Path) -> None
         assert ctl.state.profile == "dev" and ctl.profile.name == "dev"
         assert yaml.safe_load((tmp_path / "active.yml").read_text())["title"] == "K1000 dev"
         await ctl.stop()
+
+    run(body())
+
+
+def test_a_profile_at_another_sample_rate_is_refused_in_setup(tmp_path: Path) -> None:
+    """D-022: the sample rate is read once, when k1000 starts. A SETUP switch to a profile at
+    another rate (dev at 48 kHz -> the M4 at its built-in 96 kHz, a box with no settings file)
+    writes nothing to the engine: the SETUP field goes back, the hint says what to do, and the
+    run keeps its rate."""
+    async def body() -> None:
+        m4 = load_profile("m4", {}, probe=False)
+        assert m4.samplerate == 96000
+        ctl, cl = make(tmp_path, State(), playing=True, profile_loader=lambda name: m4)
+        await boot(ctl)
+        n = len(cl.log)
+        assert ctl.toggle("profile", confirmed=True)
+        assert await ctl.settle(5.0)
+        assert ctl.state.profile == "dev" and ctl.profile.name == "dev"
+        assert nomark(cl.log[n:]) == []
+        assert ctl.focus.hint == "M4 IS 96 kHz: PIN IT IN k1000.yaml"
+        assert engine_rate() == 48000 and cl.cfg["devices"]["samplerate"] == 48000
+        await ctl.stop()
+        assert json.loads((tmp_path / "state.json").read_text())["profile"] == "dev"
 
     run(body())
 
@@ -4541,6 +4565,96 @@ def test_sigterm_keeps_the_screen_live_until_the_controller_stopped(
     during = [t for t, _ in frames if window["start"] < t < window["end"]]
     assert during, "no frame drawn while stop() ran"
     assert frames[-1][0] >= window["end"]        # the stop frame comes last
+
+
+@pytest.mark.parametrize("m4_section,want", [
+    # k1000.yaml as shipped since D-022
+    ({"samplerate": 96000, "chunksize": 128, "target_level": 256, "io_latency_ms": 1.9,
+      "io_transit_ms": {128: 1.13}}, (96000, 128, 256)),
+    # the desk box's own file on 13 Nov: the 48 kHz fallback written out, no samplerate key
+    ({"chunksize": 64, "target_level": 128, "io_latency_ms": 2.3}, (48000, 64, 128)),
+])
+def test_the_service_reads_the_rate_once_at_start_and_everything_follows(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: Any, m4_section: dict[str, Any],
+        want: tuple[int, int, int]) -> None:
+    """D-022 through `python3 -m k1000`'s own start (__main__.run: load_settings, choose_profile,
+    load_profile, the Controller), no rate set by the test: the engine config uploaded and
+    written to active.yml, the delay grid and its fine step, the spectrum warm-up (the spectrum
+    task's own request), the program window the phones get, the phones' hellos, the EQ curves
+    and the tune import all run at the settings file's rate."""
+    from k1000 import __main__ as main_mod
+    from k1000 import rta, tune
+    from k1000.state import engine_rate, range_for
+    from k1000.ui import eqgraph
+    from k1000.web.server import PhoneBridge
+
+    rate, chunk, target = want
+    client = FakeClient(None)                       # a fresh engine without a config
+    asked: list[tuple[str, Any]] = []
+    built: dict[str, Controller] = {}
+
+    class Warm:                                     # the warm-up's link (spectrum_warmup_client)
+        async def connect(self, timeout: float | None = None) -> bool:
+            return True
+
+        async def command(self, name: str, timeout: float | None = None, **kw: Any) -> Any:
+            asked.append((name, kw.get("value")))
+            raise CdspError(name, "InvalidRequestError", "No audio data available")
+
+        async def close(self) -> None:
+            pass
+
+    def controller(*a: Any, **kw: Any) -> Controller:
+        built["ctl"] = Controller(*a, **kw)
+        return built["ctl"]
+
+    monkeypatch.setattr(main_mod, "CamillaClient", lambda url, **kw: client)
+    monkeypatch.setattr(main_mod, "Controller", controller)
+    monkeypatch.setattr(main_mod, "spectrum_warmup_client", lambda url: Warm)
+    monkeypatch.setattr(main_mod, "card_present", lambda device, *a, **kw: True)
+    caplog.set_level(logging.INFO, logger="k1000.control")
+    settings = tmp_path / "k1000.yaml"
+    settings.write_text(yaml.safe_dump({"profile": "m4",
+                                        "profiles": {"m4": {"probe": False, **m4_section}}}))
+    args = main_mod.build_parser().parse_args([
+        "--settings", str(settings), "--state", str(tmp_path / "state.json"),
+        "--active-config", str(tmp_path / "active.yml"), "--no-hw", "--headless", "--no-phone"])
+    seen: dict[str, Any] = {}
+
+    async def body() -> int:
+        async def look() -> None:
+            await until(lambda: "ctl" in built and built["ctl"].engine_ready, timeout=10.0,
+                        what="first sync")
+            ctl = built["ctl"]
+            seen["rate"] = engine_rate()
+            seen["devices"] = dict(client.cfg["devices"])
+            seen["active"] = yaml.safe_load((tmp_path / "active.yml").read_text())["devices"]
+            seen["fine"] = range_for("sub_delay_ms").fine
+            seen["hello"] = PhoneBridge(ctl).hello(True)["fs"]
+            seen["hello2"] = PhoneBridge(ctl).hello2(True)["fs"]
+            seen["pgm"] = rta.pgm_info()
+            seen["q"] = tune.q_for_bandwidth(1.0, 15000.0)
+            seen["curve"] = eqgraph.coefficients(eqgraph.Band(eqgraph.PEAKING, 16000.0, 6.0, 1.0))
+            seen["channel"] = ctl.profile.input_map[0]
+            os.kill(os.getpid(), signal.SIGTERM)
+        t = asyncio.get_running_loop().create_task(look())
+        code = await main_mod.run(args)
+        await t
+        return code
+
+    assert run(body()) == 0
+    assert seen["rate"] == rate
+    for dv in (seen["devices"], seen["active"]):
+        assert (dv["samplerate"], dv["chunksize"], dv["target_level"]) == (rate, chunk, target)
+    assert seen["fine"] == 1000.0 / rate
+    assert seen["hello"] == seen["hello2"] == rate
+    assert (seen["pgm"]["rate"], seen["pgm"]["fft"]) == (rate, {48000: 8192, 96000: 16384}[rate])
+    assert seen["q"] == tune.q_for_bandwidth(1.0, 15000.0, rate) != tune.q_for_bandwidth(
+        1.0, 15000.0, 144000 - rate)
+    assert seen["curve"] == eqgraph.coefficients(
+        eqgraph.Band(eqgraph.PEAKING, 16000.0, 6.0, 1.0), float(rate))
+    assert asked == [("GetSpectrum", rta.spectrum_request(seen["channel"]))]
+    assert f"engine sample rate: {rate} Hz (profile m4)" in caplog.text
 
 
 # ======================================================================= D-011

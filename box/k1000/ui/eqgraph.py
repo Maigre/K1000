@@ -7,9 +7,10 @@ Why each part is the way it is:
   5.0.0-beta.1 computes (`camilladsp-schema/src/filters/biquad.rs`, `from_config`): RBJ cookbook
   biquads with alpha = sin(w0) / (2 Q), the shelves with beta = sin(w0) * sqrt(A) / Q (the `q`
   form `dspconfig.py` writes; the `slope` form is the same filter with another width input), the
-  GraphicEqualizer's bands as Peaking/Bandwidth, all evaluated at the engine rate (48 kHz) with the
-  numerically stable phi = sin^2(w/2) form of |H(e^jw)|^2. So the curve near 20 kHz shows the
-  bilinear-transform cramping the engine really has, and a 0 dB band is exactly flat.
+  GraphicEqualizer's bands as Peaking/Bandwidth, all evaluated at the engine rate of the run
+  (`state.engine_rate()`: 48 or 96 kHz, D-022) with the numerically stable phi = sin^2(w/2) form of
+  |H(e^jw)|^2. So the curve near 20 kHz shows the bilinear-transform cramping the engine really
+  has at that rate (much less at 96 kHz), and a 0 dB band is exactly flat.
 - Pure and fast: numpy for the curve (6 bands x 456 columns is microseconds), the static grid and
   labels rasterised once per box size into masks, glyphs cached. Nothing here touches the engine.
 - The RTA is drawn BEHIND the curve, in its own scale (engine dBFS of the peak FFT bin in each
@@ -27,7 +28,8 @@ from typing import Any, Sequence
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-FS = 48000.0
+from ..state import engine_rate
+
 F_LO, F_HI = 20.0, 20000.0
 
 PEAKING = "Peaking"
@@ -60,8 +62,10 @@ class Band:
         return self.kind in _GAIN_KINDS and (abs(self.gain) < 1e-9 or not self.on)
 
 
-def coefficients(band: Band, fs: float = FS) -> tuple[float, float, float, float, float]:
-    """(b0, b1, b2, a1, a2), normalised by a0, exactly as CamillaDSP v5 `from_config`."""
+def coefficients(band: Band, fs: float | None = None) -> tuple[float, float, float, float, float]:
+    """(b0, b1, b2, a1, a2), normalised by a0, exactly as CamillaDSP v5 `from_config`, at `fs`
+    (None: the engine rate)."""
+    fs = float(engine_rate()) if fs is None else float(fs)
     f = min(max(float(band.freq), 1e-3), fs / 2 * 0.9999)
     w = 2.0 * math.pi * f / fs
     sn, cs = math.sin(w), math.cos(w)
@@ -104,8 +108,10 @@ def coefficients(band: Band, fs: float = FS) -> tuple[float, float, float, float
     return b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0
 
 
-def response_db(band: Band, freqs: Any, fs: float = FS) -> np.ndarray:
-    """|H| in dB of one band at `freqs` (Hz), digital (at fs), not the analog prototype."""
+def response_db(band: Band, freqs: Any, fs: float | None = None) -> np.ndarray:
+    """|H| in dB of one band at `freqs` (Hz), digital (at fs; None: the engine rate), not the
+    analog prototype."""
+    fs = float(engine_rate()) if fs is None else float(fs)
     f = np.asarray(freqs, dtype=np.float64)
     if band.flat:
         return np.zeros_like(f)
@@ -116,8 +122,8 @@ def response_db(band: Band, freqs: Any, fs: float = FS) -> np.ndarray:
     return 10.0 * np.log10(np.maximum(num, 1e-30) / np.maximum(den, 1e-30))
 
 
-def curve_db(bands: Sequence[Band], freqs: Any, fs: float = FS) -> np.ndarray:
-    """The combined response (dB) of filters in series."""
+def curve_db(bands: Sequence[Band], freqs: Any, fs: float | None = None) -> np.ndarray:
+    """The combined response (dB) of filters in series (at fs; None: the engine rate)."""
     f = np.asarray(freqs, dtype=np.float64)
     out = np.zeros_like(f)
     for b in bands:

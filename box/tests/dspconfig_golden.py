@@ -65,10 +65,13 @@ STATES: dict[str, Callable[[Any], Any]] = {
     "tuned": _tuned,
 }
 
-# name -> (profile name, k1000.yaml-style overrides)
+# name -> (profile name, k1000.yaml-style overrides). "m4" is a settings file that pins the
+# profile and names no `samplerate`: since D-022 a box with no settings file at all runs the M4's
+# built-in 96 kHz set, and a file without the key runs 48 kHz as every file did at f2671b0 (its
+# build ignores the key, so the fixtures stand as they were written).
 PROFILES: dict[str, tuple[str, dict[str, Any]]] = {
     "dev": ("dev", {}),
-    "m4": ("m4", {}),
+    "m4": ("m4", {"profile": "m4"}),
     "m4_6ch": ("m4", {"profiles": {"m4": {"capture_channels": 6}}}),
     "m4_in12": ("m4", {"profiles": {"m4": {"input_map": [0, 1]}}}),
 }

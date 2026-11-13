@@ -10,9 +10,14 @@ Why it is shaped like this:
   and the level itself reads about a quarter chunk low, because the device reports its position
   once per period, half a chunk (`io_share_ms`). Bench of 12 Nov, the M4 on both engines, chunk
   32 to 256, 27 starts: in to out = (level + chunk) / rate + 2.3 ms + a quarter chunk, within
-  0.3 ms. At 536 + 256 frames that is 20.1 ms for a measured 20.2 to 20.3. A profile without the
-  figure (dev) shows the engine's share alone, marked as a floor (`io` False). An estimate, not
-  a loop measurement.
+  0.3 ms. At 536 + 256 frames that is 20.1 ms for a measured 20.2 to 20.3. At 96 kHz (D-022,
+  13 Nov) the same formula held with 1.9 ms for the M4's share (median 1.93 over 30 loop
+  measurements). A profile without the figure (dev) shows the engine's share alone, marked as a
+  floor (`io` False). An estimate, not a loop measurement.
+- **A figure belongs to its rate.** `io_latency_ms` and `io_transit_ms` are the profile's, measured
+  at the profile's `samplerate`; an engine that runs another rate (a k1000.yaml rate change
+  before camilladsp restarts, a CamillaGUI config) gets neither: the engine's share alone, as a
+  floor, and no transit read.
 - **One more read a second, nothing written.** The control service's status poll adds one
   GetBufferLevel; chunksize and samplerate come from the running config the poll already reads.
   The engine refreshes the level about every 10 s (its adjust period) and reads 0 until its first
@@ -22,27 +27,33 @@ Why it is shaped like this:
   status (`/proc/asound/<card>/pcm<dev>p/sub<n>/status`) gives `delay` = the buffer fill plus
   them, so transit = `delay` - (`buffer_size` - `avail`). On the bench a load test moved it from
   48 to 144 frames (+2.0 ms at 48 kHz) while the level stayed put, and the delay measured through
-  the loop moved by 1.9 ms. `io_latency_ms` was measured with 1.0 ms in transit (48 frames at
-  48 kHz) at chunk 64; the profile says so (`io_transit_ms: {64: 1.0}`), and at that chunk the
-  readout adds what the transit holds beyond it. Only there: the transit at rest was read at no
-  other chunk, and if it differs there, the quarter chunk of the bench's fit may already hold
-  the difference (counting it again would be wrong). At a chunk the profile does not name, the
-  transit is not read and the readout is as before; a reading at rest at that chunk, added to
-  `io_transit_ms`, turns it on. Read only while the engine runs, in a worker thread: the
-  kernel answers a /proc read of a stream under the PCM's open mutex, which a USB device's open
-  or close holds for as long as they take (recalled from the ALSA source, sound/core/pcm.c,
+  the loop moved by 1.9 ms. `io_latency_ms` was measured with the transit at rest, and the
+  profile says what this reader's figure gives there (`io_transit_ms`): at 48 kHz, chunk 64,
+  1.13 ms (`{64: 1.13}`); at 96 kHz, chunk 128, 1.13 ms (`{128: 1.13}`, from the reads of 13 Nov
+  on three engine starts of four; a reading at rest made at the deploy replaces it). At such a
+  chunk the readout adds what the transit holds beyond it. Only there: the transit at rest was
+  read at no other chunk, and if it differs there, the quarter chunk of the bench's fit may
+  already hold the difference (counting it again would be wrong). At a chunk the profile does
+  not name, or at another rate than the profile's, the transit is not read and the readout is
+  as before; a reading at rest at that chunk and rate, added to `io_transit_ms`, turns it on.
+  Read only while the engine runs, in a worker thread: the kernel answers a /proc read of a
+  stream under the PCM's open mutex, which a USB device's open or close holds for as long as
+  they take (recalled from the ALSA source, sound/core/pcm.c,
   `snd_pcm_substream_proc_status_read`; not read again here, not measured). Once a second, a
-  burst of USB_BURST reads about USB_GAP_S apart; the figure is the median of the last
-  USB_POOL reads of one stream (the bench's figures were medians of 3 s of reads every 50 ms).
-  What the readout counts for it is one band USB_STEP_MS wide (`LatencyWatch.note`): never more
-  than that away from the figure's own shift, and 0 at rest. Those medians read 48 or 60 frames
-  for 16 h with the delay constant (docs/17 §9), and that never moves the readout. How far
-  single reads spread is not measured. As recalled from the USB audio driver (sound/usb/pcm.c,
-  `snd_usb_pcm_delay`), its figure drops by one USB frame's worth (1 ms) once a frame has begun
-  since the last URB came back, so single reads may sit in two groups 1 ms apart: the median of
-  100 reads holds while the smaller group stays under about a third of them (models in the
-  tests). A new stream (its `trigger_time` changed: a restart, an underrun's recovery) starts
-  the figure over. Each read also resets the stream's `avail_max` in the kernel (recalled from
+  burst of USB_BURST reads about USB_GAP_S apart; the figure is the mean of the last USB_POOL
+  reads of one stream, without the reads more than USB_KEEP_MS away from their median
+  (`transit_figure`). Single reads at rest fall in a pair of values a quarter ms apart, about
+  half each, and a low group one USB frame (1 ms) below them with 1 to 14 % of the reads (read
+  on the box on 13 Nov, at both rates; the driver's figure drops by one USB frame's worth once a
+  frame has begun since the last URB came back, as recalled from sound/usb/pcm.c,
+  `snd_usb_pcm_delay`). The median of the window flipped between the two values of the pair,
+  and the readout by 0.5 ms with it; the mean of the pair does not flip, and it followed the
+  loop within 0.05 ms. Leaving out the reads far from the median takes the low group out, and
+  keeps out what the median kept out before: a stray burst, and the old stream's reads while a
+  shift takes over the window. What the readout counts for it is one band USB_STEP_MS wide
+  (`LatencyWatch.note`): never more than that away from the figure's own shift, and 0 at rest.
+  A new stream (its `trigger_time` changed: a restart, an underrun's recovery) starts the figure
+  over. Each read also resets the stream's `avail_max` in the kernel (recalled from
   pcm_native.c, `snd_pcm_status64`): nothing in K1000 reads it. No `io_transit_ms` at the
   running chunk, no `io_latency_ms`, a device name that is not `hw:` or `plughw:`, a stream not
   RUNNING or a file not readable: the readout of the engine's level alone, as before, and
@@ -104,18 +115,26 @@ READ_CHUNK = 64 * 1024
 MAX_LINE = 64 * 1024             # a line longer than this is not one of the engine's
 MAX_BACK_BYTES = 2 * 1024 * 1024  # the first read goes back through at most this much rotated log
 # The frames in USB transit (see above): every TRANSIT_READ_S while the engine runs, USB_BURST
-# reads about USB_GAP_S apart; the figure is the median of the last USB_POOL reads of one stream
-# (five bursts, about 6 s: the bench's figures were medians of 3 s of reads every 50 ms) once
-# USB_NEED are in (three bursts). What the readout counts for it moves only by more than
-# USB_STEP_MS, and is 0 within USB_STEP_MS of the profile's `io_transit_ms` (one band:
-# `LatencyWatch.note`). Those 3 s medians read 48 or 60 frames for 16 h with the delay constant,
-# 0.25 ms apart at 48 kHz (docs/17 §9); the shift of docs/17 §3.4 was 2.0 ms.
+# reads about USB_GAP_S apart; the figure is `transit_figure` of the last USB_POOL reads of one
+# stream (five bursts, about 6 s) once USB_NEED are in (three bursts): their mean, without the
+# reads more than USB_KEEP_MS away from their median. Single reads at rest, read on the box on
+# 13 Nov with this reader, fall in a pair of values 0.25 ms apart, about half each, plus a low
+# group one USB frame (1 ms) below the pair with 1 to 14 % of them: at 48 kHz / chunk 64,
+# 60 / 72 / 12 frames for 46.4 / 51.9 / 1.0 % of 3620 reads; at 96 kHz / chunk 128, 96 / 120 / 24 frames for
+# about 46 / 50 / 3 % on three engine starts, 120 / 144 / 24 frames for 74 / 11 / 14 % on a
+# fourth. The median of such a window flips between the two values of the pair (the readout
+# then moved by 0.5 ms with the delay constant); this figure stays put, and on those reads it
+# followed the loop measurement within 0.05 ms. What the readout counts for it moves only by more
+# than USB_STEP_MS, and is 0 within USB_STEP_MS of the profile's `io_transit_ms` (one band:
+# `LatencyWatch.note`); the shift of docs/17 §3.4 was 2.0 ms. Both are in ms, not frames: the
+# same at 48 and 96 kHz.
 TRANSIT_READ_S = 1.0
 USB_BURST = 20
 USB_GAP_S = 0.01
 USB_POOL = 5 * USB_BURST
 USB_NEED = 3 * USB_BURST
 USB_STEP_MS = 0.4
+USB_KEEP_MS = 0.6
 _gaps = random.Random()          # each gap is 0.5 to 1.5 x USB_GAP_S (see read_transits)
 
 
@@ -247,6 +266,22 @@ def read_transits(device: str, proc_root: str | Path = PROC_ASOUND, *, reads: in
     return (tuple(frames), rate, stream) if frames else None
 
 
+def transit_figure(reads: Any, rate: float) -> float:
+    """The frames in USB transit of a window of single reads (`LatencyWatch.note_usb`): the mean
+    of the reads within USB_KEEP_MS of the window's median. Not the median itself: single reads
+    at rest fall in a pair of values a quarter ms apart, about half each, and the median of the
+    window flips between them; their mean does not. Out: the low group one USB frame (1 ms) below
+    the pair, an artefact of the driver's figure, and, as the median kept them out before, reads
+    far above it (a stray burst; the old stream's reads while a shift of more than USB_KEEP_MS
+    takes over the window, so the shift still shows whole once it holds most of the window).
+    Frames, not rounded: a mean of whole frames."""
+    s = sorted(reads)
+    mid = s[(len(s) - 1) // 2]
+    keep = USB_KEEP_MS * float(rate) / 1000.0
+    kept = [x for x in s if abs(x - mid) <= keep]
+    return sum(kept) / len(kept)
+
+
 def read_transit(device: str, proc_root: str | Path = PROC_ASOUND) -> tuple[int, float, str] | None:
     """One read of `read_transits`: (frames in USB transit, the stream's rate, its start)."""
     b = read_transits(device, proc_root, reads=1)
@@ -262,7 +297,7 @@ class Reading:
     samplerate: float
     io_ms: float | None          # the interface's share (the profile's), None = not known
     limit_ms: float = LIMIT_MS
-    usb: int | None = None       # frames in USB transit, when the readout counts them
+    usb: float | None = None     # frames in USB transit (`transit_figure`), when counted
     usb_ms: float = 0.0          # what they add beyond the profile's io_transit_ms (`note`)
 
     @property
@@ -288,7 +323,7 @@ class Reading:
         if self.io_ms is None:
             return (f"latency: buffer={self.level} frames, at least {self.ms:.1f} ms in to out "
                     f"(engine only, the interface not known; limit {self.limit_ms:.1f})")
-        usb = "" if self.usb is None else f"usb={self.usb} frames, "
+        usb = "" if self.usb is None else f"usb={self.usb:.1f} frames, "
         return (f"latency: buffer={self.level} frames, {usb}about {self.ms:.1f} ms in to out "
                 f"(limit {self.limit_ms:.1f})")
 
@@ -308,7 +343,7 @@ class LatencyWatch:
         self._logged_at = -math.inf
         self._usb_reads: collections.deque[int] = collections.deque(maxlen=USB_POOL)
         self._usb_stream: str | None = None      # the start (trigger_time) of the reads' stream
-        self.usb: int | None = None              # frames in USB transit: the median (None: none)
+        self.usb: float | None = None            # frames in USB transit (None: none)
         self._usb_ms = 0.0                       # what the readout counts for them (`note`)
 
     def note_config(self, cfg: Any) -> None:
@@ -324,37 +359,51 @@ class LatencyWatch:
         self.note_usb(None)
 
     def note_usb(self, burst: Burst | None) -> None:
-        """One burst of reads of the USB transit (`read_transits`). The figure is the median of
-        the last USB_POOL reads once USB_NEED are in. None, or a stream at another rate than the
-        running config's, clears it; a new stream (another start) starts it over: no read of one
-        stream counts for the next."""
+        """One burst of reads of the USB transit (`read_transits`). The figure is
+        `transit_figure` of the last USB_POOL reads once USB_NEED are in. None, or a stream at
+        another rate than the running config's, clears it; a new stream (another start) starts
+        it over: no read of one stream counts for the next."""
         if (burst is None or not burst[0] or self._devices is None
                 or burst[1] != self._devices[1]):
             self._usb_reads.clear()
             self._usb_stream = self.usb = None
             self._usb_ms = 0.0
             return
-        frames, _rate, stream = burst
+        frames, rate, stream = burst
         if stream != self._usb_stream:
             self._usb_reads.clear()
             self._usb_stream, self.usb, self._usb_ms = stream, None, 0.0
         self._usb_reads.extend(frames)
         if len(self._usb_reads) >= USB_NEED:
-            self.usb = sorted(self._usb_reads)[(len(self._usb_reads) - 1) // 2]
+            self.usb = transit_figure(self._usb_reads, rate)
 
-    def usb_ref(self, io_transit_ms: Any) -> float | None:
+    def at_rate(self, rate: Any) -> bool:
+        """Does the running config run at `rate` (the rate a profile's figures were measured at)?
+        None = not said: yes. False until the running config is read."""
+        if rate is None:
+            return True
+        if self._devices is None or isinstance(rate, bool) or not isinstance(rate, (int, float)):
+            return False
+        return float(rate) == self._devices[1]
+
+    def usb_ref(self, io_transit_ms: Any, rate: Any = None) -> float | None:
         """The profile's `io_transit_ms` ({chunksize: ms}) at the running chunk: the transit
-        `io_latency_ms` was measured with there. None: not known at that chunk, or the running
-        config not read yet; the transit is then neither read nor counted."""
-        if not isinstance(io_transit_ms, dict) or self._devices is None:
+        `io_latency_ms` was measured with there. `rate`: the rate it was measured at (the
+        profile's samplerate). None: not known at that chunk, measured at another rate than the
+        running one, or the running config not read yet; the transit is then neither read nor
+        counted."""
+        if not isinstance(io_transit_ms, dict) or self._devices is None or not self.at_rate(rate):
             return None
         return io_transit_ms.get(self._devices[0])
 
-    def io_share(self, io_latency_ms: float | None) -> float | None:
+    def io_share(self, io_latency_ms: float | None, rate: Any = None) -> float | None:
         """`io_share_ms` for the running chunk and rate (the profile's figure alone until the
-        running config is known)."""
+        running config is known). `rate`: the rate the figure was measured at (the profile's
+        samplerate); None when the engine runs another one: the figure does not apply there."""
         if io_latency_ms is None or self._devices is None:
             return io_latency_ms
+        if not self.at_rate(rate):
+            return None
         return io_share_ms(io_latency_ms, *self._devices)
 
     def note(self, engine_state: Any, level: Any, io_ms: float | None,

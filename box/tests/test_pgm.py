@@ -34,6 +34,7 @@ import pytest
 from websockets.asyncio.client import connect as ws_connect
 
 from k1000 import rta
+from k1000 import state as st
 from k1000.rta import PgmAccumulator, PgmWindow, SpectrumTask, fft_length, pgm_info
 from k1000.web import server as web
 from k1000.web.server import PhoneServer, PhoneSession, pgm_message
@@ -70,9 +71,15 @@ def test_fft_length_and_hello_info() -> None:
     assert fft_length(96000, 10.0) == 16384
     assert fft_length(40960, 10.0) == 4096          # an exact power of two stays
     assert fft_length(40970, 10.0) == 8192
+    assert fft_length(48000, 0.1) == 262144 == rta.ENGINE_RING_FRAMES   # capped like the engine
     assert pgm_info() == {"v": 1, "n": 264, "f0": 10.0, "f1": 20000.0, "rate": 48000,
                           "fft": 8192, "est": "peak", "win_s": 0.5}
     assert N == 264 and rta.PGM_WIN_S == 0.5
+    st.set_engine_rate(96000)              # D-022: the run's rate, read at each hello
+    assert pgm_info() == {"v": 1, "n": 264, "f0": 10.0, "f1": 20000.0, "rate": 96000,
+                          "fft": 16384, "est": "peak", "win_s": 0.5}
+    assert SpectrumTask("ws://x", wanted=lambda: False, channels=lambda: [2],
+                        publish=lambda f, s: None).pgm_info()["rate"] == 96000
 
 
 # ============================================================================ the accumulator

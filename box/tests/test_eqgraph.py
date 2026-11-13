@@ -22,7 +22,8 @@ from k1000.ui import eqgraph as eg
 from k1000.ui.eqgraph import (HIGHPASS, HIGHSHELF, LOWPASS, LOWSHELF, PEAKING, PEAKING_BW, Band)
 
 
-def db_at(band: Band, f: float, fs: float = eg.FS) -> float:
+def db_at(band: Band, f: float, fs: float | None = None) -> float:
+    """None: the engine rate of the run (state.engine_rate), as the screen draws it."""
     return float(eg.response_db(band, [f], fs)[0])
 
 
@@ -64,15 +65,17 @@ def test_peaking_q_is_rbj_bandwidth():
     assert eg.q_for_octaves(1 / 10) == pytest.approx(14.42, abs=0.01)
 
 
+@pytest.mark.parametrize("rate", st.SAMPLERATES)
 @pytest.mark.parametrize("gain", [6.0, -12.0, 2.0])
 @pytest.mark.parametrize("q", [0.4, 0.707, 1.5])
-def test_shelves_full_gain_at_the_far_end_half_at_f0(gain, q):
+def test_shelves_full_gain_at_the_far_end_half_at_f0(gain, q, rate):
+    st.set_engine_rate(rate)
     ls = Band(LOWSHELF, 120.0, gain, q)
     assert db_at(ls, 1e-3) == pytest.approx(gain, abs=1e-6)
     assert db_at(ls, 120.0) == pytest.approx(gain / 2, abs=1e-9)
     assert abs(db_at(ls, 20000.0)) < 0.01
     hs = Band(HIGHSHELF, 8000.0, gain, q)
-    assert db_at(hs, eg.FS / 2 * 0.999999) == pytest.approx(gain, abs=1e-4)
+    assert db_at(hs, st.engine_rate() / 2 * 0.999999) == pytest.approx(gain, abs=1e-4)
     assert db_at(hs, 8000.0) == pytest.approx(gain / 2, abs=1e-9)
     assert abs(db_at(hs, 20.0)) < 0.01
 
@@ -128,9 +131,30 @@ def test_camilladsp_parity_shelves_via_slope():
 @pytest.mark.parametrize("band", [Band(PEAKING, 2520.0, -6.5, 8.0), Band(LOWSHELF, 120.0, 4.0, 0.5),
                                   Band(HIGHSHELF, 9000.0, -8.0, 1.2), Band(HIGHPASS, 85.0, q=0.707),
                                   Band(LOWPASS, 120.0, q=0.707), Band(PEAKING_BW, 2000.0, 3.0, 1 / 3)])
-def test_phi_form_matches_direct_evaluation(band):
+@pytest.mark.parametrize("rate", st.SAMPLERATES)
+def test_phi_form_matches_direct_evaluation(band, rate):
+    st.set_engine_rate(rate)
     for f in (20.0, 63.0, 250.0, 1000.0, 2520.0, 8000.0, 16000.0, 19999.0):
-        assert db_at(band, f) == pytest.approx(direct_db(band, f, eg.FS), abs=1e-6)
+        assert db_at(band, f) == pytest.approx(direct_db(band, f, float(rate)), abs=1e-6)
+
+
+def test_the_curve_is_computed_at_the_engine_rate_of_the_run():
+    """D-022: the screen's curve is the engine's at the rate it runs (state.engine_rate, which the
+    Controller sets from its profile), read at each call: never a rate kept from the import. At
+    96 kHz a high band is not cramped toward Nyquist as at 48 kHz, and the curve says so."""
+    hi = [Band(PEAKING, 16000.0, 6.0, 1.0), Band(HIGHSHELF, 12000.0, -6.0, 0.707)]
+    f = np.array([1000.0, 14000.0, 18000.0, 19999.0])
+    at48, at96 = eg.curve_db(hi, f, 48000.0), eg.curve_db(hi, f, 96000.0)
+    assert abs(at48[2] - at96[2]) > 0.3          # the two rates are told apart where it matters
+    assert abs(at48[0] - at96[0]) < 0.05         # and agree far below Nyquist
+    assert eg.curve_db(hi, f) == pytest.approx(at48, abs=1e-12)       # the default rate
+    st.set_engine_rate(96000)
+    assert eg.curve_db(hi, f) == pytest.approx(at96, abs=1e-12)
+    assert eg.coefficients(hi[0]) == eg.coefficients(hi[0], 96000.0)
+    img96 = eg.render_graph((456, 200), hi + [Band(PEAKING, 1000.0)] * 4)
+    st.set_engine_rate(48000)
+    img48 = eg.render_graph((456, 200), hi + [Band(PEAKING, 1000.0)] * 4)
+    assert img96.tobytes() != img48.tobytes()    # draw_graph draws at the rate of the moment
 
 
 def test_curve_is_the_sum_in_db_and_skips_flat_bands():

@@ -93,10 +93,13 @@ def test_limit_and_devices_are_read_tolerantly() -> None:
 
 
 def test_io_latency_is_a_profile_number() -> None:
-    assert load_profile("m4", {}, probe=False).io_latency_ms == 2.3
+    """Measured at one rate, given per rate (D-022): 1.9 ms at 96 kHz (no settings file, or the
+    shipped one), 2.3 ms at 48 kHz (a settings file without `samplerate`)."""
+    assert load_profile("m4", {}, probe=False).io_latency_ms == 1.9
+    assert load_profile("m4", {"profile": "m4"}, probe=False).io_latency_ms == 2.3
     assert load_profile("dev", {}).io_latency_ms is None
     shipped = load_settings(BOX / "etc" / "k1000.yaml")
-    assert load_profile("m4", shipped, probe=False).io_latency_ms == 2.3
+    assert load_profile("m4", shipped, probe=False).io_latency_ms == 1.9
     assert load_profile("dev", shipped).io_latency_ms is None
     assert load_profile("m4", {"profiles": {"m4": {"io_latency_ms": 5}}}, probe=False).io_latency_ms == 5.0
     assert load_profile("m4", {"profiles": {"m4": {"io_latency_ms": None}}}, probe=False).io_latency_ms is None
@@ -107,19 +110,21 @@ def test_io_latency_is_a_profile_number() -> None:
 
 
 def test_io_transit_is_a_profile_number_per_chunk() -> None:
-    """The transit io_latency_ms was measured with, at each chunk where it was read: built in
-    for the m4 at chunk 64, so a settings file written before it (io_latency_ms alone) counts
-    the transit unchanged; `null` turns it off."""
+    """The transit io_latency_ms was measured with, at each chunk where it was read, as the
+    readout's figure gives it at rest (`transit_figure`): built in for the m4 at 48 kHz, chunk
+    64, and at 96 kHz, chunk 128 (1.13 ms both), so a settings file written before it
+    (io_latency_ms alone) counts the transit unchanged; `null` turns it off."""
     def m4(**kw: Any) -> Any:
         return load_profile("m4", {"profiles": {"m4": kw}}, probe=False)
 
-    assert load_profile("m4", {}, probe=False).io_transit_ms == {64: 1.0}
+    assert load_profile("m4", {}, probe=False).io_transit_ms == {128: 1.13}
+    assert load_profile("m4", {"profile": "m4"}, probe=False).io_transit_ms == {64: 1.13}
     assert load_profile("dev", {}).io_transit_ms is None
     shipped = load_settings(BOX / "etc" / "k1000.yaml")
-    assert load_profile("m4", shipped, probe=False).io_transit_ms == {64: 1.0}
+    assert load_profile("m4", shipped, probe=False).io_transit_ms == {128: 1.13}
     assert load_profile("dev", shipped).io_transit_ms is None
     p = m4(chunksize=64, target_level=128, io_latency_ms=2.3)          # a file from before
-    assert (p.io_latency_ms, p.io_transit_ms, p.warnings) == (2.3, {64: 1.0}, [])
+    assert (p.io_latency_ms, p.io_transit_ms, p.warnings) == (2.3, {64: 1.13}, [])
     assert m4(io_transit_ms=None).io_transit_ms is None and m4(io_transit_ms={}).io_transit_ms is None
     p = m4(io_transit_ms={64: 1, 128: 1.25})
     assert p.io_transit_ms == {64: 1.0, 128: 1.25} and p.warnings == []
@@ -127,21 +132,24 @@ def test_io_transit_is_a_profile_number_per_chunk() -> None:
     for junk in (1.0, "1.0", True, [64], {"64": 1.0}, {65: 1.0}, {True: 1.0}, {64: -1},
                  {64: 51}, {64: float("nan")}, {64: "1.0"}, {64: None}, {64: 1.0, 2048: 1.0}):
         p = m4(io_transit_ms=junk)
-        assert p.io_transit_ms == {64: 1.0} and any("io_transit_ms" in w for w in p.warnings), junk
+        assert p.io_transit_ms == {64: 1.13} and any("io_transit_ms" in w for w in p.warnings), junk
 
 
 def test_an_io_latency_of_its_own_does_not_take_the_builtin_transit() -> None:
-    """The built-in 1.0 ms is what sat in transit when the built-in 2.3 ms was measured: a new
-    loop measurement written alone has no transit to count from, so none is read."""
+    """The built-in 1.13 ms is what sat in transit when the built-in 2.3 ms was measured: a new
+    loop measurement written alone has no transit to count from, so none is read. The same at
+    96 kHz with 1.9 ms."""
     def m4(**kw: Any) -> Any:
         return load_profile("m4", {"profiles": {"m4": kw}}, probe=False)
 
     p = m4(io_latency_ms=3.1)
     assert (p.io_latency_ms, p.io_transit_ms, p.warnings) == (3.1, None, [])
     assert m4(io_latency_ms=3.1, io_transit_ms={64: 1.2}).io_transit_ms == {64: 1.2}
-    assert m4(io_latency_ms=2.3).io_transit_ms == {64: 1.0}           # the built-in figure
+    assert m4(io_latency_ms=2.3).io_transit_ms == {64: 1.13}          # the built-in figure
     p = m4(io_latency_ms="3.1")                                        # refused: the built-in
-    assert p.io_latency_ms == 2.3 and p.io_transit_ms == {64: 1.0}
+    assert p.io_latency_ms == 2.3 and p.io_transit_ms == {64: 1.13}
+    assert m4(samplerate=96000, io_latency_ms=1.9).io_transit_ms == {128: 1.13}
+    assert m4(samplerate=96000, io_latency_ms=2.3).io_transit_ms is None   # 48 kHz's, not 96's
     assert m4(io_latency_ms=None).io_transit_ms is None
     p = m4(io_latency_ms=3.1, io_transit_ms=1.2)
     assert p.io_transit_ms is None and any("io_transit_ms" in w and "using None" in w
@@ -238,8 +246,18 @@ buffer_size: 256
 """
 M4_64 = {"devices": {"chunksize": 64, "samplerate": 48000}}
 STREAM = "58770.748315426"          # the sample's trigger_time: one start of the stream
-JIT = (48, 60) * (lat.USB_BURST // 2)        # a burst at rest: the night's two figures
-SHIFT = (144, 156) * (lat.USB_BURST // 2)    # the same, 96 frames deeper (docs/17 §3.4)
+JIT = (48, 60) * (lat.USB_BURST // 2)        # a burst at rest: the night's two figures (54.0)
+SHIFT = (144, 156) * (lat.USB_BURST // 2)    # the same, 96 frames deeper (docs/17 §3.4): 150.0
+# The reference the m4 profile gives at 48 kHz, chunk 64: the figure at rest (1.13 ms, D-022).
+REF_64 = load_profile("m4", {"profile": "m4"}, probe=False).io_transit_ms[64]
+# Single reads at rest, read on the box on 13 Nov with this reader (bursts of 20 reads, a window
+# of 100): frames -> % of the reads.
+BOX_48K_64 = {60: 46.4, 72: 51.9, 12: 1.0}       # 3620 reads; the loop read 0.25 ms more than usual
+BOX_96K_128 = {96: 46.0, 120: 50.0, 24: 2.7}     # three engine starts of 820 reads each, alike
+BOX_96K_128_ODD = {120: 73.9, 144: 11.2, 24: 14.0}   # the fourth start: the loop read 0.16 ms more
+# The usual state at 48 kHz, chunk 64 (the pair the night run read, 48 / 60 frames), with the
+# shares of the 3620 reads: a model built from them, not a read distribution.
+USUAL_48K_64 = {48: 46.4, 60: 51.9, 0: 1.0}
 
 
 def burst(frames: int | tuple[int, ...], rate: float = 48000.0,
@@ -353,7 +371,7 @@ def _hour(w: LatencyWatch, clock: Clock, reads: Any, level: int, io: float | Non
     shown: set[tuple[float, float]] = set()
     for _ in range(n):
         w.note_usb(burst(tuple(reads() for _ in range(lat.USB_BURST))))
-        r = w.note("Running", level, io, 1.0)
+        r = w.note("Running", level, io, REF_64)
         assert r is not None
         shown.add((r.ms, r.usb_ms))
         clock.t += 1.0
@@ -363,15 +381,16 @@ def _hour(w: LatencyWatch, clock: Clock, reads: Any, level: int, io: float | Non
 def test_the_spread_of_the_reads_never_moves_the_readout(caplog: Any) -> None:
     """The night run (docs/17 §9), chunk 64 / target 128: for 16 h the transit read 48 or 60
     frames (49 once), as medians of 3 s of reads, while the loop measured the same delay every
-    time. How far single reads spread is not measured: here they spread as those medians, over
-    a whole USB millisecond (36 to 72 frames, and 36/48/60/72), and with a quarter of them in a
-    second group one USB frame (48 frames) lower or higher (models, not box data). In every case
-    an hour of bursts keeps the readout at what the engine's level gives, and the journal gets
-    only its ten-minute lines. (With a third of them in such a group, the models move the
-    readout by 1 ms and back less than once an hour on average: latency.py says why it matters.)"""
+    time. Single reads at rest as read on 13 Nov (the pair with the shares of the 3620 reads, and
+    a low group one USB frame down, 1 % of them and 14 %, the most seen), and models (reads spread
+    over a whole USB millisecond, 36 to 72 frames, or 36/48/60/72; a quarter of them one USB frame
+    higher, never seen). In every case an hour of bursts keeps the readout at what the engine's
+    level gives, and the journal gets only its ten-minute lines."""
     caplog.set_level(logging.INFO, logger="k1000.latency")
     rng = random.Random(1213)
-    for reads in (lambda: rng.choice((48, 60)), lambda: rng.randint(36, 72),
+    for reads in (lambda: rng.choices(list(USUAL_48K_64), list(USUAL_48K_64.values()))[0],
+                  lambda: rng.choices((48, 60, 0), (43, 43, 14))[0],
+                  lambda: rng.choice((48, 60)), lambda: rng.randint(36, 72),
                   lambda: rng.choice((36, 48, 48, 60, 60, 72)),
                   lambda: rng.choice((48, 60, 48, 60, 48, 60, 0, 12)),
                   lambda: rng.choice((48, 60, 48, 60, 48, 60, 96, 108))):
@@ -385,8 +404,88 @@ def test_the_spread_of_the_reads_never_moves_the_readout(caplog: Any) -> None:
         assert _hour(w, clock, reads, 182, io) == {(7.8, 0.0)}    # the readout of the night
         lines = [x.getMessage() for x in caplog.records if x.name == "k1000.latency"]
         assert len(lines) == 1 + (3600 - 1) // int(lat.LOG_EVERY_S)   # the first, then ten-minute
-        assert all(re.fullmatch(r"latency: buffer=182 frames, usb=\d+ frames, about 7\.8 ms in "
-                                r"to out \(limit 10\.0\)", x) for x in lines), lines
+        assert all(re.fullmatch(r"latency: buffer=182 frames, usb=\d+\.\d frames, about 7\.8 ms "
+                                r"in to out \(limit 10\.0\)", x) for x in lines), lines
+
+
+def _box_run(dist: dict[int, float], rate: float, chunk: int, ref: float, *, seed: int = 1311,
+             bursts: int = 600) -> tuple[list[float], list[float], set[tuple[float, float]]]:
+    """`bursts` bursts of single reads drawn from `dist` (frames -> %), one a second, each
+    followed by a poll at a fixed level: (the figure in ms after each, the median of the same
+    window in ms, the (readout, counted shift) pairs shown)."""
+    rng = random.Random(seed)
+    w = LatencyWatch(10.0, clock=Clock())
+    w.note_config({"devices": {"chunksize": chunk, "samplerate": rate}})
+    io = w.io_share(2.0)
+    figs: list[float] = []
+    meds: list[float] = []
+    shown: set[tuple[float, float]] = set()
+    window: list[int] = []
+    for _ in range(bursts):
+        reads = rng.choices(list(dist), list(dist.values()), k=lat.USB_BURST)
+        window = (window + reads)[-lat.USB_POOL:]
+        w.note_usb(burst(tuple(reads), rate=rate))
+        r = w.note("Running", 2 * chunk, io, ref)
+        assert r is not None
+        if w.usb is not None:
+            figs.append(w.usb / rate * 1000.0)
+            meds.append(sorted(window)[(len(window) - 1) // 2] / rate * 1000.0)
+            shown.add((r.ms, r.usb_ms))
+    return figs, meds, shown
+
+
+@pytest.mark.parametrize("dist,rate,chunk,want_ms", [
+    (USUAL_48K_64, 48000.0, 64, 1.13), (BOX_48K_64, 48000.0, 64, 1.38),
+    (BOX_96K_128, 96000.0, 128, 1.13), (BOX_96K_128_ODD, 96000.0, 128, 1.28)])
+def test_the_reads_of_13_nov_give_a_figure_that_does_not_flip(dist: dict[int, float], rate: float,
+                                                               chunk: int, want_ms: float) -> None:
+    """The single reads at rest read on the box on 13 Nov (a pair 0.25 ms apart, about half each,
+    a low group one USB frame below): ten minutes of them. The figure stays within 0.05 ms of
+    what the loop said (1.13 ms in the usual state at both rates; 1.38 and 1.28 ms in the two
+    states the loop read 0.25 and 0.16 ms higher), where the median of the same windows flips
+    between the two values of the pair; against the profile's reference the readout never
+    moves (what it counts stays 0: none of these states is a shift)."""
+    profile = load_profile("m4", {} if rate == 96000.0 else {"profile": "m4"}, probe=False)
+    assert profile.samplerate == rate and profile.chunksize in (chunk, 256)
+    ref = profile.io_transit_ms[chunk]
+    assert ref == 1.13
+    figs, meds, shown = _box_run(dist, rate, chunk, ref)
+    assert len(figs) > 550
+    assert all(abs(f - want_ms) <= 0.05 for f in figs), (min(figs), max(figs))
+    assert max(figs) - min(figs) < 0.1
+    if max(dist.values()) < 60:                      # a pair about half each: the median flips
+        assert max(meds) - min(meds) == pytest.approx(0.25)
+    assert len(shown) == 1 and next(iter(shown))[1] == 0.0
+
+
+def test_the_pair_that_moved_the_readout_by_half_a_ms_no_longer_does() -> None:
+    """Seen once on the box (13 Nov): the readout went from 6.6 to 7.1 ms where the loop read
+    6.8. With the median and the 1.0 ms reference shipped then, a stream whose pair sits 0.25 and
+    0.5 ms above the reference counts 0 or 0.5 ms depending on which value the median takes: the
+    3620 reads at 48 kHz / chunk 64 are such a stream (60 / 72 frames: 1.25 / 1.5 ms). With the
+    figure and the profile's reference (the figure at rest, 1.13 ms), the same reads count 0
+    throughout, and the figure no longer flips. (On the code before D-022 this test fails: the
+    figure flips by 0.25 ms, and the readout counts 0.5 ms from the first figure on.)"""
+    ref = load_profile("m4", {"profile": "m4"}, probe=False).io_transit_ms[64]
+    figs, _meds, shown = _box_run(BOX_48K_64, 48000.0, 64, ref)
+    assert max(figs) - min(figs) < 0.1
+    assert len(shown) == 1 and next(iter(shown))[1] == 0.0
+
+
+def test_the_figure_is_the_mean_of_the_reads_near_the_median() -> None:
+    """`transit_figure`: the reads more than USB_KEEP_MS (0.6 ms) from the window's median are
+    left out, whatever the rate (28.8 frames at 48 kHz, 57.6 at 96 kHz)."""
+    assert lat.USB_KEEP_MS == 0.6
+    assert lat.transit_figure([48, 60] * 50, 48000.0) == 54.0
+    assert lat.transit_figure([48] * 49 + [60] * 49 + [0, 12], 48000.0) == 54.0      # low group out
+    assert lat.transit_figure([60] * 60 + [500] * 20 + [48] * 20, 48000.0) == 57.0  # stray out
+    assert lat.transit_figure([96] * 46 + [120] * 50 + [24] * 4, 96000.0) == pytest.approx(
+        (96 * 46 + 120 * 50) / 96)                 # 1.13 ms
+    assert lat.transit_figure([100] * 60 + [60] * 40, 96000.0) == 84.0      # 40 frames: 0.42 ms
+    assert lat.transit_figure([100] * 60 + [60] * 40, 48000.0) == 100.0     # 40 frames: 0.83 ms
+    assert lat.transit_figure([60, 89], 48000.0) == 60.0
+    assert lat.transit_figure([60, 88], 48000.0) == 74.0
+    assert lat.transit_figure([77], 96000.0) == 77.0
 
 
 def test_a_shift_in_the_usb_stream_shows_within_three_bursts(caplog: Any) -> None:
@@ -410,21 +509,22 @@ def test_a_shift_in_the_usb_stream_shows_within_three_bursts(caplog: Any) -> Non
     def poll(frames: int | tuple[int, ...]) -> Reading:
         w.note_usb(burst(frames))
         clock.t += 1.0
-        r = w.note("Running", 103, io, 1.0)
+        r = w.note("Running", 103, io, REF_64)
         assert r is not None
         return r
 
     assert [poll(f).ms for f in (JIT, 500, JIT, JIT, JIT, JIT)] == [6.1] * 6
-    assert lines() == ["latency: buffer=103 frames, usb=48 frames, about 6.1 ms in to out "
+    assert lines() == ["latency: buffer=103 frames, usb=54.0 frames, about 6.1 ms in to out "
                        "(limit 10.0)"]
     assert [poll(SHIFT).ms for _ in range(3)] == [6.1, 6.1, 8.1]
-    assert w.reading is not None and w.reading.usb == 144 and w.reading.usb_ms == pytest.approx(2.0)
-    assert lines()[-1] == ("latency: buffer=103 frames, usb=144 frames, about 8.1 ms in to out "
+    assert w.reading is not None and w.reading.usb == 150.0
+    assert w.reading.usb_ms == pytest.approx(150 / 48 - REF_64)              # 2.0 ms
+    assert lines()[-1] == ("latency: buffer=103 frames, usb=150.0 frames, about 8.1 ms in to out "
                            "(limit 10.0)")
     assert [poll(SHIFT).ms for _ in range(5)] == [8.1] * 5                  # its own spread
     assert len(lines()) == 2
     assert [poll(JIT).ms for _ in range(3)] == [8.1, 8.1, 6.1]              # and back
-    assert len(lines()) == 3 and "usb=60 frames, about 6.1 ms" in lines()[-1]
+    assert len(lines()) == 3 and "usb=54.0 frames, about 6.1 ms" in lines()[-1]
 
 
 def test_a_shift_follows_the_journal_rule_of_the_level(caplog: Any) -> None:
@@ -450,7 +550,7 @@ def test_a_shift_follows_the_journal_rule_of_the_level(caplog: Any) -> None:
     assert logged() == [first.line()]
     clock.t += lat.LOG_EVERY_S
     w.note("Running", 173, io, 1.0)
-    assert logged() == [first.line(), r.line()] and "usb=144 frames, about 11.2 ms" in r.line()
+    assert logged() == [first.line(), r.line()] and "usb=144.0 frames, about 11.2 ms" in r.line()
 
 
 def test_without_its_reference_the_readout_is_the_engine_level_alone(caplog: Any) -> None:
@@ -505,8 +605,9 @@ def test_the_counted_shift_is_never_more_than_one_band_off() -> None:
     assert base is not None and (base.usb, base.usb_ms, base.ms) == (60, 0.0, 6.1)
     for _ in range(3):
         w.note_usb(burst(79))
-    r = w.note("Running", 103, io, 1.0)
-    assert r is not None and r.usb == 79 and r.usb_ms == pytest.approx(31 / 48) and r.ms == 6.8
+    r = w.note("Running", 103, io, 1.0)               # 40 reads of 60 and 60 of 79: their mean
+    assert r is not None and r.usb == pytest.approx(71.4)
+    assert r.usb_ms == pytest.approx(71.4 / 48 - 1.0) and r.ms == 6.6
 
     rng = random.Random(1214)
     v, moved = 48, set()
@@ -536,7 +637,7 @@ def test_the_transit_figure_starts_over_with_each_stream() -> None:
     assert w.usb is None
     for _ in range(3):
         w.note_usb(burst(JIT))
-    assert w.usb == 48
+    assert w.usb == 54.0
     w.note_usb(None)                                        # not running, closed, unreadable
     w.note_usb(burst(144))
     assert w.usb is None                                    # the old reads are gone
@@ -550,7 +651,7 @@ def test_the_transit_figure_starts_over_with_each_stream() -> None:
     w.note_config({"devices": {"chunksize": 64, "samplerate": 96000}})
     for _ in range(3):
         w.note_usb(burst((96, 120) * (lat.USB_BURST // 2), rate=96000.0))
-    assert w.usb == 96
+    assert w.usb == 108.0
     r = w.note("Running", 300, w.io_share(2.3), 1.0)
     assert r is not None and r.samplerate == 96000.0 and r.usb_ms == 0.0   # 1.0 ms at 96 kHz
     for _ in range(3):
@@ -572,7 +673,7 @@ def test_a_restart_between_two_bursts_starts_the_figure_over() -> None:
     for _ in range(3):
         w.note_usb(burst(JIT, stream="58801.000000001"))
         shown.append(w.usb)
-    assert shown == [None, None, 48]
+    assert shown == [None, None, 54.0]
 
 
 def test_the_first_line_without_the_figure_gets_one_with_it(caplog: Any) -> None:
@@ -596,7 +697,7 @@ def test_the_first_line_without_the_figure_gets_one_with_it(caplog: Any) -> None
         w.note("Running", 182, io, 1.0)
     lines = [x.getMessage() for x in caplog.records if x.name == "k1000.latency"]
     assert lines == ["latency: buffer=182 frames, about 7.8 ms in to out (limit 10.0)",
-                     "latency: buffer=182 frames, usb=48 frames, about 7.8 ms in to out "
+                     "latency: buffer=182 frames, usb=54.0 frames, about 7.8 ms in to out "
                      "(limit 10.0)"]
 
 
@@ -764,10 +865,11 @@ class LevelClient(FakeClient):
 
 
 def make(tmp_path: Path, *, io: float | None = 2.3, transit: dict[int, float] | None = None,
-         settings: dict[str, Any] | None = None,
-         engine_log: Path | None = None) -> tuple[Controller, LevelClient]:
+         settings: dict[str, Any] | None = None, engine_log: Path | None = None,
+         samplerate: int = 48000) -> tuple[Controller, LevelClient]:
     s = st.State()
-    profile = dataclasses.replace(DEV, io_latency_ms=io, io_transit_ms=transit)
+    profile = dataclasses.replace(DEV, io_latency_ms=io, io_transit_ms=transit,
+                                  samplerate=samplerate)
     client = LevelClient(dc.generate(profile, s))
     ctl = Controller(client, profile, s, Paths(tmp_path / "state.json", tmp_path / "active.yml",
                                                engine_log), settings=settings,
@@ -880,7 +982,8 @@ def test_the_transit_is_read_in_a_worker_thread_while_the_engine_runs(tmp_path: 
     assert threading.main_thread().name not in {t for _, t in calls}
     lines = [r.getMessage() for r in caplog.records if r.name == "k1000.latency"]
     # The last line names the transit; the 2 ms shift, less than chunk 256, wrote none.
-    assert lines[-1] == "latency: buffer=536 frames, usb=48 frames, about 20.1 ms in to out (limit 10.0)"
+    assert lines[-1] == ("latency: buffer=536 frames, usb=48.0 frames, about 20.1 ms in to out "
+                         "(limit 10.0)")
 
 
 def test_no_reference_nothing_read_and_a_failed_read_is_no_figure(tmp_path: Path,
@@ -919,6 +1022,46 @@ def test_no_reference_nothing_read_and_a_failed_read_is_no_figure(tmp_path: Path
     run(body())
     warned = [r.getMessage() for r in caplog.records if "USB transit" in r.getMessage()]
     assert len(warned) == 1 and "boom" in warned[0]                  # once, not every second
+
+
+def test_figures_measured_at_another_rate_are_not_applied(tmp_path: Path) -> None:
+    """D-022: io_latency_ms and io_transit_ms are the profile's, measured at its rate. While the
+    engine runs another rate (a k1000.yaml rate change before camilladsp restarts, a config from
+    CamillaGUI), the readout is the engine's share alone, as a floor, and the transit is not
+    read; back at the profile's rate, both count again."""
+    calls: list[str] = []
+
+    def reader(device: str) -> lat.Burst | None:
+        calls.append(device)
+        return burst(96, rate=96000.0)
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, transit={256: 1.0}, samplerate=96000)
+        ctl.read_transit = reader                                    # type: ignore[assignment]
+        ctl.transit_s = 0.01
+        await boot(ctl)
+        assert cl.cfg["devices"]["samplerate"] == 96000 and st.engine_rate() == 96000
+        await until(lambda: ctl.latency.usb == 96, what="the transit figure")
+        await ctl.poll_once()
+        assert ctl.status.latency_ms == 11.2          # (536 + 256) / 96 kHz + 1.9 + a quarter chunk
+        cl.cfg["devices"]["samplerate"] = 48000       # the engine runs 48 kHz
+        await ctl.poll_once()                         # the config read: the next poll shows it
+        await ctl.poll_once()
+        await until(lambda: ctl.latency.usb is None, what="no figure at another rate")
+        n = len(calls)
+        await asyncio.sleep(0.05)
+        assert len(calls) == n                                       # nothing read meanwhile
+        assert ctl.status.latency_ms == 16.5                         # (536 + 256) / 48 kHz: a floor
+        assert ctl.status.drift == ["devices.samplerate 48000 != 96000"]
+        cl.cfg["devices"]["samplerate"] = 96000
+        await ctl.poll_once()
+        await until(lambda: ctl.latency.usb == 96, what="the figure back")
+        assert ctl.status.drift == []
+        await ctl.poll_once()
+        assert ctl.status.latency_ms == 11.2
+        await ctl.stop()
+
+    run(body())
 
 
 def test_the_dropout_count_comes_from_a_worker_thread(tmp_path: Path) -> None:

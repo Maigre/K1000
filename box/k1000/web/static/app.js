@@ -46,7 +46,7 @@
   const MUTE_MS = 600, UNMUTE_MS = 1200, FLAT_MS = 600, BAND_MS = 600;
   const SLIDE_PX = 12;         // a band-chip hold that moves this far is a slide: no IN/OUT, no select
   const ACK_MS = 1500;         // no ack for a mute/notch this long = say so
-  const FS = 48000;
+  const FS_OLD_BOX = 48000;    // a box whose hello has no fs ran 48 kHz (D-022: hello.fs)
   const G_TOP = 9, G_BOT = -21; // graph gain span (dB)
 
   const $ = (s) => document.querySelector(s);
@@ -74,6 +74,8 @@
   function clampInt(v, lo, hi) { v = Number.isInteger(v) ? v : lo; return Math.max(lo, Math.min(hi, v)); }
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
   function num(v) { return typeof v === "number" && isFinite(v); }
+  // The engine's sample rate, which the curve's biquads are computed at (the box's hello.fs).
+  function fs() { return H && num(H.fs) && H.fs >= 8000 ? H.fs : FS_OLD_BOX; }
   function minus(s) { return s.replace("-", "−"); }
   function fmtDb(v, signed = true) {
     if (!num(v)) return "--";
@@ -402,7 +404,7 @@
   const gOf = (y) => G_TOP - (y - PAD.t) / (GH - PAD.t - PAD.b) * (G_TOP - G_BOT);
 
   function coeffs(kind, f0, g, q) {
-    const A = Math.pow(10, g / 40), w0 = 2 * Math.PI * f0 / FS, c = Math.cos(w0), s = Math.sin(w0);
+    const A = Math.pow(10, g / 40), w0 = 2 * Math.PI * f0 / fs(), c = Math.cos(w0), s = Math.sin(w0);
     const al = s / (2 * q);
     if (kind === "peak") return [1 + al * A, -2 * c, 1 - al * A, 1 + al / A, -2 * c, 1 - al / A];
     const sq = 2 * Math.sqrt(A) * al;
@@ -414,7 +416,7 @@
       (A + 1) - (A - 1) * c + sq, 2 * ((A - 1) - (A + 1) * c), (A + 1) - (A - 1) * c - sq];
   }
   function magDb(co, f) {
-    const w = 2 * Math.PI * f / FS;
+    const w = 2 * Math.PI * f / fs();
     const c1 = Math.cos(w), s1 = Math.sin(w), c2 = Math.cos(2 * w), s2 = Math.sin(2 * w);
     const nr = co[0] + co[1] * c1 + co[2] * c2, ni = -(co[1] * s1 + co[2] * s2);
     const dr = co[3] + co[4] * c1 + co[5] * c2, di = -(co[4] * s1 + co[5] * s2);

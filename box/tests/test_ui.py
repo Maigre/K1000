@@ -2467,7 +2467,8 @@ def test_knob_corner_table_is_a_permutation():
     (-1.25, ("1.25", "TOPS LATER · 0.43 m")),
     (2.35, ("2.35", "SUBS LATER · 0.81 m")),
     (-50.0, ("50.00", "TOPS LATER · 17.15 m")),
-    (st.SAMPLE_MS, ("0.02", "SUBS LATER · 0.01 m")),
+    (1000.0 / 48000, ("0.02", "SUBS LATER · 0.01 m")),      # one sample at 48 kHz
+    (1000.0 / 96000, ("0.01", "SUBS LATER · 0.00 m")),      # one sample at 96 kHz (D-022): 3.6 mm
     (0.0, ("0.00", "ALIGNED")),
     (-0.0, ("0.00", "ALIGNED")),
     (None, ("--", "")),
