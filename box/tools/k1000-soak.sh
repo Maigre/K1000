@@ -43,7 +43,8 @@
 #   K1000_SOAK_INTERVAL (10), K1000_SOAK_UNIT (camilladsp.service), K1000_SOAK_K1000_UNIT
 #   (k1000.service), K1000_SOAK_BOOT_ID (/proc/sys/kernel/random/boot_id), K1000_SOAK_UPTIME
 #   (/proc/uptime), K1000_SOAK_NOW (ISO time used as "now" by --summary), K1000_SOAK_BUFFER_RISE
-#   (256: frames above the starting buffer level that --summary reports as a backlog).
+#   (frames above the starting buffer level that --summary reports as a backlog; unset: 5.3 ms at
+#   the soak's rate, 256 frames at 48 kHz, 512 at 96 kHz).
 #
 # Why one long-lived python3 process instead of a client per sample: starting python + websockets
 # every 10 s on the Pi would itself disturb the load figures being measured. Rotated engine logs
@@ -73,9 +74,13 @@ CDSP_LOG = os.environ.get("K1000_CDSP_LOG", "/var/log/k1000/camilladsp.log")
 INTERVAL = float(os.environ.get("K1000_SOAK_INTERVAL", "10"))
 UNIT = os.environ.get("K1000_SOAK_UNIT", "camilladsp.service")
 K1000_UNIT = os.environ.get("K1000_SOAK_K1000_UNIT", "k1000.service")
-# --summary: a playback buffer this many frames above where the soak started is a finding
-# (256 = 5.3 ms at 48 kHz, well above the jitter of the engine's 10 s average).
-BUFFER_RISE = float(os.environ.get("K1000_SOAK_BUFFER_RISE", "256"))
+# --summary: a playback buffer this far above where the soak started is a finding: 5.3 ms, 256
+# frames at 48 kHz, well above the jitter of the engine's 10 s average; the same time at the
+# soak's own rate (its `rate` column: 512 frames at 96 kHz, D-022). K1000_SOAK_BUFFER_RISE gives
+# it in frames instead.
+BUFFER_RISE_MS = 256 / 48.0
+_RISE = os.environ.get("K1000_SOAK_BUFFER_RISE", "").strip()
+BUFFER_RISE = float(_RISE) if _RISE else None
 BOOT_ID = os.environ.get("K1000_SOAK_BOOT_ID", "/proc/sys/kernel/random/boot_id")
 UPTIME = os.environ.get("K1000_SOAK_UPTIME", "/proc/uptime")
 # Matches CamillaDSP v5's own wording ("PB: write underrun", "Capture: read overrun", "Capture
@@ -412,7 +417,8 @@ def summary():
         r = series("rate")
         fs = r[-1][1] if r and r[-1][1] > 0 else 48000.0
         print(f"buffer: starts at {base:.0f} frames, {min(vals):.0f} .. {max(vals):.0f}")
-        high = [(ts, v) for ts, v in b if v > base + BUFFER_RISE]
+        rise = BUFFER_RISE if BUFFER_RISE is not None else BUFFER_RISE_MS * fs / 1000.0
+        high = [(ts, v) for ts, v in b if v > base + rise]
         if high:
             top = max(v for _t, v in high)
             issues.append(f"the playback buffer rose to {top:.0f} frames, "

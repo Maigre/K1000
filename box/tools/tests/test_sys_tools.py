@@ -998,6 +998,24 @@ def test_soak_summary_accepts_buffer_jitter_and_the_zero_before_the_first_averag
     assert "clean" in r.stdout and "no buffer rise" in r.stdout
 
 
+@pytest.mark.parametrize("rate,rise,flagged", [
+    (48000, 250, False), (48000, 260, True),          # 256 frames = 5.3 ms at 48 kHz
+    (96000, 500, False), (96000, 520, True),          # the same 5.3 ms is 512 frames at 96 kHz
+])
+def test_soak_summary_buffer_rise_is_a_time_at_the_soaks_rate(tmp_path, rate, rise, flagged):
+    """D-022: the backlog threshold is 5.3 ms at the rate the soak measured (its `rate` column),
+    not 256 frames whatever the rate: at 96 kHz 256 frames are only 2.7 ms."""
+    levels = [256, 258, 254, 256, 257, 255, 256 + rise, 256 + rise]
+    lines = [_soak_line(f"2026-10-15T23:{i // 6:02d}:{i % 6 * 10:02d}+02:00", buffer=str(v),
+                        rate=str(rate - 1), up=str(100 + 10 * i)) for i, v in enumerate(levels)]
+    r = _summary(tmp_path, lines, "2026-10-15T23:01:15+02:00")
+    assert r.returncode == (1 if flagged else 0), r.stdout
+    assert ("the playback buffer rose to" in r.stdout) is flagged
+    if flagged:
+        ms = rise / (rate - 1) * 1000
+        assert f"rose to {256 + rise} frames, {ms:.1f} ms above its start (256)" in r.stdout
+
+
 def test_soak_summary_buffer_rise_threshold_is_settable(tmp_path):
     levels = (128, 130, 126, 128, 129, 127, 200, 204)
     lines = [_soak_line(f"2026-10-15T23:{i // 6:02d}:{i % 6 * 10:02d}+02:00", buffer=str(v), up=str(100 + 10 * i))
