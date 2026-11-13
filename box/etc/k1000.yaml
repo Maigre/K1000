@@ -37,13 +37,15 @@ profiles:
     chunksize: 256
     target_level: 512            # ~10.7 ms: the gig value (D-010), to come down by measurement (D-018)
     io_latency_ms: 2.3           # the M4's converters + USB, loop-measured 12 Nov: the delay readout adds it (D-018)
-    # io_transit_ms: what sat in USB transit when io_latency_ms was measured, as the kernel counts
-    # it (/proc/asound/M4/pcm0p/sub0/status: delay - buffer fill; 48 frames at 48 kHz). The readout
-    # reads the transit once a second and adds what it holds beyond this, so that a shift below
-    # the engine shows (docs/17 §3.4); less than 0.4 ms either way counts as nothing (the reading
-    # jitters by 0.25 ms). null = not read, the readout as before. Measured with io_latency_ms,
-    # at chunk 64 and 48 kHz: a new loop measurement of one needs the other read beside it.
-    io_transit_ms: 1.0
+    # io_transit_ms: {chunksize: ms}, what sat in USB transit when io_latency_ms was measured, as
+    # the kernel counts it (/proc/asound/M4/pcm0p/sub0/status: delay - buffer fill), at each chunk
+    # where that was read: 48 frames at 48 kHz, at chunk 64 only. At a chunk named here the
+    # readout reads the transit (a burst of reads each second) and adds what it holds beyond
+    # this, so that a shift below the engine shows (docs/17 §3.4); within 0.4 ms of it counts as
+    # nothing (the bench's 3 s medians moved by 0.25 ms with the delay constant). At any other
+    # chunk, or null: not read, the readout as before. Measured with io_latency_ms, at 48 kHz: a
+    # new loop measurement of one needs the other read beside it.
+    io_transit_ms: {64: 1.0}
 
 # Physical -> logical controls (MCP23017 indices, see docs/03-v0-architecture.md §1).
 # UNCONFIRMED DEFAULTS until SETUP > Knob test (HWTEST) on the box has identified every button

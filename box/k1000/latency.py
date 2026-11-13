@@ -23,10 +23,14 @@ Why it is shaped like this:
   them, so transit = `delay` - (`buffer_size` - `avail`). On the bench a load test moved it from
   48 to 144 frames (+2.0 ms at 48 kHz) while the level stayed put, and the delay measured through
   the loop moved by 1.9 ms. `io_latency_ms` was measured with 1.0 ms in transit (48 frames at
-  48 kHz); the profile says so (`io_transit_ms`), and the readout adds what the transit holds
-  beyond it. Read only while the engine runs, in a worker thread: the kernel answers a /proc
-  read of a stream under the PCM's open mutex, which a USB device's open or close holds for as
-  long as they take (recalled from the ALSA source, sound/core/pcm.c,
+  48 kHz) at chunk 64; the profile says so (`io_transit_ms: {64: 1.0}`), and at that chunk the
+  readout adds what the transit holds beyond it. Only there: the transit at rest was read at no
+  other chunk, and if it differs there, the quarter chunk of the bench's fit may already hold
+  the difference (counting it again would be wrong). At a chunk the profile does not name, the
+  transit is not read and the readout is as before; a reading at rest at that chunk, added to
+  `io_transit_ms`, turns it on. Read only while the engine runs, in a worker thread: the
+  kernel answers a /proc read of a stream under the PCM's open mutex, which a USB device's open
+  or close holds for as long as they take (recalled from the ALSA source, sound/core/pcm.c,
   `snd_pcm_substream_proc_status_read`; not read again here, not measured). Once a second, a
   burst of USB_BURST reads about USB_GAP_S apart; the figure is the median of the last
   USB_POOL reads of one stream (the bench's figures were medians of 3 s of reads every 50 ms).
@@ -39,11 +43,10 @@ Why it is shaped like this:
   100 reads holds while the smaller group stays under about a third of them (models in the
   tests). A new stream (its `trigger_time` changed: a restart, an underrun's recovery) starts
   the figure over. Each read also resets the stream's `avail_max` in the kernel (recalled from
-  pcm_native.c, `snd_pcm_status64`): nothing in K1000 reads it. No `io_transit_ms`, no
-  `io_latency_ms`, a device name that is not `hw:` or `plughw:`, a stream not RUNNING or a file
-  not readable: the readout of the engine's level alone, as before, and nothing in the journal.
-  The 48 frames were read at chunk 64 only: that the transit is the same at other chunks is not
-  measured yet (if not, the readout at those chunks is off by the difference).
+  pcm_native.c, `snd_pcm_status64`): nothing in K1000 reads it. No `io_transit_ms` at the
+  running chunk, no `io_latency_ms`, a device name that is not `hw:` or `plughw:`, a stream not
+  RUNNING or a file not readable: the readout of the engine's level alone, as before, and
+  nothing in the journal.
 - **It informs, it never acts.** Above `engine.latency_limit_ms` (k1000.yaml, 10 ms by default:
   D-018) the readout is flagged; nothing mutes, restarts or changes the sound.
 - **A gig leaves a trace in the journal**: one line at the first reading after K1000 connects to
@@ -339,6 +342,14 @@ class LatencyWatch:
         if len(self._usb_reads) >= USB_NEED:
             self.usb = sorted(self._usb_reads)[(len(self._usb_reads) - 1) // 2]
 
+    def usb_ref(self, io_transit_ms: Any) -> float | None:
+        """The profile's `io_transit_ms` ({chunksize: ms}) at the running chunk: the transit
+        `io_latency_ms` was measured with there. None: not known at that chunk, or the running
+        config not read yet; the transit is then neither read nor counted."""
+        if not isinstance(io_transit_ms, dict) or self._devices is None:
+            return None
+        return io_transit_ms.get(self._devices[0])
+
     def io_share(self, io_latency_ms: float | None) -> float | None:
         """`io_share_ms` for the running chunk and rate (the profile's figure alone until the
         running config is known)."""
@@ -350,7 +361,8 @@ class LatencyWatch:
              usb_ref_ms: float | None = None) -> Reading | None:
         """One poll: the engine's state and its GetBufferLevel value (None = not read) -> the
         reading to show (None = none: not running, no average yet, config not read yet).
-        `usb_ref_ms`: the profile's `io_transit_ms`; the transit counts only with it and `io_ms`.
+        `usb_ref_ms`: `usb_ref` of the profile's `io_transit_ms`; the transit counts only with it
+        and `io_ms`.
         What it counts is one band wide: it moves when the figure's own shift from the reference
         is more than USB_STEP_MS away from it, to that shift, or to 0 when that shift is itself
         within USB_STEP_MS of the reference. So it is never more than USB_STEP_MS from the

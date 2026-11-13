@@ -106,22 +106,45 @@ def test_io_latency_is_a_profile_number() -> None:
         assert p.io_latency_ms == 2.3 and any("io_latency_ms" in w for w in p.warnings), junk
 
 
-def test_io_transit_is_a_profile_number() -> None:
-    """The transit io_latency_ms was measured with: built in for the m4, so a settings file
-    written before it (io_latency_ms alone) counts the transit unchanged; `null` turns it off."""
-    assert load_profile("m4", {}, probe=False).io_transit_ms == 1.0
+def test_io_transit_is_a_profile_number_per_chunk() -> None:
+    """The transit io_latency_ms was measured with, at each chunk where it was read: built in
+    for the m4 at chunk 64, so a settings file written before it (io_latency_ms alone) counts
+    the transit unchanged; `null` turns it off."""
+    def m4(**kw: Any) -> Any:
+        return load_profile("m4", {"profiles": {"m4": kw}}, probe=False)
+
+    assert load_profile("m4", {}, probe=False).io_transit_ms == {64: 1.0}
     assert load_profile("dev", {}).io_transit_ms is None
     shipped = load_settings(BOX / "etc" / "k1000.yaml")
-    assert load_profile("m4", shipped, probe=False).io_transit_ms == 1.0
+    assert load_profile("m4", shipped, probe=False).io_transit_ms == {64: 1.0}
     assert load_profile("dev", shipped).io_transit_ms is None
-    older = {"profiles": {"m4": {"chunksize": 64, "target_level": 128, "io_latency_ms": 2.3}}}
-    p = load_profile("m4", older, probe=False)
-    assert (p.io_latency_ms, p.io_transit_ms, p.warnings) == (2.3, 1.0, [])
-    assert load_profile("m4", {"profiles": {"m4": {"io_transit_ms": None}}}, probe=False).io_transit_ms is None
-    assert load_profile("m4", {"profiles": {"m4": {"io_transit_ms": 2}}}, probe=False).io_transit_ms == 2.0
-    for junk in ("1.0", True, -1, 51, float("nan")):
-        p = load_profile("m4", {"profiles": {"m4": {"io_transit_ms": junk}}}, probe=False)
-        assert p.io_transit_ms == 1.0 and any("io_transit_ms" in w for w in p.warnings), junk
+    p = m4(chunksize=64, target_level=128, io_latency_ms=2.3)          # a file from before
+    assert (p.io_latency_ms, p.io_transit_ms, p.warnings) == (2.3, {64: 1.0}, [])
+    assert m4(io_transit_ms=None).io_transit_ms is None and m4(io_transit_ms={}).io_transit_ms is None
+    p = m4(io_transit_ms={64: 1, 128: 1.25})
+    assert p.io_transit_ms == {64: 1.0, 128: 1.25} and p.warnings == []
+    assert load_profile("m4", {}, probe=False).io_transit_ms is not p.io_transit_ms
+    for junk in (1.0, "1.0", True, [64], {"64": 1.0}, {65: 1.0}, {True: 1.0}, {64: -1},
+                 {64: 51}, {64: float("nan")}, {64: "1.0"}, {64: None}, {64: 1.0, 2048: 1.0}):
+        p = m4(io_transit_ms=junk)
+        assert p.io_transit_ms == {64: 1.0} and any("io_transit_ms" in w for w in p.warnings), junk
+
+
+def test_the_transit_counts_only_at_a_chunk_its_reference_was_read() -> None:
+    """The 48 frames were read at chunk 64 only. If the transit at rest differs at another chunk,
+    the quarter chunk of the bench's fit may already hold the difference: there the transit is
+    neither read nor counted until a reading at rest is added for that chunk."""
+    w = LatencyWatch()
+    refs = {64: 1.0, 128: 1.25}
+    assert w.usb_ref(refs) is None                          # no running config yet
+    w.note_config(M4_64)
+    assert w.usb_ref(refs) == 1.0
+    w.note_config({"devices": {"chunksize": 128, "samplerate": 48000}})
+    assert w.usb_ref(refs) == 1.25
+    w.note_config(CFG)                                      # chunk 256, as shipped
+    assert w.usb_ref(refs) is None and w.usb_ref({64: 1.0}) is None
+    for none in (None, {}, 1.0, "x"):
+        assert w.usb_ref(none) is None, none
 
 
 # ======================================================================= the journal
@@ -721,7 +744,7 @@ class LevelClient(FakeClient):
         return await super().command(name, timeout, **fields)
 
 
-def make(tmp_path: Path, *, io: float | None = 2.3, transit: float | None = None,
+def make(tmp_path: Path, *, io: float | None = 2.3, transit: dict[int, float] | None = None,
          settings: dict[str, Any] | None = None,
          engine_log: Path | None = None) -> tuple[Controller, LevelClient]:
     s = st.State()
@@ -813,7 +836,7 @@ def test_the_transit_is_read_in_a_worker_thread_while_the_engine_runs(tmp_path: 
         return burst(frames[0])
 
     async def body() -> None:
-        ctl, cl = make(tmp_path, transit=1.0)
+        ctl, cl = make(tmp_path, transit={256: 1.0})                 # DEV runs chunk 256
         ctl.read_transit = reader                                    # type: ignore[assignment]
         ctl.transit_s = 0.01
         await boot(ctl)
@@ -853,7 +876,8 @@ def test_no_reference_nothing_read_and_a_failed_read_is_no_figure(tmp_path: Path
         raise RuntimeError("boom")
 
     async def body() -> None:
-        for io, transit in ((2.3, None), (None, 1.0)):              # either missing: no read
+        # Either missing, or the reference read at another chunk than the running one: no read.
+        for io, transit in ((2.3, None), (None, {256: 1.0}), (2.3, {64: 1.0, 128: 1.0})):
             ctl, _cl = make(tmp_path, io=io, transit=transit)
             ctl.read_transit = reader                                # type: ignore[assignment]
             ctl.transit_s = 0.01
@@ -861,8 +885,9 @@ def test_no_reference_nothing_read_and_a_failed_read_is_no_figure(tmp_path: Path
             await ctl.poll_once()
             await asyncio.sleep(0.05)
             assert calls == [] and ctl.latency.usb is None
+            assert ctl.status.latency_ms == (20.1 if io else 16.5)   # the readout as before
             await ctl.stop()
-        ctl, _cl = make(tmp_path, transit=1.0)
+        ctl, _cl = make(tmp_path, transit={256: 1.0})
         ctl.read_transit = broken                                    # type: ignore[assignment]
         ctl.transit_s = 0.01
         await boot(ctl)

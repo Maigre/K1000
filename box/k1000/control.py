@@ -3567,7 +3567,7 @@ class Controller:
         """D-018: the poll's engine state and buffer level -> the readout (and its journal line)."""
         r = self.latency.note(est, level,
                               self.latency.io_share(getattr(self.profile, "io_latency_ms", None)),
-                              getattr(self.profile, "io_transit_ms", None))
+                              self.latency.usb_ref(getattr(self.profile, "io_transit_ms", None)))
         view = ((None, True, False, None) if r is None
                 else (r.ms, r.io_ms is not None, r.over, r.level))
         st = self.status
@@ -3600,11 +3600,11 @@ class Controller:
         (latency.read_transits) in a worker thread every `transit_s` (a /proc read of a stream can
         wait for its open or close; the burst sleeps between its reads there, never here).
         Nothing is read unless the engine runs and the profile knows io_latency_ms and
-        io_transit_ms; the next poll shows the figure."""
+        io_transit_ms at the running chunk; the next poll shows the figure."""
         while True:
             p, t = self.profile, None
             if (self.status.engine == "Running" and p.io_latency_ms is not None
-                    and p.io_transit_ms is not None):
+                    and self.latency.usb_ref(p.io_transit_ms) is not None):
                 try:
                     t = await asyncio.to_thread(self.read_transit, p.playback_device)
                 except asyncio.CancelledError:
