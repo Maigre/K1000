@@ -5901,6 +5901,82 @@ def test_align_at_96_khz_moves_one_96_khz_sample(tmp_path: Path) -> None:
     run(body())
 
 
+@pytest.mark.parametrize("old,new,field,ms", [
+    # 0.3 ms = 14.4 samples at 48 kHz, 1.3 ms = 62.4: coarse 0.1 ms steps are off the 48 kHz grid
+    (48000, 96000, "sub_delay_ms", 0.3),
+    (48000, 96000, "top_delay_ms", 1.3),
+    # 0.32 ms = 30.72 samples at 96 kHz, 0.34 ms = 32.64
+    (96000, 48000, "sub_delay_ms", 0.32),
+    (96000, 48000, "top_delay_ms", 0.34),
+])
+def test_a_rate_change_rewrites_no_saved_delay_before_the_engine_restarts(
+        tmp_path: Path, old: int, new: int, field: str, ms: float) -> None:
+    """D-022, the deploy order (restart k1000, then camilladsp): between the two, k1000 runs the
+    new rate and the engine still plays the old rate's config, its delays on the old grid. Then
+    nothing is adopted from that grid (state.json keeps the operator's delay as set), no delay
+    fix is written into the old engine, and the screen says the devices differ. A delay moved in
+    that window is written on the new grid and is not adopted back either; a real edit in
+    CamillaGUI still is."""
+    ptr = SUB_DELAY_PTR if field == "sub_delay_ms" else TOP_DELAY_PTR
+    block = "sub_delay" if field == "sub_delay_ms" else "top_delay"
+
+    def engine_delay(cl: FakeClient) -> float:
+        return cl.cfg["filters"][block]["parameters"]["delay"]
+
+    async def body() -> None:
+        now = {"t": 1000.0}
+        prof = {r: load_profile("m4", {"profile": "m4", "profiles": {"m4": {
+            "samplerate": r, "probe": False}}}, probe=False) for r in (old, new)}
+        assert (prof[old].samplerate, prof[new].samplerate) == (old, new)
+        st = State(**{field: ms})
+        st.profile = "m4"
+        client = FakeClient(dc.generate(prof[old], st))           # the old run's engine, playing
+        lv = dc.fader_levels(st)
+        client.faders[0] = {"volume": lv[0], "mute": st.muted}
+        client.faders[MARKER_FADER]["volume"] = MARKER_DB
+        on_old = dc.delay_on_grid(ms, old)
+        assert engine_delay(client) == on_old != ms
+        ctl = Controller(client, prof[new], st, Paths(tmp_path / "state.json",
+                                                      tmp_path / "active.yml"),
+                         sleep=fast_sleep, poll_s=3600, meter_s=3600, persist_debounce_s=0.05,
+                         persist_max_delay_s=0.5, device_probe=lambda d: True,
+                         clock=lambda: now["t"])
+        await boot(ctl)
+        await ctl.poll_once()
+        assert engine_rate() == new
+        assert getattr(ctl.state, field) == ms                     # not adopted
+        assert engine_delay(client) == on_old                      # nothing written
+        assert [e for e in nomark(client.log) if e[0] in ("set", "patch", "config")] == []
+        assert any(d.startswith("devices.samplerate") for d in ctl.status.drift)
+        assert ctl.status.message == ctl_mod.MSG_DEVICES_CHANGED
+        # what the engine loads at its restart: the new rate, the state's delay on its grid
+        active = yaml.safe_load((tmp_path / "active.yml").read_text())
+        assert active["devices"]["samplerate"] == new
+        assert active["filters"][block]["parameters"]["delay"] == dc.delay_on_grid(ms, new)
+
+        # A move in the window: written on the new grid, then neither adopted back nor "fixed".
+        n = len(client.log)
+        ctl.nudge(field, 1)
+        assert await ctl.settle(3.0)
+        moved = round(ms + 0.1, 6)
+        assert getattr(ctl.state, field) == moved
+        assert sets_for(client.log[n:], ptr) == [dc.delay_on_grid(moved, new)]
+        n = len(client.log)
+        now["t"] += 2 * ctl_mod.OWN_WRITE_S                       # read back, not as our own
+        await ctl.poll_once()
+        assert getattr(ctl.state, field) == moved
+        assert [e for e in nomark(client.log[n:]) if e[0] in ("set", "patch", "config")] == []
+
+        # A real edit in CamillaGUI (2.5 ms) is still adopted.
+        client.cfg["filters"][block]["parameters"]["delay"] = 2.5
+        await ctl.poll_once()
+        assert getattr(ctl.state, field) == 2.5
+        await ctl.stop()
+        assert json.loads((tmp_path / "state.json").read_text())[field] == 2.5
+
+    run(body())
+
+
 def test_structure_fields_are_every_rebuild_field_but_the_profile() -> None:
     from k1000.state import REBUILD_FIELDS
     assert set(ctl_mod.STRUCTURE_FIELDS) == set(REBUILD_FIELDS) - {"profile"}

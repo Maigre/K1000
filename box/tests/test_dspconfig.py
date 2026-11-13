@@ -2611,6 +2611,40 @@ def test_a_live_rate_other_than_the_wanted_one_is_a_device_change(live_rate, wan
     assert kst.delay_samples(adopted.sub_delay_ms) == kst.delay_samples(s.sub_delay_ms)
 
 
+@pytest.mark.parametrize("live_rate,want_rate,ms", [
+    (48000, 96000, 0.3), (48000, 96000, 1.3),        # 14.4 and 62.4 samples at 48 kHz
+    (96000, 48000, 0.32), (96000, 48000, 0.34),      # 30.72 and 32.64 samples at 96 kHz
+])
+def test_delays_off_the_old_grid_are_neither_adopted_nor_fixed_before_the_engine_restarts(
+        live_rate, want_rate, ms):
+    """Between a k1000.yaml rate change and the engine's restart, the engine holds K1000's
+    delays on one grid or the other: the old run's (written at the old rate) or this run's (a
+    move since, on the new grid). Neither is an edit: the state keeps the operator's ms, and no
+    delay fix goes to the old engine (its restart loads the wanted config). An edit that moves
+    the delay on both grids is still adopted."""
+    s = State(profile="m4", sub_delay_ms=ms)
+    old_run = d.generate(pf.load_profile("m4", _rate_file(samplerate=live_rate), probe=False), s)
+    kst.set_engine_rate(want_rate)                      # this run of k1000
+    prof = pf.load_profile("m4", _rate_file(samplerate=want_rate), probe=False)
+    this_run = copy.deepcopy(old_run)
+    this_run["filters"]["sub_delay"]["parameters"]["delay"] = d.delay_on_grid(ms)
+    assert old_run["filters"]["sub_delay"]["parameters"]["delay"] != d.delay_on_grid(ms)
+    for live in (old_run, this_run):
+        adopted = d.state_from_config(json.dumps(live), None, s)
+        assert adopted.sub_delay_ms == ms
+        drift = d.config_drift(json.dumps(live), d.generate(prof, adopted))
+        assert f"devices.samplerate {live_rate} != {want_rate}" in drift.devices
+        assert drift.rebuild == [] and drift.fixes == []
+    edited = copy.deepcopy(old_run)
+    edited["filters"]["sub_delay"]["parameters"]["delay"] = ms + 1.0
+    assert d.state_from_config(json.dumps(edited), None, s).sub_delay_ms == ms + 1.0
+    # once the engine runs the wanted rate, the delays compare again (at that rate)
+    live = d.generate(prof, s)
+    live["filters"]["sub_delay"]["parameters"]["delay"] = ms + 1.0
+    assert d.config_drift(json.dumps(live), d.generate(prof, s)).fixes == [
+        d.SetValue("/filters/sub_delay/parameters/delay", d.delay_on_grid(ms))]
+
+
 def test_delays_are_put_on_whole_samples_of_the_engine_rate():
     """One sample is the finest delay step at either rate: 1/48 ms at 48 kHz, 1/96 ms at 96."""
     kst.set_engine_rate(96000)

@@ -967,7 +967,8 @@ def state_from_config(cfg_json: Any, faders: Any, base_state: State, *,
     they form a balance pair (Aux1 = -Aux2 within BALANCE_TOL_DB); a common-mode or one-sided
     GUI move is not adopted and `fader_drift` reverts it. Aux mutes are never adopted (K1000
     owns them: the delay/polarity guard). A delay is adopted only when it changes the whole
-    sample count (the engine resolution), so the state keeps its own ms value otherwise.
+    sample count (the engine resolution), so the state keeps its own ms value otherwise; between
+    a sample rate change and the engine's restart, the count at both rates (D-022).
 
     The optional blocks' owned values (`aux_gain` gain, `sub_loudness` reference_level and
     low_boost, `dh_band` freq, `dh_comp` threshold) are adopted wherever the running config has
@@ -1037,7 +1038,12 @@ def state_from_config(cfg_json: Any, faders: Any, base_state: State, *,
             s.lowcut_on, s.lowcut_hz = True, f
     for name, attr in (("sub_delay", "sub_delay_ms"), ("top_delay", "top_delay_ms")):
         d = _delay_ms(_params(cfg, name), sr)
-        if d is not None and delay_samples(d) != delay_samples(getattr(s, attr)):
+        # A different whole sample count at the rate the engine runs AND at the run's rate. The
+        # two differ only between a k1000.yaml rate change and the engine's restart (D-022):
+        # the engine then holds a value on one grid or the other, the old run's write or this
+        # run's, both K1000's own, never an edit to adopt (state.json keeps the operator's ms).
+        if (d is not None and delay_samples(d, sr) != delay_samples(getattr(s, attr), sr)
+                and delay_samples(d) != delay_samples(getattr(s, attr))):
             setattr(s, attr, d)
     for i, name in enumerate(OUT_TRIM):
         g = _gain_db(_params(cfg, name))
@@ -1253,8 +1259,9 @@ def config_drift(live_cfg: Any, expected: dict[str, Any], *,
     against K1000's 1.0 ms (both 48 samples at 48 kHz) is not a difference: a write would
     rebuild the delay line and click for nothing. A running
     `devices.samplerate` other than the wanted one is a `devices` difference, like any other
-    device setting. `skip_pointers`: values K1000 wrote in the last ~0.2 s (a stale read must
-    not trigger a redundant write).
+    device setting, and until the engine restarts the delays are not compared (two grids).
+    `skip_pointers`: values K1000 wrote in the last ~0.2 s (a stale read must not trigger a
+    redundant write).
 
     Every mixer, filter and processor `expected` has is compared (the optional blocks
     included); the running config's extra ones are not, unless the pipeline uses them (then the
@@ -1426,6 +1433,12 @@ def _block_drift(kind: str, name: str, f: Any, ef: dict[str, Any], ptr: Callable
         elif ptr(name, key) in skip:
             continue
         elif ef["type"] == "Delay" and key == "delay":
+            if live_sr != exp_sr:
+                # D-022: the engine still runs the old rate (k1000.yaml changed, camilladsp not
+                # restarted yet): its delay sits on that rate's grid, the wanted one on the new.
+                # Not compared: a fix would write the new grid into the old engine for at most
+                # one sample. The engine's restart (the devices change) loads the wanted one.
+                continue
             lms, ems = _delay_ms(lpar, live_sr), _delay_ms(epar, exp_sr)
             if lms is None or delay_samples(lms, exp_sr) != delay_samples(ems, exp_sr):
                 differ.append(key)
