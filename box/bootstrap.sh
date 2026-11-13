@@ -45,8 +45,9 @@
 # K1000_BOOTSTRAP_FOREGROUND=1 runs in place, k1000-lean.sh included (it never detaches when
 # bootstrap.sh runs it).
 #
-# CAMILLADSP_BINARY=<path> installs the engine from the binary tools/engine-build/build.sh made
-# (offline too; not read on a box that already runs the pinned build);
+# CAMILLADSP_BINARY=<path> installs the engine from the binary tools/engine-build/build.sh made,
+# or one copied from a box that runs it (offline too; not read on a box that already runs the
+# pinned build);
 # CAMILLADSP_TARBALL=<path> gives the old engine's release tarball (offline; --old-engine only);
 # CAMILLAGUI_TARBALL=<path> does the same for CamillaGUI (passed on to install.sh);
 # K1000_REVISION=<text> is passed on to install.sh (what /opt/k1000/REVISION records).

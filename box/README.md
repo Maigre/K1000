@@ -171,6 +171,16 @@ box/tools/engine-build/build.sh                 # -> out/camilladsp; says whethe
 scp out/camilladsp k1000:/tmp/ && ssh k1000 "sudo install -m 755 /tmp/camilladsp /usr/local/bin/camilladsp && camilladsp --version && sudo systemctl restart camilladsp"
 ```
 
+The recipe is pinned so that it gives the same binary later and on another machine: the Rust
+toolchain that made the measured binary (1.99.1; `readelf -p .comment out/camilladsp` names it)
+and the Debian base image by digest, both in the `Dockerfile`. The Debian packages it installs
+(the cross compiler, glibc, libasound) are not pinned; the `Dockerfile` lists the versions of the
+measured build. Built again on 13 Nov from an empty Docker cache, it gave the measured binary.
+When `build.sh` ends with `NOT the measured binary`, that binary is untested: do not put it on a
+gig card. Take the measured one from a box that runs it instead (`scp
+k1000:/usr/local/bin/camilladsp out/camilladsp`; `sha256sum` gives `dd4106c9…`), or measure the
+new one on the bench (`docs/17`) before it replaces the pin.
+
 `camilladsp --version` names the commit (`5.0.0-beta.2 (0930f9b)`). The commit and the binary's
 sha256 are pinned twice, in `build.sh` (`PIN`, `PIN_SHA256`) and in `bootstrap.sh` (`CDSP_PIN`,
 `CDSP_PIN_SHA256`), and a test holds them equal. A fresh card gets this binary from `bootstrap.sh`
@@ -313,6 +323,11 @@ A spare or replacement gig card from nothing (D-006, step 3):
    ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) CAMILLADSP_BINARY=/tmp/camilladsp /opt/k1000-src/bootstrap.sh"
    ```
 
+   No Docker at hand, or `build.sh` ends with `NOT the measured binary`: take the binary from a
+   box that already runs it, `scp k1000:/usr/local/bin/camilladsp out/camilladsp` (that box on
+   the network as `k1000`), then the lines above from `scp out/camilladsp` on. Bootstrap checks it
+   against the same sha256.
+
    It runs as a systemd unit (`k1000-bootstrap-<time>`, log in `/var/log/k1000-bootstrap/`), so a
    lost session does not stop it. It runs `apt-get update` only when a package is missing,
    installs the engine from `CAMILLADSP_BINARY` (the pinned build of D-019, checked against its
@@ -348,13 +363,17 @@ A spare or replacement gig card from nothing (D-006, step 3):
   checked against their pinned sha256 sums), in place of whatever engine is there, the pinned
   build included. It **does not meet D-018's 10 ms** (never under 12.5 ms, and 13 to 15 ms more
   after one dropout, `docs/17`), and the run says so at step 2 and again at the end. Only with
-  this option: its tarball alone (`CAMILLADSP_TARBALL`) installs nothing.
+  this option: its tarball alone (`CAMILLADSP_TARBALL`) installs nothing. The second run, after
+  the power cycle, needs the option again (without it, it stops and changes nothing); the first
+  run's closing lines say so.
 - Offline: `CAMILLADSP_BINARY` is a local file already;
   `CAMILLAGUI_TARBALL=<camillagui_linux_aarch64.tar.gz>`, and with `--old-engine`
   `CAMILLADSP_TARBALL=<camilladsp-linux-aarch64.tar.gz>` (put them after `sudo`, like
   `K1000_REVISION`).
-- Proven by the tests (`tools/tests/test_sys_tools.py`, on fakes): each of these cases, and that the
-  pin equals `build.sh`'s. Not yet run on the box: a fresh card with `CAMILLADSP_BINARY`, and the
+- Proven by the tests (`tools/tests/test_sys_tools.py`, on fakes): each of these cases, that the
+  pin equals `build.sh`'s, and that the detached run gets the binary the terminal checked and
+  leaves its exit status even when it stops at the engine. Not yet run on the box: a fresh card
+  with `CAMILLADSP_BINARY`, a real `systemd-run` unit handed `CAMILLADSP_BINARY`, and the
   bootstrap's check of the box's own binary against the pin.
 
 ## Everyday commands (on the box)

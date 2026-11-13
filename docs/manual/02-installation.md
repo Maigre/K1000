@@ -16,7 +16,8 @@ All commands below run **on the laptop**, from a clone of the repository, unless
 
 - A laptop with `git`, `ssh` and `rsync`, and a clone of the repository.
 - An SSH key pair on the laptop.
-- Docker, on the laptop or on any other machine, to build the engine once (§3, about two minutes).
+- Docker, on the laptop or on any other machine, to build the engine once (§3, about two minutes),
+  or a K1000 box that already runs it, to copy it from.
 - The box on **Ethernet**, on a network with internet.
 - **Speakers off**, or their XLRs unplugged, for the whole install.
 
@@ -67,6 +68,21 @@ rsync -a --delete --filter='P apk/' --rsync-path="sudo rsync" box/ k1000:/opt/k1
 ssh k1000 "sudo K1000_REVISION=$(git describe --always --dirty) CAMILLADSP_BINARY=/tmp/camilladsp /opt/k1000-src/bootstrap.sh"
 ```
 
+**When `build.sh` does not end with that line.** It ends with `NOT the measured binary` when
+something it does not pin gave a different binary (the Rust version and the base image are pinned,
+the Debian packages are not). That binary was never measured: do not put it on a gig card. Take the
+measured one from a box that already runs it, with that box on the network as `k1000`, then go on
+from the `scp out/camilladsp` line above:
+
+```sh
+scp k1000:/usr/local/bin/camilladsp out/camilladsp
+sha256sum out/camilladsp                    # dd4106c927a5de2b31776cc28d797a3f42fb9b7d02deb928f45a6feee057d43c
+```
+
+The same way works without Docker. `bootstrap.sh` checks the file against the same sha256 either
+way, so a wrong one is refused and nothing changes. With no box to copy from, the fallback is
+`--old-engine` (below), which does not meet the 10 ms.
+
 Raspberry Pi OS Lite already has `rsync` on the box side (checked on the 2026-10-06 image).
 Always give `K1000_REVISION` as above: without it, a run that brings new code from
 `/opt/k1000-src` (no git there) records `unknown (from /opt/k1000-src)` in `/opt/k1000/REVISION`.
@@ -90,16 +106,18 @@ engine is there, the pinned build included. It is the fallback, the engine of th
 October, and it **does not meet the 10 ms of D-018**: it never gets under 12.5 ms in to out, and
 keeps 13 to 15 ms more after one dropout ([`docs/17`](../17-box-record-and-bench.md)). The run
 says so at step 2 and again at the end. Without `--old-engine`, the old engine never comes back:
-not on a re-run, not from its tarball.
+not on a re-run, not from its tarball. So the second run after the power cycle (§4) needs
+`--old-engine` again, or it stops and changes nothing; the first run's closing lines say so.
 
 **A download, later.** Where a built engine is hosted is not decided. Once it is, its URL goes on
 the marked line `CDSP_PIN_URL=` in `box/bootstrap.sh`; a run with internet then downloads the
 binary and checks it against the same pinned sha256. Until then, `CAMILLADSP_BINARY` it is.
 
 What the tests prove, on fakes: each case above (kept, installed, the stop, a wrong binary,
-`--old-engine`, the download once a URL is set), dry runs included, and that the pin in
-`bootstrap.sh` is the one in `build.sh`. Not yet done on the box: a fresh card with
-`CAMILLADSP_BINARY`.
+`--old-engine`, the download once a URL is set), dry runs included, that the pin in
+`bootstrap.sh` is the one in `build.sh`, and that the detached run (below) gets the binary your
+terminal checked and leaves its exit status even when it stops at the engine. Not yet done on the
+box: a fresh card with `CAMILLADSP_BINARY`.
 
 **It survives a lost SSH session.** A real run starts itself again as a systemd unit,
 `k1000-bootstrap-<time>`, and your terminal only follows its log. If the session drops, the run
