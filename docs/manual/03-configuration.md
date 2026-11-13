@@ -49,6 +49,7 @@ profiles:
     chunksize: 256               # the default; measured steps down are D-018's work
     target_level: 512            # D-010: margin over USB; to come down by measurement (D-018)
     io_latency_ms: 2.3           # the M4's share of the delay in to out (D-018 readout)
+    io_transit_ms: 1.0           # the USB transit it was measured with (the readout adds a shift)
 
 controls:
   encoders: [0, 1, 2, 3]
@@ -118,6 +119,7 @@ One section per profile. Every key is optional: a missing key keeps the built-in
 | `chunksize` | Frames: 64, 128, 256, 512 or 1024 | 256 | 256 |
 | `target_level` | Frames, 64 to 6 × `chunksize` (64–1536 at 256) | one chunk (256) | 512 (D-010; the code default is one chunk) |
 | `io_latency_ms` | ms, 0–50, or `null` (not known) | `null`: the delay readout shows the engine's share alone, as `≥` | 2.3 (the M4's converters and USB, loop-measured 12 Nov at chunk 32 to 256; the readout adds a quarter chunk to it, the average by which the buffer level reads low) |
+| `io_transit_ms` | ms, 0–50, or `null` (not known) | `null`: the USB transit is not read | 1.0 (the kernel's 48 frames in USB transit at 48 kHz, read at chunk 64 while `io_latency_ms` was measured). The readout reads the transit once a second and adds what it holds beyond this figure, see below |
 
 Details:
 
@@ -153,6 +155,18 @@ Details:
     1024. A value outside is clamped, with a journal line. The engine's device buffer is 4 ×
     `chunksize` (the power of two at or above 3 chunks), so up to 3 × `chunksize` the target sits in
     that buffer and above it the rest waits in the engine's queue.
+- **`io_latency_ms` and `io_transit_ms`** are measured together. The kernel keeps some frames
+  in USB transit to the interface, below the engine, which the engine's buffer level does not
+  count; at the smallest buffer a load test moved them by 2 ms with the level unchanged
+  ([`docs/17`](../17-box-record-and-bench.md) §3.4). The readout reads them once a second from
+  `/proc/asound/<card>/pcm0p/sub0/status` (`delay` minus the buffer fill) and adds what they hold
+  beyond `io_transit_ms`, so such a shift shows on the box. A difference of 0.4 ms or less counts
+  as nothing (the figure jitters by 0.25 ms, 48 or 60 frames, with the delay constant). Only a
+  `hw:` or `plughw:` device is read. `null`, or a transit that cannot be read: the readout as
+  before. After a new loop measurement of `io_latency_ms`, read the transit at the same time and
+  write it here (frames ÷ rate in kHz); with `io_latency_ms` alone changed, the shift is counted
+  from the old figure. Read at chunk 64 only: that it is the same at other chunks is not measured
+  yet.
 - **`dev` only:** the 4 logical outputs are folded onto the HiFiBerry's 2. SETUP › BOX › Audition (dev)
   picks `sum` (each side = top + sub at −6 dB each), `tops` or `subs`.
 
