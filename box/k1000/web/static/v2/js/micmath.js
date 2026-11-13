@@ -274,6 +274,18 @@ export class FFT {
   }
 }
 
+/* The rate the phone's mic is analysed at (its AudioContext): the box's engine rate, never above
+   MIC_RATE_MAX. The phone records at 48 kHz (android/BRIDGE.md): a higher context rate would only
+   resample it up, for twice the work and half the time and resolution of the line's fixed
+   16384-point analyser. The engine's estimator gives the same bins at half the rate, since its
+   FFT length follows rate / f0: 8192 at 48 kHz, 16384 at 96 kHz, 5.86 Hz and 171 ms both. Not a
+   rate the page can use (unset, not a number, outside 8..192 kHz): MIC_RATE_MAX. */
+export const MIC_RATE_MAX = 48000;
+export function micRate(boxRate) {
+  return typeof boxRate === "number" && boxRate >= 8000 && boxRate <= 192000
+    ? Math.min(boxRate, MIC_RATE_MAX) : MIC_RATE_MAX;
+}
+
 /* spectrum.rs fft_length_for: smallest power of two >= rate / minFreq (capped like the engine). */
 export function engineFftLen(rate, minFreq) {
   const need = Math.ceil(rate / minFreq);

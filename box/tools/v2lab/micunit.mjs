@@ -359,6 +359,28 @@ run("spectrumrs", () => {
   check("the engine's estimator matches spectrum.rs re-done in numpy (spectrum_ref.json) within 0.005 dB on every bin, 48, 44.1 and 96 kHz", ok, rows.join("; "));
 });
 
+// D-022: the mic is analysed at the box's rate, at most 48 kHz (the phone records at 48 kHz). At
+// 48 kHz the engine's estimator has the box's 96 kHz bins (5.86 Hz) and window (171 ms), so the
+// same sound gives the same bands at both rates.
+run("micrate", () => {
+  check("the mic's rate: the box's, at most 48 kHz; 48 kHz when the box says none it can use",
+    R.micRate(96000) === 48000 && R.micRate(48000) === 48000 && R.micRate(44100) === 44100 &&
+    R.micRate(undefined) === 48000 && R.micRate(null) === 48000 && R.micRate("96000") === 48000 &&
+    R.micRate(4000) === 48000 && R.micRate(384000) === 48000 && R.MIC_RATE_MAX === 48000);
+  const g = R.engineGrid(10, 20000, 264);
+  const e48 = new R.EngineEstimator(48000, g.min, g.max, g.n), e96 = new R.EngineEstimator(96000, g.min, g.max, g.n);
+  // a band-limited sound, as a phone mic gives (white noise to 48 kHz is not the same sound as
+  // white noise to 24 kHz): tones from 40 Hz to 16 kHz, 6 dB apart
+  const tones = (n, rate) => Float32Array.from({ length: n }, (_, i) =>
+    [40, 125.5, 997, 3150, 8000, 16000].reduce((acc, f, k) => acc + 0.4 / (1 << k) * Math.sin(2 * Math.PI * f * i / rate), 0));
+  const a = R.toDb(e48.bands(tones(e48.n, 48000))), b = R.toDb(e96.bands(tones(e96.n, 96000)));
+  const top = Math.max(...a);
+  let worst = 0;
+  for (let i = 0; i < g.n; i++) if (a[i] > top - 40) worst = Math.max(worst, Math.abs(a[i] - b[i]));
+  check("the estimator at 48 kHz gives the 96 kHz bands of the same sound (FFT 8192 / 16384: the same 5.86 Hz bins and 171 ms), within 0.02 dB (as built: 0.007)",
+    e48.n === 8192 && e96.n === 16384 && 48000 / e48.n === 96000 / e96.n && worst <= 0.02, worst.toFixed(4) + " dB");
+});
+
 // The mic PEAK runs on the engine's numbers (mic.js: EngineEstimator, as the box): an 8 kHz tone
 // 7 dB over its 1/24 oct band in pink noise is a PEAK there; the analyser's mean power per band
 // (the first build's feed: Blackman 16384, smoothFracOct at 1/24) never makes it one, the box would

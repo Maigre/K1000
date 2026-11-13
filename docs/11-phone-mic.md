@@ -122,7 +122,9 @@ window. Latest only, dropped under backpressure like `rta` frames (a dropped win
 = the next power of 2 ≥ rate / `f0` (8192 at 48 kHz), log bins on `hello.pgm`'s grid (n, f0,
 f1: 264 bins, 10 Hz–20 kHz, 1/24 oct) with edges at the geometric midpoints, **each bin = the
 peak FFT bin in its band**. The AudioContext runs at `hello.pgm.rate` (the engine's), so the bins
-match exactly. About 8 times a second it takes the analyser's last samples, divides the bands
+match exactly; at most at 48 kHz, the rate the phone records at (D-022: at a 96 kHz box the
+engine's FFT is twice as long, 16384, so its bins, 5.86 Hz, and its window, 171 ms, are those of
+8192 at 48 kHz; `micmath.micRate`). About 8 times a second it takes the analyser's last samples, divides the bands
 by the master's gain (the program is taken before the master), sums them in power, and when the
 box's window arrives it pairs the two halves: kept only if nothing paused it during the window
 (muted, no program, the mic off or clipping, the box ramping in), and not in the 0.4 s after a

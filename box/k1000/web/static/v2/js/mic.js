@@ -18,7 +18,8 @@
    1/12 · 1/6 · 1/3 oct, shown as band power (pink noise reads flat) on the EQ grid's dB scale,
    placed by a slow level tracker (uncalibrated: its loudest band 100 Hz-12 kHz sits at PLACE_DB),
    faint below 100 Hz. Its PEAK: the box's rule in its own instance (micmath.PeakRule) on the
-   box's own numbers: the ENGINE's estimator (micmath.EngineEstimator, Hann 8192, the loudest FFT
+   box's own numbers: the ENGINE's estimator (micmath.EngineEstimator, Hann 8192 at the 48 kHz the
+   mic is analysed at, the box's 16384 at 96 kHz: the same bins, micmath.micRate; the loudest FFT
    bin per 1/24 oct band, as CamillaDSP gives the box) on the analyser's last samples, so ENTER
    10 dB means on the phone what it means on the box (the analyser's mean power per band made the
    phone 3 dB more sensitive at 200 Hz and 5-8 dB less at 4-11 kHz); gated by the program (the
@@ -84,10 +85,11 @@ export function why() {
   if (M.state === "on" && M.suspended) return "MIC READY · tap anywhere to start it";
   return null;
 }
+// the box's engine rate, at most the 48 kHz the phone records at (micmath.micRate, D-022)
 function wantRate() {
   const H = K.hello;
-  if (H && H.pgm && num(H.pgm.rate) && H.pgm.rate >= 8000 && H.pgm.rate <= 192000) return H.pgm.rate;
-  return H && num(H.fs) && H.fs >= 8000 && H.fs <= 192000 ? H.fs : 48000;
+  if (H && H.pgm && num(H.pgm.rate) && H.pgm.rate >= 8000 && H.pgm.rate <= 192000) return MM.micRate(H.pgm.rate);
+  return MM.micRate(H && num(H.fs) ? H.fs : null);
 }
 
 // ------------------------------------------------------------------ the permission
