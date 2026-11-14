@@ -758,3 +758,28 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   grew from 7.4 to 10.1 ms in two silent steps (`docs/17` §10). The cause is not known. The
   decision stands until Thomas says otherwise; the 48 kHz fallback is the setting with a clean
   night.
+
+## D-023 — A known delay at every start, and a resync on the operator's command · decided 2026-11-14
+
+- **Context**: during the 96 kHz night of 13 to 14 Nov the delay grew from 7.4 to 10.1 ms in two
+  steps with nothing in any log (`docs/17-box-record-and-bench.md` §10). Read in the kernel's
+  source: the M4's playback follows its capture stream, and when the handling of USB completions
+  stalls for about 3 ms the playback queue rises to its maximum (12 transfers, 3 ms) and never
+  shrinks. The engine can restart its audio stream in place: measured on the desk box, the stream
+  is not running for 20 to 27 ms, the volume does not move, and the delay lands at 6.35 to
+  6.38 ms every time, where a normal start lands between 6.1 and 7.6 ms.
+- **Options** for a delay that has grown during a show: never touch it, only show it · restart
+  the stream by itself when the input is silent · restart it on the operator's command.
+- **Decision** (Thomas, 2026-11-14):
+  1. **At every start, one in-place restart of the stream while the box is still muted**, so
+     that every start comes up at the same delay.
+  2. **When the delay has grown, the stream is restarted only on the operator's command, from
+     the box or from the phone.** Never by itself: a 25 ms gap is a click in continuous music.
+  3. The two system settings that should prevent the stall (CPU 0 left to the USB handling;
+     real-time priority for the kernel's deferred USB work) are built as switches and applied on
+     the box according to what the trace of a step shows.
+- **Consequences**: a new SETUP action and a new phone button; this decision is their exception
+  to D-020. The readout shows how much the delay has grown since the stream last started.
+- **The M4's USB disconnects of 14 Nov** (29, in two bursts, nobody touching the box; the cable
+  looks fine) are taken as exceptional. They are counted from now on, and reconsidered if they
+  come back.
