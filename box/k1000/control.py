@@ -3166,15 +3166,18 @@ class Controller:
         before the ramp."""
         self.latency.restarted(None)        # a new engine, a new stream: whatever comes next
         t0 = self._clock()
-        while not await self._engine_running(epoch, held=True):
-            if self._clock() - t0 > RESTART_START_WAIT_S:
-                log.warning("stream restart (start): the engine is not running after %g s: no "
-                            "restart, the delay of this start is where it lands",
-                            RESTART_START_WAIT_S)
-                return
-            await self._sleep(RESTART_POLL_S)
-        await self._sleep(RESTART_AFTER_WARMUP_S)
-        r = await self._restart_stream(epoch, "start")
+        try:
+            while not await self._engine_running(epoch, held=True):
+                if self._clock() - t0 > RESTART_START_WAIT_S:
+                    log.warning("stream restart (start): the engine is not running after %g s: "
+                                "no restart, the delay of this start is where it lands",
+                                RESTART_START_WAIT_S)
+                    return
+                await self._sleep(RESTART_POLL_S)
+            await self._sleep(RESTART_AFTER_WARMUP_S)
+            r = await self._restart_stream(epoch, "start")
+        except CdspError as e:              # a read refused: the sync and its ramp go on
+            r = Restart(RESTART_REFUSED, f"ENGINE ERROR ({e})")
         self._say_restart("start", r)
 
     def request_resync(self, source: str = "box") -> asyncio.Future[Restart]:
@@ -3218,6 +3221,9 @@ class Controller:
                 except CdspError as e:
                     log.error("resync (%s): %s", who, e)
                     r = Restart(RESTART_REFUSED, "ENGINE REFUSED")
+                except Exception:   # noqa: BLE001 - a bug: said, never a dead task
+                    log.exception("resync (%s) failed", who)
+                    r = Restart(RESTART_TIMEOUT, "INTERNAL ERROR")
                 finally:
                     self._engine_lock.release()
         r = dataclasses.replace(r, before=before, grown=grown)
