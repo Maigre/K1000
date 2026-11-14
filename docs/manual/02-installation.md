@@ -380,10 +380,15 @@ switches so that the bench can turn each on and off and compare. Each:
   its files changed, or when its unit is not active (a failed start is retried); a new
   `tools/k1000-cpu.py` alone applies at the next boot, or at once with
   `sudo systemctl restart k1000-usb-cpu0` (or `k1000-usb-rt`). A unit that
-  fails is a warning (`WARNING: … NOT applied`); the rest of the install goes on;
+  cannot be enabled is not started, and a unit that fails is undone (below): either is a warning
+  (`WARNING: … NOT applied`), the rest of the install goes on, and the next run tries again;
 - comes off at once: install.sh stops its unit while the unit file is still there, the unit's
   `ExecStopPost` undoes what it applied, then the files go. The same `ExecStopPost` runs after a
-  failed start, so a half-applied switch never stays;
+  failed start: what the unit had changed at run time is put back at once. Its files stay,
+  though, so a failed usb-cpu0 is only half off: systemd, k1000 and CamillaGUI take core 1 again
+  at the next daemon-reload or their next start, while the interrupts stay on core 0. The check
+  then says `NOT AS CHOSEN`; the next install.sh run, or
+  `sudo systemctl restart k1000-usb-cpu0`, tries again, and `--usb-cpu0-off` removes it all;
 - needs no service restart and no reboot, on or off. Like every install.sh run: never during a
   show.
 

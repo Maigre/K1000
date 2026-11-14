@@ -565,12 +565,17 @@ done
 # --- 6c. the bench switches that are on: applied now, and at every boot ------------------------
 # After the daemon-reload: systemd already gives what it starts the switch's cores. The unit runs
 # again only when its files changed (or it is not active: a failed start is retried); a switch
-# that fails warns and leaves the rest of the install alone (its ExecStopPost has undone it).
+# that fails warns and leaves the rest of the install alone (its ExecStopPost has undone it). Not
+# enabled, it is not started either (on now but not at the next boot is a state nobody chose);
+# the next run tries both again.
 switch_start() {   # NAME 0|1(on) 0|1(files changed)
   local u=k1000-$1.service
   [ "$2" = 1 ] || return 0
   if ! systemctl is-enabled --quiet "$u" 2>/dev/null; then
-    systemctl enable --quiet "$u"
+    if ! systemctl enable --quiet "$u"; then
+      note "WARNING: enabling $u failed, $1 is NOT applied (the next install.sh run tries again): $APP/tools/k1000-cpu.py check"
+      return 0
+    fi
     changed "enabled $u (applies $1 at every boot)"
   fi
   if [ "$3" = 1 ] || ! systemctl is-active --quiet "$u"; then

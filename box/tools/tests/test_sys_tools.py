@@ -735,7 +735,7 @@ echo "$*" >> "{w}/calls"
 case $1 in
   is-enabled) [ -e "{w}/state/$u.enabled" ] ;;
   is-active) [ -e "{w}/state/$u.active" ] ;;
-  enable) touch "{w}/state/$u.enabled" ;;
+  enable) if [ "$u" = "$FAIL_ENABLE" ]; then exit 1; fi; touch "{w}/state/$u.enabled" ;;
   disable) [ -e "{root}/etc/systemd/system/$u" ] && echo "  (its unit file still there)" >> "{w}/calls"
            rm -f "{w}/state/$u.enabled" "{w}/state/$u.active" ;;
   restart) if [ "$u" = "$FAIL_UNIT" ]; then exit 1; fi; touch "{w}/state/$u.active" ;;
@@ -744,11 +744,11 @@ esac
 
 
 def _run_cpu_block(root: Path, do_cpu: str = "", usb_cpu0: str = "", usb_rt: str = "",
-                   fail: str = "") -> tuple[str, dict[str, int]]:
+                   fail: str = "", fail_enable: str = "") -> tuple[str, dict[str, int]]:
     """install.sh steps 6b and 6c against a fake /etc under `root` and a fake systemctl (its calls
     in root/w/calls, the units' enabled/active state in root/w/state). `put` is a stand-in (the
     real one chowns to root): install when the content differs, report it, set PUT_CHANGED.
-    `fail`: a unit whose (re)start fails."""
+    `fail`: a unit whose (re)start fails; `fail_enable`: one whose enable fails."""
     text = INSTALL.read_text()
     tables = re.search(r"^CPU_FILES=\(\n.*?^switch_choice\(\) .*?\n", text, re.S | re.M).group(0)
     start = text.index("# --- 6b. processor settings")
@@ -769,7 +769,7 @@ def _run_cpu_block(root: Path, do_cpu: str = "", usb_cpu0: str = "", usb_rt: str
             + (tables + block).replace("/etc/", f"{root}/etc/")
             + 'echo "RELOAD=$RELOAD"\n' + block6c.replace("/etc/", f"{root}/etc/")
             + 'echo "CHANGES=$CHANGES RELOAD=$RELOAD"\n')
-    env = dict(os.environ, PATH=f"{fb}:/usr/bin:/bin", FAIL_UNIT=fail)
+    env = dict(os.environ, PATH=f"{fb}:/usr/bin:/bin", FAIL_UNIT=fail, FAIL_ENABLE=fail_enable)
     r = subprocess.run(["bash", "-c", prog], capture_output=True, text=True, env=env)
     assert r.returncode == 0, r.stderr
     tail = r.stdout.strip().splitlines()[-1]
@@ -968,6 +968,20 @@ def test_install_a_switch_that_fails_warns_and_the_install_goes_on(tmp_path):
     assert "usb-rt applied now" not in out
     out, n = _run_cpu_block(tmp_path)                       # retried at the next run (not active)
     assert "usb-rt applied now" in out
+
+
+def test_install_a_switch_whose_unit_cannot_be_enabled_warns_and_the_install_goes_on(tmp_path):
+    """Under set -e an unguarded enable would end install.sh there: steps 7 to 9 and the summary
+    skipped. Not enabled, the switch is not started either (on now, off at the next boot)."""
+    out, n = _run_cpu_block(tmp_path, usb_cpu0="on", usb_rt="on", fail_enable="k1000-usb-cpu0.service")
+    assert ("WARNING: enabling k1000-usb-cpu0.service failed, usb-cpu0 is NOT applied (the next install.sh "
+            "run tries again): /opt/k1000/tools/k1000-cpu.py check") in out
+    calls = _calls(tmp_path)
+    assert "restart k1000-usb-cpu0.service" not in calls, calls
+    assert "usb-rt applied now" in out and "restart k1000-usb-rt.service" in calls   # the other one goes on
+    assert out.splitlines()[-1].startswith("CHANGES=")      # and so does the rest of the script
+    out, n = _run_cpu_block(tmp_path)                       # the next run: enabled and applied
+    assert "enabled k1000-usb-cpu0.service" in out and "usb-cpu0 applied now" in out, out
 
 
 def test_install_refuses_a_switch_while_the_processor_settings_are_off(tmp_path):
