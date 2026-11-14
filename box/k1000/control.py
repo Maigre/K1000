@@ -79,7 +79,7 @@ from typing import Any, Awaitable, Callable, Iterable
 import yaml
 
 from . import dspconfig as dc
-from .cdsp import CdspError, CdspNoConfig, CdspUnavailable
+from .cdsp import CdspError, CdspNoConfig, CdspNotApplied, CdspUnavailable
 from .dspconfig import FADER_MAIN, FADER_SUBS, FADER_TOPS, Fader, FaderMute, Op, Rebuild, SetValue
 from .latency import (DROPOUT_READ_S, ENGINE_LOG, LIMIT_MS, TRANSIT_READ_S, Burst,
                       DropoutCounter, LatencyWatch, latency_limit_ms, read_transits)
@@ -145,6 +145,29 @@ SPECTRUM_WARMUP_S = 0.3
 # frequency range refused, an engine without GetSpectrum ("Invalid").
 SPECTRUM_WARMED_ANSWERS = ("no audio data available", "insufficient data in buffer", "channel ",
                            "fft error")
+# D-023: the audio stream restarted in place (`Controller._restart_stream`). Any change in the
+# engine's `devices` section makes it stop its capture and playback streams and start them again
+# in the same process (CamillaDSP engine.rs `ConfigChange::Devices`: `pipeline.stop`, the new
+# config made active, then a new run; next5 0930f9b and 5.0.0-beta.1 alike). The faders, the mute
+# and the spectrum buffers live outside a run and are kept. K1000 changes the one devices value
+# that does nothing else here: `rate_measure_interval_s`, how often the engine measures the capture
+# rate (1.0 s when absent; rate adjust is off), written alternately as RESTART_MARKS[0] and [1].
+# It is K1000's own value (`_expected` writes it), so the drift check never flags it and active.yml
+# says what runs. Measured on the box (14 Nov, next5, 96 kHz, 128 / 256): the write answered in
+# 1 to 8 ms, the kernel's playback stream not running for 20 to 27 ms, no underrun, Main
+# unchanged, the delay 6.35 to 6.38 ms after each of four restarts.
+RESTART_KEY = "rate_measure_interval_s"
+RESTART_POINTER = "/devices/" + RESTART_KEY
+RESTART_MARKS = (1.0, 1.001)
+RESTART_LOCK_S = 1.0         # an operator's resync waits this long for the engine work in flight
+RESTART_RUN_S = 1.0          # after the write, the engine must run again within this: else timed out
+RESTART_POLL_S = 0.005       # GetState while waiting for it
+RESTART_START_WAIT_S = 2.0   # at an engine start: the engine must run within this, else no restart
+# At an engine start the restart comes after the spectrum warm-up's stall (its allocation at the
+# next chunk, about 20 ms, then the underrun): restarted before it, the new stream would allocate
+# and underrun in its turn, and the start would land anywhere again (docs/17 §11).
+RESTART_AFTER_WARMUP_S = dc.GUARD_WAIT_S
+RESTART_DONE, RESTART_REFUSED, RESTART_TIMEOUT = "done", "refused", "timeout"
 MAX_DETENTS = 1000.0         # a sane encoder move (input_map acceleration stays far below)
 
 POLL_S = 1.0                 # config + faders adoption, engine state, load, clipped samples
@@ -235,6 +258,10 @@ HINT_LAPTOP_OPENING = "LAPTOP ACCESS: OPENING…"
 HINT_LAPTOP_OPEN = "LAPTOP OPEN 2 H · GUI :5005 · SSH"
 HINT_LAPTOP_CLOSED = "LAPTOP ACCESS CLOSED"
 LAPTOP_HINT_S = 4.0
+# D-023: the operator's resync (SETUP › BOX › Resync delay, the phone's STATUS sheet)
+HINT_RESYNC_RUNNING = "RESYNC…"
+HINT_RESYNC_DONE = "RESYNC DONE · DELAY READ IN ABOUT 10 s"
+RESYNC_HINT_S = 4.0
 
 # D-009 master-up guard: master rises at most this much within any MASTER_UP_WINDOW_S (knobs,
 # phone and console nudges alike); the detents beyond are refused with HINT_MASTER_SLOW. Going
@@ -294,6 +321,46 @@ RANK_ENGINE_DOWN = 7.5
 
 class _LinkChanged(CdspUnavailable):
     """The websocket link changed under a running plan: the next connect sync takes over."""
+
+
+@dataclass(frozen=True)
+class Restart:
+    """What a stream restart came to (`Controller._restart_stream`, D-023).
+
+    outcome: RESTART_DONE (the engine ran again after the write), RESTART_REFUSED (nothing was
+    written: `why` says why) or RESTART_TIMEOUT (written, but the engine did not run again within
+    RESTART_RUN_S, or its link went). `ms`: from the write to the engine read running again, as
+    seen from here (not the gap in the sound: the kernel's stream state measures that). `before`:
+    the delay readout before (ms, None = no reading), `grown`: how much it had grown since the
+    stream last started (None = not shown)."""
+
+    outcome: str
+    why: str = ""
+    ms: float | None = None
+    before: float | None = None
+    grown: float | None = None
+
+    @property
+    def done(self) -> bool:
+        return self.outcome == RESTART_DONE
+
+    @property
+    def said(self) -> str:
+        """The box's words for it (the hint, the phone's err `why`)."""
+        if self.done:
+            return HINT_RESYNC_DONE
+        if self.outcome == RESTART_REFUSED:
+            return f"RESYNC REFUSED: {self.why}"
+        return f"RESYNC: {self.why} (SEE LOG)"
+
+
+def restart_mark(value: Any) -> float | None:
+    """`devices.rate_measure_interval_s` as one of K1000's RESTART_MARKS, else None (absent, or a
+    value K1000 never writes)."""
+    for m in RESTART_MARKS:
+        if dc._close(value, m):
+            return m
+    return None
 
 
 def marker_db(guards: Iterable[int] = ()) -> float:
@@ -424,6 +491,11 @@ class Status:
     latency_limit_ms: float = LIMIT_MS
     buffer_level: int | None = None  # GetBufferLevel, frames
     dropouts: int | None = None      # dropout lines since the engine started; None = log unread
+    # ---- D-023: grown since the stream last started (ms, shown from GROWTH_SHOWN_MS; None =
+    # not shown), and the resync: "running" (a restart under way), "reading" (restarted, the
+    # new stream's delay not read yet: about 10 s) or ""
+    latency_grown_ms: float | None = None
+    resync: str = ""
 
     def copy(self) -> "Status":
         return dataclasses.replace(self, levels=list(self.levels), clip=list(self.clip),
@@ -974,6 +1046,12 @@ class Controller:
         # from the profile's after a k1000.yaml change until the engine restarts (`_two_chunks_s`).
         self._engine_chunk: int | None = None
         self._engine_samplerate: float | None = None   # the running config's (D-022)
+        # D-023: K1000's value of devices.rate_measure_interval_s (RESTART_MARKS; None = left
+        # unset), written by each stream restart, adopted at connect (`_adopt_stream_mark`).
+        self._stream_mark: float | None = None
+        self._restarting = False                                 # a restart under way (any)
+        self._resync_task: asyncio.Task[Restart] | None = None    # an operator's resync running
+        self._restart_after: tuple[str, str] | None = None       # (who, delay before): its 2nd line
         self._marker_engine: float | None = None       # Aux4 as last read or written
         # Aux groups lowered (offset <= 0 dB under the balance macro) or muted outside K1000:
         # kept, shown, never raised or released by K1000.
@@ -2060,7 +2138,26 @@ class Controller:
     # ------------------------------------------------------------------ engine plumbing
     def _expected(self, state: State, profile: Profile | None = None) -> dict[str, Any]:
         cfg = dc.generate(profile or self.profile, state)
+        if self._stream_mark is not None:      # D-023: K1000's own restart value (`_restart_stream`)
+            cfg["devices"][RESTART_KEY] = self._stream_mark
         return self._transform(cfg) if self._transform else cfg
+
+    def _adopt_stream_mark(self, live: Any) -> None:
+        """At connect: the running config's `rate_measure_interval_s`, when it is absent or one of
+        K1000's RESTART_MARKS, is K1000's (an engine started from the active.yml a previous run
+        wrote after a restart holds one): the wanted config takes it, so a restart made before
+        this run of k1000 is not flagged, nor uploaded over. Any other value is someone else's:
+        a devices difference, as before."""
+        dev = live.get("devices") if isinstance(live, dict) else None
+        if not isinstance(dev, dict):
+            return
+        v = dev.get(RESTART_KEY)
+        mark = restart_mark(v)
+        if v is not None and mark is None:
+            return
+        if mark != self._stream_mark:
+            self._stream_mark = mark
+            self._mark_dirty()                 # active.yml says what runs
 
     def _note_engine_chunk(self, live: Any) -> None:
         dev = live.get("devices") if isinstance(live, dict) else None
@@ -2807,6 +2904,7 @@ class Controller:
         self.status.load = None
         self.status.levels = [METER_FLOOR_DB] * 4
         self.latency.lost()               # the next reading gets a journal line (D-018)
+        self._restart_after = None        # a restart's delay after: not on another link
         self._note_latency(None, None)
         self._changed()
 
@@ -2823,6 +2921,7 @@ class Controller:
             live = None
         self._note_engine_chunk(live)
         self.latency.note_config(live)    # chunksize, samplerate (D-018 readout)
+        self._adopt_stream_mark(live)     # D-023: a restart value of K1000's is K1000's
         faders = await self.client.get_faders()
         self._note_engine(await self.client.get_state())
         main_vol, main_mute = _fader(faders, FADER_MAIN)
@@ -2840,7 +2939,11 @@ class Controller:
             # link blip at that moment): nothing to resume, no dip.
             self._guards.discard(FADER_MAIN)
             guards = guards - {FADER_MAIN}
-        if live is None or (guards is None and main_mute is True and at_start):
+        fresh = live is None or (guards is None and main_mute is True and at_start)
+        if not fresh and self.latency.base_ms is None and not self.latency.settling:
+            log.info("latency: the engine's stream started before this run of k1000: its growth "
+                     "(D-023) counts from the first reading")
+        if fresh:
             log.info("engine %s (Main %s dB muted, no K1000 marker): pushing the state, ramping in",
                      "has no config" if live is None else "freshly started", main_vol)
             await self._sync_fresh(live, faders, epoch)
@@ -2952,6 +3055,185 @@ class Controller:
                     await asyncio.wait_for(client.close(), SPECTRUM_WARMUP_S)
                 except Exception:   # noqa: BLE001
                     pass
+
+    # ------------------------------------------------------------------ stream restart (D-023)
+    async def _restart_stream(self, epoch: int, who: str) -> Restart:
+        """Restart the engine's audio stream in place and confirm it (D-023): write K1000's other
+        RESTART_MARKS value to devices.rate_measure_interval_s, then wait until the engine runs
+        again, at most RESTART_RUN_S. The caller holds the engine lock: no config write of
+        K1000's runs meanwhile, and each one before has been read back active (cdsp
+        `_write_confirmed`), so none is lost to the engine computing this write on a stale
+        config. The write itself is confirmed the same way, and the engine makes it active
+        only once its old streams have stopped (engine.rs `ConfigChange::Devices`).
+
+        Never a fader, never a mute: Main stays where it is (measured on the box), a mute pressed
+        meanwhile goes out on its own link (cdsp `mute_link`) as at any time, and the new run
+        takes it. Only two callers, by D-023: an engine start (`_restart_at_start`) and the
+        operator's command (`request_resync`); nothing else may call this (a test holds it).
+
+        Refused (nothing written) when the engine is not running or refuses the write; timed out
+        when, written, it does not run again in time or its link goes (the connect sync then
+        takes over). `who`: start, box, phone N (the journal)."""
+        self._check_link(epoch)
+        if not await self._engine_running(epoch, held=True):
+            return Restart(RESTART_REFUSED, "ENGINE NOT RUNNING")
+        live = await self.client.get_config_json()
+        dev = live.get("devices") if isinstance(live, dict) else None
+        cur = restart_mark(dev.get(RESTART_KEY) if isinstance(dev, dict) else None)
+        new = RESTART_MARKS[1] if cur == RESTART_MARKS[0] else RESTART_MARKS[0]
+        self._restarting = True
+        self._note_resync()
+        t0 = self._clock()
+        try:
+            try:
+                await self.client.set_value(RESTART_POINTER, new)
+            except CdspNotApplied as e:
+                # Taken, not read back in time: it may still come. K1000's value follows the engine.
+                log.warning("the engine took the stream restart's write (asked by %s) but did "
+                            "not show it active in time (%s)", who, e)
+                await self._reread_mark(new)
+                return Restart(RESTART_TIMEOUT, "ENGINE NOT RUNNING AGAIN",
+                               ms=round((self._clock() - t0) * 1000.0, 1))
+            except CdspError as e:
+                log.error("the engine refused the stream restart's write (%s, asked by %s)", e, who)
+                return Restart(RESTART_REFUSED, "ENGINE REFUSED")
+            self._stream_mark = new
+            self._mark_dirty()                  # active.yml says what runs
+            while True:
+                self._check_link(epoch)
+                if await self._engine_running(epoch, held=True):
+                    break
+                if self._clock() - t0 > RESTART_RUN_S:
+                    return Restart(RESTART_TIMEOUT, "ENGINE NOT RUNNING AGAIN",
+                                   ms=round((self._clock() - t0) * 1000.0, 1))
+                await self._sleep(RESTART_POLL_S)
+            ms = round((self._clock() - t0) * 1000.0, 1)
+            # What the engine still reports for the old stream's level, until the new one's
+            # first average (latency.LatencyWatch.restarted).
+            try:
+                stale = await self.client.command("GetBufferLevel")
+            except CdspError:
+                stale = None
+            self.latency.restarted(stale)
+            self._note_latency(self.status.engine, None)
+            return Restart(RESTART_DONE, ms=ms)
+        finally:
+            self._restarting = False
+            self._note_resync()
+
+    async def _reread_mark(self, written: float) -> None:
+        """After a restart write not confirmed in time: K1000's value is what the engine holds."""
+        try:
+            live = await self.client.get_config_json()
+        except CdspError:
+            return
+        dev = live.get("devices") if isinstance(live, dict) else None
+        if isinstance(dev, dict) and restart_mark(dev.get(RESTART_KEY)) == written:
+            self._stream_mark = written
+            self._mark_dirty()
+
+    async def _restart_at_start(self, epoch: int) -> None:
+        """D-023 point 1: a freshly started engine gets one stream restart while Main is still
+        muted, after the spectrum warm-up's stall and before the boot ramp, so that every start
+        comes up at the same delay (a normal start lands anywhere from 6.1 to 7.6 ms at 96 kHz,
+        docs/17 §11; four restarts on the box, 6.35 to 6.38 ms). It never stands between the
+        engine and its ramp: an engine that does not run within RESTART_START_WAIT_S, a refusal
+        or a timeout is a journal line, and the ramp goes on (it waits for the engine itself).
+        Adds RESTART_AFTER_WARMUP_S, the write and the engine's restart (about 30 ms on the box)
+        before the ramp."""
+        self.latency.restarted(None)        # a new engine, a new stream: whatever comes next
+        t0 = self._clock()
+        while not await self._engine_running(epoch, held=True):
+            if self._clock() - t0 > RESTART_START_WAIT_S:
+                log.warning("stream restart (start): the engine is not running after %g s: no "
+                            "restart, the delay of this start is where it lands",
+                            RESTART_START_WAIT_S)
+                return
+            await self._sleep(RESTART_POLL_S)
+        await self._sleep(RESTART_AFTER_WARMUP_S)
+        r = await self._restart_stream(epoch, "start")
+        self._say_restart("start", r)
+
+    def request_resync(self, source: str = "box") -> asyncio.Future[Restart]:
+        """D-023 point 2: the operator's resync (SETUP › BOX › Resync delay on the box, `act
+        resync` from a phone): the stream restarted in place, once, now. Returns the outcome's
+        future; a second request while one runs is refused at once. Never called by K1000 on
+        its own (a test holds it): the delay is shown, and the operator decides when its gap
+        (about 25 ms of silence) may come. `source`: box, phone N."""
+        loop = asyncio.get_running_loop()
+        t = self._resync_task
+        if t is not None and not t.done():
+            r = Restart(RESTART_REFUSED, "ALREADY RUNNING")
+            self._say_restart(source, r)
+            fut: asyncio.Future[Restart] = loop.create_future()
+            fut.set_result(r)
+            return fut
+        self._resync_task = loop.create_task(self._resync(source), name="k1000-resync")
+        self._resync_task.add_done_callback(lambda _t: self._note_resync())
+        self._note_resync()
+        return self._resync_task
+
+    async def _resync(self, who: str) -> Restart:
+        before, grown = self.status.latency_ms, self.status.latency_grown_ms
+        self.show_hint(HINT_RESYNC_RUNNING)
+        r: Restart
+        if self._stopping or not self.client.connected or not self._engine_ready:
+            r = Restart(RESTART_REFUSED, "ENGINE NOT IN SYNC")
+        else:
+            try:
+                await asyncio.wait_for(self._engine_lock.acquire(), RESTART_LOCK_S)
+            except (TimeoutError, asyncio.TimeoutError):
+                r = Restart(RESTART_REFUSED, "ENGINE BUSY, TRY AGAIN")
+            else:
+                try:
+                    if self._stopping or not self._engine_ready:
+                        r = Restart(RESTART_REFUSED, "ENGINE NOT IN SYNC")
+                    else:
+                        r = await self._restart_stream(self._epoch, who)
+                except CdspUnavailable:
+                    r = Restart(RESTART_TIMEOUT, "ENGINE LINK LOST")
+                except CdspError as e:
+                    log.error("resync (%s): %s", who, e)
+                    r = Restart(RESTART_REFUSED, "ENGINE REFUSED")
+                finally:
+                    self._engine_lock.release()
+        r = dataclasses.replace(r, before=before, grown=grown)
+        self._say_restart(who, r)
+        self._kick.set()          # an edit made while it ran
+        return r
+
+    @staticmethod
+    def _delay_words(ms: float | None, grown: float | None) -> str:
+        if ms is None:
+            return "no reading"
+        return f"{ms:.1f} ms" + (f" (+{grown:.1f})" if grown is not None else "")
+
+    def _say_restart(self, who: str, r: Restart) -> None:
+        """The journal of a restart (D-023 point 5): one line at once with who asked, the outcome
+        and the delay before; for a done one, a second line with the delay before and after
+        once the new stream's delay is read (`_say_restart_after`, about 10 s later: the
+        engine's level average). The operator's also get the screen's hint."""
+        was = self._delay_words(r.before, r.grown)
+        if r.done:
+            log.info("stream restart (%s): done, the engine ran again %.0f ms after the write; "
+                     "delay before %s, the delay after comes with the next reading", who,
+                     r.ms or 0.0, was)
+            self._restart_after = (who, was)
+        else:
+            log.warning("stream restart (%s): %s (%s)%s; delay before %s", who,
+                        "refused" if r.outcome == RESTART_REFUSED else "timed out", r.why,
+                        "" if r.ms is None else f" after {r.ms:.0f} ms", was)
+        if who != "start":
+            self.show_hint(r.said, RESYNC_HINT_S)
+        self._note_resync()
+
+    def _say_restart_after(self) -> None:
+        """The second line of a done restart, at the new stream's first reading."""
+        pend, r = self._restart_after, self.latency.reading
+        if pend is None or r is None or self.latency.settling:
+            return
+        self._restart_after = None
+        log.info("stream restart (%s): delay before %s, after %.1f ms", pend[0], pend[1], r.ms)
 
     async def _sync_running(self, live: Any, faders: Any, epoch: int, *, managed: bool = True,
                             resume_main: bool = False) -> None:
@@ -3601,11 +3883,24 @@ class Controller:
         r = self.latency.note(est, level,
                               self.latency.io_share(getattr(p, "io_latency_ms", None), rate),
                               self.latency.usb_ref(getattr(p, "io_transit_ms", None), rate))
-        view = ((None, True, False, None) if r is None
-                else (r.ms, r.io_ms is not None, r.over, r.level))
+        view = ((None, True, False, None, None) if r is None
+                else (r.ms, r.io_ms is not None, r.over, r.level, r.grown))
         st = self.status
-        if view != (st.latency_ms, st.latency_io, st.latency_over, st.buffer_level):
-            st.latency_ms, st.latency_io, st.latency_over, st.buffer_level = view
+        if view != (st.latency_ms, st.latency_io, st.latency_over, st.buffer_level,
+                    st.latency_grown_ms):
+            (st.latency_ms, st.latency_io, st.latency_over, st.buffer_level,
+             st.latency_grown_ms) = view
+            self._changed()
+        self._note_resync()
+        self._say_restart_after()
+
+    def _note_resync(self) -> None:
+        """Status.resync from the resync running and the readout settling (D-023)."""
+        t = self._resync_task
+        now = ("running" if self._restarting or (t is not None and not t.done())
+               else "reading" if self.latency.settling else "")
+        if now != self.status.resync:
+            self.status.resync = now
             self._changed()
 
     async def _dropout_loop(self) -> None:

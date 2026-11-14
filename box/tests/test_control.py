@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import dataclasses
 import inspect
 import json
 import logging
@@ -133,6 +134,23 @@ class FakeClient:
         self.hooks: list[asyncio.Task[Any]] = []
         self.on_write: Any = None       # optional async callback(entry) after each write
         self.cap_peaks: list[float] | None = None   # GetCaptureSignalPeakSinceLast (None: unknown)
+        # D-023: a change in `devices` restarts the streams in place, as the engine does
+        # (engine.rs ConfigChange::Devices): the write is active once the old streams have
+        # stopped, GetState then reads Inactive, Starting (`down_reads` reads in all), Running
+        # again; the faders and the mute are kept (they live outside a run). `stuck`: it does
+        # not run again. `streams`: the restarts made. `level`: GetBufferLevel (None: unknown).
+        self.down_reads = 3
+        self.stuck = False
+        self.streams = 0
+        self._down = 0
+        self.states: list[str] = []     # every GetState answer, in order
+        self.level: Any = None
+
+    def _devices_changed(self, before: Any) -> None:
+        after = self.cfg.get("devices") if isinstance(self.cfg, dict) else None
+        if before != after:
+            self.streams += 1
+            self._down = self.down_reads
 
     # -- lifecycle
     def _fire(self, hook: Any) -> None:
@@ -196,7 +214,15 @@ class FakeClient:
 
     async def get_state(self) -> str:
         self._need()
-        return self.engine_state
+        if self.stuck:
+            st = "Inactive"
+        elif self._down > 0:
+            st = "Inactive" if self._down == self.down_reads else "Starting"
+            self._down -= 1
+        else:
+            st = self.engine_state
+        self.states.append(st)
+        return st
 
     async def get_processing_load(self) -> float:
         self._need()
@@ -215,6 +241,8 @@ class FakeClient:
             return list(self.peaks)
         if name == "GetCaptureSignalPeakSinceLast" and self.cap_peaks is not None:
             return list(self.cap_peaks)
+        if name == "GetBufferLevel" and self.level is not None:
+            return self.level
         raise CdspError(name, "Invalid", "fake: unknown")
 
     # -- writes
@@ -230,18 +258,25 @@ class FakeClient:
             if not cdsp_matches(got, value):
                 raise CdspNotApplied("SetConfigValue", "NotApplied",
                                      f"accepted, but the active config still differs: {got!r}")
+        before = copy.deepcopy(self.cfg.get("devices"))
         _set_ptr(self.cfg, pointer, value)
+        self._devices_changed(before)
         await self._logged(("set", pointer, value))
         return value
 
     async def patch_config(self, patch: dict[str, Any]) -> None:
         self._need()
+        before = copy.deepcopy(self.cfg.get("devices"))
         _merge(self.cfg, patch)
+        self._devices_changed(before)
         await self._logged(("patch", copy.deepcopy(patch)))
 
     async def set_config_yaml(self, text: str, timeout: float = 10.0) -> None:
         self._need()
+        before = copy.deepcopy(self.cfg.get("devices")) if isinstance(self.cfg, dict) else None
         self.cfg = yaml.safe_load(text)
+        if before != self.cfg.get("devices"):
+            self.streams += 1        # CamillaClient.set_config_yaml returns once it runs again
         await self._logged(("config", copy.deepcopy(self.cfg)))
 
     async def set_fader(self, idx: int, db: float) -> float:
@@ -937,6 +972,271 @@ def test_the_warm_up_on_a_real_socket(tmp_path: Path, caplog: pytest.LogCaptureF
     assert said[0].endswith("(No audio data available), Main still muted")
     assert said[1].startswith("spectrum warm-up: refused in") and "unknown variant" in said[1]
     assert said[2].startswith("spectrum warm-up: no answer within")
+
+
+# ======================================================================= stream restart (D-023)
+RP = ctl_mod.RESTART_POINTER
+
+
+def restarts(log: list[tuple[Any, ...]]) -> list[Any]:
+    """The values K1000 wrote to restart the stream, in order."""
+    return [e[2] for e in log if e[0] == "set" and e[1] == RP]
+
+
+def test_a_resync_writes_k1000s_value_and_waits_for_the_engine_to_run_again(
+        tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """The restart: K1000's other value in devices.rate_measure_interval_s, the engine's streams
+    restart in place (GetState passes through Inactive and Starting), Running again; no fader,
+    no mute; K1000's own config says the same, so the poll flags nothing and uploads nothing,
+    and active.yml holds it. The values alternate."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-6.0), playing=True)
+        await boot(ctl)
+        faders = copy.deepcopy(cl.faders)
+        n = len(cl.log)
+        r = await ctl.request_resync("phone 1")
+        assert r.done and r.ms is not None and cl.streams == 1
+        assert cl.log[n:] == [("set", RP, 1.0)]                 # nothing else: no fader, no mute
+        assert cl.faders == faders
+        down = cl.states[cl.states.index("Inactive"):]
+        assert down[:4] == ["Inactive", "Starting", "Starting", "Running"]
+        assert ctl._expected(ctl.state)["devices"][ctl_mod.RESTART_KEY] == 1.0
+        await ctl.poll_once()
+        assert ctl.status.drift == [] and cl.log[n:] == [("set", RP, 1.0)]
+        assert ctl.save_now()
+        saved = yaml.safe_load((tmp_path / "active.yml").read_text())
+        assert saved["devices"][ctl_mod.RESTART_KEY] == 1.0
+        assert (await ctl.request_resync("box")).done
+        assert (await ctl.request_resync("box")).done
+        assert restarts(cl.log) == [1.0, 1.001, 1.0] and cl.streams == 3
+        await ctl.poll_once()
+        assert ctl.status.drift == []
+        await ctl.stop()
+
+    with caplog.at_level(logging.INFO, logger="k1000.control"):
+        run(body())
+    said = [r.getMessage() for r in caplog.records if r.getMessage().startswith("stream restart")]
+    assert said[0].startswith("stream restart (phone 1): done, the engine ran again")
+    assert "delay before no reading" in said[0]
+
+
+def test_k1000s_restart_value_is_adopted_at_connect_and_anyone_elses_is_a_drift(
+        tmp_path: Path) -> None:
+    """An engine started from the active.yml a previous k1000 wrote after a restart holds one
+    of K1000's values: it is K1000's (nothing flagged, nothing uploaded). Any other value is
+    someone's: a devices difference, shown, not fixed while the PA plays."""
+    async def body() -> None:
+        for v, mine in ((1.001, True), (1.0, True), (2.0, False)):
+            cfg = dc.generate(DEV, State(master_db=-6.0))
+            cfg["devices"][ctl_mod.RESTART_KEY] = v
+            ctl, cl = make(tmp_path / str(v), State(master_db=-6.0), playing=True, cfg=cfg)
+            await boot(ctl)
+            await ctl.poll_once()
+            assert (ctl._stream_mark == v) is mine
+            assert (ctl.status.drift == []) is mine, ctl.status.drift
+            assert not any(e[0] == "config" for e in cl.log)
+            if mine:
+                assert ctl.save_now()
+                saved = yaml.safe_load((tmp_path / str(v) / "active.yml").read_text())
+                assert saved["devices"][ctl_mod.RESTART_KEY] == v
+                assert (await ctl.request_resync("box")).done
+                assert restarts(cl.log) == [1.0 if v == 1.001 else 1.001]
+            await ctl.stop()
+
+    run(body())
+
+
+@pytest.mark.parametrize("fault", ["not running", "refused", "stuck", "link lost", "not synced"])
+def test_a_refused_or_timed_out_resync_says_so_on_the_box_and_in_the_journal(
+        tmp_path: Path, fault: str, caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Refused: nothing written (the engine not running, the write refused, the engine not in
+    sync). Timed out: written, the engine not running again within RESTART_RUN_S, or its link
+    gone. Either way the box says it in a hint, the journal says who, why, the delay before."""
+    monkeypatch.setattr(ctl_mod, "RESTART_RUN_S", 0.05)
+
+    async def body() -> Any:
+        ctl, cl = make(tmp_path, State(master_db=-6.0), playing=True)
+        await boot(ctl)
+        if fault == "not running":
+            cl.engine_state = "Paused"
+        elif fault == "refused":
+            cl.refuse.add(RP)
+        elif fault == "stuck":
+            cl.down_reads, cl.stuck = 3, False
+
+            async def stick(entry: tuple[Any, ...]) -> None:
+                if entry[:2] == ("set", RP):
+                    cl.stuck = True
+            cl.on_write = stick
+        elif fault == "link lost":
+            async def gone(entry: tuple[Any, ...]) -> None:
+                if entry[:2] == ("set", RP):
+                    cl.connected = False
+            cl.on_write = gone
+        else:
+            ctl._engine_ready = False
+        r = await ctl.request_resync("box")
+        hint = ctl.focus.hint_now()
+        await ctl.stop()
+        return r, cl, hint
+
+    with caplog.at_level(logging.INFO, logger="k1000.control"):
+        r, cl, hint = run(body())
+    want = {"not running": ("refused", "ENGINE NOT RUNNING"), "refused": ("refused", "ENGINE REFUSED"),
+            "stuck": ("timeout", "ENGINE NOT RUNNING AGAIN"), "link lost": ("timeout", "ENGINE LINK LOST"),
+            "not synced": ("refused", "ENGINE NOT IN SYNC")}[fault]
+    assert (r.outcome, r.why) == want
+    assert hint == r.said and hint.startswith("RESYNC")
+    assert hint == (f"RESYNC REFUSED: {want[1]}" if want[0] == "refused" else f"RESYNC: {want[1]} (SEE LOG)")
+    assert bool(restarts(cl.log)) is (want[0] == "timeout")
+    said = [x for x in caplog.records if x.getMessage().startswith("stream restart (box)")]
+    assert len(said) == 1 and said[0].levelno == logging.WARNING
+    assert ("refused" if want[0] == "refused" else "timed out") in said[0].getMessage()
+    assert want[1] in said[0].getMessage() and "delay before" in said[0].getMessage()
+
+
+def test_a_mute_during_a_resync_goes_out_at_once_and_stays(tmp_path: Path) -> None:
+    """B4 while the restart holds the main link (its write not read back yet): the mute goes
+    out on its own link at once, and the restart, which touches no fader, leaves it muted."""
+    async def body() -> None:
+        ctl, cl = make_two_links(tmp_path, State(master_db=-6.0))
+        await boot(ctl)
+        cl.hold = asyncio.Event()
+        task = ctl.request_resync("box")
+        await until(lambda: cl.main_lock.locked(), what="the restart's write in flight")
+        n = len(cl.log)
+        ctl.set_mute(True, source="B4")
+        await until(lambda: ("mute", 0, True) in cl.log[n:], what="the mute, at once")
+        assert not task.done() and restarts(cl.log) == []
+        cl.hold.set()
+        r = await task
+        assert r.done and restarts(cl.log) == [1.0]
+        assert cl.faders[0] == {"volume": -6.0, "mute": True} and ctl.status.muted is True
+        assert [e for e in cl.log[n:] if e[0] in ("mute", "fader") and e[1] == 0] == [("mute", 0, True)]
+        await ctl.stop()
+
+    run(body())
+
+
+def test_a_resync_never_runs_inside_a_config_write(tmp_path: Path,
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    """An edit's write is in flight (the worker holds the engine): the resync waits for it to
+    end, then restarts; the edit is written whole before it. One held longer than RESTART_LOCK_S
+    gets the resync refused (ENGINE BUSY, TRY AGAIN), nothing written. A second resync while
+    one runs is refused at once."""
+    monkeypatch.setattr(ctl_mod, "RESTART_LOCK_S", 0.2)
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-6.0), playing=True)
+        await boot(ctl)
+        gate = asyncio.Event()
+
+        async def held(entry: tuple[Any, ...]) -> None:
+            if entry[0] == "set" and "live_peq" in entry[1]:
+                await gate.wait()
+        cl.on_write = held
+        ctl.nudge("live_peq.0.gain", -4)
+        await until(lambda: ctl._busy, what="the edit's write in flight")
+        task = ctl.request_resync("box")
+        again = await ctl.request_resync("phone 2")
+        assert (again.outcome, again.why) == ("refused", "ALREADY RUNNING")
+        await asyncio.sleep(0.05)
+        assert not task.done() and restarts(cl.log) == []
+        gate.set()
+        r = await task
+        assert r.done
+        i = cl.log.index(("set", RP, 1.0))
+        assert any(e[0] == "set" and "live_peq_1" in e[1] for e in cl.log[:i])
+        assert not any(e[0] == "set" and "live_peq" in e[1] for e in cl.log[i:])
+        gate.clear()
+        ctl.nudge("live_peq.0.gain", -4)
+        await until(lambda: ctl._busy, what="another write in flight")
+        r = await ctl.request_resync("box")
+        assert (r.outcome, r.why) == ("refused", "ENGINE BUSY, TRY AGAIN")
+        assert restarts(cl.log) == [1.0]
+        gate.set()
+        assert await ctl.settle(3.0)
+        await ctl.stop()
+
+    run(body())
+
+
+def test_the_journal_gives_the_delay_before_and_after_a_resync(
+        tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Before: the readout and its growth when asked. After: the new stream's first reading
+    (the engine keeps reporting the old level until then: no reading meanwhile). The growth
+    is zero again."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-6.0), playing=True)
+        profile = dataclasses.replace(DEV, io_latency_ms=2.3)
+        ctl.profile = profile
+        cl.level = 536
+        await boot(ctl)
+        await ctl.poll_once()
+        assert (ctl.status.latency_ms, ctl.status.latency_grown_ms) == (20.1, None)
+        cl.level = 536 + 77                                    # +1.6 ms
+        await ctl.poll_once()
+        assert (ctl.status.latency_ms, ctl.status.latency_grown_ms) == (21.7, 1.6)
+        r = await ctl.request_resync("phone 1")
+        assert r.done and (r.before, r.grown) == (21.7, 1.6)
+        assert ctl.status.resync == "reading" and ctl.status.latency_ms is None
+        await ctl.poll_once()                                  # the engine still says 613
+        assert ctl.status.latency_ms is None and ctl.status.resync == "reading"
+        cl.level = 536
+        await ctl.poll_once()
+        assert (ctl.status.latency_ms, ctl.status.latency_grown_ms, ctl.status.resync) == \
+            (20.1, None, "")
+        assert ctl.latency.reading is not None and ctl.latency.reading.grown_ms == 0.0
+        await ctl.stop()
+
+    with caplog.at_level(logging.INFO, logger="k1000.control"):
+        run(body())
+    said = [r.getMessage() for r in caplog.records if r.getMessage().startswith("stream restart")]
+    assert len(said) == 2
+    assert said[0].startswith("stream restart (phone 1): done") and "delay before 21.7 ms (+1.6)" in said[0]
+    assert said[1] == "stream restart (phone 1): delay before 21.7 ms (+1.6), after 20.1 ms"
+
+
+def test_nothing_restarts_the_stream_by_itself(tmp_path: Path) -> None:
+    """D-023: never automatic. The restart has exactly two callers, the engine start and the
+    operator's command, and the operator's command exactly two, SETUP's action and the phone's
+    `act resync`. A delay growing far past the limit, polled for a while, writes nothing."""
+    import ast
+    src = (BOX / "k1000" / "control.py").read_text()
+    tree = ast.parse(src)
+    callers: dict[str, set[str]] = {}
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Attribute) and node.attr in ("_restart_stream",
+                                                                     "request_resync", "_resync"):
+                    callers.setdefault(node.attr, set()).add(fn.name)
+    assert callers["_restart_stream"] == {"_restart_at_start", "_resync"}
+    assert callers["_resync"] == {"request_resync"}
+    assert callers.get("request_resync", set()) <= {"__init__"}          # SETUP's action
+    assert src.count("RESTART_POINTER") == 2       # its definition and _restart_stream's write
+    server = (BOX / "k1000" / "web" / "server.py").read_text()
+    assert server.count("request_resync") <= 2     # the phone's act resync (and its docstring)
+    for path in (BOX / "k1000").rglob("*.py"):
+        if path.name not in ("control.py", "server.py"):
+            text = path.read_text()
+            assert "request_resync" not in text and "_restart_stream" not in text, path
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-6.0), playing=True)
+        ctl.profile = dataclasses.replace(DEV, io_latency_ms=2.3)
+        cl.level = 536
+        await boot(ctl)
+        for k in range(30):
+            cl.level = 536 + 40 * k                           # up to 45 ms
+            await ctl.poll_once()
+        assert ctl.status.latency_over and (ctl.status.latency_grown_ms or 0) > 20
+        await asyncio.sleep(0.05)
+        assert restarts(cl.log) == [] and cl.streams == 0
+        await ctl.stop()
+
+    run(body())
 
 
 def test_unmute_pressed_while_link_down_is_dropped_but_mute_is_kept(tmp_path: Path) -> None:
