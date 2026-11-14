@@ -4,7 +4,7 @@
 M4 OUT 1 into LINE IN 4), nothing else plugged. This follows `docs/16-post-gig-audit.md`, which
 was written before the box was powered, and corrects it. Each figure says whether it was
 **measured** on the box, **read** in a log or in source code, or **calculated**. Sections 9 to 13
-were added on 13 Nov.
+were added on 13 Nov, the 96 kHz night of section 10 on 14 Nov.
 
 ## 1. Summary
 
@@ -40,8 +40,11 @@ were added on 13 Nov.
   underruns came after the ramp had begun.
 - **13 Nov: the readout counts the frames in USB transit (section 12).** It agrees with the loop
   within 0.2 ms at rest. That it follows a real shift is not proven: none happened on the day.
-- **Still open:** a night run at 96 kHz (started 13 Nov, 19:56), a few real power cycles, and
-  Thomas's ear on the result.
+- **14 Nov: the night run at 96 kHz did not pass (section 10).** No dropout in 13 hours, but the
+  delay grew from 7.4 to 10.1 ms in two steps with nothing in any log (measured). The readout
+  showed both steps. The 48 kHz night of section 9 had none. The cause is not known yet.
+- **Still open:** why the delay grew at 96 kHz, a few real power cycles, and Thomas's ear on the
+  result.
 
 ## 2. The gig night, from the box's logs
 
@@ -267,10 +270,12 @@ baseline. Not proven: that a real power-on times like a reboot, and the 1.5 s ra
 
 ## 8. Still to do
 
-1. The night run at the candidate setting on the new engine, with the readout logging: done at
-   48 kHz, section 9. At 96 kHz: started 13 Nov, 19:56.
-2. The kernel's transit figure in the readout: done, section 12. Left: see it follow a real
-   shift, and the first power-on with it. The note for upstream is drafted for Thomas to send.
+1. The night run at the candidate setting on the new engine, with the readout logging: passed
+   at 48 kHz, section 9. At 96 kHz the delay grew during the night (section 10): find which of
+   the rate, the buffer or the new transit reader does it, one night per change.
+2. The kernel's transit figure in the readout: done, section 12. It followed two real shifts
+   during the 96 kHz night. Left: the first power-on with it. The note for upstream is drafted
+   for Thomas to send.
 3. A few real power cycles: the power-on delay (24.35 ms once, at the old setting), and the boot
    times.
 4. Thomas listens: beatmatching at the new setting, the ramp.
@@ -369,8 +374,40 @@ At the last of those boots the engine service started before the M4 existed for 
 up, and was started again by systemd a second later (read in the journal). The start that
 follows is normal. Whether this happens at every boot, and what it costs, is not measured.
 
-Not done at 96 kHz: a night run (started 13 Nov at 19:56 from the second boot, at 7.39 ms), real
-power cycles, a phone on the box, the ear.
+Not done at 96 kHz: real power cycles, a phone on the box, the ear.
+
+### The night run at 96 kHz, 13 to 14 Nov
+
+Added 14 Nov. The test of section 9 at the 96 kHz setting, from the second boot above: 19:56 to
+09:08, 13 h 12 min, a loop measurement every 5 minutes.
+
+| | Result | |
+|---|---|---|
+| Dropouts and restarts | None in 13 h 12 min: no line in the engine's log, the engine Running in every sample, 0 clipped samples, 62.3 °C at most | read |
+| Delay in to out | 7.391 ms on the first 6 measurements; 9.058 ms on the next 53, from 20:32; 10.069 ms on the last 91, from 01:07 | measured |
+| First step, between 20:27 and 20:32 | The frames in USB transit went from about 132 to 288 (+1.6 ms). The engine's buffer did not move | read |
+| Second step, at 01:07 | The engine's buffer went from 347 to 444 frames (+1.0 ms). The transit did not move | read |
+| Readout on the box | "about 9.0 ms" logged at 20:32:18, then "about 10.0 ms" | read |
+
+**The delay grew by 2.7 ms in two steps and ended just over the 10 ms of D-018.** Nothing is in
+the engine's log, the kernel's or the control service's at either moment. D-018 asks for a delay
+that never grows: at this setting, on this night, it grew.
+
+The readout showed both steps within seconds or minutes. That is the first proof that it follows
+a real shift (section 12).
+
+The 48 kHz night of section 9 had no step in 16 hours. Between the two nights these differ: the
+sample rate; the chunk and target; the code, in which the transit reader now reads the kernel's
+status 20 times a second; and the buffer level the start happened to give (347 frames here, a
+high one). Which of them matters is not known. Seven hours at rest at 48 kHz on the new code,
+with the reader running, showed no step (section 11), but that was without a program and without
+phone clients.
+
+**At 09:08:41 the M4 left the USB bus**, and came back and left again 23 times in 69 seconds (read
+in the kernel's log). The engine crashes when its device disappears, and systemd started it 21
+times until the M4 stayed. The box then came back by itself: a muted start, the warm-up, the ramp,
+7.31 ms. Nothing in the logs says why the M4 left: no under-voltage flag, no message before the
+first disconnect.
 
 ## 11. The dropout just after a start
 
@@ -430,8 +467,9 @@ median. On the data above it gives 1.13 ms at rest at both rates, and 1.28 ms on
 where the loop also measured 0.16 ms more. The readout adds what the figure holds beyond
 1.13 ms, and counts nothing within 0.4 ms of it.
 
-Not proven: that the readout follows a real shift. The load test at chunk 64 / target 64 was run
-again on 13 Nov and no shift happened: 5.22 ms at every phase, readout 5.3 ms.
+The load test at chunk 64 / target 64 was run again on 13 Nov and no shift happened: 5.22 ms at
+every phase, readout 5.3 ms. The first real shifts came during the 96 kHz night (section 10): the
+readout went to 9.0 ms where the loop measured 9.06, then to 10.0 ms where it measured 10.07.
 
 ## 13. The engine a fresh card gets
 

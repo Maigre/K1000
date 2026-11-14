@@ -754,3 +754,7 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   `io_latency_ms` goes with it (1.9 at 96 kHz). 48 kHz at 64 / 128 stays the proven fallback.
 - **Still owed at this setting**: a night run, the dropout just after a start (3 starts of 4 at
   96 kHz), and Thomas's ear (D-020's "closed").
+- **14 Nov, the night run at this setting did not pass**: no dropout in 13 hours, but the delay
+  grew from 7.4 to 10.1 ms in two silent steps (`docs/17` §10). The cause is not known. The
+  decision stands until Thomas says otherwise; the 48 kHz fallback is the setting with a clean
+  night.
