@@ -479,7 +479,7 @@ Wi-Fi's interrupt threads, still on core 0 then, and nothing in the kernel caps 
 
 | Switch | On | What it changes |
 |---|---|---|
-| usb-cpu0, core 0 left to the USB handling | `--usb-cpu0-on` | Everything but the engine on core 1 (systemd's default cores, k1000, CamillaGUI, the other K1000 units); every interrupt the kernel lets move on core 1, the SD card's and the Wi-Fi's first; the kernel's unbound workqueues off core 0. The xHCI's interrupt stays on core 0: it cannot move |
+| usb-cpu0, core 0 left to the USB handling | `--usb-cpu0-on` | Every process but the engine on core 1 (systemd's default cores, k1000, CamillaGUI, the other K1000 units); every interrupt the kernel lets move on core 1, the SD card's and the Wi-Fi's first; the kernel's unbound work (SD writeback, the Wi-Fi's receive work) on cores 1-3, off core 0 but still allowed on the engine's cores, as it is without the switch. The xHCI's interrupt stays on core 0: it cannot move |
 | usb-rt, real-time priority for the deferred USB work | `--usb-rt-on` | `ksoftirqd/0`, which finishes the USB completion work when it is deferred, at `SCHED_FIFO 51` instead of normal priority |
 
 ```sh
@@ -795,6 +795,21 @@ The tool writes one line every 10 s:
   ```
 
   Or from the laptop: `git checkout <good-commit>`, then deploy as above with `--start`.
+
+  **Past the bench switches (D-023), take them off first.** An older version neither knows nor
+  removes them: with one on, its unit fails at every boot while systemd, k1000 and CamillaGUI stay
+  on core 1, and an old `--cpu-off` would leave systemd's core 1 behind, so that the engine shares
+  it after the next boot. When `tools/k1000-cpu.py check --sample 0` says either is `chosen on`
+  and the copy predates them, take both off between the copy and its install:
+
+  ```sh
+  sudo rm -rf /tmp/k1000-rollback && sudo cp -a /opt/k1000.prev /tmp/k1000-rollback
+  grep -c usb-rt /tmp/k1000-rollback/install.sh            # 0: the copy predates the switches
+  sudo /opt/k1000/install.sh --usb-cpu0-off --usb-rt-off   # from /opt/k1000: nothing synced, .prev kept
+  sudo /tmp/k1000-rollback/install.sh --start
+  ```
+
+  The manual says why (`docs/manual/02-installation.md` §9).
 - **Settings:** `/etc/k1000/k1000.yaml` is never touched by install.sh. Fix it by hand, then
   `sudo systemctl restart k1000`.
 - **Sound state:** `/var/lib/k1000/state.json` holds the levels and EQ.

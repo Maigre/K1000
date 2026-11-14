@@ -11,7 +11,9 @@
 #   xHCI's, the M4's USB host: the kernel cannot move it (an MSI behind the PCIe controller), and
 #   it is why core 0 is left free. What the kernel refuses stays on core 0 and is reported.
 # - The kernel's unbound workqueues leave core 0 (/sys/devices/virtual/workqueue/cpumask, cores
-#   1-3): the Wi-Fi driver's receive work and the SD card's writeback run there.
+#   1-3): the Wi-Fi driver's receive work and the SD card's writeback run there. Cores 2-3 stay
+#   open to them, as without the switch (the mask is every core by default): the engine's
+#   real-time threads come before them, and core 1 alone would carry them with everything else.
 # - Every user-space thread allowed on core 0 goes to core 1, except the engine's (its unit keeps
 #   it on 2-3). systemd itself has core 1 from 51-k1000-usb-cpu0.conf at install.sh's
 #   daemon-reload; this moves what was already running.

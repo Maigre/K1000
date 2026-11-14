@@ -392,8 +392,12 @@ switches so that the bench can turn each on and off and compare. Each:
 - needs no service restart and no reboot, on or off. Like every install.sh run: never during a
   show.
 
-**usb-cpu0: core 0 left to the USB handling.** Everything that ran on cores 0 and 1 goes to core
-1; the engine stays alone on 2 and 3.
+**usb-cpu0: core 0 left to the USB handling.** Every process that ran on cores 0 and 1 goes to
+core 1, and the interrupts that can move with them; the engine keeps cores 2 and 3 to itself among
+the processes. The kernel's unbound work (SD writeback, the Wi-Fi's receive work), allowed on every
+core without the switch, leaves core 0 for cores 1 to 3: it may still run on the engine's cores,
+as it could before, where the engine's real-time threads (FIFO 10) come first. Core 1 alone would
+add it to everything else there.
 
 | What | How | When |
 |---|---|---|
@@ -429,7 +433,7 @@ Why a unit and not `irqaffinity=1` on the kernel command line: the same interrup
 way, but the unit needs no edit of the boot files and no reboot, on or off, so the bench can
 switch it within one boot.
 
-Its cost, to watch with it on: everything but the engine shares one core. k1000 alone uses about
+Its cost, to watch with it on: every process but the engine shares one core. k1000 alone uses about
 30 % of one; the SD card's and the Wi-Fi's interrupt threads run there too. The knobs (a knob
 trace), the phone under edits and the boot time to full level (everything at boot runs on one
 core) are the things to compare.
@@ -610,6 +614,27 @@ in [chapter 7](07-maintenance.md#updating) with `--start`.
 
 `--start` drops the audio for about a second: between shows only. Settings
 (`/etc/k1000/k1000.yaml`) and the sound state are not touched by a rollback.
+
+**Rolling back past the bench switches (D-023): take them off first.** A version older than the
+[bench switches](#the-bench-switches-d-023) neither knows nor removes them. With one on, its
+install.sh deletes `tools/k1000-cpu.py`, so the switch's unit fails at every boot while its
+drop-ins keep systemd, k1000 and CamillaGUI on core 1; it refuses `--usb-cpu0-off` and
+`--usb-rt-off` (exit 2); and its `--cpu-off` would remove the engine's cores but leave systemd's
+core 1, so that after the next boot the engine shares core 1 with everything else and every later
+`--start` is refused. So, when either switch is on (`/opt/k1000/tools/k1000-cpu.py check
+--sample 0` says `chosen on`) and the copy predates them, take both off with the version installed
+now, between copying and installing:
+
+```sh
+ssh k1000 'sudo rm -rf /tmp/k1000-rollback && sudo cp -a /opt/k1000.prev /tmp/k1000-rollback'
+ssh k1000 'grep -c usb-rt /tmp/k1000-rollback/install.sh'      # 0: the copy predates the switches
+ssh k1000 'sudo /opt/k1000/install.sh --usb-cpu0-off --usb-rt-off'
+ssh k1000 'sudo /tmp/k1000-rollback/install.sh --start'
+```
+
+Run from `/opt/k1000` itself, install.sh syncs nothing and leaves `/opt/k1000.prev` alone. The same
+applies to an older commit deployed from the laptop: switches off first, with the version on the
+box.
 
 ## 10. After the install
 
