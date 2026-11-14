@@ -2735,6 +2735,11 @@ class Controller:
             try:
                 await self.client.set_config_yaml(dc.to_yaml(cfg), timeout=UPLOAD_TIMEOUT_S)
                 ok = True
+                if ramp_after:
+                    # A device change restarts the stream (D-023's growth counts from the new
+                    # one; the level last read is what the engine still reports for the old).
+                    self.latency.restarted(self.status.buffer_level)
+                    self._note_latency(self.status.engine, None)
             except CdspUnavailable:
                 raise    # engine gone: it comes back muted, the connect sync decides
             except (CdspError, ValueError) as e:

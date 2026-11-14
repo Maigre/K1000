@@ -1576,6 +1576,37 @@ def test_reading_is_said_only_for_a_restart_that_happened_and_an_engine_that_run
     run(body())
 
 
+def test_a_device_change_k1000_uploads_starts_the_growth_over(tmp_path: Path) -> None:
+    """A device repair (or a profile switch) restarts the stream like a resync: the growth then
+    counts from the new stream's first reading, not from the old one's base."""
+    async def body() -> None:
+        now = [1000.0]
+        ctl, cl = make(tmp_path, State(master_db=-6.0), playing=True, clock=lambda: now[0])
+        ctl.same_card = lambda a, b: a == b
+        ctl.profile = dataclasses.replace(DEV, io_latency_ms=2.3)
+        cl.level = 536
+        await boot(ctl)
+        await ctl.poll_once()
+        cl.level = 536 + 77
+        await ctl.poll_once()
+        assert ctl.status.latency_grown_ms == 1.6
+        cl.cfg["devices"]["playback"]["device"] = "hw:Elsewhere"
+        for _ in range(2):
+            now[0] += ctl_mod.RESTORE_MIN_INTERVAL_S + 1
+            await ctl.poll_once()
+            assert await ctl.settle(5.0)
+        assert [e[0] for e in cl.log].count("config") == 1 and cl.streams == 1
+        assert ctl.latency.base_ms is None
+        await ctl.poll_once()                    # the engine still says 613: not the new stream's
+        assert ctl.status.latency_ms is None
+        cl.level = 540
+        await ctl.poll_once()
+        assert ctl.latency.reading is not None and ctl.latency.reading.grown_ms == 0.0
+        await ctl.stop()
+
+    run(body())
+
+
 def test_unmute_pressed_while_link_down_is_dropped_but_mute_is_kept(tmp_path: Path) -> None:
     async def body() -> None:
         # engine playing but muted by the operator; the link blips; unmute pressed meanwhile
