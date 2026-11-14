@@ -219,8 +219,12 @@ After any edit of `k1000.yaml`: `sudo systemctl restart k1000`.
 | `--boot` | Boot-level setup, applied at the next reboot: compiles the screen overlay into `/boot/firmware/overlays/`, adds `dtoverlay=k1000-zynscreen,rotate=270` to `config.txt`, adds `vt.global_cursor_default=0` to `cmdline.txt` (original kept as `cmdline.txt.k1000-orig`), turns I²C on for the knobs (`dtparam=i2c_arm=on`, `i2c-dev` loaded at boot) |
 | `--headless` | Boots to the console instead of a desktop (`multi-user.target`), masks PipeWire/WirePlumber for all users, disables Bluetooth, printing and the NFS client/rpcbind, removes the tty1 auto-login. Applied at the next reboot. It leaves cloud-init alone (see §4) |
 | `--ap` | Runs `net/setup-ap.sh`: the phone's Wi-Fi "K1000" on `wlan0` and its firewall, and installs or updates the access point's units (the only way they are). Takes effect at once. Later runs keep every earlier choice, a no-go included: after `setup-ap.sh --down` the access point stays down until `setup-ap.sh --up`. It refuses (exit 4, nothing changed) while another interface holds a 10.42.0.x address or `wlan0` is a client of another Wi-Fi |
-| `--cpu-off` | Removes the [processor settings](#processor-settings) and keeps them off on every later run (`/etc/k1000/cpu-tuning` says `off`). **Reboot to apply (between shows).** Until then systemd keeps cores 0-1 for everything it starts: an engine restarted before the reboot (a USB drop, a `systemctl restart`) shares them with everything else, worse than both on and off. So `--start` is refused until that reboot: run `--cpu-off` alone, then reboot |
-| `--cpu-on` | Puts them back and keeps them on (the default). Cores and nice apply to what starts from then on, the governor at the next boot; a reboot applies all of it |
+| `--cpu-off` | Removes the [processor settings](#processor-settings) and keeps them off on every later run (`/etc/k1000/cpu-tuning` says `off`), and takes both bench switches off (each remembered `off`). **Reboot to apply (between shows).** Until then systemd keeps cores 0-1 for everything it starts: an engine restarted before the reboot (a USB drop, a `systemctl restart`) shares them with everything else, worse than both on and off. So `--start` is refused until that reboot: run `--cpu-off` alone, then reboot |
+| `--cpu-on` | Puts them back and keeps them on (the default). Cores and nice apply to what starts from then on, the governor at the next boot; a reboot applies all of it. The bench switches stay as they were (off after a `--cpu-off`) |
+| `--usb-cpu0-on` | [Bench switch](#the-bench-switches-d-023) usb-cpu0, core 0 left to the USB handling: on, at once and at every boot, and kept on (`/etc/k1000/usb-cpu0`). No restart, no reboot. Refused (exit 1, nothing changed) while the processor settings are off, unless `--cpu-on` comes with it |
+| `--usb-cpu0-off` | Takes it off at once and keeps it off (the default) |
+| `--usb-rt-on` | [Bench switch](#the-bench-switches-d-023) usb-rt, real-time priority for the deferred USB work: the same way (`/etc/k1000/usb-rt`) |
+| `--usb-rt-off` | Takes it off at once and keeps it off (the default) |
 | `--deps` | Prints the apt packages it may install, one per line, and exits |
 | `-h`, `--help` | Prints its header |
 
@@ -234,8 +238,8 @@ After any edit of `k1000.yaml`: `sudo systemctl restart k1000`.
 | Exit | Meaning |
 |---|---|
 | 0 | Done |
-| 1 | An error, printed (not root, not a `box/` tree, a bad certificate pair, `--start` before the reboot that `--cpu-off` needs…) |
-| 2 | Unknown option |
+| 1 | An error, printed (not root, not a `box/` tree, a bad certificate pair, `--start` before the reboot that `--cpu-off` needs, a bench switch while the processor settings are off…) |
+| 2 | Unknown option, or `--cpu-off` with `--usb-cpu0-on` or `--usb-rt-on` |
 | 3 | CamillaGUI failed. Everything else is installed |
 | 4 | The access point failed. Everything else is installed |
 | 5 | Both failed |
@@ -326,10 +330,10 @@ the settings, beside the dropout and boot-time checks.
 
 Not set, on purpose: each needs a measurement on the box first.
 
-- **Which core handles the interrupts.** USB (the M4), Wi-Fi, the SD card and Ethernet are
-  expected on core 0 unless moved. `cat /proc/interrupts` twice, 10 s apart, shows the counts per core;
-  `/proc/irq/<n>/smp_affinity_list` moves one (the PCIe interrupts behind the Pi 4's USB may
-  refuse). The idea to test: USB on the engine's cores, the rest on 0 and 1.
+- **Which core handles the interrupts.** USB (the M4), Wi-Fi, the SD card and Ethernet are on
+  core 0 unless moved. The USB host's cannot move: it is an MSI behind the PCIe controller, which
+  the kernel refuses to move (read in its source, D-023). So the bench switch usb-cpu0 moves the
+  others off core 0 instead ([below](#the-bench-switches-d-023)), off by default.
 - **`isolcpus=2,3`.** It would keep even the kernel's balancing off the engine's cores, but then
   the engine's threads stay on the core they start on, all on one if unlucky, unless each is
   pinned by hand. `nohz_full` is not built into Raspberry Pi OS's 64-bit kernels (checked on
@@ -351,6 +355,133 @@ Not set, on purpose: each needs a measurement on the box first.
 
 Each is judged the same way: the loop latency, the produced fault and a night run of
 `docs/16-post-gig-audit.md` §3.3, before and after.
+
+### The bench switches (D-023)
+
+Two system settings that should prevent the stall behind the silent delay steps of the 96 kHz
+night (`docs/17-box-record-and-bench.md` §10, D-023 point 3). Read in the kernel's source: the M4's
+playback follows its capture stream, and when the handling of its USB completions on core 0
+stalls for about 3 ms, the playback queue rises to its maximum and stays there. Measured on the
+box: two such steps in 13 hours at 96 kHz (13 to 14 Nov), one on 12 Nov at 48 kHz under load, none
+in 21 minutes of heavy load on core 0. Read on the box: every xHCI interrupt on core 0,
+`ksoftirqd/0` at normal priority, the SD card's and Wi-Fi's interrupt thread (`irq/40-mmc0`) at
+FIFO 50 on core 0, no `irqaffinity`, `isolcpus` or `threadirqs` on the kernel command line.
+
+**Both switches are off by default and NOT yet measured against the delay steps**: they are
+switches so that the bench can turn each on and off and compare. Each:
+
+- is turned on by its `-on` flag and off by its `-off` flag, the choice remembered in
+  `/etc/k1000/usb-cpu0` or `/etc/k1000/usb-rt` (`on`; absent or anything else is off);
+- needs the processor settings on: refused, with nothing changed, while they are off, unless
+  `--cpu-on` comes with it. `--cpu-off` takes both off and writes both choices `off`, so a later
+  `--cpu-on` brings back the processor settings alone;
+- applies at once through its own root unit (`k1000-usb-cpu0.service`, `k1000-usb-rt.service`, from
+  `box/cpu/`, enabled: so at every boot too). A later install.sh run applies it again only when
+  its files changed, or when its unit is not active (a failed start is retried). A unit that
+  fails is a warning (`WARNING: … NOT applied`); the rest of the install goes on;
+- comes off at once: install.sh stops its unit while the unit file is still there, the unit's
+  `ExecStopPost` undoes what it applied, then the files go. The same `ExecStopPost` runs after a
+  failed start, so a half-applied switch never stays;
+- needs no service restart and no reboot, on or off. Like every install.sh run: never during a
+  show.
+
+**usb-cpu0: core 0 left to the USB handling.** Everything that ran on cores 0 and 1 goes to core
+1; the engine stays alone on 2 and 3.
+
+| What | How | When |
+|---|---|---|
+| Every process systemd starts (the other K1000 units, sshd, journald…): core 1 | `/etc/systemd/system.conf.d/51-k1000-usb-cpu0.conf`: `CPUAffinity=` then `CPUAffinity=1`. The lines add up, so the empty one resets the `0 1` of `50-k1000-cpu.conf` | install.sh's daemon-reload |
+| k1000 and CamillaGUI: core 1 | `/etc/systemd/system/{k1000,camillagui}.service.d/51-k1000-usb-cpu0.conf`, the same two lines (k1000's `Nice=5` stays) | their next start; the unit has already moved the running ones |
+| Every interrupt the kernel lets move: core 1. The SD card's and the Wi-Fi's (one shared interrupt, two threads at FIFO 50) matter most; their threads follow | `/proc/irq/<n>/smp_affinity_list` | the unit's start |
+| Interrupts set up later (Ethernet when its link comes up, the knob board's lines when k1000 starts…): core 1 | `/proc/irq/default_smp_affinity` = `2` | the unit's start |
+| The kernel's unbound workqueues: cores 1-3. The Wi-Fi driver's receive work and the SD card's writeback run there | `/sys/devices/virtual/workqueue/cpumask` = `e` | the unit's start |
+| Every user-space thread allowed on core 0, except the engine's: core 1 | `sched_setaffinity` | the unit's start |
+
+The unit (`/opt/k1000/tools/k1000-cpu.py usb-cpu0 apply`) logs what it moved, what it kept on core
+0 and what the kernel refused, and writes it to `/run/k1000-usb-cpu0/report` for the check. It
+never touches the engine: an engine still allowed on core 0 (the processor settings just turned
+on, the engine not restarted since) is a warning. Off: every interrupt on core 1 alone back on
+every core (except the ones it found off core 0 already), new interrupts and the workqueues on
+every core, the threads on core 1 alone back on cores 0 and 1, and systemd back on 0 and 1 at the
+daemon-reload: what a boot without the switch gives.
+
+What stays on core 0: the xHCI's interrupt, the M4's USB host (an MSI behind the PCIe controller,
+which the kernel refuses to move; the switch never writes it, even on a kernel that would allow
+it) and its completion work, which runs on the core that took the interrupt; the per-core
+interrupts (the timer tick, the inter-processor ones); the per-core kernel threads
+(`ksoftirqd/0`, `kworker/0:*`, `migration/0`…); any interrupt the kernel refuses to move (the unit
+names them; the GPIO lines, demultiplexed by the GPIO controller, may be among them). Not moved by
+the switch: the kernel threads that may run on any core (`jbd2` for the SD card's journal,
+`rcu_preempt`, `kswapd0`…), and the PCIe controller's own MSI interrupt, which has no handler of
+its own (moving it might move USB with it: untested).
+
+Why a unit and not `irqaffinity=1` on the kernel command line: the same interrupts move either
+way, but the unit needs no edit of the boot files and no reboot, on or off, so the bench can
+switch it within one boot.
+
+Its cost, to watch with it on: everything but the engine shares one core. k1000 alone uses about
+30 % of one; the SD card's and the Wi-Fi's interrupt threads run there too. The knobs (a knob
+trace), the phone under edits and the boot time to full level (everything at boot runs on one
+core) are the things to compare.
+
+**usb-rt: real-time priority for the deferred USB work.** The USB completion work runs as
+soft-interrupt work on core 0, just after the xHCI's interrupt. When it runs over 2 ms, or the
+scheduler has a task waiting for the core, the kernel hands the rest to `ksoftirqd/0`, a thread
+at normal priority (`SCHED_OTHER`): then it waits behind whatever task holds core 0. The unit
+(`k1000-cpu.py usb-rt apply`) sets `ksoftirqd/0` to `SCHED_FIFO 51`:
+
+- above every normal task on core 0, and just above the interrupt threads (FIFO 50, the kernel's
+  priority for them; the SD card's and the Wi-Fi's among them unless usb-cpu0 moves them): the
+  USB stream has a deadline of a few milliseconds, an SD-card write or a Wi-Fi frame finished a
+  millisecond later costs nothing audible. Far below `migration/0` (99). The engine's threads
+  (FIFO 10) are on cores 2-3 and never meet it;
+- the xHCI's interrupt thread too, at FIFO 51, if the kernel runs one (only with `threadirqs`,
+  below). `ksoftirqd/1` to `/3` are left alone.
+
+Off: `ksoftirqd/0` back to `SCHED_OTHER`, an xHCI thread back to FIFO 50, the kernel's own values.
+Nothing is written to any file.
+
+What could go wrong: `ksoftirqd/0` runs all the deferred soft-interrupt work of core 0, not only
+USB (network receive, block completions, timers, RCU). A flood of it would hold core 0 above every
+normal task and the interrupt threads there, up to the kernel's real-time throttle
+(`/proc/sys/kernel/sched_rt_runtime_us`: by default, real-time work may use 950 ms of each second
+of a core). With usb-cpu0 also on, the network's, the SD card's and the Wi-Fi's work has left core
+0. It fails safe: refused, with nothing changed, while that throttle is off (`-1`); a failed start
+is undone; a boot without the unit is the kernel's default.
+
+**Not part of either switch, on purpose: `threadirqs`** on the kernel command line. It would run
+every interrupt handler in a thread, the xHCI's included, so that its completion work gets a
+priority of its own. Not done: it changes every driver's interrupts at once (the knobs, the
+screen, the SD card, the network), it hands every soft interrupt raised by a hardware interrupt
+to a thread (`ksoftirqd`, timers to `ktimers`), and it needs an edit of `cmdline.txt` and a
+reboot, on and off. If steps still come with both switches on, and a trace shows the completion
+work delayed inside the interrupt path itself, it is the next lever; usb-rt already raises the
+xHCI's thread when there is one.
+
+**The check** needs no root and changes nothing:
+
+```sh
+/opt/k1000/tools/k1000-cpu.py check     # --sample 0 skips the 2 s count of core 0's interrupts
+```
+
+For the processor settings it prints the governor, systemd's cores and each K1000 unit's cores.
+For each switch, what is chosen and whether it is in force, part by part (`[x]` or `[ ]`):
+usb-cpu0's report, systemd's and the K1000 units' cores, the user-space threads still allowed on
+core 0, the masks for new interrupts and workqueues, the interrupts still on core 0 and why, the
+interrupt threads' cores; usb-rt's `ksoftirqd/0` and xHCI threads (scheduling class, priority),
+every real-time thread allowed on core 0, the throttle. Last, the interrupts core 0 took in 2 s,
+by kind: with usb-cpu0 on, only the xHCI's, the timer's and the inter-processor ones should be
+left. Exit 0 when each switch is as chosen, 1 when one is not (`NOT AS CHOSEN`).
+
+**Proven, measured, not verified.** Proven by tests here, against a fake `/proc` and `/sys`
+shaped like the box and a fake `systemctl` (`box/tools/tests/test_cpu_switches.py`, the installer
+tests in `test_sys_tools.py`): the flags, off by default, the choices remembered and read like
+`cpu-tuning`, each switch's files written and removed, its unit stopped before its file goes,
+`--cpu-off` taking both off, the refusals, which interrupts and threads each switch changes and
+puts back, the check's verdicts. Measured on the box: only what led to them (above). **Not
+verified**: that the kernel on the box accepts each write and which interrupts it refuses, that
+systemd applies the empty-then-`1` `CPUAffinity=` at a daemon-reload, the units' sandbox, the
+costs above, and above all the effect on the delay steps.
 
 ## 7. Converting a desktop card
 

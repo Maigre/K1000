@@ -43,7 +43,9 @@ The order at power-on:
   its event loop feeds a systemd watchdog, and 15 s without it is a restart. The engine plays on
   and the new k1000 adopts it (docs/manual/02-installation.md §6).
 - The engine runs alone on cores 2 and 3, everything else on 0 and 1, with the CPU governor at
-  `performance` (`cpu/`; `install.sh --cpu-off` takes it all away).
+  `performance` (`cpu/`; `install.sh --cpu-off` takes it all away). Two bench switches against
+  the USB stall of D-023 go further, both off by default ("Processor settings: the two bench
+  switches" below).
 - The hardware watchdog reboots the box if systemd itself hangs for 15 s.
 - The journal is kept on the SD card (32 MB at most), so after a power cycle `journalctl -b -1`
   still shows what happened before it.
@@ -70,6 +72,10 @@ The order at power-on:
 | `/etc/systemd/system.conf.d/50-k1000-watchdog.conf` | `RuntimeWatchdogSec=15` |
 | `/etc/udev/rules.d/61-k1000-cpu-governor.rules`, `/etc/systemd/system.conf.d/50-k1000-cpu.conf`, `/etc/systemd/system/{camilladsp,k1000,camillagui}.service.d/50-k1000-cpu.conf` | the processor settings, from `cpu/`: governor `performance`, the engine on cores 2-3 and the rest on 0-1, `Nice=5` for k1000 (all of it from the next boot; after `--cpu-off`, a reboot, and `--start` is refused until then) |
 | `/etc/k1000/cpu-tuning` | `off` after `install.sh --cpu-off` (the settings above removed, and kept off by later runs), `on` after `--cpu-on`; absent = on |
+| `/etc/systemd/system/k1000-usb-cpu0.service`, `/etc/systemd/system.conf.d/51-k1000-usb-cpu0.conf`, `/etc/systemd/system/{k1000,camillagui}.service.d/51-k1000-usb-cpu0.conf` | bench switch usb-cpu0, from `cpu/`, only after `install.sh --usb-cpu0-on`: core 0 left to the USB handling (D-023) |
+| `/etc/systemd/system/k1000-usb-rt.service` | bench switch usb-rt, from `cpu/`, only after `install.sh --usb-rt-on`: `ksoftirqd/0` at real-time priority (D-023) |
+| `/etc/k1000/usb-cpu0`, `/etc/k1000/usb-rt` | each switch's choice: `on` after its `-on` flag, `off` after its `-off` flag or `--cpu-off`; absent = off |
+| `/run/k1000-usb-cpu0/report` | while usb-cpu0 is applied: the interrupts it moved, kept on core 0 and the kernel refused (read by `tools/k1000-cpu.py check`) |
 | `/etc/systemd/journald.conf.d/50-k1000-journal.conf` | journal on the SD card, 32 MB cap (applies at the next reboot) |
 | `/etc/modules-load.d/k1000.conf` | `i2c-dev` at boot: `/dev/i2c-1`, the knob board (install.sh `--boot`) |
 | `/etc/rpi/swap.conf.d/50-k1000.conf` | swap in RAM only (zram), from `tools/k1000-lean.sh` |
@@ -460,6 +466,30 @@ writes none to it on its own. Saved delays are kept in ms, never rewritten by th
 the same at 96 kHz; at 48 kHz a delay set at 96 kHz plays at most half a sample (0.0104 ms) off
 (the stored value stays). The manual has the details (`docs/manual/03-configuration.md` §4).
 
+## Processor settings: the two bench switches (D-023)
+
+During the 96 kHz night of 13 to 14 Nov the delay grew twice, by up to 3 ms, with nothing in any
+log (`docs/17` §10). The best fit read in the kernel's source: the handling of the M4's USB
+completions on core 0 stalled for about 3 ms. Two system settings should prevent that. D-023
+builds them as switches, **both off by default, NOT yet measured against the delay steps**: the
+bench turns each on and off and compares. Each needs the processor settings on (above), applies
+at once and at every boot, and comes off at once: no service restart, no reboot.
+
+| Switch | On | What it changes |
+|---|---|---|
+| usb-cpu0, core 0 left to the USB handling | `--usb-cpu0-on` | Everything but the engine on core 1 (systemd's default cores, k1000, CamillaGUI, the other K1000 units); every interrupt the kernel lets move on core 1, the SD card's and the Wi-Fi's first; the kernel's unbound workqueues off core 0. The xHCI's interrupt stays on core 0: it cannot move |
+| usb-rt, real-time priority for the deferred USB work | `--usb-rt-on` | `ksoftirqd/0`, which finishes the USB completion work when it is deferred, at `SCHED_FIFO 51` instead of normal priority |
+
+```sh
+sudo /opt/k1000-src/install.sh --usb-cpu0-on     # or --usb-rt-on; both at once is fine
+/opt/k1000/tools/k1000-cpu.py check              # no root: chosen, in force, part by part (exit 1 if not as chosen)
+sudo /opt/k1000-src/install.sh --usb-cpu0-off    # or --usb-rt-off; --cpu-off takes both off
+```
+
+What each moves, file by file, the risks, and what stays on core 0: `docs/manual/02-installation.md`
+§6, "The bench switches". Tested here against a fake system (`tools/tests/test_cpu_switches.py`
+and the installer tests); never run on the box yet.
+
 ## MOTU M4 bring-up (Tuesday)
 
 Speakers OFF, or their XLRs unplugged, for all of it.
@@ -786,7 +816,9 @@ cd /opt/k1000 && python3 -m pytest -q -p no:cacheprovider -m hw              # h
 ```
 
 `tools/tests` covers the engine unit's start script, the panel console guard, install.sh's helpers
-(headless leftovers, I2C at boot, `--deps`, the phone certificate, `--ap`), the soak tool, the M4
+(headless leftovers, I2C at boot, `--deps`, the phone certificate, `--ap`, the processor settings
+and the two bench switches), `tools/k1000-cpu.py` (the switches' apply, undo and check against a
+fake `/proc` and `/sys`), the soak tool, the M4
 bring-up tool, `k1000-lean.sh` (the guard, the dry run, the boot-file edits, the power-cycle check,
 the cloud-init gate, the detached run), `bootstrap.sh` (apt only when needed, SSH keys only, the
 detached run, `--no-ap`, the engine: the pinned build kept, installed from `CAMILLADSP_BINARY` or
