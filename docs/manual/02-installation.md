@@ -462,8 +462,8 @@ source of the box's kernel (6.18, `kernel/sched/rt.c` and `deadline.c`; not yet 
 box): since Linux 6.12, `/proc/sys/kernel/sched_rt_runtime_us` throttles real-time threads only on
 a kernel built with RT group scheduling, and Raspberry Pi's (`bcm2711_defconfig`) is built
 without it. What keeps core 0 usable is the kernel's fair server: normal tasks keep 50 ms of each
-second of each core (`/sys/kernel/debug/sched/fair_server/cpu0/runtime`, root only), so the box
-slows down, it does not lock up. The interrupt threads at FIFO 50 get no such share:
+second of each core (`/sys/kernel/debug/sched/fair_server/cpu0/runtime`, root only), so their work
+on core 0 slows down, it does not stop. The interrupt threads at FIFO 50 get no such share:
 
 - **usb-rt alone** leaves the SD card's and the Wi-Fi's interrupt threads (`irq/40-mmc0`,
   `irq/40-mmc1`) on core 0, below `ksoftirqd/0`. While other soft-interrupt work keeps core 0 busy
@@ -499,9 +499,8 @@ usb-cpu0's report, systemd's and the K1000 units' cores, the user-space threads 
 core 0, the masks for new interrupts and workqueues, whether the interrupts it moved are still
 off core 0, the ones that stay there and why (an interrupt set up after the unit ran, on a chip
 that cannot move it, is named but does not count against the switch), the interrupt threads'
-cores; usb-rt's `ksoftirqd/0` and xHCI threads (scheduling class, priority),
-every real-time thread allowed on core 0, `sched_rt_runtime_us`. Last, the interrupts core 0 took in 2 s,
-by kind: with usb-cpu0 on, only the xHCI's, the timer's and the inter-processor ones should be
+cores; usb-rt's `ksoftirqd/0` and xHCI threads (scheduling class, priority), every real-time
+thread allowed on core 0, `sched_rt_runtime_us`. Last, the interrupts core 0 took in 2 s, by kind: with usb-cpu0 on, only the xHCI's, the timer's and the inter-processor ones should be
 left. Exit 0 when each switch is as chosen, 1 when one is not (`NOT AS CHOSEN`).
 
 **Proven, measured, not verified.** Proven by tests here, against a fake `/proc` and `/sys`
