@@ -1148,12 +1148,17 @@ def test_a_resync_never_runs_inside_a_config_write(tmp_path: Path,
     """An edit's write is in flight (the worker holds the engine): the resync waits for it to
     end, then restarts; the edit is written whole before it. One held longer than RESTART_LOCK_S
     gets the resync refused (ENGINE BUSY, TRY AGAIN), nothing written. A second resync while
-    one runs is refused at once."""
+    one runs is refused at once, with the readout of the moment (the journal, the phone)."""
     monkeypatch.setattr(ctl_mod, "RESTART_LOCK_S", 0.2)
 
     async def body() -> None:
         ctl, cl = make(tmp_path, State(master_db=-6.0), playing=True)
+        ctl.profile = dataclasses.replace(DEV, io_latency_ms=2.3)
+        cl.level = 536
         await boot(ctl)
+        await ctl.poll_once()
+        cl.level = 536 + 77
+        await ctl.poll_once()
         gate = asyncio.Event()
 
         async def held(entry: tuple[Any, ...]) -> None:
@@ -1165,6 +1170,7 @@ def test_a_resync_never_runs_inside_a_config_write(tmp_path: Path,
         task = ctl.request_resync("box")
         again = await ctl.request_resync("phone 2")
         assert (again.outcome, again.why) == ("refused", "ALREADY RUNNING")
+        assert (again.before, again.grown) == (21.7, 1.6)
         await asyncio.sleep(0.05)
         assert not task.done() and restarts(cl.log) == []
         gate.set()

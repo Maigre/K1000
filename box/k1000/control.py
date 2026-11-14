@@ -3214,7 +3214,8 @@ class Controller:
         loop = asyncio.get_running_loop()
         t = self._resync_task
         if t is not None and not t.done():
-            r = Restart(RESTART_REFUSED, "ALREADY RUNNING")
+            r = Restart(RESTART_REFUSED, "ALREADY RUNNING", before=self.status.latency_ms,
+                        grown=self.status.latency_grown_ms)
             self._say_restart(source, r)
             fut: asyncio.Future[Restart] = loop.create_future()
             fut.set_result(r)
