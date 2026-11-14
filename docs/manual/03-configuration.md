@@ -424,7 +424,7 @@ All in `/var/lib/k1000/`, owned by the `k1000` user, written by the k1000 servic
 |---|---|---|
 | `state.json` | **The sound**: levels, mute, EQ, delays, trims, profile ([§11](#11-statejson-fields)) | Atomically (temp file, fsync, rename), only when the content changed. 1 s after the last edit, at most 5 s after the first. **Edits toward silence** (a mute, the master turned down) are saved at once |
 | `state.json.bad` | A copy of an unreadable `state.json`, kept for a post-mortem | When k1000 finds one at start |
-| `active.yml` | The CamillaDSP config K1000 generated from the state. **The engine boots from it** | With `state.json` |
+| `active.yml` | The CamillaDSP config K1000 generated from the state. **The engine boots from it**. Its `devices.rate_measure_interval_s` (1.0 or 1.001) is K1000's own: each stream restart (D-023: one at every engine start, and the operator's resync) switches it, the one change that makes the engine restart its stream and nothing else | With `state.json`, and after each stream restart |
 | `active.yml.prev` | The previous `active.yml`: the config the engine had booted from | At k1000's start, only when the `active.yml` it regenerates differs from the one on disk (for example after an update, a `k1000.yaml` change or a hand edit of `state.json`). Not on an ordinary restart, and never again until k1000's next start |
 | `phone.json` | SETUP › PHONE › Phone on/off | When toggled |
 | `tune-undo.json` | The system EQ the last `/tune` Apply replaced (its one-level undo) | At each Apply; removed by Undo |

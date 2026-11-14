@@ -29,13 +29,16 @@ the amber strip for a few seconds (what your own press did), **pills** sit on SH
 | `ENGINE ?` amber, and the orange alert `STATUS ? engine · device` | K1000 cannot tell yet whether the engine runs or the device is there ([picture](../ui/unknown_status.png)) | Wait. Audio never depends on the screen |
 | `DSP 1.2%` | The engine's processing load. Left out when the pills leave too little room for it beside the delay | Normal: a few percent |
 | `20.3ms` after the engine state, white | An estimate of the delay from the inputs to the outputs (D-018), not a measurement: the engine's playback buffer plus one chunk, plus the interface's own share (`io_latency_ms` and a quarter chunk: 1.9 + 0.3 ms on the M4 at 96 kHz, chunk 128; 2.3 + 0.3 ms at 48 kHz, chunk 64), plus what the kernel holds in USB transit beyond what that share was measured with (`io_transit_ms`, on the M4 at those two settings only; a shift of more than 0.4 ms shows within about 5 s). Once the engine has logged a dropout it is only a floor, marked `≥`: part of a backlog can sit where the engine's buffer reading does not see it ([`docs/16`](../16-post-gig-audit.md) §2.2). The engine refreshes it about every 10 s. Nothing shown: no reading yet (the first seconds after an engine start), the engine not running, an alert on the bar, or no room beside the pills (`DSP` gives way first, then the dropout count, then the delay) | — |
+| `7.9ms +1.6` | D-023: the delay grew by 1.6 ms since the audio stream last started (an engine start or a resync). Shown from 0.5 ms up, never for a delay that went down. After a k1000 restart on a playing engine it counts from k1000's first reading | Between two tracks: SETUP › BOX › Resync delay (two E3 pushes) or the phone's STATUS › RESYNC: about 25 ms of silence, then the delay of a start, the `+` gone. `journalctl -u k1000 \| grep "stream restart"` gives who asked, the outcome, the delay before and after |
 | `20.3ms` orange | Above the limit (`engine.latency_limit_ms`, 10 ms). It only informs: the sound is not changed | After the show: `journalctl -u k1000 \| grep latency:` gives one line at each engine connection, at each move of more than one chunk, and every 10 minutes. `buffer=` is the engine's level, `usb=` the frames in USB transit when the readout counts them (the mean of the last 100 reads near their median, one decimal): a move in one and not the other says where it happened |
 | `≥16.5ms` | A floor: the profile does not know its interface's share (`dev`), so the engine's share alone; or the engine runs another sample rate than the profile's (a `samplerate` change before camilladsp restarted: the interface figures belong to the profile's rate); or the engine logged a dropout (`3 DROP` beside it) | After a `samplerate` change: `sudo systemctl restart camilladsp` between shows |
 | `3 DROP` small, orange, after the delay | The engine logged that many dropouts (underrun, overrun, stall) since it started. Not shown at 0, nor when its log cannot be read. A delay that grew since the start, with dropouts beside it, may be the backlog of [`docs/16-post-gig-audit.md`](../16-post-gig-audit.md) §2.2 (unproven) | Copy `/var/log/k1000/camilladsp_r*.log` aside before the engine restarts |
 | A coloured bar across the top | A system alert | See "Alerts" below |
 
 The phone's STATUS sheet says the same in words, on its `Delay in → out` row (`at least` for
-`≥`), with the dropout count even at 0, beside a figure only.
+`≥`, `7.9 ms +1.6` for the growth), with the dropout count even at 0, beside a figure only. Under
+it, **RESYNC · hold 1 s** (D-023) does what SETUP › BOX › Resync delay does; a refusal is a red
+toast with the box's words.
 
 ### Full-screen states
 
@@ -120,7 +123,7 @@ On SHOW the strip covers the band chips, on ALIGN the middle, on SETUP the foote
 | `DELAY + LO-CUT UNLOCKED` / `DELAY + LO-CUT LOCKED` | ALIGN: a B2 hold unlocked them for 30 s of idle; a B2 tap locked them |
 | `DELAY · TURN AGAIN TO CHANGE` | ALIGN's DELAY was at rest for 2.5 s: the first click only wakes it |
 | SETUP popup `now → proposed`, `push E3 = apply · turn E1 = cancel` | SETUP (D-017): E3 turned on a risky row (a pipeline rebuild: Mono L+R, Profile, Audition, De-harsh, Loudness, AUX IN; a polarity; Lo-Cut). Nothing changes until an E3 push; an E1 or E2 turn cancels it, so do leaving the page and 8 s without an E3 turn. `MAY CLICK`: a rebuild |
-| SETUP popup `Reset live EQ?`, `Open laptop access?` | SETUP: the first E3 push on a ×2 action; a second E3 push within 5 s runs it |
+| SETUP popup `Reset live EQ?`, `Open laptop access?`, `Resync the delay?` | SETUP: the first E3 push on a ×2 action; a second E3 push within 5 s runs it |
 | `CANCELLED` | SETUP: E1 or E2 turned while a popup was open. Nothing changed, the row is still selected |
 | `ALREADY ON`, `ALREADY OFF`, `ALREADY NORMAL`… | SETUP: E3 turned toward the value the row already holds |
 | `NO CHANGE: ALREADY SET` | SETUP: the proposed value was already set (a phone changed it meanwhile) |
@@ -135,6 +138,9 @@ On SHOW the strip covers the band chips, on ALIGN the middle, on SETUP the foote
 | `AUX: NO SPARE INPUT ON THIS DEVICE` | SETUP › INPUT › AUX IN 1/2 or AUX level on a profile with no spare input (the bench HiFiBerry): read-only |
 | `LAPTOP ACCESS: OPENING…`, `LAPTOP OPEN 2 H · GUI :5005 · SSH`, `LAPTOP ACCESS CLOSED`, `LAPTOP ACCESS CLOSED (2 H)` (4 s) | SETUP › PHONE › Laptop access ([chapter 4 §5.1](04-usage.md#51-laptop-access-and-the-tune-page)) |
 | `LAPTOP ACCESS: NOT AVAILABLE`, `LAPTOP ACCESS: NO ANSWER (SEE LOG)`, `LAPTOP ACCESS NO WI-FI FENCE (AP NOT SET UP)` (4 s) | It could not open: no laptop-access service, the root helper did not answer (`journalctl -t k1000-laptop`), or there is no K1000 Wi-Fi ([`docs/06-phone.md`](../06-phone.md) §7) |
+| `RESYNC…`, then `RESYNC DONE · DELAY READ IN ABOUT 10 s` (4 s) | SETUP › BOX › Resync delay, or the phone's STATUS › RESYNC (D-023): the audio stream restarted in place, about 25 ms of silence. The readout shows nothing for up to 10 s (the row: `READING…`), then the new delay |
+| `RESYNC REFUSED: ENGINE NOT RUNNING`, `… ENGINE NOT IN SYNC`, `… ENGINE REFUSED`, `… ALREADY RUNNING`, `… ENGINE BUSY, TRY AGAIN` (4 s) | The resync did not happen, nothing changed: the engine does not process audio, K1000 is still syncing with it, it refused the write, another resync runs, or other engine work held it more than 1 s (try again) |
+| `RESYNC: ENGINE NOT RUNNING AGAIN (SEE LOG)`, `RESYNC: ENGINE LINK LOST (SEE LOG)` (4 s) | The restart was written but the engine did not run again within 1 s, or it went away: K1000 then holds Main muted until audio flows, as after any engine restart. `journalctl -u k1000 \| grep "stream restart"`, and the engine's log |
 | `MUTE OR CONFIRM ON SETUP (MAY CLICK)` | A setup action asked for (console) without the confirm and while unmuted |
 | `PROFILE PINNED IN k1000.yaml` | SETUP › BOX › Profile is read-only: `k1000.yaml` pins the profile |
 | `AUDITION: DEV PROFILE ONLY` | SETUP › BOX › Audition (dev) is read-only off the bench profile |
@@ -343,6 +349,7 @@ Lost in bypass: the Lo-Cut, the delays, the EQ, the mute.
 | The engine's starts and stops, "waiting for …" lines | `journalctl -u camilladsp -n 50` |
 | The engine's own log (xruns, device errors, config loads) | `tail -f /var/log/k1000/camilladsp_rCURRENT.log` |
 | Older engine logs | `/var/log/k1000/camilladsp_r<date>.log`: up to 50, rotated at every engine start and every 256 kB |
+| Stream restarts (D-023): each engine start's and each resync's, who asked, the outcome, the delay before and after | `journalctl -u k1000 \| grep "stream restart"` |
 | Did the box reboot? When? | `journalctl --list-boots` |
 | The boot before this one (after a power cut) | `journalctl -b -1 -u k1000 -u camilladsp` |
 | A soak run | `/opt/k1000/tools/k1000-soak.sh --summary /var/log/k1000/<its log>` ([chapter 7](07-maintenance.md#soak-test)) |

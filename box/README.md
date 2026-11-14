@@ -24,7 +24,7 @@ phone (D-007) is `docs/06-phone.md`.
 The order at power-on:
 
 1. The engine starts **muted at −40 dB** from `/var/lib/k1000/active.yml`.
-2. k1000 connects to the engine, checks the config, asks the engine once for its spectrum (the warm-up, below), and, unless the state was saved muted, unmutes and ramps Main up to the saved level over about 1.5 s (`engine.boot_ramp_s`; 3 s until 12/11; saved muted: it stays muted, `READY · hold B4 to unmute`).
+2. k1000 connects to the engine, checks the config, asks the engine once for its spectrum (the warm-up, below), restarts the engine's audio stream once in place, Main still muted (D-023, below), and, unless the state was saved muted, unmutes and ramps Main up to the saved level over about 1.5 s (`engine.boot_ramp_s`; 3 s until 12/11; saved muted: it stays muted, `READY · hold B4 to unmute`).
 3. The phone/laptop GUI comes up next to them.
 
 - If `active.yml` is missing or broken, the engine waits for a valid one, with no websocket
@@ -491,6 +491,43 @@ sudo /opt/k1000-src/install.sh --usb-cpu0-off    # or --usb-rt-off; --cpu-off ta
 What each moves, file by file, the risks, and what stays on core 0: `docs/manual/02-installation.md`
 §6, "The bench switches". Tested here against a fake system (`tools/tests/test_cpu_switches.py`
 and the installer tests); never run on the box yet.
+
+## The delay at every start, and the resync (D-023)
+
+The engine can restart its audio stream in place: any change in the `devices` section of its
+config makes it stop and start its capture and playback streams in the same process, Main and
+the spectrum buffers kept. K1000 changes the one value there that does nothing else,
+`rate_measure_interval_s` (how often the engine measures the capture rate), alternately 1.0 and
+1.001. That value is K1000's own: `active.yml` carries it, and the drift check never flags it.
+
+- **At every engine start**, after the spectrum warm-up and before the ramp, Main still muted:
+  one restart, so that every start comes up at the same delay. Measured on the desk box
+  (14 Nov, 96 kHz, 128 / 256, four restarts made by hand): the stream not running for 20 to
+  27 ms, no underrun, Main unchanged, then 6.35 to 6.38 ms in to out every time, where a plain
+  start lands anywhere from 6.1 to 7.6 ms. It adds about 0.2 s before the ramp (0.15 s for the
+  warm-up's stall to pass, the restart itself; calculated, not measured), so full level comes
+  at about 14.6 s after power-on instead of 14.4 s. An engine that does not run within 2 s, a
+  refused or timed-out restart: a warning, the ramp goes on. An engine already playing when
+  k1000 starts is left alone.
+- **The resync, on the operator's command only**: SETUP › BOX › Resync delay (two E3 pushes,
+  the popup between them) or the phone's STATUS sheet (a 1 s hold). About 25 ms of silence,
+  then the delay where a start puts it. **Never by itself**: a gap is a click in continuous
+  music (a test holds this line).
+- **The readout says when it is worth it**: `7.9ms +1.6` on the status bar, `7.9 ms +1.6` on
+  the Resync row and on the phone, `+1.6 since the stream started` in the journal: how much the
+  delay grew since the stream last started (an engine start or a resync), shown from 0.5 ms up.
+  After a resync the engine reports the old stream's level for up to 10 s: the readout shows
+  nothing meanwhile (`READING…`), then the new delay, and the growth starts again from 0.
+  After a k1000 restart on a playing engine the growth counts from its first reading.
+
+```sh
+journalctl -u k1000 -b | grep "stream restart"     # who asked, the outcome, the delay before and after
+grep rate_measure /var/lib/k1000/active.yml       # K1000's value, what the engine runs
+```
+
+Not proven yet on the box: the code itself (the restart was measured by hand, with the same
+command), the delay after 20 starts, the gap with the kernel's stream state, and the resync from
+a phone. The two system settings of D-023 point 3 are not built here.
 
 ## MOTU M4 bring-up (Tuesday)
 

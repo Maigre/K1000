@@ -367,6 +367,7 @@ why:
 | LIVE EQ › **Spectrum** | E3 | `ON` (E3 right) / `off` (left), at once, saved. Read-only `DISABLED` when `spectrum: enabled: false` in `k1000.yaml` |
 | PHONE › Phone | push E3 | Opens the PHONE page ([§5.3](#53-the-phone-page)) |
 | PHONE › **Laptop access** | push E3 ×2 to open, once to close | CamillaGUI, SSH and the `/tune` page from a laptop on the K1000 Wi-Fi, for 2 h ([§5.1](#51-laptop-access-and-the-tune-page)) |
+| BOX › **Resync delay** | push E3 ×2 | D-023. The row shows the delay and how much it grew since the audio stream last started (`7.9 ms +1.6`). The popup `Resync the delay?` · `THE SOUND STOPS ABOUT 25 MS`, then the engine restarts its stream in place: `RESYNC…`, `RESYNC DONE · DELAY READ IN ABOUT 10 s`, the row `READING…` until the new delay is read, then the delay where a start puts it, with no `+`. Main is not touched. Greyed while the engine does not run. Refused or not finished: `RESYNC REFUSED: …` / `RESYNC: … (SEE LOG)`. Never done by itself |
 | BOX › Profile | E3, push E3 | `DEV` / `M4`. Read-only while `k1000.yaml` pins it. About 1 s of silence, then the ramp |
 | BOX › Audition (dev) | E3, push E3 | Bench profile only: `SUM`, `TOPS`, `SUBS` on the two bench outputs. Rebuilds the pipeline |
 | BOX › Knob test | push E3 | Opens the Knob test ([§5.4](#54-knob-test)) |
@@ -380,8 +381,11 @@ reset is the same reset: the box can undo it.
 
 ![TOPS › De-harsh proposed: a rebuild](../ui/setup_deharsh_pick.png) ![INPUT › AUX IN 1/2: MIC proposed](../ui/setup_aux_pick.png)
 
-During a show, SETUP is for Reset live EQ and Undo reset only, and the D-016 numbers (De-harsh
-freq and thresh, Loudness boost and ref, AUX level) if needed: they move without a click. Polarity,
+![BOX › Resync delay: grown 1.6 ms](../ui/setup_resync.png) ![Its popup](../ui/setup_resync_confirm.png)
+
+During a show, SETUP is for Reset live EQ and Undo reset only, the D-016 numbers (De-harsh
+freq and thresh, Loudness boost and ref, AUX level) if needed: they move without a click, and
+Resync delay when the delay has grown, between two tracks (§9). Polarity,
 trims, Mono L+R, the profile and the three D-016 switches (a rebuild each) belong before the doors.
 
 ### 5.1 Laptop access and the tune page
@@ -582,6 +586,12 @@ on/off. It has no spectrum.
 - Stay on **SHOW**. Master on E1; ring control with B3, E4 (gain), E3 (Q).
 - Leave ALIGN locked and SETUP alone, except Reset live EQ / Undo reset and, if needed, the D-016
   numbers (De-harsh freq and thresh, Loudness boost and ref, AUX level): they move without a click.
+- **The delay grew** (D-023): the status bar reads `7.9ms +1.6`, the `+` being how much the delay
+  grew since the audio stream last started. Every start comes up at the same delay; a step of 1 to
+  2 ms can come later in a long night. When it matters (orange, over 10 ms, or a DJ who feels it),
+  **SETUP › BOX › Resync delay**, two E3 pushes, or the phone's STATUS › RESYNC (hold 1 s), at a
+  moment a gap of about 25 ms does not hurt: between two tracks, in a break. The box never does
+  it by itself.
 - No CamillaGUI Apply, and Laptop access closed. Not CamillaGUI's spectrum either: if it asks the
   engine's playback side, which K1000 does not warm up, an engine built from upstream `next5`
   stalls once at full level ([chapter 3 §7](03-configuration.md#7-spectrum)).

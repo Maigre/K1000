@@ -120,7 +120,11 @@ ui:
 
 engine:
   # D-018: in to out, at most this many ms. Above it the delay readout (status bar, the phone's
-  # STATUS) turns orange. It only informs: it never changes the sound.
+  # STATUS) turns orange. It only informs: it never changes the sound. D-023: the readout also
+  # says how much the delay grew since the audio stream last started ("7.9ms +1.6"); the resync
+  # (SETUP > BOX > Resync delay, or the phone's STATUS) brings it back, on the operator's command
+  # only. Nothing to set here: K1000 restarts the stream once at every engine start, Main muted,
+  # and writes its own devices.rate_measure_interval_s (1.0 / 1.001) into active.yml for it.
   latency_limit_ms: 10.0
   url: ws://127.0.0.1:1234
   boot_gain_db: -40.0            # Main fader at connect, before the ramp to the saved master
