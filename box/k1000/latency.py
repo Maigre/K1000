@@ -397,19 +397,29 @@ class LatencyWatch:
         self._logged = None
         self.note_usb(None)
 
-    def restarted(self, stale_level: Any = None) -> None:
-        """K1000 (re)started the stream (an engine start, a resync, a device change it made): the
-        growth counts from the new stream's first whole reading. Until the engine reports a level
-        other than `stale_level` (what it still says for the old stream; None: nothing to wait
-        for), at most RESTART_SETTLE_S, no reading is given (`settling`)."""
+    def new_stream(self) -> None:
+        """A stream K1000 did not see the start of yet (a freshly started engine, before its
+        start restart): the growth counts from its first whole reading. Nothing is held: no
+        reading of an older stream can come on a new engine."""
         self.base_ms = None
+        self._hold = None
+
+    def restarted(self, stale_level: Any = None) -> None:
+        """K1000 restarted the stream in place (a resync, the start restart, a device change it
+        uploaded): the growth counts from the new stream's first whole reading. Until the engine
+        reports a level other than `stale_level` (what it still says for the old stream; None:
+        not known, the first reading is taken), at most RESTART_SETTLE_S, no reading is given
+        (`settling`)."""
+        self.new_stream()
         self._hold = (stale_level, self._clock())
         self.reading = None
 
     @property
     def settling(self) -> bool:
-        """After `restarted`, until the new stream's first reading."""
-        return self._hold is not None
+        """After `restarted`, until the new stream's first reading, RESTART_SETTLE_S at most:
+        after that the next reading is taken whatever it is (`note`), so nothing is said to be
+        coming any longer."""
+        return self._hold is not None and self._clock() - self._hold[1] < RESTART_SETTLE_S
 
     def note_usb(self, burst: Burst | None) -> None:
         """One burst of reads of the USB transit (`read_transits`). The figure is

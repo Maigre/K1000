@@ -1393,6 +1393,73 @@ def test_no_restart_on_an_engine_already_playing(tmp_path: Path) -> None:
     run(body())
 
 
+@pytest.mark.parametrize("where", ["before the write", "after the write"])
+def test_a_bug_in_the_start_restart_never_holds_the_ramp(
+        tmp_path: Path, where: str, caplog: pytest.LogCaptureFixture) -> None:
+    """D-023: the ramp goes ahead whatever the start restart came to. A bug in it (any error but
+    a lost link), before its write or after it, is a journal line with its traceback and a
+    timed-out restart; the connect sync does not start over, Main ramps in (review 2026-11-15:
+    it stayed muted at -40 dB, the sync retried every 2 s)."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-6.0))
+        if where == "before the write":
+            async def boom(epoch: int, who: str) -> Any:
+                raise RuntimeError("injected")
+            ctl._restart_stream = boom  # type: ignore[method-assign]
+        else:
+            def boom2(stale: Any = None) -> None:
+                raise RuntimeError("injected")
+            ctl.latency.restarted = boom2  # type: ignore[method-assign]
+        await ctl.start()
+        await until(lambda: ctl.engine_ready and not ctl.ramping
+                    and cl.faders[0] == {"volume": -6.0, "mute": False}, what="ramped in")
+        assert restarts(cl.log) == ([] if where == "before the write" else [1.0])
+        assert not ctl._restarting and ctl.status.resync == ""
+        await ctl.stop()
+
+    with caplog.at_level(logging.INFO, logger="k1000.control"):
+        run(body())
+    said = [r for r in caplog.records if r.getMessage().startswith("stream restart (start)")]
+    assert [r.levelno for r in said] == [logging.ERROR, logging.WARNING]
+    assert said[0].exc_info is not None and "ramping in anyway" in said[0].getMessage()
+    assert "timed out (INTERNAL ERROR)" in said[1].getMessage()
+    assert not any("connect sync failed" in r.getMessage() for r in caplog.records)
+
+
+def test_reading_is_said_only_for_a_restart_that_happened_and_an_engine_that_runs(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """READING… (the box's row, the phone's `reading after the restart`) only after a restart
+    and while the engine runs: not at a start whose engine never ran (no restart was made),
+    nor while an engine stopped after a resync (review 2026-11-15: it stuck there)."""
+    monkeypatch.setattr(ctl_mod, "RESTART_START_WAIT_S", 0.05)
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-6.0))
+        cl.engine_state = "Stalled"
+        await ctl.start()
+        await until(lambda: ctl.ramping, what="the ramp waiting for the engine")
+        await asyncio.sleep(0.1)
+        await ctl.poll_once()
+        assert restarts(cl.log) == [] and ctl.status.resync == "" and not ctl.latency.settling
+        cl.engine_state = "Running"
+        await until(lambda: ctl.engine_ready and not ctl.ramping, what="ramped in")
+        cl.level = 536
+        assert (await ctl.request_resync("box")).done
+        assert ctl.status.resync == "reading"
+        cl.engine_state = "Stalled"
+        await ctl.poll_once()
+        assert ctl.status.resync == ""
+        cl.engine_state = "Running"
+        await ctl.poll_once()                    # the engine still says 536
+        assert ctl.status.resync == "reading"
+        cl.level = 540
+        await ctl.poll_once()
+        assert ctl.status.resync == "" and ctl.status.latency_ms is not None
+        await ctl.stop()
+
+    run(body())
+
+
 def test_unmute_pressed_while_link_down_is_dropped_but_mute_is_kept(tmp_path: Path) -> None:
     async def body() -> None:
         # engine playing but muted by the operator; the link blips; unmute pressed meanwhile

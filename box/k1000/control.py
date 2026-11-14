@@ -3160,11 +3160,12 @@ class Controller:
         muted, after the spectrum warm-up's stall and before the boot ramp, so that every start
         comes up at the same delay (a normal start lands anywhere from 6.1 to 7.6 ms at 96 kHz,
         docs/17 §11; four restarts on the box, 6.35 to 6.38 ms). It never stands between the
-        engine and its ramp: an engine that does not run within RESTART_START_WAIT_S, a refusal
-        or a timeout is a journal line, and the ramp goes on (it waits for the engine itself).
-        Adds RESTART_AFTER_WARMUP_S, the write and the engine's restart (about 30 ms on the box)
-        before the ramp."""
-        self.latency.restarted(None)        # a new engine, a new stream: whatever comes next
+        engine and its ramp: an engine that does not run within RESTART_START_WAIT_S, a refusal,
+        a timeout or a bug here is a journal line, and the ramp goes on (it waits for the engine
+        itself). Only a lost link (CdspUnavailable: the next connect sync takes over) and a
+        cancel go up. Adds RESTART_AFTER_WARMUP_S, the write and the engine's restart (about
+        0.2 s by the code path, not measured) before the ramp."""
+        self.latency.new_stream()           # a new engine, a new stream: whatever comes next
         t0 = self._clock()
         try:
             while not await self._engine_running(epoch, held=True):
@@ -3176,8 +3177,13 @@ class Controller:
                 await self._sleep(RESTART_POLL_S)
             await self._sleep(RESTART_AFTER_WARMUP_S)
             r = await self._restart_stream(epoch, "start")
+        except CdspUnavailable:
+            raise
         except CdspError as e:              # a read refused: the sync and its ramp go on
             r = Restart(RESTART_REFUSED, f"ENGINE ERROR ({e})")
+        except Exception:   # noqa: BLE001 - a bug: said, never between the engine and its ramp
+            log.exception("stream restart (start) failed; ramping in anyway")
+            r = Restart(RESTART_TIMEOUT, "INTERNAL ERROR")
         self._say_restart("start", r)
 
     def request_resync(self, source: str = "box") -> asyncio.Future[Restart]:
@@ -3924,10 +3930,12 @@ class Controller:
         self._say_restart_after()
 
     def _note_resync(self) -> None:
-        """Status.resync from the resync running and the readout settling (D-023)."""
+        """Status.resync from the resync running and the readout settling (D-023). "reading"
+        only while the engine runs: an engine that stopped after a restart has no delay coming."""
         t = self._resync_task
         now = ("running" if self._restarting or (t is not None and not t.done())
-               else "reading" if self.latency.settling else "")
+               else "reading" if self.latency.settling and self.status.engine == "Running"
+               else "")
         if now != self.status.resync:
             self.status.resync = now
             self._changed()

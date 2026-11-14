@@ -231,8 +231,8 @@ def test_the_growth_counts_from_the_streams_first_reading_and_shows_from_half_a_
     w = LatencyWatch(10.0, clock=clock)
     caplog.set_level(logging.INFO, logger="k1000.latency")
     w.note_config(CFG)
-    w.restarted(None)                                           # a fresh engine: nothing stale
-    assert w.settling and w.note("Running", 0, 3.8) is None     # no average yet
+    w.new_stream()                                              # a fresh engine: nothing stale
+    assert not w.settling and w.note("Running", 0, 3.8) is None  # no average yet
     r = w.note("Running", 536, 3.8)
     assert not w.settling and w.base_ms == 20.3 and r is not None
     assert (r.grown_ms, r.grown) == (0.0, None)
@@ -275,10 +275,21 @@ def test_after_a_restart_the_old_streams_level_is_not_read_as_the_new_ones() -> 
     assert r is not None and not w.settling and w.base_ms == 20.3 and r.grown_ms == 0.0
     w.restarted(536)                                            # one that lands exactly where it was
     clock.t += lat.RESTART_SETTLE_S - 0.5
-    assert w.note("Running", 536, 3.8) is None
+    assert w.note("Running", 536, 3.8) is None and w.settling
     clock.t += 0.5
     r = w.note("Running", 536, 3.8)                             # bounded: taken after the window
     assert r is not None and r.grown_ms == 0.0 and not w.settling
+    # No reading at all after a restart (the engine stopped, its level unreadable): `settling`
+    # ends with the window all the same, so nothing says a delay is coming for ever.
+    w.restarted(536)
+    assert w.settling
+    clock.t += lat.RESTART_SETTLE_S
+    assert not w.settling and w.base_ms is None
+    # A level not known at the restart (None): the first reading is the new stream's.
+    w.restarted(None)
+    assert w.settling and w.note("Stalled", 536, 3.8) is None and w.settling
+    r = w.note("Running", 540, 3.8)
+    assert r is not None and not w.settling and w.base_ms == r.ms
 
 
 def test_the_base_waits_for_the_transit_figure_when_it_counts() -> None:
@@ -286,7 +297,7 @@ def test_the_base_waits_for_the_transit_figure_when_it_counts() -> None:
     comes three bursts after the level must not read as growth."""
     w = LatencyWatch(10.0, clock=Clock())
     w.note_config(M4_64)
-    w.restarted(None)
+    w.new_stream()
     r = w.note("Running", 128, 2.3, usb_ref_ms=REF_64)          # the level in, the transit not yet
     assert r is not None and r.usb is None and w.base_ms is None and r.grown is None
     for _ in range(3):
