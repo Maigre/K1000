@@ -359,7 +359,7 @@ def test_usb_rt_puts_ksoftirqd_0_alone_at_fifo_51_and_undo_puts_it_back(pi):
     assert (pi.tasks[95]["policy"], pi.tasks[95]["prio"]) == (1, 50)           # the SD/Wi-Fi thread
     assert [c for c in pi.kernel.calls if c[0] == "sched"] == [("sched", 14, 1, 51)]
     assert "ksoftirqd/0(14): SCHED_FIFO 51 (was SCHED_OTHER)" in text
-    assert "no xHCI interrupt thread" in text and "950000 of every 1000000" in text
+    assert "no xHCI interrupt thread" in text and "sched_rt_runtime_us: 950000 of every 1000000 µs" in text
     log, rc = kc.undo_usb_rt(pi.box())
     assert rc == 0 and (pi.tasks[14]["policy"], pi.tasks[14]["prio"]) == (0, 0), log
 
@@ -379,14 +379,14 @@ def test_usb_rt_raises_the_xhci_thread_too_when_the_kernel_runs_one(pi):
 
 
 @pytest.mark.parametrize("runtime", ["-1", "1000000", "", None])
-def test_usb_rt_refused_with_nothing_changed_without_the_real_time_throttle(pi, runtime):
+def test_usb_rt_refused_with_nothing_changed_when_the_real_time_limit_is_lifted(pi, runtime):
     path = pi.root / "proc/sys/kernel/sched_rt_runtime_us"
     if runtime is None:
         path.unlink()
     else:
         path.write_text(runtime + "\n")
     log, rc = kc.apply_usb_rt(pi.box())
-    assert rc == 1 and "refused, nothing changed: the real-time throttle is off" in log[0]
+    assert rc == 1 and "refused, nothing changed: the real-time limit is lifted or unreadable" in log[0]
     assert pi.kernel.calls == []
 
 

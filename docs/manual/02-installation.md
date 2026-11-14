@@ -452,12 +452,27 @@ Off: `ksoftirqd/0` back to `SCHED_OTHER`, an xHCI thread back to FIFO 50, the ke
 Nothing is written to any file.
 
 What could go wrong: `ksoftirqd/0` runs all the deferred soft-interrupt work of core 0, not only
-USB (network receive, block completions, timers, RCU). A flood of it would hold core 0 above every
-normal task and the interrupt threads there, up to the kernel's real-time throttle
-(`/proc/sys/kernel/sched_rt_runtime_us`: by default, real-time work may use 950 ms of each second
-of a core). With usb-cpu0 also on, the network's, the SD card's and the Wi-Fi's work has left core
-0. It fails safe: refused, with nothing changed, while that throttle is off (`-1`); a failed start
-is undone; a boot without the unit is the kernel's default.
+USB (network receive, block completions, timers, RCU). At FIFO 51 a flood of it holds core 0 for
+as long as it lasts, and nothing caps it against the other real-time threads there. Read in the
+source of the box's kernel (6.18, `kernel/sched/rt.c` and `deadline.c`; not yet checked on the
+box): since Linux 6.12, `/proc/sys/kernel/sched_rt_runtime_us` throttles real-time threads only on
+a kernel built with RT group scheduling, and Raspberry Pi's (`bcm2711_defconfig`) is built
+without it. What keeps core 0 usable is the kernel's fair server: normal tasks keep 50 ms of each
+second of each core (`/sys/kernel/debug/sched/fair_server/cpu0/runtime`, root only), so the box
+slows down, it does not lock up. The interrupt threads at FIFO 50 get no such share:
+
+- **usb-rt alone** leaves the SD card's and the Wi-Fi's interrupt threads (`irq/40-mmc0`,
+  `irq/40-mmc1`) on core 0, below `ksoftirqd/0`. While other soft-interrupt work keeps core 0 busy
+  (Ethernet receive during an rsync deploy, for example), SD and Wi-Fi I/O stop. Not fatal, and
+  not likely during a show.
+- **With usb-cpu0 also on**, the network's, the SD card's and the Wi-Fi's interrupts, their threads
+  and their soft-interrupt work have left core 0.
+
+So on the bench: usb-cpu0 alone first, then usb-rt with usb-cpu0 still on; usb-rt alone, if at
+all, after those. It fails safe as far as it can: refused, with nothing changed, while
+`sched_rt_runtime_us` is `-1` (real-time limits lifted on purpose; on the box's kernel that lifts
+only the limit on `SCHED_DEADLINE` admission, but a system set up that way gets no raised thread
+from K1000); a failed start is undone; a boot without the unit is the kernel's default.
 
 **Not part of either switch, on purpose: `threadirqs`** on the kernel command line. It would run
 every interrupt handler in a thread, the xHCI's included, so that its completion work gets a
@@ -481,7 +496,7 @@ core 0, the masks for new interrupts and workqueues, whether the interrupts it m
 off core 0, the ones that stay there and why (an interrupt set up after the unit ran, on a chip
 that cannot move it, is named but does not count against the switch), the interrupt threads'
 cores; usb-rt's `ksoftirqd/0` and xHCI threads (scheduling class, priority),
-every real-time thread allowed on core 0, the throttle. Last, the interrupts core 0 took in 2 s,
+every real-time thread allowed on core 0, `sched_rt_runtime_us`. Last, the interrupts core 0 took in 2 s,
 by kind: with usb-cpu0 on, only the xHCI's, the timer's and the inter-processor ones should be
 left. Exit 0 when each switch is as chosen, 1 when one is not (`NOT AS CHOSEN`).
 
@@ -489,11 +504,13 @@ left. Exit 0 when each switch is as chosen, 1 when one is not (`NOT AS CHOSEN`).
 shaped like the box and a fake `systemctl` (`box/tools/tests/test_cpu_switches.py`, the installer
 tests in `test_sys_tools.py`): the flags, off by default, the choices remembered and read like
 `cpu-tuning`, each switch's files written and removed, its unit stopped before its file goes,
-`--cpu-off` taking both off, the refusals, which interrupts and threads each switch changes and
-puts back, the check's verdicts. Measured on the box: only what led to them (above). **Not
-verified**: that the kernel on the box accepts each write and which interrupts it refuses, that
-systemd applies the empty-then-`1` `CPUAffinity=` at a daemon-reload, the units' sandbox, the
-costs above, and above all the effect on the delay steps.
+`--cpu-off` taking both off, the refusals, a unit that cannot be enabled or start (a warning, the
+install goes on), which interrupts and threads each switch changes and puts back (each thread on
+the cores it had), the check's verdicts. Read in the kernel's source only: what limits real-time
+work on the box's kernel (no RT group scheduling; the fair server). Measured on the box: only what
+led to them (above). **Not verified**: that the kernel on the box accepts each write and which
+interrupts it refuses, that systemd applies the empty-then-`1` `CPUAffinity=` at a daemon-reload,
+the units' sandbox, the costs above, and above all the effect on the delay steps.
 
 ## 7. Converting a desktop card
 

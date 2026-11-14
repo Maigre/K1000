@@ -20,15 +20,21 @@
 #   the kernel command line, which K1000 does not set (docs/manual/02-installation.md §6).
 #
 # What could go wrong: ksoftirqd/0 runs ALL the deferred soft-interrupt work of core 0, not only
-# USB (network receive, block completions, timers, RCU). A flood of it would hold core 0 above
-# every normal task and the interrupt threads there, up to the kernel's real-time throttle
-# (/proc/sys/kernel/sched_rt_runtime_us: by default real-time work may use 950 ms of each second
-# of a core). With usb-cpu0 on, the SD card's, the Wi-Fi's and the network's work leaves core 0.
+# USB (network receive, block completions, timers, RCU). A flood of it holds core 0 for as long as
+# it lasts. Nothing caps a FIFO 51 thread against the interrupt threads at FIFO 50: since Linux
+# 6.12, sched_rt_runtime_us throttles real-time threads only on a kernel with RT group scheduling,
+# and Raspberry Pi's is built without it (read in the source, not yet on the box). Normal tasks
+# keep 50 ms of each second of core 0 through the kernel's fair server. So with usb-rt alone, the
+# SD card's and the Wi-Fi's interrupt threads (on core 0 unless usb-cpu0 moves them) wait while
+# other soft-interrupt work keeps core 0 busy (Ethernet receive during a deploy): SD and Wi-Fi I/O
+# stop for that time. With usb-cpu0 on, the SD card's, the Wi-Fi's and the network's work has
+# left core 0: on the bench, turn usb-rt on with usb-cpu0 on first.
 #
-# Fails safe: refused, with nothing changed, while the real-time throttle is off
-# (sched_rt_runtime_us -1); a failed start is undone by ExecStopPost; stopped, ksoftirqd/0 goes
-# back to SCHED_OTHER and an xHCI thread to FIFO 50 (the kernel's own values). Nothing is written
-# to any file: a boot without the unit is the kernel's default. No restart, no reboot.
+# Fails safe as far as it can: refused, with nothing changed, while sched_rt_runtime_us is -1
+# (real-time limits lifted on purpose); a failed start is undone by ExecStopPost; stopped,
+# ksoftirqd/0 goes back to SCHED_OTHER and an xHCI thread to FIFO 50 (the kernel's own values).
+# Nothing is written to any file: a boot without the unit is the kernel's default. No restart, no
+# reboot.
 #
 # Sandbox: CAP_SYS_NICE sets another thread's scheduling. No RestrictRealtime= (it would refuse
 # the very call this unit makes).

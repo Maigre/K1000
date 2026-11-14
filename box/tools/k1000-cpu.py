@@ -23,8 +23,9 @@ Commands (apply and undo run as root, from their units; check needs no root and 
                   started meanwhile keep their cores (a reader the bench pinned to core 1 too).
   usb-rt apply    k1000-usb-rt.service, "real-time priority for the deferred USB work":
                   ksoftirqd/0, and the xHCI's interrupt thread if the kernel runs one (threadirqs),
-                  at SCHED_FIFO 51. Refused, with nothing changed, while the kernel's real-time
-                  throttle is off.
+                  at SCHED_FIFO 51. Refused, with nothing changed, while sched_rt_runtime_us lifts
+                  the real-time limit (-1). On the box's kernel that knob caps no real-time thread
+                  anyway (no RT group scheduling): docs/manual/02-installation.md §6 says what does.
   usb-rt undo     ksoftirqd/0 back to SCHED_OTHER, an xHCI thread back to FIFO 50.
   check           For the processor settings and each switch: what is chosen (/etc/k1000/) and
                   whether it is in force on the running system, part by part. Exit 0 when each
@@ -380,7 +381,11 @@ def undo_usb_cpu0(box: Box, report_dir: str | None = None) -> tuple[list[str], i
 
 
 # --------------------------------------------------------------------------- usb-rt
-def _rt_throttle(box: Box) -> tuple[int | None, int | None]:
+def _rt_limit(box: Box) -> tuple[int | None, int | None]:
+    """sched_rt_runtime_us and sched_rt_period_us. Since Linux 6.12 they cap real-time threads only
+    on a kernel with RT group scheduling (kernel/sched/rt.c, update_curr_rt), which Raspberry Pi's
+    bcm2711_defconfig does not set; normal tasks keep their share through the fair server instead
+    (50 ms of each second of each core, kernel/sched/deadline.c). -1 still means: limits lifted."""
     def num(path):
         try:
             return int((box.read(path) or "").strip())
@@ -396,11 +401,11 @@ def _usb_threads(ts: list[Task]) -> tuple[list[Task], list[Task]]:
 
 
 def apply_usb_rt(box: Box) -> tuple[list[str], int]:
-    runtime, period = _rt_throttle(box)
+    runtime, period = _rt_limit(box)
     if runtime is None or period is None or not 0 <= runtime < period:
-        return [f"refused, nothing changed: the real-time throttle is off or unreadable "
-                f"(sched_rt_runtime_us {runtime}, sched_rt_period_us {period}); a real-time "
-                f"ksoftirqd/{USB_CPU} that loops could then hold core {USB_CPU} for good"], 1
+        return [f"refused, nothing changed: the real-time limit is lifted or unreadable "
+                f"(sched_rt_runtime_us {runtime}, sched_rt_period_us {period}): K1000 raises no "
+                f"thread on a system set up that way"], 1
     soft, xhci = _usb_threads(tasks(box))
     if not soft:
         return [f"ERROR: no ksoftirqd/{USB_CPU} thread found: nothing changed"], 1
@@ -415,7 +420,8 @@ def apply_usb_rt(box: Box) -> tuple[list[str], int]:
             rc = 1
     if not xhci:
         log.append("no xHCI interrupt thread: the kernel takes that interrupt directly (no threadirqs)")
-    log.append(f"real-time throttle: {runtime} of every {period} µs")
+    log.append(f"sched_rt_runtime_us: {runtime} of every {period} µs (a cap on real-time threads only "
+               f"if the kernel has RT group scheduling)")
     return log, rc
 
 
@@ -563,8 +569,9 @@ def check(box: Box, sample: float = 2.0, sleep=time.sleep) -> tuple[list[str], i
         out.append("  no xHCI interrupt thread (no threadirqs on the kernel command line)")
     rt0 = sorted((t for t in ts if t.policy in (1, 2) and USB_CPU in t.cpus), key=lambda t: -t.prio)
     out.append(f"  real-time threads allowed on core {USB_CPU}: " + (_short([f"{t.comm} {sched(t)}" for t in rt0]) or "none"))
-    runtime, period = _rt_throttle(box)
-    out.append(f"  real-time throttle: {runtime} of every {period} µs")
+    runtime, period = _rt_limit(box)
+    out.append(f"  sched_rt_runtime_us: {runtime} of every {period} µs (a cap on real-time threads only "
+               f"if the kernel has RT group scheduling)")
 
     # what core 0 takes
     if sample > 0:

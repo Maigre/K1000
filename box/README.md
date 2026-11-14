@@ -473,7 +473,9 @@ log (`docs/17` §10). The best fit read in the kernel's source: the handling of 
 completions on core 0 stalled for about 3 ms. Two system settings should prevent that. D-023
 builds them as switches, **both off by default, NOT yet measured against the delay steps**: the
 bench turns each on and off and compares. Each needs the processor settings on (above), applies
-at once and at every boot, and comes off at once: no service restart, no reboot.
+at once and at every boot, and comes off at once: no service restart, no reboot. On the bench,
+usb-cpu0 first, then usb-rt with it: usb-rt alone puts `ksoftirqd/0` above the SD card's and the
+Wi-Fi's interrupt threads, still on core 0 then, and nothing in the kernel caps that.
 
 | Switch | On | What it changes |
 |---|---|---|
