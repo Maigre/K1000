@@ -1285,7 +1285,7 @@ def test_field_names_exist_in_state():
             assert item.field in im.ALL_PAGES
             continue
         if item.kind == "action":
-            assert item.field in (im.A_RESET_LIVE, im.A_UNDO_RESET, im.A_LAPTOP)
+            assert item.field in (im.A_RESET_LIVE, im.A_UNDO_RESET, im.A_LAPTOP, im.A_RESYNC)
             continue
         s.get(item.field)
         if item.kind == "num":
@@ -1314,33 +1314,34 @@ D013_SETUP = (
     ("LIVE EQ", (("Reset live EQ", "reset_live", "action"), ("Undo reset", "undo_reset", "action"),
                  ("Spectrum", "spectrum_on", "bool"))),
     ("PHONE", (("Phone", "PHONE", "page"), ("Laptop access", "laptop_access", "action"))),
-    ("BOX", (("Profile", "profile", "choice"), ("Audition (dev)", "dev_audition", "choice"),
-             ("Knob test", "HWTEST", "page"))),
+    ("BOX", (("Resync delay", "resync", "action"), ("Profile", "profile", "choice"),
+             ("Audition (dev)", "dev_audition", "choice"), ("Knob test", "HWTEST", "page"))),
 )
 
 
 def test_setup_groups_are_d013s():
-    """The 27 items under TOPS / SUBS / INPUT / LIVE EQ / PHONE / BOX, in that order; every
+    """The 28 items under TOPS / SUBS / INPUT / LIVE EQ / PHONE / BOX, in that order; every
     item knows its group. No Top delay since D-011: ALIGN's signed E3 is the one place to set
-    the alignment (and the Lo-Cut frequency stays on ALIGN E4). D-016 added 8 rows."""
+    the alignment (and the Lo-Cut frequency stays on ALIGN E4). D-016 added 8 rows, D-023 BOX ›
+    Resync delay."""
     assert tuple((g, tuple((it.label, it.field, it.kind) for it in items))
                  for g, items in im.SETUP_GROUPS) == D013_SETUP
     assert im.SETUP_GROUP_NAMES == ("TOPS", "SUBS", "INPUT", "LIVE EQ", "PHONE", "BOX")
-    assert len(im.SETUP_ITEMS) == 27
+    assert len(im.SETUP_ITEMS) == 28
     assert [(it.group, it.label, it.field, it.kind) for it in im.SETUP_ITEMS] == \
         [(g, *row) for g, rows in D013_SETUP for row in rows]
-    assert len({it.field for it in im.SETUP_ITEMS}) == 27                  # one row per field
+    assert len({it.field for it in im.SETUP_ITEMS}) == 28                  # one row per field
     assert not any(i.field.endswith("_delay_ms") or i.field == im.F_LOWCUT_FREQ
                    for i in im.SETUP_ITEMS)
     assert "Top delay" not in [i.label for i in im.SETUP_ITEMS]
 
 
 def test_setup_item_kinds_say_how_each_row_is_set():
-    """D-013's kinds, D-017's gestures: an action that touches the sound (Reset live EQ) or opens
-    the fence (Laptop access) needs a second E3 push; ON/off and choice rows are stepped by E3;
+    """D-013's kinds, D-017's gestures: an action that touches the sound (Reset live EQ, D-023's
+    Resync delay: a gap) or opens the fence (Laptop access) needs a second E3 push; ON/off and choice rows are stepped by E3;
     the pipeline rebuilds (a possible click) are among them, and say so."""
     by = {i.field: i for i in im.SETUP_ITEMS}
-    assert {f for f, i in by.items() if i.needs_confirm} == {"reset_live", "laptop_access"}
+    assert {f for f, i in by.items() if i.needs_confirm} == {"reset_live", "laptop_access", "resync"}
     assert {f for f, i in by.items() if i.picks} == \
         {"top_inverted", "lowcut_on", "sub_inverted", "mono_subs", "sub_lowpass_on", "spectrum_on",
          "profile", "dev_audition", "deharsh_on", "loud_on", "aux_mode"}
@@ -1394,13 +1395,13 @@ def test_setup_group_helpers():
     assert im.setup_group_pos(0) == ("TOPS", 1, 7)
     assert im.setup_group_pos(_item("input_trim_db")) == ("INPUT", 1, 3)
     assert im.setup_group_pos(_item("aux_gain_db")) == ("INPUT", 3, 3)
-    assert im.setup_group_pos(26) == ("BOX", 3, 3)
-    assert im.setup_group_pos(99) == ("BOX", 3, 3) and im.setup_group_pos(-4) == ("TOPS", 1, 7)
+    assert im.setup_group_pos(27) == ("BOX", 4, 4)                     # D-023: Resync delay first
+    assert im.setup_group_pos(99) == ("BOX", 4, 4) and im.setup_group_pos(-4) == ("TOPS", 1, 7)
     assert im.setup_group_step(mono, 1) == first["INPUT"]
     assert im.setup_group_step(mono, -1) == first["SUBS"]             # its own first item first
     assert im.setup_group_step(first["SUBS"], -1) == first["TOPS"]
     assert im.setup_group_step(mono, -2) == first["TOPS"]
-    assert im.setup_group_step(0, 99) == first["BOX"] and im.setup_group_step(26, -99) == 0
+    assert im.setup_group_step(0, 99) == first["BOX"] and im.setup_group_step(27, -99) == 0
     assert im.setup_group_step(0, -1) == 0 and im.setup_group_step(first["BOX"], 1) == first["BOX"]
 
 
@@ -1749,6 +1750,48 @@ def test_setup_reset_live_needs_two_e3_pushes_and_undo_one():
     assert map_event("SETUP", g, Sw(2, "short", ts=51.0), state=st.State()) == \
         [ShowHint(im.HINT_TURN_VALUE)]
     assert g.pick_now(51.0) is None
+
+
+def test_setup_resync_runs_on_a_double_e3_push_with_its_popup_between():
+    """D-023 (a gap in the sound): the first E3 push opens the popup, which says so; the second
+    within CONFIRM_WINDOW_S emits SetupAction("resync"); a turn or E1 runs nothing."""
+    f = Focus(item=_item(im.A_RESYNC))
+    assert map_event("SETUP", f, Enc(2, 1)) == [ShowHint(im.HINT_PUSH_TWICE)]
+    assert map_event("SETUP", f, Sw(2, "short", ts=1.0)) == []                  # the popup
+    assert f.confirm == im.A_RESYNC and im.setup_popup(f, 1.0) == ("confirm", None)
+    assert map_event("SETUP", f, Enc(0, 1, ts=1.5)) == [ShowHint(im.HINT_CANCELLED)]
+    map_event("SETUP", f, Sw(2, "short", ts=2.0))
+    assert map_event("SETUP", f, Sw(2, "short", ts=3.0)) == [im.SetupAction(im.A_RESYNC)]
+    assert f.confirm is None
+    _n, _p, s, status, foc = {c[0]: c for c in pages.demo_cases()}["setup_resync_confirm"]
+    c = _setup_ctx(s, status, foc)
+    assert (c.popup["title"], c.popup["big"], c.popup["what"], c.popup["instr"]) == \
+        ("BOX", "Resync the delay?", "THE SOUND STOPS ABOUT 25 MS",
+         "push E3 again = resync · turn E1 = cancel")
+
+
+def test_setup_resync_row_says_the_delay_its_growth_and_the_resync():
+    """BOX › Resync delay shows the readout and its growth ("7.9 ms +1.6"), RESYNC… while it
+    runs, READING… until the new stream's delay is read, — without a reading; dimmed while the
+    engine does not run (it would be refused). The status bar carries the growth too."""
+    item = {it.field: it for it in im.SETUP_ITEMS}[im.A_RESYNC]
+    v, S = pages._setup_value, pages.ScreenStatus
+    s = st.State()
+    assert v(s, item, S(**RUN, latency_ms=7.9, latency_grown_ms=1.6)) == "7.9 ms +1.6"
+    assert v(s, item, S(**RUN, latency_ms=6.4)) == "6.4 ms"
+    assert v(s, item, S(**RUN, latency_ms=6.4, dropouts=2)) == "≥6.4 ms"
+    assert v(s, item, S(**RUN)) == "—"
+    assert v(s, item, S(**RUN, latency_ms=7.9, resync="running")) == "RESYNC…"
+    assert v(s, item, S(**RUN, resync="reading")) == "READING…"
+    assert not pages._setup_unavailable(item, S(**RUN))
+    assert pages._setup_unavailable(item, S(**dict(RUN, engine="Paused")))
+    assert pages._setup_unavailable(item, S(**dict(RUN, engine=None)))
+    assert pages.latency_readout(S(latency_ms=7.9, latency_grown_ms=1.6)) == ("7.9ms +1.6", False, "")
+    assert pages.latency_readout(S(latency_ms=10.1, latency_over=True, latency_grown_ms=2.7)) == \
+        ("10.1ms +2.7", True, "")
+    bar = lambda **kw: pages.render("SHOW", s, S(**RUN, **kw), Focus(), now=0.0).crop(  # noqa: E731
+        (0, 0, pages.W, pages.STATUS_H)).tobytes()
+    assert bar(latency_ms=7.9, latency_grown_ms=1.6) != bar(latency_ms=7.9)
 
 
 def test_setup_laptop_access_opens_on_a_double_e3_push_and_closes_on_one():
@@ -2307,7 +2350,7 @@ def test_setup_knobs_say_what_a_row_wants():
         assert f.pick is None and f.confirm is None
     for field, hint in (("PHONE", im.HINT_PUSH_OPEN), ("HWTEST", im.HINT_PUSH_OPEN),
                         (im.A_RESET_LIVE, im.HINT_PUSH_TWICE), (im.A_UNDO_RESET, im.HINT_PUSH_RUN),
-                        (im.A_LAPTOP, im.HINT_PUSH_TWICE)):
+                        (im.A_LAPTOP, im.HINT_PUSH_TWICE), (im.A_RESYNC, im.HINT_PUSH_TWICE)):
         f = Focus(item=_item(field))
         for d in (1, -2):
             assert map_event("SETUP", f, Enc(2, d), state=s) == [ShowHint(hint)], field
@@ -2830,7 +2873,7 @@ def test_setup_scroll_bar_follows_the_selection():
     ("mono_subs", "turn E3 · push E3 = apply"), ("profile", "turn E3 · push E3 = apply"),
     ("PHONE", "push E3 = open"), ("HWTEST", "push E3 = open"),
     (im.A_RESET_LIVE, "push E3 ×2 = run"), (im.A_LAPTOP, "push E3 ×2 = run"),
-    (im.A_UNDO_RESET, "push E3 = run"),
+    (im.A_UNDO_RESET, "push E3 = run"), (im.A_RESYNC, "push E3 ×2 = run"),
 ])
 def test_setup_bottom_line_says_what_the_knobs_do_on_the_row(field, help):
     _img, drawn = _drawn("SETUP", st.State(), pages.ScreenStatus(**RUN), Focus(item=_item(field)))

@@ -1162,6 +1162,35 @@ def test_a_resync_never_runs_inside_a_config_write(tmp_path: Path,
     run(body())
 
 
+def test_setup_resync_on_the_box_runs_after_its_second_e3_push(tmp_path: Path) -> None:
+    """BOX › Resync delay: the first E3 push opens the popup and writes nothing, the second
+    resyncs; the box says RESYNC… then RESYNC DONE, and the row reads READING… until the new
+    stream's delay is read."""
+    from k1000.ui import pages
+    from k1000.ui.input_map import A_RESYNC, SETUP_ITEMS
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-6.0), playing=True)
+        await boot(ctl)
+        ctl.goto_page("SETUP")
+        ctl.focus.item = next(i for i, it in enumerate(SETUP_ITEMS) if it.field == A_RESYNC)
+        ctl.handle_event(SwitchEvent(2, "short", time.monotonic()))
+        await asyncio.sleep(0.02)
+        assert restarts(cl.log) == [] and ctl.focus.confirm == A_RESYNC
+        ctl.handle_event(SwitchEvent(2, "short", time.monotonic()))
+        task = ctl._resync_task
+        assert task is not None and ctl.snapshot()[2].resync == "running"
+        assert (await task).done and restarts(cl.log) == [1.0]
+        assert ctl.focus.hint_now() == ctl_mod.HINT_RESYNC_DONE
+        _p, s, status, _f = ctl.snapshot()
+        assert status.resync == "reading"
+        item = next(it for it in SETUP_ITEMS if it.field == A_RESYNC)
+        assert pages._setup_value(s, item, status) == "READING…"
+        await ctl.stop()
+
+    run(body())
+
+
 def test_the_journal_gives_the_delay_before_and_after_a_resync(
         tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """Before: the readout and its growth when asked. After: the new stream's first reading

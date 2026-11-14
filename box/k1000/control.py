@@ -91,7 +91,7 @@ from .state import (BOOL_FIELDS, CHOICES, DEFAULT_SAMPLERATE, DELAY_FIELDS, N_SY
                     sample_ms, set_engine_rate)
 from .ui.input_map import (
     A_LAPTOP, ALL_PAGES, AUTO_HOME_PAGES, BELL_SLOTS, EDIT_HIGHLIGHT_S, F_AUX_GAIN, F_AUX_MODE,
-    F_LOWCUT_ON, F_SPECTRUM_ON,
+    A_RESYNC, F_LOWCUT_ON, F_SPECTRUM_ON,
     HINT_S, HOME_AFTER_S, HOME_PAGE, LIVE_SLOT_LABELS, LIVE_SLOT_SHORT, LIVE_SLOTS, MUTE_TOGGLE,
     PAGES, ControlMap, Focus, GotoPage, Mute, NextPage, NotchHelper, Nudge, PhoneQr, PhoneToggle,
     B1_TAP, SETUP_ITEMS, ResetLive, SetChoice, SetupAction, Toggle, ToggleBand, UndoReset,
@@ -979,8 +979,10 @@ class Controller:
         # short text or None, read at every snapshot. Never allowed to break the screen.
         self.pill_sources: list[Callable[[], str | None]] = []
         # SETUP action items beyond reset/undo (input_map.SetupAction): name -> callable, run
-        # after the item's confirm. Unknown names only say so.
-        self.setup_actions: dict[str, Callable[[], Any]] = {}
+        # after the item's confirm. Unknown names only say so. BOX › Resync delay (D-023): the
+        # operator's resync, after its two E3 pushes.
+        self.setup_actions: dict[str, Callable[[], Any]] = {
+            A_RESYNC: lambda: self.request_resync("box")}
         # SETUP > Laptop access (laptop.LaptopAccess, set by __main__ through attach_laptop;
         # None = no such surface: the item then says NOT AVAILABLE).
         self.laptop: Any = None

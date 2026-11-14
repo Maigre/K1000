@@ -32,10 +32,10 @@ HWTEST reached from SETUP.
   a left one, applied at once. A RISKY row (SETUP_RISKY: every pipeline rebuild, both polarities,
   Lo-Cut) only PROPOSES on an E3 turn (a popup, `now -> proposed`) and an E3 push applies it: two
   gestures, the value always visible; an E1 or E2 turn, leaving the page or PICK_WINDOW_S
-  cancels. Pages open and actions run on an E3 push; Reset live EQ and opening Laptop access
-  need a second E3 push within CONFIRM_WINDOW_S (the same popup). E1 and E2 pushes only point to
-  E3. A row the Controller holds read-only (`Focus.readonly`), a number included, only shows its
-  reason.
+  cancels. Pages open and actions run on an E3 push; Reset live EQ, opening Laptop access and
+  Resync delay (D-023) need a second E3 push within CONFIRM_WINDOW_S (the same popup). E1 and
+  E2 pushes only point to E3. A row the Controller holds read-only (`Focus.readonly`), a number
+  included, only shows its reason.
 - D-016 (2026-10-16, all OFF by default): TOPS De-harsh (ON/off, a rebuild) + its freq and
   threshold, SUBS Loudness (ON/off, a rebuild) + its boost and reference, INPUT AUX IN 1/2
   (off / MIC / LINE, a rebuild) + its level. The switches are risky rows like Mono; the numbers
@@ -339,6 +339,7 @@ class SetupItem:
 A_RESET_LIVE = "reset_live"     # SETUP action items (`SetupItem.field`)
 A_UNDO_RESET = "undo_reset"
 A_LAPTOP = "laptop_access"      # the Friday tune's laptop over the K1000 Wi-Fi (docs/06 §11)
+A_RESYNC = "resync"             # D-023: the stream restarted in place, on the operator's command
 
 # SETUP (D-013): grouped by speaker floor, then the rest by what it serves. The ALIGN page keeps
 # what is set per venue (balance, the signed delay, the Lo-Cut frequency); SETUP holds what is set
@@ -389,6 +390,9 @@ SETUP_GROUPS: tuple[tuple[str, tuple[SetupItem, ...]], ...] = (
         SetupItem("Laptop access", A_LAPTOP, "action", confirm=True),
     )),
     ("BOX", (
+        # D-023: the delay back to where a start puts it, on the operator's command only (a
+        # gap of about 25 ms in the sound: two E3 pushes, the popup between them)
+        SetupItem("Resync delay", A_RESYNC, "action", confirm=True),
         SetupItem("Profile", "profile", "choice"),
         SetupItem("Audition (dev)", "dev_audition", "choice"),
         SetupItem("Knob test", "HWTEST", "page"),
@@ -615,6 +619,7 @@ SETUP_VALUE_KNOB = 2          # E3 (D-017): SETUP's value knob, its push the onl
 SETUP_ASK: dict[str, tuple[str, str, str]] = {
     A_RESET_LIVE: ("Reset live EQ?", "ALL 6 LIVE BANDS FLAT · UNDO 5 MIN", "reset"),
     A_LAPTOP: ("Open laptop access?", "GUI + SSH OVER THE K1000 WI-FI · 2 H", "open"),
+    A_RESYNC: ("Resync the delay?", "THE SOUND STOPS ABOUT 25 MS", "resync"),
 }
 
 # ------------------------------------------------------------------------------------------

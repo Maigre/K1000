@@ -67,7 +67,7 @@ from PIL import Image, ImageDraw, ImageFont
 from . import eqgraph as eg
 from .input_map import (A_LAPTOP, A_RESET_LIVE, A_UNDO_RESET, BAND_CYCLE, F_ALIGN_DELAY, F_AUX_MODE,
                         F_BALANCE, F_LOWCUT_FREQ, F_LOWCUT_ON, F_MASTER, F_SLOT, F_SPECTRUM_ON,
-                        HINT_LOCKED,
+                        HINT_LOCKED, A_RESYNC,
                         KNOB_CORNERS, KNOB_TAGS_DEFAULT, LIVE_SLOT_LABELS, LIVE_SLOT_SHORT,
                         LIVE_SLOTS, SETUP_ASK, SETUP_GROUPS, SETUP_ITEMS, Focus, knob_labels,
                         page_name, parse_knob_tags, setup_group_pos, setup_popup)
@@ -211,6 +211,9 @@ class ScreenStatus:
             the engine's alone, drawn as a floor "≥"), above the limit (orange), and the
             engine's dropout lines since it started (drawn only above 0, and the delay then as
             a floor "≥"; None = unknown).
+    latency_grown_ms / resync: D-023, how much the delay grew since the stream last started
+            (None = not shown: "7.9ms +1.6") and the resync ("running", "reading" or ""): SETUP
+            › BOX › Resync delay.
     The controller must set engine and device_present explicitly: the defaults are "unknown".
     """
     profile: str = ""
@@ -243,6 +246,8 @@ class ScreenStatus:
     latency_io: bool = True
     latency_over: bool = False
     dropouts: int | None = None
+    latency_grown_ms: float | None = None
+    resync: str = ""
 
 
 # ------------------------------------------------------------------------------------------
@@ -319,12 +324,20 @@ def engine_unknown(status: Any) -> bool:
     return e is not None and e.upper() == ENGINE_UNKNOWN.upper()
 
 
+def latency_growth(status: Any) -> str:
+    """D-023: "+1.6", how much the delay grew since the stream last started, or "" (none shown:
+    under latency.GROWTH_SHOWN_MS, which the controller applies, or not known)."""
+    g = _num(status, "latency_grown_ms", None)
+    return f"+{min(g, 999.9):.1f}" if g is not None and g > 0 else ""
+
+
 def latency_readout(status: Any) -> tuple[str, bool, str] | None:
     """The status bar's delay readout (D-018): (text, above the limit, dropouts text), e.g.
     ("20.3ms", True, "") or ("≥16.5ms", False, "3 DROP"); None = no reading. "≥", a floor: the
     engine's share alone (the profile does not know its interface's), or the engine logged a
     dropout (a backlog past the playback buffer is not in the figure, docs/16 §2.2). Dropouts
-    only when above 0."""
+    only when above 0. D-023: the growth since the stream last started follows the figure,
+    "7.9ms +1.6", when there is one to show."""
     ms = _num(status, "latency_ms", None)
     if ms is None or ms < 0:
         return None
@@ -332,7 +345,9 @@ def latency_readout(status: Any) -> tuple[str, bool, str] | None:
     n = _num(status, "dropouts", None)
     drops = f"{int(n)} DROP" if n is not None and n >= 1 else ""
     floor = _truth(_get(status, "latency_io", True)) is False or bool(drops)
-    return f"{'≥' if floor else ''}{min(ms, 9999.9):.1f}ms", over, drops
+    grown = latency_growth(status)
+    return (f"{'≥' if floor else ''}{min(ms, 9999.9):.1f}ms" + (f" {grown}" if grown else ""),
+            over, drops)
 
 
 def displayed_muted(state: Any, status: Any) -> bool:
@@ -1445,6 +1460,8 @@ def _setup_value(state: Any, item, status: Any = None, readonly: Any = None) -> 
             return f"UNDO {fmt_mmss(left)}" if left > 0 else "—"
         if item.field == A_LAPTOP:
             return _laptop_value(status)
+        if item.field == A_RESYNC:
+            return _resync_value(status)
         return "PUSH ×2" if getattr(item, "confirm", False) else "PUSH ▸"
     if item.field == F_SPECTRUM_ON and (_get(status, "spectrum_state", "") == "disabled"
                                         or item.field in (readonly or {})):
@@ -1479,6 +1496,20 @@ def _laptop_value(status: Any) -> str:
     return "PUSH ×2"
 
 
+def _resync_value(status: Any) -> str:
+    """SETUP > Resync delay (D-023): 'RESYNC…' while it runs, 'READING…' until the new stream's
+    delay is read (about 10 s), else the readout and its growth ('7.9 ms +1.6'), '—' without."""
+    state = _get(status, "resync", "")
+    if state == "running":
+        return "RESYNC…"
+    if state == "reading":
+        return "READING…"
+    lat = latency_readout(status)
+    if lat is None:
+        return "—"
+    return lat[0].replace("ms", " ms", 1)
+
+
 def _setup_unavailable(item, status: Any, readonly: Any = None) -> bool:
     """A row with nothing to do right now (Undo reset with no undo, Laptop access without its
     surface, a field the Controller holds read-only: Focus.readonly): its label is dimmed."""
@@ -1488,6 +1519,9 @@ def _setup_unavailable(item, status: Any, readonly: Any = None) -> bool:
         return not (_num(status, "undo_reset_s", 0.0) or 0.0) > 0
     if item.kind == "action" and item.field == A_LAPTOP:
         return _get(status, "laptop_state", "off") in ("off", "unavailable")
+    if item.kind == "action" and item.field == A_RESYNC:     # refused: nothing to restart
+        eng = engine_state(status)
+        return eng is None or eng.upper() != "RUNNING"
     return item.field == F_SPECTRUM_ON and _get(status, "spectrum_state", "") == "disabled"
 
 
@@ -2059,6 +2093,8 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
     aux_ro = "AUX: NO SPARE INPUT ON THIS DEVICE"
     ro = {"profile": "PROFILE PINNED IN k1000.yaml", "aux_mode": aux_ro, "aux_gain_db": aux_ro}
     ro_m4 = {"profile": "PROFILE PINNED IN k1000.yaml", "dev_audition": "AUDITION: DEV PROFILE ONLY"}
+    resync_i = _setup_index(A_RESYNC)
+    grown = with_(run, latency_ms=7.9, latency_grown_ms=1.6, knob_tags="off")   # D-023
     mono_pick = dict(pick="mono_subs", pick_value=not bool(s.mono_subs), pick_until=inf, readonly=ro)
     tops_later = State.from_dict({**s.to_dict(), "sub_delay_ms": 0.0, "top_delay_ms": 1.25})
     aligned = State.from_dict({**s.to_dict(), "sub_delay_ms": 0.0, "top_delay_ms": 0.0})
@@ -2197,6 +2233,10 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
         ("setup_laptop_confirm", "SETUP", s, dev,
          Focus(item=laptop_i, confirm=A_LAPTOP, confirm_until=inf, readonly=ro)),
         ("setup_laptop_open", "SETUP", s, dev_open, Focus(item=laptop_i - 1, readonly=ro)),
+        # D-023: the delay has grown 1.6 ms since the stream started; Resync delay, then its popup
+        ("setup_resync", "SETUP", s, grown, Focus(item=resync_i, readonly=ro_m4)),
+        ("setup_resync_confirm", "SETUP", s, grown,
+         Focus(item=resync_i, confirm=A_RESYNC, confirm_until=inf, readonly=ro_m4)),
         # D-016: the three switches are risky rows like Mono (a rebuild: MAY CLICK)
         ("setup_deharsh_pick", "SETUP", s, run,
          Focus(item=dh_i, pick="deharsh_on", pick_value=True, pick_until=inf, readonly=ro_m4)),
