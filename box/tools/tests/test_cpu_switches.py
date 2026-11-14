@@ -404,8 +404,8 @@ def test_check_in_force_after_both_apply(pi, tmp_path):
                  "[x] K1000 units on core 1", "[x] no user-space thread allowed on core 0",
                  "[x] new interrupts on core 1 (default_smp_affinity 2)",
                  "[x] kernel workqueues off core 0 (cores 1-3)",
-                 "[x] every interrupt that can move is off core 0",
-                 "stays on core 0: 11 arch_timer · 37 xhci_hcd (USB host)",
+                 "[x] the interrupts it moved are off core 0 (3)",
+                 "stays on core 0 (the kernel cannot move it): 11 arch_timer · 37 xhci_hcd (USB host)",
                  "[x] ksoftirqd/0 at SCHED_FIFO 51 (now SCHED_FIFO 51)",
                  "usb-rt, real-time priority for the deferred USB work: chosen on (/etc/k1000/usb-rt), in force"):
         assert line in out, line
@@ -425,7 +425,19 @@ def test_check_names_what_breaks_a_switch(pi):
     assert rc == 1
     assert "usb-cpu0, core 0 left to the USB handling: chosen on (/etc/k1000/usb-cpu0), PARTLY in force: NOT AS CHOSEN" in out
     assert "[ ] no user-space thread allowed on core 0 (1: stress(3000))" in out
-    assert "[ ] every interrupt that can move is off core 0 (still there: 41 eth0)" in out
+    assert "[ ] the interrupts it moved are off core 0 (3) (back on it: 41 eth0)" in out
+
+
+def test_check_an_unmovable_interrupt_set_up_after_the_switch_is_not_a_failure(pi):
+    """k1000 restarted: the knob board's GPIO lines are set up again, on a chip that cannot move
+    them. The switch is still in force; the check names them."""
+    run = pi.root / "run/k1000-usb-cpu0"
+    run.mkdir(parents=True)
+    kc.apply_usb_cpu0(pi.box(), str(run))
+    pi.irq(60, ["k1000-knobs"], cpus="0-3", refuse=True)
+    out, rc = _check_with(pi, usb_cpu0="on")
+    assert rc == 0 and "chosen on (/etc/k1000/usb-cpu0), in force" in out, out
+    assert "also on core 0 (set up since; the kernel may refuse to move it): 60 k1000-knobs" in out
 
 
 def test_check_reads_the_choice_files_like_install_sh(pi):

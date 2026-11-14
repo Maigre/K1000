@@ -377,7 +377,9 @@ switches so that the bench can turn each on and off and compare. Each:
   `--cpu-on` brings back the processor settings alone;
 - applies at once through its own root unit (`k1000-usb-cpu0.service`, `k1000-usb-rt.service`, from
   `box/cpu/`, enabled: so at every boot too). A later install.sh run applies it again only when
-  its files changed, or when its unit is not active (a failed start is retried). A unit that
+  its files changed, or when its unit is not active (a failed start is retried); a new
+  `tools/k1000-cpu.py` alone applies at the next boot, or at once with
+  `sudo systemctl restart k1000-usb-cpu0` (or `k1000-usb-rt`). A unit that
   fails is a warning (`WARNING: … NOT applied`); the rest of the install goes on;
 - comes off at once: install.sh stops its unit while the unit file is still there, the unit's
   `ExecStopPost` undoes what it applied, then the files go. The same `ExecStopPost` runs after a
@@ -467,8 +469,10 @@ xHCI's thread when there is one.
 For the processor settings it prints the governor, systemd's cores and each K1000 unit's cores.
 For each switch, what is chosen and whether it is in force, part by part (`[x]` or `[ ]`):
 usb-cpu0's report, systemd's and the K1000 units' cores, the user-space threads still allowed on
-core 0, the masks for new interrupts and workqueues, the interrupts still on core 0 and why, the
-interrupt threads' cores; usb-rt's `ksoftirqd/0` and xHCI threads (scheduling class, priority),
+core 0, the masks for new interrupts and workqueues, whether the interrupts it moved are still
+off core 0, the ones that stay there and why (an interrupt set up after the unit ran, on a chip
+that cannot move it, is named but does not count against the switch), the interrupt threads'
+cores; usb-rt's `ksoftirqd/0` and xHCI threads (scheduling class, priority),
 every real-time thread allowed on core 0, the throttle. Last, the interrupts core 0 took in 2 s,
 by kind: with usb-cpu0 on, only the xHCI's, the timer's and the inter-processor ones should be
 left. Exit 0 when each switch is as chosen, 1 when one is not (`NOT AS CHOSEN`).

@@ -476,9 +476,12 @@ def check(box: Box, sample: float = 2.0, sleep=time.sleep) -> tuple[list[str], i
     except ValueError:
         pass
     excused = {r[0] for r in (report or {}).get("kept", []) + (report or {}).get("refused", [])}
-    all_irqs = irqs(box)
-    on0 = [i for i in all_irqs if i.names and USB_CPU in i.cpus]
-    stray = [i for i in on0 if i.n not in excused and not _usb_irq(i)]
+    moved = {r[0] for r in (report or {}).get("moved", [])}
+    on0 = [i for i in irqs(box) if i.names and USB_CPU in i.cpus]
+    back0 = [i for i in on0 if i.n in moved]               # moved by the unit, on core 0 again
+    # on core 0 and in no report: set up after the unit ran, where the kernel cannot move it (the
+    # default mask moves the others), or the switch is off
+    other0 = [i for i in on0 if i.n not in excused | moved and not _usb_irq(i)]
     k1000_units = {u: c for u, c in units.items() if u != ENGINE_UNIT}
     threads0 = [t for t in user if USB_CPU in t.cpus]
     conds = [
@@ -494,8 +497,9 @@ def check(box: Box, sample: float = 2.0, sleep=time.sleep) -> tuple[list[str], i
     if box.p(WQ_MASK).exists():
         wq = parse_mask(box.read(WQ_MASK))
         conds.append((f"kernel workqueues off core {USB_CPU} (cores {fmt_cpus(wq)})", bool(wq) and USB_CPU not in wq))
-    conds.append((f"every interrupt that can move is off core {USB_CPU}"
-                   + (f" (still there: {_short([i.label() for i in stray], 8)})" if stray else ""), not stray))
+    conds.append((f"the interrupts it moved are off core {USB_CPU}" + (f" ({len(moved)})" if report else "")
+                   + (f" (back on it: {_short([i.label() for i in back0], 8)})" if back0 else ""),
+                   report is not None and not back0))
     st = _state(conds)
     want = chosen["usb-cpu0"]
     ok = st == ("in force" if want else "not in force")
@@ -505,7 +509,11 @@ def check(box: Box, sample: float = 2.0, sleep=time.sleep) -> tuple[list[str], i
     out += [f"  [{'x' if c else ' '}] {label}" for label, c in conds]
     stays = [i.label() + (" (USB host)" if _usb_irq(i) else "") for i in on0 if i.n in excused or _usb_irq(i)]
     if stays:
-        out.append(f"  stays on core {USB_CPU}: " + _short(stays))
+        out.append(f"  stays on core {USB_CPU} (the kernel cannot move it): " + _short(stays))
+    if other0:
+        out.append(f"  {'also ' if stays else ''}on core {USB_CPU}" + (" (set up since; the kernel may refuse to move it)"
+                                                                     if report else "") + ": "
+                   + _short([i.label() for i in other0], 8))
     ithreads = [f"{t.comm} {fmt_cpus(t.cpus)}" for t in ts if t.kernel and t.comm.startswith("irq/")]
     if ithreads:
         out.append("  interrupt threads, cores: " + _short(ithreads))
