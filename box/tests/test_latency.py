@@ -222,6 +222,91 @@ def test_journal_lines_at_connect_on_a_move_and_every_ten_minutes(caplog: Any) -
     assert len(lines()) == 5
 
 
+# ======================================================================= the growth (D-023)
+def test_the_growth_counts_from_the_streams_first_reading_and_shows_from_half_a_ms(
+        caplog: Any) -> None:
+    """D-023: "7.9 ms +1.6". The base is the first reading of the stream K1000 started; under
+    GROWTH_SHOWN_MS nothing is shown, nor a delay that went down; the journal line says it."""
+    clock = Clock()
+    w = LatencyWatch(10.0, clock=clock)
+    caplog.set_level(logging.INFO, logger="k1000.latency")
+    w.note_config(CFG)
+    w.restarted(None)                                           # a fresh engine: nothing stale
+    assert w.settling and w.note("Running", 0, 3.8) is None     # no average yet
+    r = w.note("Running", 536, 3.8)
+    assert not w.settling and w.base_ms == 20.3 and r is not None
+    assert (r.grown_ms, r.grown) == (0.0, None)
+    clock.t += 10.0
+    r = w.note("Running", 536 + 22, 3.8)                         # +0.46 ms: within the band
+    assert r is not None and r.ms == 20.8 and r.grown_ms == 0.5 and r.grown == 0.5
+    r = w.note("Running", 536 + 20, 3.8)
+    assert r is not None and r.grown_ms == 0.4 and r.grown is None
+    r = w.note("Running", 536 + 77, 3.8)                         # +1.6 ms
+    assert r is not None and (r.ms, r.grown) == (21.9, 1.6)
+    r = w.note("Running", 500, 3.8)                              # went down: not shown
+    assert r is not None and r.grown_ms == -0.7 and r.grown is None
+    clock.t += lat.LOG_EVERY_S
+    w.note("Running", 536 + 77, 3.8)
+    lines = [m.getMessage() for m in caplog.records if m.name == "k1000.latency"]
+    assert lines[-1] == ("latency: buffer=613 frames, about 21.9 ms in to out +1.6 since the "
+                         "stream started (limit 10.0)")
+    assert lines[0] == "latency: buffer=536 frames, about 20.3 ms in to out (limit 10.0)"
+    w.lost()                                                    # a link blip: the stream goes on
+    w.note_config(CFG)
+    r = w.note("Running", 536 + 77, 3.8)
+    assert r is not None and r.grown == 1.6 and w.base_ms == 20.3
+
+
+def test_after_a_restart_the_old_streams_level_is_not_read_as_the_new_ones() -> None:
+    """The engine keeps reporting the old stream's 10 s average until the new stream's first one:
+    no reading meanwhile (RESTART_SETTLE_S at most), then the growth starts again from 0."""
+    clock = Clock()
+    w = LatencyWatch(10.0, clock=clock)
+    w.note_config(CFG)
+    w.note("Running", 536, 3.8)
+    r = w.note("Running", 613, 3.8)
+    assert r is not None and r.grown == 1.6
+    w.restarted(613)
+    assert w.settling and w.reading is None
+    for _ in range(11):                                         # the engine still says 613
+        clock.t += 1.0
+        assert w.note("Running", 613, 3.8) is None and w.settling
+    r = w.note("Running", 536, 3.8)                             # the new stream's first average
+    assert r is not None and not w.settling and w.base_ms == 20.3 and r.grown_ms == 0.0
+    w.restarted(536)                                            # one that lands exactly where it was
+    clock.t += lat.RESTART_SETTLE_S - 0.5
+    assert w.note("Running", 536, 3.8) is None
+    clock.t += 0.5
+    r = w.note("Running", 536, 3.8)                             # bounded: taken after the window
+    assert r is not None and r.grown_ms == 0.0 and not w.settling
+
+
+def test_the_base_waits_for_the_transit_figure_when_it_counts() -> None:
+    """With the transit counted, the base is the first reading with its figure in: a figure that
+    comes three bursts after the level must not read as growth."""
+    w = LatencyWatch(10.0, clock=Clock())
+    w.note_config(M4_64)
+    w.restarted(None)
+    r = w.note("Running", 128, 2.3, usb_ref_ms=REF_64)          # the level in, the transit not yet
+    assert r is not None and r.usb is None and w.base_ms is None and r.grown is None
+    for _ in range(3):
+        w.note_usb(burst(SHIFT))
+    r = w.note("Running", 128, 2.3, usb_ref_ms=REF_64)
+    assert r is not None and r.usb == 150.0 and r.usb_ms > 1.5
+    assert w.base_ms == r.ms and r.grown_ms == 0.0
+
+
+def test_another_chunk_or_rate_starts_the_growth_over() -> None:
+    w = LatencyWatch(10.0, clock=Clock())
+    w.note_config(CFG)
+    w.note("Running", 536, 3.8)
+    assert w.base_ms == 20.3
+    w.note_config({"devices": {"samplerate": 48000, "chunksize": 128, "target_level": 256}})
+    assert w.base_ms is None and not w.settling
+    r = w.note("Running", 300, 3.8)
+    assert r is not None and w.base_ms == r.ms and r.grown_ms == 0.0
+
+
 # ======================================================================= the USB transit
 # The kernel's files, read on the box with the engine playing (docs/17 §9): fill = 256 - 75 = 181
 # frames (the engine's level that night), transit = 241 - 181 = 60.
@@ -520,7 +605,7 @@ def test_a_shift_in_the_usb_stream_shows_within_three_bursts(caplog: Any) -> Non
     assert w.reading is not None and w.reading.usb == 150.0
     assert w.reading.usb_ms == pytest.approx(150 / 48 - REF_64)              # 2.0 ms
     assert lines()[-1] == ("latency: buffer=103 frames, usb=150.0 frames, about 8.1 ms in to out "
-                           "(limit 10.0)")
+                           "+2.0 since the stream started (limit 10.0)")       # D-023
     assert [poll(SHIFT).ms for _ in range(5)] == [8.1] * 5                  # its own spread
     assert len(lines()) == 2
     assert [poll(JIT).ms for _ in range(3)] == [8.1, 8.1, 6.1]              # and back
@@ -563,11 +648,12 @@ def test_without_its_reference_the_readout_is_the_engine_level_alone(caplog: Any
     for _ in range(3):
         w.note_usb(burst(144))
     assert w.usb == 144
-    before = Reading(103, 64, 48000.0, io_ms=io)
+    before = Reading(103, 64, 48000.0, io_ms=io, grown_ms=0.0)          # its own base (D-023)
     assert w.note("Running", 103, io) == before                          # no reference
     assert w.note("Running", 103, io, None) == before
     floor = w.note("Running", 103, None, 1.0)                            # the engine's share alone
-    assert floor == Reading(103, 64, 48000.0, io_ms=None) and floor.line().count("usb") == 0
+    assert dataclasses.replace(floor, grown_ms=None) == Reading(103, 64, 48000.0, io_ms=None)
+    assert floor.line().count("usb") == 0
     w.note_usb(None)                                                     # the stream stopped
     assert w.usb is None and w.note("Running", 103, io, 1.0) == before
     lines = [x.getMessage() for x in caplog.records if x.name == "k1000.latency"]

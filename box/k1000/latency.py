@@ -80,10 +80,26 @@ Why it is shaped like this:
   today's settings: a backlog past that sits in the engine's queues, which GetBufferLevel does
   not see (docs/16 §2.2, read in the engine source, not measured). The screen and the phone mark
   it "≥" / "at least" once the count is above 0.
+- **How much it has grown since the stream last started** (D-023: "7.9 ms +1.6"), so that the
+  operator knows when a resync is worth its gap. The base is the first whole reading after K1000
+  (re)started the stream (`restarted`: an engine start, a resync, a device change K1000 made):
+  the first one with the transit figure in when the transit counts. When K1000 meets a stream it
+  did not start (a k1000 restart while the engine plays), the base is its first whole reading
+  (the controller's journal says so): a growth from before that is not seen. A link blip keeps
+  the base (the stream goes on); an underrun's recovery keeps it too (the growth then says what a
+  resync would take back). Shown from GROWTH_SHOWN_MS up, never below: the transit part moves in
+  USB_STEP_MS bands, the level's 10 s average by a few frames, and the smallest step seen on the
+  box was 1.0 ms (docs/17 §10). A delay that went down shows no growth.
+- **After a restart the engine still reports the old stream's level** for up to its adjust period
+  (10 s): the playback level lives outside a run (CamillaDSP lib.rs `PlaybackStatus`, which a new
+  run's playback thread updates only at its first average, alsa_backend/device.rs; next5 0930f9b,
+  read in the source, not measured). So after `restarted` no reading is given while the engine
+  still reports the level it had at the restart, for at most RESTART_SETTLE_S (`settling`).
 """
 from __future__ import annotations
 
 import collections
+import dataclasses
 import logging
 import math
 import os
@@ -135,6 +151,11 @@ USB_POOL = 5 * USB_BURST
 USB_NEED = 3 * USB_BURST
 USB_STEP_MS = 0.4
 USB_KEEP_MS = 0.6
+# D-023: the growth since the stream last started is shown from this up (see above), and after a
+# restart the old stream's level is not taken for the new one for at most this long: the engine's
+# adjust period (10 s: K1000 leaves adjust_interval_s unset) and two polls.
+GROWTH_SHOWN_MS = 0.5
+RESTART_SETTLE_S = 12.0
 _gaps = random.Random()          # each gap is 0.5 to 1.5 x USB_GAP_S (see read_transits)
 
 
@@ -299,6 +320,7 @@ class Reading:
     limit_ms: float = LIMIT_MS
     usb: float | None = None     # frames in USB transit (`transit_figure`), when counted
     usb_ms: float = 0.0          # what they add beyond the profile's io_transit_ms (`note`)
+    grown_ms: float | None = None  # `ms` minus the base (the stream's start), None = no base
 
     @property
     def engine_ms(self) -> float:
@@ -318,20 +340,27 @@ class Reading:
     def over(self) -> bool:
         return self.ms > self.limit_ms
 
+    @property
+    def grown(self) -> float | None:
+        """The growth to show (D-023): from GROWTH_SHOWN_MS up, else None."""
+        g = self.grown_ms
+        return g if g is not None and g >= GROWTH_SHOWN_MS else None
+
     def line(self) -> str:
         """The journal line."""
+        grown = "" if self.grown is None else f" +{self.grown:.1f} since the stream started"
         if self.io_ms is None:
-            return (f"latency: buffer={self.level} frames, at least {self.ms:.1f} ms in to out "
-                    f"(engine only, the interface not known; limit {self.limit_ms:.1f})")
+            return (f"latency: buffer={self.level} frames, at least {self.ms:.1f} ms in to out"
+                    f"{grown} (engine only, the interface not known; limit {self.limit_ms:.1f})")
         usb = "" if self.usb is None else f"usb={self.usb:.1f} frames, "
-        return (f"latency: buffer={self.level} frames, {usb}about {self.ms:.1f} ms in to out "
-                f"(limit {self.limit_ms:.1f})")
+        return (f"latency: buffer={self.level} frames, {usb}about {self.ms:.1f} ms in to out"
+                f"{grown} (limit {self.limit_ms:.1f})")
 
 
 class LatencyWatch:
     """The last reading, and when the journal gets a line. `note_config` with every running
     config read, `note` with every poll, `note_usb` with every burst of reads of the USB
-    transit, `lost` when the engine link goes."""
+    transit, `lost` when the engine link goes, `restarted` when K1000 (re)started the stream."""
 
     def __init__(self, limit_ms: float = LIMIT_MS,
                  clock: Callable[[], float] = time.monotonic) -> None:
@@ -345,18 +374,42 @@ class LatencyWatch:
         self._usb_stream: str | None = None      # the start (trigger_time) of the reads' stream
         self.usb: float | None = None            # frames in USB transit (None: none)
         self._usb_ms = 0.0                       # what the readout counts for them (`note`)
+        # D-023: the readout when the stream last started (None: not read yet), and after a
+        # restart (`restarted`) the level the engine still reports for the old stream, and since
+        # when.
+        self.base_ms: float | None = None
+        self._hold: tuple[Any, float] | None = None
 
     def note_config(self, cfg: Any) -> None:
         d = run_devices(cfg)
         if d is not None:
+            if self._devices is not None and d != self._devices:
+                # Another chunk or rate: a base read at the old ones means nothing now.
+                self.base_ms = None
             self._devices = d
 
     def lost(self) -> None:
-        """The engine link is gone: no reading until the next one, which gets a journal line."""
+        """The engine link is gone: no reading until the next one, which gets a journal line.
+        The base stays: a link blip does not restart the stream (a fresh engine does, and its
+        connect sync says so with `restarted`)."""
         self._devices = None
         self.reading = None
         self._logged = None
         self.note_usb(None)
+
+    def restarted(self, stale_level: Any = None) -> None:
+        """K1000 (re)started the stream (an engine start, a resync, a device change it made): the
+        growth counts from the new stream's first whole reading. Until the engine reports a level
+        other than `stale_level` (what it still says for the old stream; None: nothing to wait
+        for), at most RESTART_SETTLE_S, no reading is given (`settling`)."""
+        self.base_ms = None
+        self._hold = (stale_level, self._clock())
+        self.reading = None
+
+    @property
+    def settling(self) -> bool:
+        """After `restarted`, until the new stream's first reading."""
+        return self._hold is not None
 
     def note_usb(self, burst: Burst | None) -> None:
         """One burst of reads of the USB transit (`read_transits`). The figure is
@@ -415,7 +468,10 @@ class LatencyWatch:
         What it counts is one band wide: it moves when the figure's own shift from the reference
         is more than USB_STEP_MS away from it, to that shift, or to 0 when that shift is itself
         within USB_STEP_MS of the reference. So it is never more than USB_STEP_MS from the
-        figure's shift, and it is 0 at rest."""
+        figure's shift, and it is 0 at rest.
+        D-023: after `restarted`, no reading while the engine still reports the old stream's
+        level (`settling`); then the first whole reading (the transit figure in, when it counts)
+        is the base, and every reading carries its growth from it (`Reading.grown_ms`)."""
         r = None
         if (engine_state == "Running" and self._devices is not None
                 and isinstance(level, (int, float)) and not isinstance(level, bool)
@@ -430,6 +486,18 @@ class LatencyWatch:
                 self._usb_ms = 0.0
             r = Reading(int(round(level)), chunk, rate, io_ms=io_ms, limit_ms=self.limit_ms,
                         usb=usb, usb_ms=self._usb_ms)
+            if self._hold is not None:
+                stale, since = self._hold
+                if r.level == stale and self._clock() - since < RESTART_SETTLE_S:
+                    r = None                    # the old stream's level, still reported
+                else:
+                    self._hold = None
+        if r is not None:
+            whole = usb_ref_ms is None or io_ms is None or r.usb is not None
+            if self.base_ms is None and whole:
+                self.base_ms = r.ms
+            if self.base_ms is not None:
+                r = dataclasses.replace(r, grown_ms=round(r.ms - self.base_ms, 1))
         self.reading = r
         if r is not None and self._due(r):
             log.info("%s", r.line())
