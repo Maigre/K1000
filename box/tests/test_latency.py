@@ -1284,8 +1284,17 @@ def test_protocol_2_carries_the_readout_and_protocol_1_does_not() -> None:
                     latency_limit_ms=10.0, buffer_level=536, dropouts=0)
     snap = ("SHOW", st.State(), status, Focus())
     v2 = PhoneBridge.state_message2(snap, phone_on=True, phones=1)
-    assert v2["latency"] == {"ms": 20.3, "io": True, "over": True, "limit": 10.0, "buf": 536, "drops": 0}
+    assert v2["latency"] == {"ms": 20.3, "io": True, "over": True, "limit": 10.0, "buf": 536, "drops": 0,
+                             "grown": None, "resync": ""}
     assert "latency" not in PhoneBridge.state_message(snap, phone_on=True, phones=1)
-    odd = Status(latency_ms=float("nan"), latency_io=False, buffer_level=True, dropouts=None)  # type: ignore[arg-type]
+    odd = Status(latency_ms=float("nan"), latency_io=False, buffer_level=True, dropouts=None,  # type: ignore[arg-type]
+                 latency_grown_ms=float("inf"), resync="odd")
     assert PhoneBridge.state_message2(("SHOW", st.State(), odd, Focus()), phone_on=True, phones=1)[
-        "latency"] == {"ms": None, "io": False, "over": False, "limit": 10.0, "buf": None, "drops": None}
+        "latency"] == {"ms": None, "io": False, "over": False, "limit": 10.0, "buf": None, "drops": None,
+                       "grown": None, "resync": ""}
+    # D-023: the growth since the stream last started, and the resync
+    grown = Status(engine="Running", latency_ms=7.9, latency_grown_ms=1.6, resync="reading")
+    assert PhoneBridge.state_message2(("SHOW", st.State(), grown, Focus()), phone_on=True, phones=1)[
+        "latency"]["grown"] == 1.6
+    assert PhoneBridge.state_message2(("SHOW", st.State(), grown, Focus()), phone_on=True, phones=1)[
+        "latency"]["resync"] == "reading"
