@@ -2999,6 +2999,7 @@ class Controller:
         self._applied = applied
         self._mute_want = None   # the boot plan honours state.muted itself
         await self._warm_spectrum()
+        await self._restart_at_start(epoch)    # D-023: every start at the same delay
         await self._boot_ramp(target, epoch)
 
     async def _warm_spectrum(self) -> None:

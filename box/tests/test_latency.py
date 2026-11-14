@@ -21,7 +21,7 @@ import pytest
 from k1000 import latency as lat
 from k1000 import state as st
 from k1000.cdsp import CdspError
-from k1000.control import Controller, Paths, Status
+from k1000.control import MARKER_DB, MARKER_FADER, Controller, Paths, Status
 from k1000.latency import (DropoutCounter, LatencyWatch, Reading, io_share_ms, latency_limit_ms,
                            read_transit, run_devices, scan, stream_dir)
 from k1000.profiles import load_profile, load_settings
@@ -957,6 +957,11 @@ def make(tmp_path: Path, *, io: float | None = 2.3, transit: dict[int, float] | 
     profile = dataclasses.replace(DEV, io_latency_ms=io, io_transit_ms=transit,
                                   samplerate=samplerate)
     client = LevelClient(dc.generate(profile, s))
+    # An engine K1000 already brought in: no start restart (D-023), whose old-stream level this
+    # fake, which always answers `level`, would hold for RESTART_SETTLE_S.
+    lv = dc.fader_levels(s)
+    client.faders[0] = {"volume": lv[0], "mute": s.muted}
+    client.faders[MARKER_FADER]["volume"] = MARKER_DB
     ctl = Controller(client, profile, s, Paths(tmp_path / "state.json", tmp_path / "active.yml",
                                                engine_log), settings=settings,
                      sleep=fast_sleep, poll_s=3600, meter_s=3600, persist_debounce_s=0.05,

@@ -1239,6 +1239,103 @@ def test_nothing_restarts_the_stream_by_itself(tmp_path: Path) -> None:
     run(body())
 
 
+@pytest.mark.parametrize("engine", ENGINES)
+def test_every_engine_start_restarts_the_stream_after_the_warm_up_and_before_the_ramp(
+        tmp_path: Path, engine: str, caplog: pytest.LogCaptureFixture) -> None:
+    """D-023 point 1, both engines: the warm-up's request and its allocation (the stall), the
+    stall's time, then the restart with Main still muted, then the ramp. The spectrum buffers
+    outlive the restart (they live outside a run, like the faders): the spectrum task's polls
+    afterwards allocate nothing. The same again after an engine restart."""
+    async def body() -> None:
+        ctl, cl, an, links = make_warm(tmp_path, engine)
+        task, link = await boot_as_main(ctl, cl, an)
+        await until(lambda: task.polls >= 2, what="spectrum polls")
+        for start in range(2):
+            log = cl.log
+            rs = log.index(("set", RP, ctl_mod.RESTART_MARKS[start]))
+            first = next(i for i, e in enumerate(log) if e[0] == "spectrum" and e[1] == "warmup")
+            alloc = max(i for i, e in enumerate(log) if e[0] == "alloc")
+            unmute = log.index(("mute", 0, False))
+            assert first <= alloc < rs < unmute
+            assert ("mute", 0, False) not in log[:rs] and cl.faders[0]["volume"] == -6.0
+            waited = sum(e[1] for e in log[first:rs] if e[0] == "sleep")
+            assert waited >= ctl_mod.RESTART_AFTER_WARMUP_S             # the stall has passed
+            assert not any(e[0] == "alloc" for e in log[rs:])
+            assert asked(log[unmute:], "task") >= 1
+            assert cl.faders[0] == {"volume": -6.0, "mute": False}
+            if start == 0:
+                ctl.save_now()
+                active = yaml.safe_load((tmp_path / "active.yml").read_text())
+                assert active["devices"][ctl_mod.RESTART_KEY] == 1.0     # what runs
+                an.restart()
+                cl.log.clear()
+                await cl.restart(active)        # systemd starts it again, from that file
+                await until(lambda: ctl.engine_ready and not ctl.ramping
+                            and cl.faders[0] == {"volume": -6.0, "mute": False}, what="ramped in")
+                await until(lambda: asked(cl.log, "task") >= 1, what="the task polls again")
+        await task.stop()
+        await ctl.stop()
+
+    with caplog.at_level(logging.INFO, logger="k1000.control"):
+        run(body())
+    said = [r.getMessage() for r in caplog.records if r.getMessage().startswith("stream restart (start)")]
+    assert len(said) == 2 and all(s.startswith("stream restart (start): done") for s in said)
+
+
+@pytest.mark.parametrize("fault", ["not running", "timed out"])
+def test_a_start_restart_that_fails_never_holds_the_ramp(
+        tmp_path: Path, fault: str, caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """An engine that does not run within RESTART_START_WAIT_S gets no restart; one that does
+    not run again after it times out. A warning, and the ramp goes on: it waits for the engine
+    as it always has, Main muted, and comes in once audio flows."""
+    monkeypatch.setattr(ctl_mod, "RESTART_START_WAIT_S", 0.05)
+    monkeypatch.setattr(ctl_mod, "RESTART_RUN_S", 0.05)
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-6.0))
+        if fault == "not running":
+            cl.engine_state = "Stalled"
+        else:
+            async def stick(entry: tuple[Any, ...]) -> None:
+                if entry[:2] == ("set", RP):
+                    cl.stuck = True
+            cl.on_write = stick
+        await ctl.start()
+        await until(lambda: any(r.getMessage().startswith("stream restart (start)")
+                                for r in caplog.records), what="the warning")
+        await asyncio.sleep(0.05)
+        assert ("mute", 0, False) not in cl.log and ctl.ramping
+        cl.engine_state, cl.stuck = "Running", False
+        await until(lambda: ctl.engine_ready and not ctl.ramping
+                    and cl.faders[0] == {"volume": -6.0, "mute": False}, what="ramped in")
+        assert restarts(cl.log) == ([] if fault == "not running" else [1.0])
+        await ctl.stop()
+
+    with caplog.at_level(logging.INFO, logger="k1000.control"):
+        run(body())
+    said = [r for r in caplog.records if r.getMessage().startswith("stream restart (start)")]
+    assert len(said) == 1 and said[0].levelno == logging.WARNING
+    assert ("is not running after" if fault == "not running" else "timed out") in said[0].getMessage()
+
+
+def test_no_restart_on_an_engine_already_playing(tmp_path: Path) -> None:
+    """The watchdog case: k1000 restarts while the engine plays. Nothing is restarted."""
+    async def body() -> None:
+        for resume in (False, True):
+            st = State(master_db=-6.0)
+            ctl, cl = make(tmp_path / str(resume), st, playing=True)
+            if resume:            # killed inside its ramp: Main's bit left on the marker
+                cl.faders[MARKER_FADER]["volume"] = marker_db({0})
+                cl.faders[0] = {"volume": -20.0, "mute": False}
+            await boot(ctl)
+            assert restarts(cl.log) == [] and cl.streams == 0
+            assert cl.faders[0] == {"volume": -6.0, "mute": False}
+            await ctl.stop()
+
+    run(body())
+
+
 def test_unmute_pressed_while_link_down_is_dropped_but_mute_is_kept(tmp_path: Path) -> None:
     async def body() -> None:
         # engine playing but muted by the operator; the link blips; unmute pressed meanwhile
