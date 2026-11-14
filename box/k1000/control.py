@@ -70,6 +70,7 @@ import dataclasses
 import json
 import logging
 import math
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -361,6 +362,23 @@ def restart_mark(value: Any) -> float | None:
         if dc._close(value, m):
             return m
     return None
+
+
+_MARK_LINE = re.compile(rf"^\s+{RESTART_KEY}:\s*([0-9.eE+-]+)\s*$", re.M)
+
+
+def _mark_on_disk(path: Path) -> float | None:
+    """K1000's restart value in the active.yml a previous run wrote (`dspconfig.to_yaml`'s one
+    line under `devices:`), None when there is none or the file cannot be read. A line search,
+    not a YAML parse: it runs at every start, before the engine's first sync."""
+    try:
+        m = _MARK_LINE.search(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    try:
+        return restart_mark(float(m.group(1))) if m else None
+    except ValueError:
+        return None
 
 
 def marker_db(guards: Iterable[int] = ()) -> float:
@@ -1050,7 +1068,9 @@ class Controller:
         self._engine_samplerate: float | None = None   # the running config's (D-022)
         # D-023: K1000's value of devices.rate_measure_interval_s (RESTART_MARKS; None = left
         # unset), written by each stream restart, adopted at connect (`_adopt_stream_mark`).
-        self._stream_mark: float | None = None
+        # Taken from active.yml at start, so that k1000's first save writes the file the engine
+        # booted from unchanged (no active.yml.prev at every start).
+        self._stream_mark: float | None = _mark_on_disk(paths.active_config)
         self._restarting = False                                 # a restart under way (any)
         self._resync_task: asyncio.Task[Restart] | None = None    # an operator's resync running
         self._restart_after: tuple[str, str] | None = None       # (who, delay before): its 2nd line

@@ -1046,6 +1046,30 @@ def test_k1000s_restart_value_is_adopted_at_connect_and_anyone_elses_is_a_drift(
     run(body())
 
 
+def test_a_k1000_restart_keeps_the_restart_value_active_yml_holds(tmp_path: Path) -> None:
+    """k1000 starts again on the active.yml a previous run wrote after a restart: it takes the
+    value from there, so its first save leaves the file the engine booted from as it is (no
+    active.yml.prev at every start), and the engine started from it is K1000's."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-6.0), playing=True)
+        await boot(ctl)
+        assert (await ctl.request_resync("box")).done
+        await ctl.stop()
+        text = (tmp_path / "active.yml").read_text()
+        assert f"  {ctl_mod.RESTART_KEY}: 1.0\n" in text
+        again = Controller(cl, DEV, State(master_db=-6.0), Paths(tmp_path / "state.json",
+                                                                 tmp_path / "active.yml"))
+        assert again._stream_mark == 1.0
+        assert again.save_now()
+        assert (tmp_path / "active.yml").read_text() == text
+        assert not (tmp_path / "active.yml.prev").exists()
+        (tmp_path / "active.yml").write_text(text.replace(": 1.0\n", ": 2.5\n"))
+        assert ctl_mod._mark_on_disk(tmp_path / "active.yml") is None       # not K1000's
+        assert ctl_mod._mark_on_disk(tmp_path / "nowhere.yml") is None
+
+    run(body())
+
+
 @pytest.mark.parametrize("fault", ["not running", "refused", "stuck", "link lost", "not synced"])
 def test_a_refused_or_timed_out_resync_says_so_on_the_box_and_in_the_journal(
         tmp_path: Path, fault: str, caplog: pytest.LogCaptureFixture,
