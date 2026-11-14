@@ -258,7 +258,7 @@ def test_v2_hello_carries_the_schema(tmp_path: Path) -> None:
             assert h["order"] == [4, 0, 1, 2, 3, 5] and h["bells"] == [0, 1, 2, 3]
             assert h["kind"][4:] == ["low_shelf", "high_shelf"]
             assert h["nudge"] == {k: list(v) for k, v in NUDGE_CAPS_V2.items()}
-            assert h["acts"] == ["reset_live", "undo_reset", "laptop_open", "laptop_close"]
+            assert h["acts"] == ["reset_live", "undo_reset", "laptop_open", "laptop_close", "resync"]
             assert h["unlock_s"] == input_map.UNLOCK_S == 30.0
             assert h["notch"]["q"] == pytest.approx(NOTCH_Q, abs=1e-3)
             assert h["limits"]["max_phones"] == 4 and h["limits"]["master_up_db_per_s"] == 6.0
@@ -334,6 +334,9 @@ def test_setup_schema_is_setup_groups() -> None:
     assert rows["dev_audition"]["rebuild"] is True
     assert rows["reset_live"]["confirm"] is True and rows["reset_live"]["act"] == ["reset_live"]
     assert rows["laptop_access"]["act"] == ["laptop_open", "laptop_close"]
+    # D-023: the phone's resync is on its STATUS sheet, beside the delay, not in SETUP
+    assert rows["resync"]["act"] == ["resync"] and rows["resync"]["confirm"] is True
+    assert (rows["resync"]["phone"], rows["resync"]["why"]) == ("hidden", "ON THE STATUS SHEET")
     assert rows["PHONE"]["phone"] == "readonly" and rows["HWTEST"]["phone"] == "hidden"
     assert rows["out_trim_db.2"]["field"] == "out_trim_db" and rows["out_trim_db.2"]["phone"] == "edit"
     assert all(r["phone"] == "edit" for f, r in rows.items() if r["kind"] in ("bool", "choice"))
@@ -788,6 +791,56 @@ def test_act_reset_undo_and_laptop(tmp_path: Path) -> None:
         lap.refuse = True
         assert b.apply2({"t": "act", "a": "laptop_open"}, s)[3] == "REFUSED"
         assert b.apply2({"t": "act", "a": "shutdown"}, s)[3] == "BAD"
+        await ctl.stop()
+    run(go())
+
+
+def test_act_resync_is_answered_when_it_is_done(tmp_path: Path) -> None:
+    """D-023: `act resync` restarts the stream (Controller.request_resync, asked by "phone 1")
+    and is answered once it is done, with what it did; a second while one runs gets err BUSY,
+    an engine not running err REFUSED, one not running again err LATE, each with the box's
+    words. The state says `latency.resync` and `latency.grown`. apply2 alone does not run it."""
+    async def go() -> None:
+        ctl, eng = make_ctl(tmp_path)
+        await boot(ctl)
+        assert ctl._stream_mark == 1.0                          # the start's own restart
+        srv = PhoneServer(ctl, settings(tmp_path), tick_s=0.02)
+        await srv.start()
+        async with ws_connect(v2url(srv), origin=origin(srv)) as ws:
+            st0 = await recv_until(ws, lambda m: m["t"] == "state")
+            assert st0["latency"]["grown"] is None and st0["latency"]["resync"] in ("", "reading")
+            await send(ws, t="act", a="resync", id="r1")
+            r = await reply(ws, "r1")
+            assert r["t"] == "ack" and r["v"]["outcome"] == "done" and r["v"]["ms"] >= 0
+            assert eng.cfg["devices"]["rate_measure_interval_s"] == 1.001
+            st = await recv_until(ws, lambda m: m["t"] == "state"
+                                  and m["latency"]["resync"] == "reading")
+            assert st["latency"]["ms"] is None
+            await ctl._engine_lock.acquire()                    # engine work in flight
+            await send(ws, t="act", a="resync", id="r2")
+            await asyncio.sleep(0.05)
+            await send(ws, t="act", a="resync", id="r3")
+            busy = await reply(ws, "r3")
+            assert (busy["t"], busy["code"], busy["why"]) == ("err", "BUSY",
+                                                              "RESYNC REFUSED: ALREADY RUNNING")
+            ctl._engine_lock.release()
+            assert (await reply(ws, "r2"))["v"]["outcome"] == "done"
+            assert eng.cfg["devices"]["rate_measure_interval_s"] == 1.0
+
+            async def paused() -> str:
+                return "Paused"
+            eng.get_state = paused                              # type: ignore[method-assign]
+            await send(ws, t="act", a="resync", id="r4")
+            no = await reply(ws, "r4")
+            assert (no["code"], no["why"]) == ("REFUSED", "RESYNC REFUSED: ENGINE NOT RUNNING")
+            assert no["v"]["outcome"] == "refused"
+        b = PhoneBridge(ctl)
+        assert b.apply2({"t": "act", "a": "resync"}, sess())[3] == "BAD"
+        from k1000.control import Restart
+        assert PhoneBridge.resync_reply(Restart("timeout", "ENGINE NOT RUNNING AGAIN", ms=1004.0)) == (
+            False, {"outcome": "timeout", "ms": 1004.0, "before": None, "grown": None},
+            "RESYNC: ENGINE NOT RUNNING AGAIN (SEE LOG)", "LATE")
+        await srv.stop()
         await ctl.stop()
     run(go())
 

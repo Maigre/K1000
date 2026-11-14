@@ -224,6 +224,12 @@ export class FakeBox {
         else if (m.a === "undo_reset") { if (!this.state.undo_reset_s) this.err(ws, id, "NOCHANGE", "NOTHING TO UNDO", { undo_s: 0 }); else { this.state.undo_reset_s = 0; this.ack(ws, id, { undo_s: 0 }); this.broadcast(); } }
         else if (m.a === "laptop_open") { this.state.laptop = { state: "open", s: 7200 }; this.ack(ws, id, { state: "opening", s: 0 }); this.broadcast(); }
         else if (m.a === "laptop_close") { this.state.laptop = { state: "closed", s: 0 }; this.ack(ws, id, { state: "closed", s: 0 }); this.broadcast(); }
+        else if (m.a === "resync") {      // D-023: answered when done; the delay read again later
+          const L = this.state.latency || {};
+          this.ack(ws, id, { outcome: "done", ms: 31, before: L.ms ?? null, grown: L.grown ?? null });
+          this.state.latency = Object.assign({}, L, { ms: null, grown: null, resync: "reading" });
+          this.broadcast();
+        }
         else this.err(ws, id, "BAD", "act");
         break;
       case "grab": {

@@ -72,12 +72,17 @@ export function delaySub(v, short) {
 // only the engine's share, or the engine logged a dropout (a backlog past its playback buffer is
 // not in the figure, docs/16 §2.2). The dropout count only beside a figure, as on the box's
 // screen: without one the engine is not running, and its log may still be the previous run's.
+// D-023: "7.9 ms +1.6 · …", how much it grew since the stream last started (`grown`, shown by
+// the box from 0.5 ms up); while a resync runs, and until the new stream's delay is read
+// (about 10 s), the words say so.
 export function latencyWords(L) {
   L = L || {};
-  if (!num(L.ms)) return "--";
+  if (L.resync === "running") return "resync…";
+  if (!num(L.ms)) return L.resync === "reading" ? "reading after the restart (about 10 s)" : "--";
   const drops = num(L.drops) ? L.drops : null;
   const floor = L.io === false || (drops !== null && drops > 0);
-  const parts = [(floor ? "at least " : "") + L.ms.toFixed(1) + " ms" + (L.io === false ? " (engine only)" : "")];
+  const grown = num(L.grown) && L.grown > 0 ? " +" + L.grown.toFixed(1) : "";
+  const parts = [(floor ? "at least " : "") + L.ms.toFixed(1) + " ms" + grown + (L.io === false ? " (engine only)" : "")];
   if (num(L.limit)) parts.push((L.over ? "ABOVE " : "limit ") + L.limit + " ms");
   if (drops !== null) parts.push(drops + (drops === 1 ? " dropout" : " dropouts"));
   return parts.join(" · ");

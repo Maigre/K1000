@@ -90,7 +90,7 @@ from .. import __version__
 from ..control import MASTER_UP_WINDOW_S, NOTCH_NEAR_OCT, NOTCH_Q, UNDO_RESET_S
 from ..state import N_LIVE_PEQ, N_OUT, RANGES, atomic_write, effective_gain, engine_rate, range_for
 from ..tune import MAX_TEXT, TuneDesk
-from ..ui.input_map import (A_LAPTOP, A_RESET_LIVE, A_UNDO_RESET, BAND_CYCLE, BELL_SLOTS,
+from ..ui.input_map import (A_LAPTOP, A_RESET_LIVE, A_RESYNC, A_UNDO_RESET, BAND_CYCLE, BELL_SLOTS,
                             LIVE_SLOT_LABELS, LIVE_SLOT_SHORT, LIVE_SLOTS, PICK_WINDOW_S,
                             SETUP_ITEMS, UNLOCK_S, knob_accel, setup_schema)
 
@@ -211,7 +211,12 @@ TRIM_FIELDS_V2: frozenset[str] = frozenset({"input_trim_db", *(f"out_trim_db.{i}
 # What a refused rise names (`err SLOW`): the field's own word, TRIM for the trims.
 SLOW_WORD_V2: dict[str, str] = {"master_db": "MASTER", "aux_gain_db": "AUX",
                                 "loud_boost_db": "LOUDNESS", "loud_ref_db": "LOUDNESS"}
-ACTS_V2 = ("reset_live", "undo_reset", "laptop_open", "laptop_close")
+ACTS_V2 = ("reset_live", "undo_reset", "laptop_open", "laptop_close", "resync")
+# `act resync` (D-023): the err codes of a resync that did not happen or did not finish
+# (control.Restart): BUSY (one runs, or engine work in flight: try again), REFUSED (nothing
+# written: the engine not running, not in sync, or refusing), LATE (written, but the engine did
+# not run again in time: see the box).
+RESYNC_BUSY = ("ALREADY RUNNING", "ENGINE BUSY, TRY AGAIN")
 SETUP_PICKS_V2 = {it.field: it for it in SETUP_ITEMS if it.picks}
 HINT_LOCKED_V2 = "LOCKED · HOLD 0.8 s TO EDIT"
 HINT_CHANGED_V2 = "CHANGED MEANWHILE"
@@ -596,7 +601,9 @@ def _latency(status: Any) -> dict[str, Any]:
     """state.latency (docs/14 §3.2, D-018): the box's delay readout. `ms` in to out (None = no
     reading), `io` the interface's share is in it (false: the engine's alone, a floor), `over`
     above `limit` ms, `buf` the playback buffer level (frames), `drops` the engine's dropout
-    lines since it started (None = its log is not read)."""
+    lines since it started (None = its log is not read). D-023: `grown` how much it grew since
+    the stream last started (None = not shown: under 0.5 ms, or not known), `resync` "running",
+    "reading" (restarted, the new stream's delay not read yet) or ""."""
     def whole(v: Any) -> int | None:
         return v if isinstance(v, int) and not isinstance(v, bool) else None
 
@@ -605,7 +612,9 @@ def _latency(status: Any) -> dict[str, Any]:
             "over": getattr(status, "latency_over", False) is True,
             "limit": _f(getattr(status, "latency_limit_ms", None), 1),
             "buf": whole(getattr(status, "buffer_level", None)),
-            "drops": whole(getattr(status, "dropouts", None))}
+            "drops": whole(getattr(status, "dropouts", None)),
+            "grown": _f(getattr(status, "latency_grown_ms", None), 1),
+            "resync": r if (r := getattr(status, "resync", "")) in ("running", "reading") else ""}
 
 
 def _sys_eq_id(st: Any) -> str | None:
@@ -1484,6 +1493,8 @@ class PhoneBridge:
         """The SETUP actions (docs/14 §4.7), through the knobs' own Controller methods."""
         if a not in ACTS_V2:
             return False, None, f"act: one of {list(ACTS_V2)}", "BAD"
+        if a == "resync":                # answered when done: PhoneServer._resync2
+            return False, None, "act resync: through the phone server", "BAD"
         ctl = self.ctl
         if a == "reset_live":
             before = self._live_now()
@@ -1503,6 +1514,26 @@ class PhoneBridge:
             if want_open and r is False:
                 return False, self._laptop_view(lap), "LAPTOP ACCESS: REFUSED (SEE THE BOX)", "REFUSED"
         return True, self._laptop_view(lap), "", ""
+
+    def resync(self, sess: PhoneSession) -> Any:
+        """`act resync` (docs/14 §4.7, D-023): the operator's resync, asked by this phone
+        (Controller.request_resync, its outcome's future), or None on a box without it."""
+        fn = getattr(self.ctl, "request_resync", None)
+        return fn(sess.name) if callable(fn) else None
+
+    @staticmethod
+    def resync_reply(r: Any) -> tuple[bool, Any, str, str]:
+        """A resync's outcome (control.Restart) as (ok, value, why, code), §4.7."""
+        v = {"outcome": str(getattr(r, "outcome", "")), "ms": _f(getattr(r, "ms", None), 0),
+             "before": _f(getattr(r, "before", None), 1), "grown": _f(getattr(r, "grown", None), 1)}
+        if getattr(r, "done", False):
+            return True, v, "", ""
+        why = str(getattr(r, "said", "") or "RESYNC FAILED")
+        if v["outcome"] == "refused":
+            code = "BUSY" if getattr(r, "why", "") in RESYNC_BUSY else "REFUSED"
+        else:
+            code = "LATE"
+        return False, v, why, code
 
     def _live_now(self) -> list[tuple[Any, ...]]:
         st = getattr(self.ctl, "state", None)
@@ -1588,7 +1619,9 @@ def setup_v2() -> list[dict[str, Any]]:
     """hello.setup (docs/14 §3.1.3): input_map.setup_schema() plus what the phone may do with
     each row (edit / readonly / hidden) and the `act` names of the actions."""
     acts = {A_RESET_LIVE: ["reset_live"], A_UNDO_RESET: ["undo_reset"],
-            A_LAPTOP: ["laptop_open", "laptop_close"]}
+            A_LAPTOP: ["laptop_open", "laptop_close"], A_RESYNC: ["resync"]}
+    # D-023: the phone's resync sits in its STATUS sheet, beside the delay readout, not in SETUP.
+    elsewhere = {A_RESYNC: "ON THE STATUS SHEET"}
     groups = setup_schema()
     for g in groups:
         for row in g["items"]:
@@ -1604,6 +1637,8 @@ def setup_v2() -> list[dict[str, Any]]:
             elif kind == "action":
                 row["act"] = acts.get(f, [])
                 row["phone"] = "edit" if row["act"] else "hidden"
+                if f in elsewhere:
+                    row["phone"], row["why"] = "hidden", elsewhere[f]
             elif kind == "page" and f == "PHONE":
                 row["phone"], row["why"] = "readonly", "ON · SWITCHED AT THE BOX"
             else:
@@ -2886,6 +2921,8 @@ class PhoneServer:
         sess = c.sess if c.sess is not None else PhoneSession(n=c.n)
         if t == "sub":
             return self._sub(c, sess, msg, mid)
+        if t == "act" and msg.get("a") == "resync":
+            return self._resync2(c, sess, mid)
         try:
             ok, value, why, code = self.bridge.apply2(msg, sess)
         except Exception as e:  # noqa: BLE001 - a controller error stays with this message
@@ -2909,6 +2946,37 @@ class PhoneServer:
         if t == "nudge" and msg.get("f") in LOCKED_V2:
             ack["unlock_s"] = self.bridge.unlock_left(sess)
         return ack
+
+    def _resync2(self, c: _Client, sess: PhoneSession, mid: Any) -> dict[str, Any] | None:
+        """`act resync` (docs/14 §4.7, D-023): answered once the resync is done, refused or timed
+        out, not at once (about 30 ms; RESTART_LOCK_S + RESTART_RUN_S and a read-back at
+        worst, under the page's 5 s). Nothing here awaits: the reply goes through the sender."""
+        try:
+            fut = self.bridge.resync(sess)
+        except Exception as e:  # noqa: BLE001 - a controller error stays with this message
+            self.stats["errors"] += 1
+            self._log_failure(c, "act resync failed", e)
+            return self._err2(c, mid, "INTERNAL", f"internal error ({type(e).__name__})")
+        if fut is None:
+            return self._err2(c, mid, "UNAVAILABLE", "RESYNC: NOT ON THIS BOX")
+
+        def done(f: Any) -> None:
+            try:
+                ok, v, why, code = self.bridge.resync_reply(f.result())
+            except BaseException as e:  # noqa: BLE001 - cancelled at a stop, a bug
+                log.info("phone %s (%s): act resync -> no outcome (%s)", c.peer, sess.name,
+                         type(e).__name__)
+                ok, v, why, code = False, None, "RESYNC: NO OUTCOME (SEE THE BOX)", "INTERNAL"
+            else:
+                log.info("phone %s (%s): act resync -> %s", c.peer, sess.name,
+                         v if ok else f"not done ({code} {why})")
+            reply = ({"t": "ack", "id": mid, "v": v} if mid is not None else None) if ok \
+                else self._err2(c, mid, code, why, v)
+            if reply is not None:
+                self._queue(c, reply)
+
+        fut.add_done_callback(done)
+        return None
 
     def _sub(self, c: _Client, sess: PhoneSession, msg: dict[str, Any], mid: Any) -> dict[str, Any] | None:
         """sub {rta, pgm}: this connection's spectrum subscription (docs/14 §4.8) and its

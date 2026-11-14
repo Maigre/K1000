@@ -85,6 +85,10 @@ check("delay: the bench figure, above the limit, 0 dropouts", lw({ ms: 20.3, io:
 check("delay: after a dropout the figure is a floor", lw({ ms: 9.1, io: true, over: false, limit: 10, drops: 1 }) === "at least 9.1 ms · limit 10 ms · 1 dropout" && lw({ ms: 30.5, io: true, over: true, limit: 12.5, drops: 7 }) === "at least 30.5 ms · ABOVE 12.5 ms · 7 dropouts", lw({ ms: 9.1, io: true, over: false, limit: 10, drops: 1 }));
 check("delay: the engine's share alone, the log unread", lw({ ms: 16.5, io: false, over: true, limit: 10, drops: null }) === "at least 16.5 ms (engine only) · ABOVE 10 ms", lw({ ms: 16.5, io: false, over: true, limit: 10, drops: null }));
 check("delay: no figure reads --, without a count (the log may be the previous run's)", lw({ ms: null, io: true, over: false, limit: 10, drops: 3 }) === "--" && lw(undefined) === "--" && lw({ ms: NaN, drops: 0 }) === "--");
+// D-023: the growth since the stream last started, and the resync
+check("delay: the growth follows the figure", lw({ ms: 7.9, io: true, over: false, limit: 10, drops: 0, grown: 1.6, resync: "" }) === "7.9 ms +1.6 · limit 10 ms · 0 dropouts" && lw({ ms: 10.1, io: true, over: true, limit: 10, drops: 0, grown: 2.7 }) === "10.1 ms +2.7 · ABOVE 10 ms · 0 dropouts", lw({ ms: 7.9, io: true, over: false, limit: 10, drops: 0, grown: 1.6 }));
+check("delay: no growth shown without one", lw({ ms: 6.4, io: true, over: false, limit: 10, drops: 0, grown: null, resync: "" }) === "6.4 ms · limit 10 ms · 0 dropouts" && lw({ ms: 6.4, io: true, limit: 10, drops: 0, grown: 0 }) === "6.4 ms · limit 10 ms · 0 dropouts");
+check("delay: while a resync runs, then until the new delay is read", lw({ ms: 7.9, resync: "running", limit: 10 }) === "resync…" && lw({ ms: null, resync: "reading", limit: 10 }) === "reading after the restart (about 10 s)", lw({ ms: null, resync: "reading" }));
 
 const ok = checks.every((c) => c.ok);
 console.log(JSON.stringify({ ok, checks }));

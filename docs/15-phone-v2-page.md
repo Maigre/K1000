@@ -37,7 +37,7 @@ style-src 'self'`); the box stamps its v2 build into every `.js`.
 | `js/measure.js` | MEASURE (≋): the MEASURE row; RESPONSE: `sub {pgm}`, the paired windows, pauses, restarts, the line and the graph's note |
 | `js/mute.js` | MUTE, v1's protocol |
 | `js/hold.js` | Every hold key (one rule: 12 px of travel or leaving the key cancels; MUTE takes over from any other hold; a second finger, or the key leaving the page, cancels) |
-| `js/sheets.js` | SETUP (from `hello.setup`; a switch paired with the next number whose label starts with its own, a note under each switch, a number the box holds read-only dimmed with its reason), THIS PHONE (with Phone mic: ALLOW, then OFF / ON and what the browser kept of the processing), STATUS |
+| `js/sheets.js` | SETUP (from `hello.setup`; a switch paired with the next number whose label starts with its own, a note under each switch, a number the box holds read-only dimmed with its reason), THIS PHONE (with Phone mic: ALLOW, then OFF / ON and what the browser kept of the processing), STATUS (with the delay, how much it grew since the stream started, and the resync under it: D-023) |
 | `js/native.js`, `js/haptics.js` | The APK bridge (android/BRIDGE.md) and the haptics, `navigator.vibrate` in Chrome |
 | `js/touch.js`, `js/util.js`, `js/view.js` | Fingers, helpers, the strip / alerts / pills / meters / toasts / layout |
 
@@ -60,6 +60,7 @@ style-src 'self'`); the box stamps its v2 build into every `.js`.
 | MUTE hold 0.6 s / 1.2 s | `mute {on, id: "mute-<n>"}`, `seq` on an unmute (v1's message; each press its own id, so a late ack of an earlier press that timed out never confirms this one) |
 | SETUP choice, then SET | `choose {f, v, seen}` |
 | ALL FLAT… / UNDO (hold 1 s), laptop OPEN (hold 1 s) / CLOSE (tap) | `act {a}` |
+| STATUS › RESYNC (hold 1 s; D-023, beside the delay readout) | `act {a: "resync"}`: answered once the box has restarted the stream (or refused it); a refusal is a red toast with the box's words, as for every action. Never sent otherwise |
 | LIVE visible with the box spectrum | `sub {rta: true}`; hidden, a sheet up, OFF, PHONE MIC only, FROZEN or RESPONSE: `sub {rta: false}` |
 | RESPONSE shown (MEASURE), page visible | `sub {pgm: true}`; otherwise `sub {pgm: false}`; again after `unsub {what: "pgm"}` or a reconnect. Nothing else for the mic: audio never leaves the phone |
 | Every 1 s | `ping {ts}` (the box wants one at least every 2 s for the spectrum; one a second lets the page see a stalled link, §3) |

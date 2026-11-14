@@ -650,6 +650,7 @@ function buildStatus() {
   kv("Engine", () => (linked() ? String(S().engine || "--") + " · load " + (num(S().load) ? S().load.toFixed(1) + " %" : "--") + (S().ready ? "" : " · syncing") : "— (no link)"));
   const lat = kv("Delay in → out", () => (linked() ? latencyWords(S().latency) : "— (no link)"));
   upd.push(() => lat.classList.toggle("warn", linked() && !!S().latency && S().latency.over === true));
+  rowResync(S);
   kv("Device", () => String(S().device || "--") + (S().device_present === false ? " · NOT FOUND" : ""));
   kv("Profile", () => String(S().profile || "--") + (S().readonly && S().readonly.profile ? " · " + S().readonly.profile : ""));
   kv("Input clip", () => (S().in_clip ? "CLIPPED (latched 3 s)" : "none"));
@@ -682,6 +683,22 @@ function buildStatus() {
   kv("App", () => (hasNative() ? "K1000 app " + UI.native.app + (Number.isInteger(UI.native.code) ? " · code " + UI.native.code : "") + " (" + UI.native.build + ")" +
     (K.appCheck && K.appCheck.app_ok === false ? " · BOX WANTS code " + K.appCheck.min_app + "+" : "") : "browser"));
   kv("Haptics sent", () => hapLog.slice(-6).join(" ") || "—");
+}
+
+// D-023: the resync, beside the delay it brings back (docs/14 §4.7 `act resync`): a 1 s hold,
+// the page's confirm; the box answers once it is done. Never by itself: only this hold, or the
+// box's SETUP › BOX › Resync delay, restarts the stream.
+function rowResync(S) {
+  const rs = () => (S().latency && typeof S().latency.resync === "string" ? S().latency.resync : "");
+  const can = () => linked() && String(S().engine || "") === "Running" && rs() !== "running";
+  rowAction({
+    label: "Resync the delay", cls: "warn",
+    holdable: can, disabled: () => !can(),
+    text: () => (rs() === "running" ? "RESYNC…" : rs() === "reading" ? "READING…" : "RESYNC · hold 1 s"),
+    fire: () => act("resync", (ok) => { if (ok) toast("RESYNC DONE · the delay is read again in about 10 s", "white"); }),
+    note: () => "Restarts the audio stream in place: the sound stops for about 25 ms. The delay goes back to where a start puts it; " +
+      "the + after it above is how much it grew since the stream last started. Never by itself.",
+  });
 }
 
 export function initSheets() {

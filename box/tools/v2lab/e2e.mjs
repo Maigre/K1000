@@ -1270,6 +1270,20 @@ await run("sheets", async () => {
   box.push({ latency: { ms: 8.9, io: true, over: false, limit: 10, buf: 170, drops: 0 } }); await sleep(250);
   const dl2 = await delayRow();
   check("sheets: STATUS Delay in → out, within the limit: plain", !!dl2 && dl2.text === "8.9 ms · limit 10 ms · 0 dropouts" && !dl2.warn, JSON.stringify(dl2));
+  // D-023: the growth beside the figure, and the resync under it: a 1 s hold sends act resync
+  box.push({ engine: "Running", latency: { ms: 7.9, io: true, over: false, limit: 10, buf: 300, drops: 0, grown: 1.6, resync: "" } }); await sleep(250);
+  const dl3 = await delayRow();
+  check("sheets: STATUS Delay in → out says how much it grew", !!dl3 && dl3.text === "7.9 ms +1.6 · limit 10 ms · 0 dropouts", JSON.stringify(dl3));
+  box.clearSent();
+  const rsy = await center(page, "#shBody .act.warn");
+  check("sheets: STATUS has the resync, held 1 s", (await page.textContent("#shBody .act.warn")) === "RESYNC · hold 1 s", await page.textContent("#shBody .act.warn"));
+  await f.tap(rsy.x, rsy.y, 80); await sleep(150);
+  check("sheets: STATUS resync tapped does nothing", !box.ofType("act").length, box.ofType("act"));
+  await f.hold(rsy.x, rsy.y, 1150); await sleep(300);
+  const ra = box.ofType("act");
+  check("sheets: STATUS resync held 1 s sends act resync once", ra.length === 1 && ra[0].a === "resync", ra);
+  check("sheets: STATUS resync done is said, then the delay is read again", (await toasts(page)).some((x) => /RESYNC DONE/.test(x)) &&
+    (await delayRow()).text === "reading after the restart (about 10 s)", JSON.stringify(await delayRow()));
   await tapSel(t, page, "#shX");
   await t.close();
 });

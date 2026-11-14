@@ -113,7 +113,7 @@ page                                     box
  "fields": { "...": "§3.1.1" },
  "slide": { "...": "§3.1.2" },
  "setup": ["… §3.1.3 …"],
- "acts": ["reset_live", "undo_reset", "laptop_open", "laptop_close"],
+ "acts": ["reset_live", "undo_reset", "laptop_open", "laptop_close", "resync"],
  "notch": {"q": 8.651, "near_oct": 0.1667},
  "unlock_s": 30.0, "pick_window_s": 8.0, "undo_reset_s": 300.0, "fs": 48000,
  "rta": {"enabled": true, "src": "PGM", "hz": 10.0, "step_db": 0.5, "idle_s": 10.0},
@@ -269,6 +269,8 @@ them (it enforces `caps`, the locks and the buckets).
    {"label": "Laptop access", "f": "laptop_access", "kind": "action", "confirm": true,
     "act": ["laptop_open", "laptop_close"], "phone": "edit"}]},
  {"group": "BOX", "items": [
+   {"label": "Resync delay", "f": "resync", "kind": "action", "confirm": true, "act": ["resync"],
+    "phone": "hidden", "why": "ON THE STATUS SHEET"},
    {"label": "Profile", "f": "profile", "kind": "choice", "choices": ["dev", "m4"], "names": ["DEV", "M4"], "rebuild": true, "phone": "edit"},
    {"label": "Audition (dev)", "f": "dev_audition", "kind": "choice", "choices": ["sum", "tops", "subs"], "names": ["SUM", "TOPS", "SUBS"], "rebuild": true, "phone": "edit"},
    {"label": "Knob test", "f": "HWTEST", "kind": "page", "phone": "hidden", "why": "ON THE BOX ONLY"}]}]
@@ -283,7 +285,7 @@ them (it enforces `caps`, the locks and the buckets).
 | `rebuild` | (`bool`/`choice`) setting it rebuilds the pipeline (it may click): the SET is a 1 s hold, marked MAY CLICK |
 | `confirm` | (`action`) the box asks for a second push: on the phone, a 1 s hold |
 | `act` | (`action`) the `act` names that drive it |
-| `phone` | `edit`, `readonly` (shown dimmed with `why`: the Phone row `ON · SWITCHED AT THE BOX`; a future number row outside the phone allowlist `SET ON THE BOX`), or `hidden` (`why` `ON THE BOX ONLY`: the Knob test) |
+| `phone` | `edit`, `readonly` (shown dimmed with `why`: the Phone row `ON · SWITCHED AT THE BOX`; a future number row outside the phone allowlist `SET ON THE BOX`), or `hidden` (`why` `ON THE BOX ONLY`: the Knob test; `ON THE STATUS SHEET`: D-023's Resync delay, which the page shows beside the delay readout, `act resync`) |
 
 Read-only **now** (a pinned profile, Audition off the dev profile, Spectrum disabled in
 k1000.yaml, D-016's AUX IN and AUX level on a profile with no spare input) is live:
@@ -327,7 +329,8 @@ meaning; v2 adds the rest. Numbers are rounded, never NaN or infinite (`null` in
  "laptop": {"state": "open", "s": 7140},
  "readonly": {"profile": "PROFILE PINNED IN k1000.yaml", "dev_audition": "AUDITION: DEV PROFILE ONLY"},
  "box_band": 1, "box_page": "SHOW", "knobs_ok": true,
- "latency": {"ms": 20.3, "io": true, "over": true, "limit": 10.0, "buf": 536, "drops": 0}}
+ "latency": {"ms": 20.3, "io": true, "over": true, "limit": 10.0, "buf": 536, "drops": 0,
+             "grown": 1.6, "resync": ""}}
 ```
 
 | Key | Meaning |
@@ -355,7 +358,7 @@ meaning; v2 adds the rest. Numbers are rounded, never NaN or infinite (`null` in
 | `box_band` | The band the knobs are on (the `E` mark). Not the phone's selection: each phone keeps its own |
 | `box_page` | The box screen's page (`SHOW`, `ALIGN`, `SETUP`, `PHONE`, `HWTEST`) |
 | `knobs_ok` | `true` knobs answer, `false` KNOBS OFFLINE, `null` no knobs expected |
-| `latency` | The box's delay readout (D-018, `k1000/latency.py`): `ms` in to out, estimated (`null` = no reading); `io` `false` = the interface's share is not known, `ms` is the engine's alone (a floor); `over` above `limit` ms (it only informs); `buf` the engine's playback buffer level, frames; `drops` the engine's dropout lines since it started (`null` = its log is not read). `ms` is a floor too once `drops` is above 0; the page then says `at least`, and shows `drops` only beside a figure. v2 only: v1's state is unchanged |
+| `latency` | The box's delay readout (D-018, `k1000/latency.py`): `ms` in to out, estimated (`null` = no reading); `io` `false` = the interface's share is not known, `ms` is the engine's alone (a floor); `over` above `limit` ms (it only informs); `buf` the engine's playback buffer level, frames; `drops` the engine's dropout lines since it started (`null` = its log is not read). `ms` is a floor too once `drops` is above 0; the page then says `at least`, and shows `drops` only beside a figure. D-023 (2026-11-14, additive): `grown` how much `ms` grew since the stream last started (an engine start or a resync), ms, `null` = nothing to show (under 0.5 ms, a delay that went down, or not known yet); `resync` `running` (a stream restart under way), `reading` (restarted: `ms` is `null` until the new stream's delay is read, about 10 s), or `""`. v2 only: v1's state is unchanged |
 
 Countdowns are the values when the state was built; the box resends when something else changes,
 so the page counts down from the last one it got.
@@ -447,6 +450,8 @@ Without a picture (`st` not `live`) the frame is `{"t":"rta","seq":…,"src":"PG
 | `NOCHANGE` | `choose` of the value already set; `undo_reset` with nothing to undo |
 | `NOFREE` | `grab`: all four bells in use (`NO FREE BAND`) |
 | `UNAVAILABLE` | Laptop access on a box without it |
+| `BUSY` | `act resync` while one runs (`RESYNC REFUSED: ALREADY RUNNING`), or while other engine work holds the engine more than 1 s (`RESYNC REFUSED: ENGINE BUSY, TRY AGAIN`): nothing written |
+| `LATE` | `act resync` written, but the engine did not run again within 1 s, or its link went (`RESYNC: ENGINE NOT RUNNING AGAIN (SEE LOG)`, `RESYNC: ENGINE LINK LOST (SEE LOG)`) |
 | `HELD` | An unmute while K1000 itself holds the mute on its way in (§5) |
 | `REFUSED` | The controller refused it (e.g. an engine-side rule) |
 | `INTERNAL` | A box bug (logged); nothing was half-applied by the bridge |
@@ -634,9 +639,17 @@ apply unchanged.
 | `undo_reset` | `undo_reset()` | `{"undo_s": 0}` | `NOCHANGE` `NOTHING TO UNDO` |
 | `laptop_open` | `setup_actions["laptop_access"]` (= `laptop_toggle`) when closed | `{"state": "opening", "s": 0}` (already open: its state, nothing done) | `UNAVAILABLE`; `REFUSED` when root refuses |
 | `laptop_close` | the same toggle when open or opening | `{"state": "closed", "s": 0}` (already closed: nothing done) | `UNAVAILABLE` |
+| `resync` | `request_resync("phone N")` (D-023): the engine's audio stream restarted in place, about 25 ms of silence, Main untouched | `{"outcome": "done", "ms": 31, "before": 7.9, "grown": 1.6}`: `ms` from the write to the engine running again as the box saw it (not the gap in the sound), `before` and `grown` the readout when asked (`null`: none) | `BUSY`; `REFUSED` (`RESYNC REFUSED: ENGINE NOT RUNNING`, `… ENGINE NOT IN SYNC`, `… ENGINE REFUSED`); `LATE`. `v` is the same object, `outcome` `refused` or `timeout` |
 
-`reset_live` and `laptop_open` are 1 s holds on the page (the box asks two pushes). v1's
+`reset_live`, `laptop_open` and `resync` are 1 s holds on the page (the box asks two pushes). v1's
 `{"t":"reset_live","confirm":true}` is accepted too.
+
+**`resync` is answered when it is done**, not at once: about 30 ms on the box (the engine
+answers its write in 1 to 8 ms and runs again 20 to 27 ms later, measured 14 Nov), 2.5 s at
+most (1 s for engine work in flight, the write's read-back, 1 s for the engine to run again),
+under the page's 5 s. Nothing else on this connection waits for it. It is the only way a phone
+restarts the stream, and the box never does it by itself: only at an engine start, Main still
+muted (D-023).
 
 ### 4.8 `sub`: the box spectrum and RESPONSE
 

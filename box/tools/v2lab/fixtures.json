@@ -3,7 +3,7 @@
   "t": "hello",
   "v": 2,
   "server": "k1000 0.1.0",
-  "build": "8650128bda4b",
+  "build": "b43e7ec6c210",
   "phone_on": true,
   "you": 1,
   "min_app": 0,
@@ -1110,6 +1110,17 @@
     "group": "BOX",
     "items": [
      {
+      "label": "Resync delay",
+      "f": "resync",
+      "kind": "action",
+      "confirm": true,
+      "act": [
+       "resync"
+      ],
+      "phone": "hidden",
+      "why": "ON THE STATUS SHEET"
+     },
+     {
       "label": "Profile",
       "f": "profile",
       "kind": "choice",
@@ -1155,7 +1166,8 @@
    "reset_live",
    "undo_reset",
    "laptop_open",
-   "laptop_close"
+   "laptop_close",
+   "resync"
   ],
   "notch": {
    "q": 8.651,
@@ -1442,7 +1454,9 @@
    "over": false,
    "limit": 10.0,
    "buf": null,
-   "drops": null
+   "drops": null,
+   "grown": null,
+   "resync": ""
   }
  },
  "m": {

@@ -1269,8 +1269,12 @@ def test_nothing_restarts_the_stream_by_itself(tmp_path: Path) -> None:
     assert callers["_resync"] == {"request_resync"}
     assert callers.get("request_resync", set()) <= {"__init__"}          # SETUP's action
     assert src.count("RESTART_POINTER") == 2       # its definition and _restart_stream's write
-    server = (BOX / "k1000" / "web" / "server.py").read_text()
-    assert server.count("request_resync") <= 2     # the phone's act resync (and its docstring)
+    server = ast.parse((BOX / "k1000" / "web" / "server.py").read_text())
+    asking = {fn.name for fn in ast.walk(server) if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+              for node in ast.walk(fn)
+              if (isinstance(node, ast.Constant) and node.value == "request_resync")
+              or (isinstance(node, ast.Attribute) and node.attr == "request_resync")}
+    assert asking == {"resync"}                    # PhoneBridge.resync: the phone's act resync
     for path in (BOX / "k1000").rglob("*.py"):
         if path.name not in ("control.py", "server.py"):
             text = path.read_text()
