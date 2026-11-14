@@ -1426,6 +1426,122 @@ def test_a_bug_in_the_start_restart_never_holds_the_ramp(
     assert not any("connect sync failed" in r.getMessage() for r in caplog.records)
 
 
+def _late_restart_writes(cl: FakeClient, late_s: float) -> None:
+    """The engine takes the restart's write (Ok) but makes it active only `late_s` later, after
+    the client's read-back gave up (CdspNotApplied): its old streams slow to stop."""
+    real = cl.set_value
+
+    async def late(pointer: str, value: Any, clamp: Any = None) -> Any:
+        if pointer != RP:
+            return await real(pointer, value, clamp)
+        cl._need()
+        cl.log.append(("set", pointer, value))
+
+        async def apply() -> None:
+            await asyncio.sleep(late_s)
+            before = copy.deepcopy(cl.cfg.get("devices"))
+            _set_ptr(cl.cfg, pointer, value)
+            cl._devices_changed(before)
+        task = asyncio.get_running_loop().create_task(apply())
+        cl.hooks.append(task)
+        if not late_s:
+            await task
+        raise CdspNotApplied("SetConfigValue", "NotApplied",
+                             "accepted, but the active config still differs after 0.5 s")
+    cl.set_value = late  # type: ignore[method-assign]
+
+
+@pytest.mark.parametrize("late_s", [0.0, 0.05])
+def test_a_restart_write_the_engine_makes_active_late_stays_k1000s(
+        tmp_path: Path, late_s: float, caplog: pytest.LogCaptureFixture) -> None:
+    """The write taken but read back too late: a timeout on the box, but the stream does
+    restart. K1000's value follows the engine's (at once, or at the next poll), so nothing is
+    flagged as someone's devices change; the growth counts from the new stream, and the
+    journal gives the delay after (review 2026-11-15: DEVICES CHANGED (GUI) until the next
+    engine start)."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-6.0), playing=True)
+        ctl.profile = dataclasses.replace(DEV, io_latency_ms=2.3)
+        cl.level = 536
+        await boot(ctl)
+        await ctl.poll_once()
+        cl.level = 536 + 77
+        await ctl.poll_once()
+        assert ctl.status.latency_grown_ms == 1.6
+        _late_restart_writes(cl, late_s)
+        r = await ctl.request_resync("phone 1")
+        assert (r.outcome, r.why, r.written) == ("timeout", "ENGINE NOT RUNNING AGAIN", True)
+        assert ctl.latency.base_ms is None and ctl.status.latency_ms is None
+        await asyncio.sleep(late_s + 0.02)
+        for _ in range(4):                       # the engine passes Inactive, Starting: Running
+            await ctl.poll_once()
+        assert cl.cfg["devices"][ctl_mod.RESTART_KEY] == 1.0 and ctl._stream_mark == 1.0
+        assert ctl.status.drift == [] and "DEVICES" not in (ctl.status.message or "")
+        assert not any(e[0] == "config" for e in cl.log)
+        assert ctl.save_now()
+        saved = yaml.safe_load((tmp_path / "active.yml").read_text())
+        assert saved["devices"][ctl_mod.RESTART_KEY] == 1.0
+        assert ctl.status.latency_ms is None             # the engine still says 613
+        cl.level = 540
+        await ctl.poll_once()
+        assert ctl.latency.reading is not None and ctl.latency.reading.grown_ms == 0.0
+        await ctl.stop()
+
+    with caplog.at_level(logging.INFO, logger="k1000.control"):
+        run(body())
+    msgs = [r.getMessage() for r in caplog.records]
+    assert not any("devices differ" in m for m in msgs)
+    said = [m for m in msgs if m.startswith("stream restart (phone 1)")]
+    assert len(said) == 2 and "timed out (ENGINE NOT RUNNING AGAIN)" in said[0]
+    assert said[1].startswith("stream restart (phone 1): delay before 21.7 ms (+1.6), after ")
+
+
+def test_a_timed_out_resync_starts_the_growth_over_and_leaves_main_as_it_is(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """Written, then the engine not running again within RESTART_RUN_S: the old stream is gone,
+    so the growth counts from the next one and the journal gives the delay after, once read.
+    Main stays where it is (the restart touches no fader, nothing mutes it), and nothing says
+    a delay is coming while the engine does not run (review 2026-11-15)."""
+    monkeypatch.setattr(ctl_mod, "RESTART_RUN_S", 0.05)
+
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-6.0), playing=True)
+        ctl.profile = dataclasses.replace(DEV, io_latency_ms=2.3)
+        cl.level = 536
+        await boot(ctl)
+        await ctl.poll_once()
+        cl.level = 536 + 77
+        await ctl.poll_once()
+
+        async def stick(entry: tuple[Any, ...]) -> None:
+            if entry[:2] == ("set", RP):
+                cl.stuck = True
+        cl.on_write = stick
+        r = await ctl.request_resync("box")
+        assert (r.outcome, r.written, (r.before, r.grown)) == ("timeout", True, (21.7, 1.6))
+        for _ in range(3):
+            await ctl.poll_once()
+            assert cl.faders[0] == {"volume": -6.0, "mute": False}
+            assert ctl.status.resync == "" and ctl.status.latency_ms is None
+        cl.stuck = False
+        for _ in range(4):                       # Inactive, Starting, then running again
+            await ctl.poll_once()
+        assert ctl.status.engine == "Running"    # the engine still says 613
+        assert ctl.status.resync == "reading" and ctl.status.latency_ms is None
+        cl.level = 540
+        await ctl.poll_once()
+        assert ctl.status.resync == "" and ctl.status.latency_grown_ms is None
+        assert ctl.latency.reading is not None and ctl.latency.reading.grown_ms == 0.0
+        assert cl.faders[0] == {"volume": -6.0, "mute": False}
+        await ctl.stop()
+
+    with caplog.at_level(logging.INFO, logger="k1000.control"):
+        run(body())
+    said = [r.getMessage() for r in caplog.records if r.getMessage().startswith("stream restart (box)")]
+    assert len(said) == 2 and "timed out (ENGINE NOT RUNNING AGAIN)" in said[0]
+    assert said[1].startswith("stream restart (box): delay before 21.7 ms (+1.6), after ")
+
+
 def test_reading_is_said_only_for_a_restart_that_happened_and_an_engine_that_runs(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """READING… (the box's row, the phone's `reading after the restart`) only after a restart

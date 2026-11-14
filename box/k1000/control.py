@@ -346,6 +346,12 @@ class Restart:
         return self.outcome == RESTART_DONE
 
     @property
+    def written(self) -> bool:
+        """The write went in (done, or timed out after it: `ms` is set): the old stream is gone
+        or going, and the delay after is worth a journal line once read."""
+        return self.done or (self.outcome == RESTART_TIMEOUT and self.ms is not None)
+
+    @property
     def said(self) -> str:
         """The box's words for it (the hint, the phone's err `why`)."""
         if self.done:
@@ -1067,7 +1073,8 @@ class Controller:
         self._engine_chunk: int | None = None
         self._engine_samplerate: float | None = None   # the running config's (D-022)
         # D-023: K1000's value of devices.rate_measure_interval_s (RESTART_MARKS; None = left
-        # unset), written by each stream restart, adopted at connect (`_adopt_stream_mark`).
+        # unset), written by each stream restart, adopted at connect and at every poll
+        # (`_adopt_stream_mark`).
         # Taken from active.yml at start, so that k1000's first save writes the file the engine
         # booted from unchanged (no active.yml.prev at every start).
         self._stream_mark: float | None = _mark_on_disk(paths.active_config)
@@ -2165,11 +2172,12 @@ class Controller:
         return self._transform(cfg) if self._transform else cfg
 
     def _adopt_stream_mark(self, live: Any) -> None:
-        """At connect: the running config's `rate_measure_interval_s`, when it is absent or one of
-        K1000's RESTART_MARKS, is K1000's (an engine started from the active.yml a previous run
-        wrote after a restart holds one): the wanted config takes it, so a restart made before
-        this run of k1000 is not flagged, nor uploaded over. Any other value is someone else's:
-        a devices difference, as before."""
+        """At connect and at every poll: the running config's `rate_measure_interval_s`, when it
+        is absent or one of K1000's RESTART_MARKS, is K1000's (an engine started from the
+        active.yml a previous run wrote after a restart holds one; a restart write the engine
+        made active after its read-back): the wanted config takes it, so a restart made before
+        this run of k1000, or applied late, is not flagged, nor uploaded over. Any other value
+        is someone else's: a devices difference, as before."""
         dev = live.get("devices") if isinstance(live, dict) else None
         if not isinstance(dev, dict):
             return
@@ -3096,7 +3104,11 @@ class Controller:
 
         Refused (nothing written) when the engine is not running or refuses the write; timed out
         when, written, it does not run again in time or its link goes (the connect sync then
-        takes over). `who`: start, box, phone N (the journal)."""
+        takes over), or when the engine took the write but did not show it active within the
+        read-back (cdsp CONFIRM_TIMEOUT_S: its old streams slow to stop, a stalled USB stream).
+        Once the write went in, the old stream is gone or going: the growth counts from the next
+        one either way (`_new_stream_base`), and K1000's value follows the engine's, at once or
+        at the next poll (`_adopt_stream_mark`). `who`: start, box, phone N (the journal)."""
         self._check_link(epoch)
         if not await self._engine_running(epoch, held=True):
             return Restart(RESTART_REFUSED, "ENGINE NOT RUNNING")
@@ -3107,16 +3119,24 @@ class Controller:
         self._restarting = True
         self._note_resync()
         t0 = self._clock()
+
+        def late() -> Restart:
+            return Restart(RESTART_TIMEOUT, "ENGINE NOT RUNNING AGAIN",
+                           ms=round((self._clock() - t0) * 1000.0, 1))
         try:
             try:
                 await self.client.set_value(RESTART_POINTER, new)
             except CdspNotApplied as e:
-                # Taken, not read back in time: it may still come. K1000's value follows the engine.
+                # Taken, not read back in time: it is still coming. K1000's value follows the
+                # engine's: now if it is there already, else at the next poll.
                 log.warning("the engine took the stream restart's write (asked by %s) but did "
                             "not show it active in time (%s)", who, e)
-                await self._reread_mark(new)
-                return Restart(RESTART_TIMEOUT, "ENGINE NOT RUNNING AGAIN",
-                               ms=round((self._clock() - t0) * 1000.0, 1))
+                try:
+                    self._adopt_stream_mark(await self.client.get_config_json())
+                except CdspError:
+                    pass
+                await self._new_stream_base()
+                return late()
             except CdspError as e:
                 log.error("the engine refused the stream restart's write (%s, asked by %s)", e, who)
                 return Restart(RESTART_REFUSED, "ENGINE REFUSED")
@@ -3127,33 +3147,27 @@ class Controller:
                 if await self._engine_running(epoch, held=True):
                     break
                 if self._clock() - t0 > RESTART_RUN_S:
-                    return Restart(RESTART_TIMEOUT, "ENGINE NOT RUNNING AGAIN",
-                                   ms=round((self._clock() - t0) * 1000.0, 1))
+                    await self._new_stream_base()
+                    return late()
                 await self._sleep(RESTART_POLL_S)
             ms = round((self._clock() - t0) * 1000.0, 1)
-            # What the engine still reports for the old stream's level, until the new one's
-            # first average (latency.LatencyWatch.restarted).
-            try:
-                stale = await self.client.command("GetBufferLevel")
-            except CdspError:
-                stale = None
-            self.latency.restarted(stale)
-            self._note_latency(self.status.engine, None)
+            await self._new_stream_base()
             return Restart(RESTART_DONE, ms=ms)
         finally:
             self._restarting = False
             self._note_resync()
 
-    async def _reread_mark(self, written: float) -> None:
-        """After a restart write not confirmed in time: K1000's value is what the engine holds."""
+    async def _new_stream_base(self) -> None:
+        """After a restart write went in: the growth counts from the new stream's first reading,
+        and until then the level the engine still reports for the old stream (it lives outside
+        a run, until the new one's first average) is not taken for it
+        (latency.LatencyWatch.restarted)."""
         try:
-            live = await self.client.get_config_json()
+            stale = await self.client.command("GetBufferLevel")
         except CdspError:
-            return
-        dev = live.get("devices") if isinstance(live, dict) else None
-        if isinstance(dev, dict) and restart_mark(dev.get(RESTART_KEY)) == written:
-            self._stream_mark = written
-            self._mark_dirty()
+            stale = None
+        self.latency.restarted(stale)
+        self._note_latency(self.status.engine, None)
 
     async def _restart_at_start(self, epoch: int) -> None:
         """D-023 point 1: a freshly started engine gets one stream restart while Main is still
@@ -3245,19 +3259,21 @@ class Controller:
 
     def _say_restart(self, who: str, r: Restart) -> None:
         """The journal of a restart (D-023 point 5): one line at once with who asked, the outcome
-        and the delay before; for a done one, a second line with the delay before and after
-        once the new stream's delay is read (`_say_restart_after`, about 10 s later: the
-        engine's level average). The operator's also get the screen's hint."""
+        and the delay before; once the write went in (`Restart.written`: done, or timed out
+        after it), a second line with the delay before and after once the new stream's delay is
+        read (`_say_restart_after`, about 10 s after it runs: the engine's level average). The
+        operator's also get the screen's hint."""
         was = self._delay_words(r.before, r.grown)
         if r.done:
             log.info("stream restart (%s): done, the engine ran again %.0f ms after the write; "
                      "delay before %s, the delay after comes with the next reading", who,
                      r.ms or 0.0, was)
-            self._restart_after = (who, was)
         else:
             log.warning("stream restart (%s): %s (%s)%s; delay before %s", who,
                         "refused" if r.outcome == RESTART_REFUSED else "timed out", r.why,
                         "" if r.ms is None else f" after {r.ms:.0f} ms", was)
+        if r.written:
+            self._restart_after = (who, was)
         if who != "start":
             self.show_hint(r.said, RESYNC_HINT_S)
         self._note_resync()
@@ -3871,6 +3887,9 @@ class Controller:
                 return
             self._note_engine_chunk(live)
             self.latency.note_config(live)
+            # D-023: a restart write the engine made active after its read-back (`_restart_stream`)
+            # is K1000's, not a devices change of someone's.
+            self._adopt_stream_mark(live)
             faders = await self.client.get_faders()
             self._marker_engine = _fader(faders, MARKER_FADER)[0]
             _v, m = _fader(faders, FADER_MAIN)
