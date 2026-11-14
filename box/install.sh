@@ -113,7 +113,7 @@ GUI_URL=https://github.com/HEnquist/camillagui-backend/releases/download/v5.0.0-
 GUI_TGZ_SHA256=854552f3e74a156d25117a1ecca2df44c94aefbeb62e1c47ff23b19d6b0cc8a2
 GUI_BIN_SHA256=d993616caf6c67dc09b11a337d484ca2eca6c21c517305dc9d95df2f2e7bf14e
 
-DO_START=0 DO_BOOT=0 DO_HEADLESS=0 DO_AP=0 DO_CPU= DO_USB_CPU0= DO_USB_RT=
+DO_START=0 DO_BOOT=0 DO_HEADLESS=0 DO_AP=0 DO_CPU='' DO_USB_CPU0='' DO_USB_RT=''
 for arg in "$@"; do
   case $arg in
     --ap) DO_AP=1 ;;

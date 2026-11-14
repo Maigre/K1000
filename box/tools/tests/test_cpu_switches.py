@@ -528,3 +528,19 @@ def test_the_units_verify_with_systemd(tmp_path, switch):
     r = subprocess.run(["systemd-analyze", "verify", str(tmp_path / name)], capture_output=True, text=True)
     bad = [line for line in (r.stdout + r.stderr).splitlines() if name in line and "k1000-cpu.py" not in line]
     assert not bad, bad
+
+
+@pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="no systemd-analyze")
+@pytest.mark.parametrize("unit", ["k1000.service", "camillagui.service"])
+def test_the_usb_cpu0_dropins_verify_after_the_processor_settings_ones(tmp_path, unit):
+    """Each unit with both drop-ins, the way systemd finds them (51- read after 50-)."""
+    (tmp_path / unit).write_text((BOX / "systemd" / unit).read_text())
+    d = tmp_path / f"{unit}.d"
+    d.mkdir()
+    name = unit.removesuffix(".service")
+    (d / "50-k1000-cpu.conf").write_text((CPU_DIR / f"{name}.conf").read_text())
+    (d / "51-k1000-usb-cpu0.conf").write_text((CPU_DIR / f"usb-cpu0-{name}.conf").read_text())
+    assert sorted(p.name for p in d.iterdir()) == ["50-k1000-cpu.conf", "51-k1000-usb-cpu0.conf"]
+    r = subprocess.run(["systemd-analyze", "verify", str(tmp_path / unit)], capture_output=True, text=True)
+    bad = [line for line in (r.stdout + r.stderr).splitlines() if "k1000-cpu.conf" in line or "usb-cpu0" in line]
+    assert not bad, bad
