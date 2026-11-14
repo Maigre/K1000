@@ -16,12 +16,14 @@
 #   it on 2-3). systemd itself has core 1 from 51-k1000-usb-cpu0.conf at install.sh's
 #   daemon-reload; this moves what was already running.
 # It writes what it moved, kept and was refused to /run/k1000-usb-cpu0/report, which
-# `k1000-cpu.py check` reads.
+# `k1000-cpu.py check` reads, with the cores each thread it moved had, which undo reads.
 #
 # Stopped, or after a failed start, ExecStopPost undoes it: interrupts and workqueues back on
-# every core, the threads on core 1 alone back on 0 and 1. A boot without the unit gives the same.
-# No restart of any service and no reboot, either way. Like every install.sh run: never during a
-# show.
+# every core; each thread it moved back on the cores it had; the threads systemd started meanwhile
+# on core 1 back on 0 and 1; a login session's commands keep their cores (a reader the bench
+# pinned to core 1 keeps its pin). With the drop-ins removed (install.sh), a boot without the unit
+# gives the same. No restart of any service and no reboot, either way. Like every install.sh run:
+# never during a show.
 #
 # Why a unit and not irqaffinity=1 on the kernel command line: the same interrupts move either
 # way, but this needs no edit of the boot files and no reboot, on or off, so the bench can switch

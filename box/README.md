@@ -75,7 +75,7 @@ The order at power-on:
 | `/etc/systemd/system/k1000-usb-cpu0.service`, `/etc/systemd/system.conf.d/51-k1000-usb-cpu0.conf`, `/etc/systemd/system/{k1000,camillagui}.service.d/51-k1000-usb-cpu0.conf` | bench switch usb-cpu0, from `cpu/`, only after `install.sh --usb-cpu0-on`: core 0 left to the USB handling (D-023) |
 | `/etc/systemd/system/k1000-usb-rt.service` | bench switch usb-rt, from `cpu/`, only after `install.sh --usb-rt-on`: `ksoftirqd/0` at real-time priority (D-023) |
 | `/etc/k1000/usb-cpu0`, `/etc/k1000/usb-rt` | each switch's choice: `on` after its `-on` flag, `off` after its `-off` flag or `--cpu-off`; absent = off |
-| `/run/k1000-usb-cpu0/report` | while usb-cpu0 is applied: the interrupts it moved, kept on core 0 and the kernel refused (read by `tools/k1000-cpu.py check`) |
+| `/run/k1000-usb-cpu0/report` | while usb-cpu0 is applied: the interrupts it moved, kept on core 0 and the kernel refused (read by `tools/k1000-cpu.py check`), and the cores each thread it moved had (read by its undo, which puts them back) |
 | `/etc/systemd/journald.conf.d/50-k1000-journal.conf` | journal on the SD card, 32 MB cap (applies at the next reboot) |
 | `/etc/modules-load.d/k1000.conf` | `i2c-dev` at boot: `/dev/i2c-1`, the knob board (install.sh `--boot`) |
 | `/etc/rpi/swap.conf.d/50-k1000.conf` | swap in RAM only (zram), from `tools/k1000-lean.sh` |

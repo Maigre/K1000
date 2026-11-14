@@ -409,8 +409,11 @@ The unit (`/opt/k1000/tools/k1000-cpu.py usb-cpu0 apply`) logs what it moved, wh
 never touches the engine: an engine still allowed on core 0 (the processor settings just turned
 on, the engine not restarted since) is a warning. Off: every interrupt on core 1 alone back on
 every core (except the ones it found off core 0 already), new interrupts and the workqueues on
-every core, the threads on core 1 alone back on cores 0 and 1, and systemd back on 0 and 1 at the
-daemon-reload: what a boot without the switch gives.
+every core, each thread it moved back on the cores it had (the report keeps them, by thread and
+start time), the threads systemd started meanwhile (k1000 or CamillaGUI restarted, a new service)
+back on cores 0 and 1, and systemd's default back to 0 and 1 at the daemon-reload: what a boot
+without the switch gives. A login session's commands started meanwhile keep the core they
+inherited, and a reader the bench pinned to core 1 (`taskset -c 1`) keeps its pin.
 
 What stays on core 0: the xHCI's interrupt, the M4's USB host (an MSI behind the PCIe controller,
 which the kernel refuses to move; the switch never writes it, even on a kernel that would allow

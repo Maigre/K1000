@@ -17,8 +17,10 @@ Commands (apply and undo run as root, from their units; check needs no root and 
                   workqueues leave core 0; every user-space thread allowed on core 0 goes to
                   core 1, except the engine's. Never the xHCI's interrupt. Writes what it did to
                   $RUNTIME_DIRECTORY/report (/run/k1000-usb-cpu0/report).
-  usb-cpu0 undo   Interrupts and workqueues back on every core, threads on core 1 alone back on
-                  cores 0 and 1 (the processor settings' cores).
+  usb-cpu0 undo   Interrupts and workqueues back on every core; each thread apply moved back on
+                  the cores it had (the report names them), the threads systemd started meanwhile
+                  on cores 0 and 1 (the processor settings' cores). A login session's commands
+                  started meanwhile keep their cores (a reader the bench pinned to core 1 too).
   usb-rt apply    k1000-usb-rt.service, "real-time priority for the deferred USB work":
                   ksoftirqd/0, and the xHCI's interrupt thread if the kernel runs one (threadirqs),
                   at SCHED_FIFO 51. Refused, with nothing changed, while the kernel's real-time
@@ -145,6 +147,7 @@ class Task:
     policy: int
     prio: int
     unit: str          # the systemd unit its cgroup names ("" for none)
+    start: int = 0     # when it started (stat field 22): a thread id reused later is another thread
 
     @property
     def kernel(self) -> bool:
@@ -187,7 +190,8 @@ def tasks(box: Box) -> list[Task]:
             rest = stat[stat.rindex(")") + 2:].split()     # fields 3 on (the name may hold spaces)
             try:
                 out.append(Task(int(pdir.name), int(t.name), f.get("Name", "?"), int(rest[6]),
-                                parse_cpus(f.get("Cpus_allowed_list")), int(rest[38]), int(rest[37]), unit))
+                                parse_cpus(f.get("Cpus_allowed_list")), int(rest[38]), int(rest[37]), unit,
+                                int(rest[19])))
             except (ValueError, IndexError):
                 continue
     return sorted(out, key=lambda t: (t.pid, t.tid))
@@ -234,7 +238,7 @@ def apply_usb_cpu0(box: Box, report_dir: str | None = None) -> tuple[list[str], 
     if not target:
         return [f"core {fmt_cpus(USB_CPU0_CORES)} is not online: nothing changed"], 1
     record: dict = {"applied": time.strftime("%Y-%m-%dT%H:%M:%S"), "moved": [], "kept": [],
-                    "refused": [], "elsewhere": []}
+                    "refused": [], "elsewhere": [], "thread_cores": []}
     for irq in irqs(box):
         if not irq.names:            # no handler, or a demultiplexer's (the PCIe MSI's): left alone
             continue
@@ -282,6 +286,7 @@ def apply_usb_cpu0(box: Box, report_dir: str | None = None) -> tuple[list[str], 
         try:
             box.kernel.set_affinity(t.tid, target)
             moved += 1
+            record["thread_cores"].append([t.tid, t.start, fmt_cpus(t.cpus)])   # for undo
         except ProcessLookupError:
             pass
         except OSError as e:
@@ -294,9 +299,14 @@ def apply_usb_cpu0(box: Box, report_dir: str | None = None) -> tuple[list[str], 
                    "settings reach it at its next start (between shows: sudo systemctl restart camilladsp)")
     record["threads"] = moved
     if report_dir:
-        try:      # applied again without an undo between: what was off core 0 is the first run's view
-            record["elsewhere"] = json.loads(Path(report_dir, "report").read_text())["elsewhere"]
-        except (OSError, ValueError, KeyError, TypeError):
+        try:      # applied again without an undo between: what was off core 0, and each moved
+            # thread's cores, are the first run's view (this run found those threads on core 1)
+            first = json.loads(Path(report_dir, "report").read_text())
+            record["elsewhere"] = first["elsewhere"]
+            seen = {(r[0], r[1]) for r in first.get("thread_cores", [])}
+            record["thread_cores"] = first.get("thread_cores", []) + [
+                r for r in record["thread_cores"] if (r[0], r[1]) not in seen]
+        except (OSError, ValueError, KeyError, TypeError, IndexError):
             pass
         try:
             Path(report_dir, "report").write_text(json.dumps(record, indent=1) + "\n")
@@ -306,17 +316,24 @@ def apply_usb_cpu0(box: Box, report_dir: str | None = None) -> tuple[list[str], 
 
 
 def undo_usb_cpu0(box: Box, report_dir: str | None = None) -> tuple[list[str], int]:
-    """Back to what a boot without the switch gives (the processor settings' cores for threads).
-    Every interrupt on core 1 alone goes back on every core (the ones apply moved, and the ones set
-    up since), except those apply found off core 0 already (its report, when it has one)."""
+    """Back to what a boot without the switch gives. Every interrupt on core 1 alone goes back on
+    every core (the ones apply moved, and the ones set up since), except those apply found off core
+    0 already. Each thread apply moved, still on core 1 alone, gets back the cores it had; another
+    thread on core 1 alone gets the processor settings' cores when systemd started it (PID 1, a
+    service: it inherited core 1 from the switch), and is left alone otherwise (a login session's
+    commands, such as a reader the bench pinned to core 1). Both lists come from apply's report;
+    without one, only the second rule applies."""
     log, rc = [], 0
     on = box.online()
     target = USB_CPU0_CORES & on
     elsewhere: set[int] = set()
+    had: dict[tuple[int, int], frozenset] = {}
     if report_dir:
         try:
-            elsewhere = set(json.loads(Path(report_dir, "report").read_text()).get("elsewhere", []))
-        except (OSError, ValueError, AttributeError):
+            report = json.loads(Path(report_dir, "report").read_text())
+            elsewhere = set(report.get("elsewhere", []))
+            had = {(int(r[0]), int(r[1])): parse_cpus(r[2]) for r in report.get("thread_cores", [])}
+        except (OSError, ValueError, AttributeError, TypeError, IndexError):
             pass
     back = []
     for irq in irqs(box):
@@ -337,17 +354,26 @@ def undo_usb_cpu0(box: Box, report_dir: str | None = None) -> tuple[list[str], i
             log.append(f"ERROR: {path}: {e.strerror or e}")
             rc = 1
     log.append(f"new interrupts and kernel workqueues: cores {fmt_cpus(on)}")
-    cores = BASE_CORES & on
-    moved = 0
+    base = BASE_CORES & on
+    back_had, back_base, left = 0, 0, 0
     for t in tasks(box):
         if t.kernel or t.unit == ENGINE_UNIT or t.cpus != target:
             continue
+        cores = had.get((t.tid, t.start))
+        if cores is None and not (t.tid == 1 or t.unit.endswith(".service")):
+            left += 1
+            continue
         try:
-            box.kernel.set_affinity(t.tid, cores)
-            moved += 1
+            box.kernel.set_affinity(t.tid, base if cores is None else (cores & on) or base)
         except OSError:
-            pass
-    log.append(f"{moved} user-space threads back on cores {fmt_cpus(cores)}")
+            continue
+        if cores is None:
+            back_base += 1
+        else:
+            back_had += 1
+    log.append(f"{back_had} user-space threads back on the cores they had, {back_base} started by systemd "
+               f"meanwhile on cores {fmt_cpus(base)}"
+               + (f"; {left} of login sessions left on core {fmt_cpus(target)}" if left else ""))
     if report_dir:
         Path(report_dir, "report").unlink(missing_ok=True)
     return log, rc

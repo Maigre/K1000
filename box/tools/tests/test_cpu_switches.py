@@ -132,10 +132,10 @@ class FakePi:
             self.kernel.refuse.add(self.root / f"proc/irq/{n}/smp_affinity_list")
 
     def task(self, pid: int, tid: int | None = None, comm: str = "x", cpus: str = "0-3",
-             kernel: bool = False, policy: int = 0, prio: int = 0, unit: str = "") -> None:
+             kernel: bool = False, policy: int = 0, prio: int = 0, unit: str = "", start: int = 0) -> None:
         tid = tid or pid
         self.tasks[tid] = dict(pid=pid, comm=comm, cpus=cpus, flags=PF_KTHREAD if kernel else 0x400100,
-                               policy=policy, prio=prio)
+                               policy=policy, prio=prio, start=start)
         self.w(f"proc/{pid}/cgroup", f"0::/system.slice/{unit}\n" if unit else "0::/\n")
         self._write_task(tid)
 
@@ -145,7 +145,8 @@ class FakePi:
         self.w(f"{d}/status", f"Name:\t{t['comm']}\nUmask:\t0022\nState:\tS (sleeping)\nTgid:\t{t['pid']}\n"
                               f"PPid:\t1\nCpus_allowed:\tf\nCpus_allowed_list:\t{t['cpus']}\n")
         rest = ["S"] + ["0"] * 49                          # stat fields 3 to 52
-        rest[6], rest[37], rest[38] = str(t["flags"]), str(t["prio"]), str(t["policy"])
+        rest[6], rest[19] = str(t["flags"]), str(t["start"])           # fields 9 and 22
+        rest[37], rest[38] = str(t["prio"]), str(t["policy"])           # fields 40 and 41
         self.w(f"{d}/stat", f"{tid} ({t['comm']}) " + " ".join(rest) + "\n")
 
     def set_task(self, tid: int, **kw) -> None:
@@ -251,6 +252,8 @@ def test_usb_cpu0_moves_what_can_move_off_core_0_and_keeps_the_usb_host(pi, tmp_
     assert [r[:2] for r in rec["refused"]] == [[11, ["arch_timer"]]]
     assert [r[0] for r in rec["moved"]] == [40, 41, 42] and rec["threads"] == 7
     assert rec["elsewhere"] == [45]
+    assert [r[0] for r in rec["thread_cores"]] == [1, 300, 800, 801, 900, 950, 1200]   # for undo
+    assert {r[2] for r in rec["thread_cores"]} == {"0-1"}
 
 
 def test_usb_cpu0_never_moves_the_engine_even_when_it_is_on_core_0(pi):
@@ -282,6 +285,37 @@ def test_usb_cpu0_undo_gives_back_what_a_boot_without_it_gives(pi, tmp_path):
     assert not [c for c in pi.kernel.calls if c[0] == "write" and "irq/37/" in c[1]]
 
 
+def test_usb_cpu0_undo_gives_each_thread_back_its_own_cores(pi, tmp_path):
+    """The bench pins its usbmon reader to core 1 (taskset -c 1); a helper may have every core.
+    Undo puts back what apply changed, and only that, by thread and start time."""
+    pi.task(1500, comm="awk", cpus="1", start=5000)                  # pinned by the bench, in its session
+    pi.task(1600, comm="helper", cpus="0-3", start=5100)             # allowed everywhere
+    pi.task(1700, comm="pinned0", cpus="0", start=5200)              # pinned to core 0 by hand
+    run = tmp_path / "run"
+    run.mkdir()
+    kc.apply_usb_cpu0(pi.box(), str(run))
+    assert pi.cpus(1500) == "1" and pi.cpus(1600) == "1" and pi.cpus(1700) == "1"
+    assert [1500, 0, "1"] not in json.loads((run / "report").read_text())["thread_cores"]  # not moved
+    pi.task(1800, comm="shell", cpus="1", start=6000)                # a login session's, started meanwhile
+    pi.task(1900, comm="restarted", cpus="1", unit="camillagui.service", start=6100)   # systemd's
+    pi.set_task(1200, start=6200)                                    # sshd's id, reused by another thread
+    log, rc = kc.undo_usb_cpu0(pi.box(), str(run))
+    assert rc == 0, log
+    assert [pi.cpus(t) for t in (1500, 1600, 1700, 1800, 1900)] == ["1", "0-3", "0", "1", "0-1"]
+    assert pi.cpus(1200) == "0-1"                                    # a service's: the base cores, not its record
+    assert pi.cpus(1) == pi.cpus(800) == "0-1"
+    text = "\n".join(log)
+    assert "8 user-space threads back on the cores they had, 2 started by systemd meanwhile on cores 0-1" in text
+    assert "2 of login sessions left on core 1" in text
+
+
+def test_usb_cpu0_undo_without_a_report_gives_systemd_s_threads_the_base_cores(pi):
+    kc.apply_usb_cpu0(pi.box())                                      # no report written
+    pi.task(1500, comm="awk", cpus="1")
+    log, rc = kc.undo_usb_cpu0(pi.box())
+    assert rc == 0 and pi.cpus(1) == pi.cpus(800) == pi.cpus(1200) == "0-1" and pi.cpus(1500) == "1", log
+
+
 def test_usb_cpu0_twice_changes_nothing_more(pi, tmp_path):
     run = tmp_path / "run"
     run.mkdir()
@@ -294,8 +328,11 @@ def test_usb_cpu0_twice_changes_nothing_more(pi, tmp_path):
     assert {c[1] for c in again if c[0] == "write"} == {"proc/irq/11/smp_affinity_list",
                                                         "proc/irq/default_smp_affinity",
                                                         "sys/devices/virtual/workqueue/cpumask"}
-    # and its undo still knows which interrupt was off core 0 before the first run
-    assert json.loads((run / "report").read_text())["elsewhere"] == [45]
+    # and its undo still knows which interrupt was off core 0 before the first run, and the cores
+    # each thread had before it
+    rec = json.loads((run / "report").read_text())
+    assert rec["elsewhere"] == [45] and len(rec["thread_cores"]) == 7
+    assert {r[2] for r in rec["thread_cores"]} == {"0-1"}
     kc.undo_usb_cpu0(pi.box(), str(run))
     assert [pi.irq_cpus(n) for n in (40, 41, 42, 45)] == ["0-3", "0-3", "0-3", "1"]
 
