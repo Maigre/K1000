@@ -627,13 +627,16 @@ def test_install_keeps_the_journal_and_never_touches_the_network():
 CPU_DIR = BOX / "cpu"
 
 
-def _cpu_table() -> dict[str, str]:
-    """install.sh's CPU_FILES: file in box/cpu/ -> where it is installed."""
-    m = re.search(r"^CPU_FILES=\(\n(.*?)^\)\n", INSTALL.read_text(), re.S | re.M)
-    assert m, "CPU_FILES not found in install.sh"
+def _cpu_table(name: str = "CPU_FILES") -> dict[str, str]:
+    """install.sh's CPU_FILES (or a bench switch's table): file in box/cpu/ -> where it is installed."""
+    m = re.search(rf"^{name}=\(\n(.*?)^\)\n", INSTALL.read_text(), re.S | re.M)
+    assert m, f"{name} not found in install.sh"
     rows = re.findall(r'^\s*"(\S+) (\S+)"\s*$', m.group(1), re.M)
     assert len(rows) == len(m.group(1).strip().splitlines())
     return dict(rows)
+
+
+SWITCHES = {"usb-cpu0": "USB_CPU0_FILES", "usb-rt": "USB_RT_FILES"}     # D-023 point 3
 
 
 def _ini(path: Path, section: str) -> dict[str, str]:
@@ -658,7 +661,19 @@ def _cpus(spec: str) -> set[int]:
 
 def test_cpu_files_and_table_agree():
     table = _cpu_table()
-    assert sorted(table) == sorted(p.name for p in CPU_DIR.iterdir()), table
+    switches = {s: _cpu_table(t) for s, t in SWITCHES.items()}
+    every = [*table] + [f for t in switches.values() for f in t]
+    assert sorted(every) == sorted(p.name for p in CPU_DIR.iterdir()), every
+    for name, t in switches.items():
+        for src, dst in t.items():
+            if dst.endswith(".service.d/51-k1000-usb-cpu0.conf"):     # after 50-k1000-cpu.conf
+                unit = dst.split("/")[-2][:-2]
+                assert (BOX / "systemd" / unit).exists() and src == f"{name}-{unit.removesuffix('.service')}.conf"
+                assert dst.replace("51-k1000-usb-cpu0", "50-k1000-cpu") in table.values(), dst
+            elif dst.startswith("/etc/systemd/system.conf.d/"):
+                assert dst == "/etc/systemd/system.conf.d/51-k1000-usb-cpu0.conf" and src == f"{name}-system.conf"
+            else:                                                       # the switch's own unit
+                assert dst == f"/etc/systemd/system/k1000-{name}.service" and src == f"k1000-{name}.service"
     for src, dst in table.items():
         if dst.endswith(".service.d/50-k1000-cpu.conf"):
             unit = dst.split("/")[-2][:-2]
@@ -715,25 +730,57 @@ def test_cpu_dropins_verify_with_their_units(tmp_path):
         assert not bad, bad
 
 
-def _run_cpu_block(root: Path, do_cpu: str = "") -> tuple[str, dict[str, int]]:
-    """install.sh step 6b against a fake /etc under `root`. `put` is a stand-in (the real one
-    chowns to root): install when the content differs, report it, set PUT_CHANGED."""
+FAKE_SWITCH_SYSTEMCTL = """u=$(echo "$*" | awk '{{print $NF}}')
+echo "$*" >> "{w}/calls"
+case $1 in
+  is-enabled) [ -e "{w}/state/$u.enabled" ] ;;
+  is-active) [ -e "{w}/state/$u.active" ] ;;
+  enable) touch "{w}/state/$u.enabled" ;;
+  disable) [ -e "{root}/etc/systemd/system/$u" ] && echo "  (its unit file still there)" >> "{w}/calls"
+           rm -f "{w}/state/$u.enabled" "{w}/state/$u.active" ;;
+  restart) if [ "$u" = "$FAIL_UNIT" ]; then exit 1; fi; touch "{w}/state/$u.active" ;;
+esac
+"""
+
+
+def _run_cpu_block(root: Path, do_cpu: str = "", usb_cpu0: str = "", usb_rt: str = "",
+                   fail: str = "") -> tuple[str, dict[str, int]]:
+    """install.sh steps 6b and 6c against a fake /etc under `root` and a fake systemctl (its calls
+    in root/w/calls, the units' enabled/active state in root/w/state). `put` is a stand-in (the
+    real one chowns to root): install when the content differs, report it, set PUT_CHANGED.
+    `fail`: a unit whose (re)start fails."""
     text = INSTALL.read_text()
-    table = re.search(r"^CPU_FILES=\(\n.*?^\)\n", text, re.S | re.M).group(0)
-    choice = re.search(r"^CPU_CHOICE=.*\ncpu_choice\(\) .*\n", text, re.M).group(0)
+    tables = re.search(r"^CPU_FILES=\(\n.*?^switch_choice\(\) .*?\n", text, re.S | re.M).group(0)
     start = text.index("# --- 6b. processor settings")
     block = text[start:text.index("if [ $RELOAD = 1 ]; then", start)]
+    start = text.index("# --- 6c. the bench switches")
+    block6c = text[start:text.index("# --- 7. ", start)]
+    w = root / "w"
+    (w / "state").mkdir(parents=True, exist_ok=True)
+    fb = root / "bin"
+    fb.mkdir(exist_ok=True)
+    _bin(fb, "systemctl", FAKE_SWITCH_SYSTEMCTL.format(w=w, root=root))
     prog = ('set -euo pipefail\nCHANGES=0 RELOAD=0\nnote() { printf "%s\\n" "$*"; }\n'
             'changed() { CHANGES=$((CHANGES + 1)); note "$*"; }\n'
             'put() { PUT_CHANGED=0; if [ -f "$2" ] && cmp -s "$1" "$2"; then return 0; fi; '
             'mkdir -p "$(dirname "$2")"; cp "$1" "$2"; changed "installed $2"; PUT_CHANGED=1; }\n'
-            f'SRC={BOX}\nTMP={root}/tmp\nmkdir -p "$TMP"\nDO_CPU={do_cpu}\n'
-            + (table + choice + block).replace("/etc/", f"{root}/etc/")
+            f'SRC={BOX}\nAPP=/opt/k1000\nTMP={root}/tmp\nmkdir -p "$TMP"\n'
+            f'DO_CPU={do_cpu} DO_USB_CPU0={usb_cpu0} DO_USB_RT={usb_rt}\n'
+            + (tables + block).replace("/etc/", f"{root}/etc/")
+            + 'echo "RELOAD=$RELOAD"\n' + block6c.replace("/etc/", f"{root}/etc/")
             + 'echo "CHANGES=$CHANGES RELOAD=$RELOAD"\n')
-    r = subprocess.run(["bash", "-c", prog], capture_output=True, text=True)
+    env = dict(os.environ, PATH=f"{fb}:/usr/bin:/bin", FAIL_UNIT=fail)
+    r = subprocess.run(["bash", "-c", prog], capture_output=True, text=True, env=env)
     assert r.returncode == 0, r.stderr
     tail = r.stdout.strip().splitlines()[-1]
     return r.stdout, {k: int(v) for k, v in (kv.split("=") for kv in tail.split())}
+
+
+def _calls(root: Path) -> list[str]:
+    f = root / "w" / "calls"
+    out = f.read_text().splitlines() if f.exists() else []
+    f.unlink(missing_ok=True)
+    return out
 
 
 def test_install_cpu_settings_on_off_and_remembered(tmp_path):
@@ -749,7 +796,7 @@ def test_install_cpu_settings_on_off_and_remembered(tmp_path):
 
     out, n = _run_cpu_block(tmp_path, "off")                # --cpu-off: all removed, remembered
     assert not [p for p in installed if p.exists()], out
-    assert n == {"CHANGES": len(table) + 1, "RELOAD": 1}, out         # + the choice file
+    assert n == {"CHANGES": len(table) + 3, "RELOAD": 1}, out   # + its choice file and both switches'
     assert "processor settings off: reboot to apply" in out           # not "from the next boot"
     assert "shares cores 0-1 with everything else" in out
     choice = tmp_path / "etc/k1000/cpu-tuning"
@@ -773,7 +820,8 @@ def test_install_cpu_settings_on_off_and_remembered(tmp_path):
 
 
 def _run_cpu_start_guard(root: Path, *, start: int, do_cpu: str = "", choice: str | None = None,
-                         pid1: str, online: str = "0-3") -> subprocess.CompletedProcess:
+                         pid1: str, online: str = "0-3", usb_cpu0: str = "",
+                         usb_rt: str = "") -> subprocess.CompletedProcess:
     """install.sh's --start guard (before step 0) against a fake /etc, /proc/1/status and
     /sys/devices/system/cpu/online under `root`."""
     text = INSTALL.read_text()
@@ -789,7 +837,7 @@ def _run_cpu_start_guard(root: Path, *, start: int, do_cpu: str = "", choice: st
         choice_file.parent.mkdir(parents=True, exist_ok=True)
         choice_file.write_text(f"# K1000 processor settings\n{choice}\n")
     prog = ('set -euo pipefail\ndie() { printf "%s\\n" "$*" >&2; exit 1; }\n'
-            f'DO_START={start} DO_CPU={do_cpu}\n'
+            f'DO_START={start} DO_CPU={do_cpu} DO_USB_CPU0={usb_cpu0} DO_USB_RT={usb_rt}\n'
             + (choice_def + block).replace("/etc/", f"{root}/etc/")
                                   .replace("/proc/1/status", f"{root}/proc/1/status")
                                   .replace("/sys/devices/system/cpu/online", f"{root}/online")
@@ -829,6 +877,125 @@ def test_install_cpu_flags_parse_and_are_documented():
     assert r.returncode == 2 and "unknown option '--cpu-of'" in r.stderr, r.stderr
     r = subprocess.run(["bash", str(INSTALL), "--help"], capture_output=True, text=True)
     assert r.returncode == 0 and "--cpu-off" in r.stdout and "--cpu-on" in r.stdout
+
+
+# --------------------------------------------------------------------------- the bench switches
+@pytest.mark.parametrize("switch", sorted(SWITCHES))
+def test_install_bench_switch_off_by_default_on_off_and_remembered(tmp_path, switch):
+    """D-023 point 3: each switch alone, off by default; on installs its files, enables its unit
+    and applies it now (after the daemon-reload); off stops its unit while the unit file is still
+    there (its ExecStopPost undoes it), then removes its files; the choice is remembered."""
+    table = _cpu_table(SWITCHES[switch])
+    other = next(s for s in SWITCHES if s != switch)
+    unit = f"k1000-{switch}.service"
+    flag = {"usb-cpu0": "usb_cpu0", "usb-rt": "usb_rt"}[switch]
+    installed = [tmp_path / dst.lstrip("/") for dst in table.values()]
+    choice = tmp_path / f"etc/k1000/{switch}"
+
+    out, n = _run_cpu_block(tmp_path)                       # first install: off, nothing of it
+    assert not [p for p in installed if p.exists()] and not choice.exists(), out
+    assert _calls(tmp_path) == [] and n["CHANGES"] == len(_cpu_table()), out
+
+    out, n = _run_cpu_block(tmp_path, **{flag: "on"})       # --<switch>-on
+    for src, p in zip(table, installed):
+        assert p.read_text() == (CPU_DIR / src).read_text(), p
+    assert choice.read_text().splitlines()[-1] == "on"
+    assert n == {"CHANGES": len(table) + 3, "RELOAD": 1}, out       # + choice, enable, applied
+    assert _calls(tmp_path) == [f"is-enabled --quiet {unit}", f"enable --quiet {unit}", f"restart {unit}"]
+    assert f"{switch} applied now ({unit}; no restart or reboot needed)" in out
+    assert not (tmp_path / f"etc/k1000/{other}").exists()           # the other switch: untouched
+    assert not [p for p in (tmp_path / "etc/systemd/system").glob(f"k1000-{other}.service")]
+
+    out, n = _run_cpu_block(tmp_path)                       # a later plain run: kept, not re-applied
+    assert n == {"CHANGES": 0, "RELOAD": 0}, out
+    assert _calls(tmp_path) == [f"is-enabled --quiet {unit}", f"is-active --quiet {unit}"]
+
+    (tmp_path / "w/state" / f"{unit}.active").unlink()      # it failed at the last boot: retried
+    out, n = _run_cpu_block(tmp_path)
+    assert n["CHANGES"] == 1 and f"restart {unit}" in _calls(tmp_path), out
+
+    out, n = _run_cpu_block(tmp_path, **{flag: "off"})      # --<switch>-off
+    assert _calls(tmp_path) == [f"disable --now --quiet {unit}", "  (its unit file still there)"]
+    assert not [p for p in installed if p.exists()], out
+    assert choice.read_text().splitlines()[-1] == "off"
+    assert n == {"CHANGES": len(table) + 1, "RELOAD": 1}, out
+    assert f"{unit} stopped and disabled: what it applied is undone" in out
+    for p in _cpu_table().values():                         # the processor settings stay, dirs too
+        assert (tmp_path / p.lstrip("/")).exists(), p
+    out, n = _run_cpu_block(tmp_path)                       # still off, nothing to do
+    assert n == {"CHANGES": 0, "RELOAD": 0} and _calls(tmp_path) == [], out
+
+
+def test_install_cpu_off_takes_both_switches_off_and_cpu_on_alone_never_brings_one_back(tmp_path):
+    _run_cpu_block(tmp_path, usb_cpu0="on", usb_rt="on")
+    _calls(tmp_path)
+    switch_files = [tmp_path / d.lstrip("/") for t in SWITCHES.values() for d in _cpu_table(t).values()]
+    assert all(p.exists() for p in switch_files)
+
+    out, n = _run_cpu_block(tmp_path, "off")                # --cpu-off
+    calls = _calls(tmp_path)
+    for s in SWITCHES:
+        i = calls.index(f"disable --now --quiet k1000-{s}.service")
+        assert calls[i + 1] == "  (its unit file still there)", calls
+        assert (tmp_path / f"etc/k1000/{s}").read_text().splitlines()[-1] == "off"
+    assert not [p for p in switch_files if p.exists()], out
+    assert not [p for p in (tmp_path / "etc/systemd/system").rglob("*k1000*cpu*")], out   # nothing left
+
+    out, n = _run_cpu_block(tmp_path, "on")                 # --cpu-on: the settings, not the switches
+    assert all((tmp_path / d.lstrip("/")).exists() for d in _cpu_table().values())
+    assert not [p for p in switch_files if p.exists()] and _calls(tmp_path) == [], out
+
+
+def test_install_switch_choice_files_read_like_the_cpu_one(tmp_path):
+    """A choice file edited by hand: "on" is on, anything else (or nothing) off; comments ignored."""
+    _run_cpu_block(tmp_path)
+    unit = tmp_path / "etc/systemd/system/k1000-usb-rt.service"
+    choice = tmp_path / "etc/k1000/usb-rt"
+    choice.parent.mkdir(parents=True, exist_ok=True)
+    for text, on in (("# off\n  on  \n", True), ("# on\nmaybe\n", False), ("", False), ("on", True)):
+        choice.write_text(text)
+        _run_cpu_block(tmp_path)
+        assert unit.exists() is on, text
+    # the processor settings off (by hand too): the switch is off whatever its own file says
+    (tmp_path / "etc/k1000/cpu-tuning").write_text("off\n")
+    _run_cpu_block(tmp_path)
+    assert not unit.exists() and choice.read_text() == "on"
+
+
+def test_install_a_switch_that_fails_warns_and_the_install_goes_on(tmp_path):
+    out, n = _run_cpu_block(tmp_path, usb_rt="on", fail="k1000-usb-rt.service")
+    assert "WARNING: k1000-usb-rt.service failed, usb-rt is NOT applied: journalctl -u k1000-usb-rt" in out
+    assert "usb-rt applied now" not in out
+    out, n = _run_cpu_block(tmp_path)                       # retried at the next run (not active)
+    assert "usb-rt applied now" in out
+
+
+def test_install_refuses_a_switch_while_the_processor_settings_are_off(tmp_path):
+    """Before any change: usb-cpu0 puts everything on core 1 but the engine, which only the
+    processor settings' drop-in keeps on 2-3."""
+    def run(**kw):
+        return _run_cpu_start_guard(tmp_path, start=0, pid1="0-3", **kw)
+
+    for kw in (dict(choice="off", usb_cpu0="on"), dict(choice="off", usb_rt="on")):
+        r = run(**kw)
+        assert r.returncode == 1 and "a bench switch needs them: add --cpu-on" in r.stderr, (kw, r.stdout)
+    for kw in (dict(choice="off", usb_cpu0="on", do_cpu="on"), dict(usb_rt="on"), dict(choice="on", usb_cpu0="on"),
+               dict(choice="off", usb_cpu0="off"), dict(choice="off")):
+        r = run(**kw)
+        assert r.returncode == 0 and r.stdout == "passed\n", (kw, r.stderr)
+
+
+def test_install_switch_flags_parse_are_documented_and_never_go_with_cpu_off():
+    for flag in ("--usb-cpu0-on", "--usb-cpu0-off", "--usb-rt-on", "--usb-rt-off"):
+        r = subprocess.run(["bash", str(INSTALL), flag, "--deps"], capture_output=True, text=True)
+        assert r.returncode == 0 and "rsync" in r.stdout.split(), (flag, r.stderr)
+    help_text = subprocess.run(["bash", str(INSTALL), "--help"], capture_output=True, text=True).stdout
+    for word in ("--usb-cpu0-on", "--usb-cpu0-off", "--usb-rt-on", "--usb-rt-off", "k1000-cpu.py check",
+                 "NOT yet measured"):
+        assert word in help_text, word
+    for flag in ("--usb-cpu0-on", "--usb-rt-on"):   # refused before the root check: no change possible
+        r = subprocess.run(["bash", str(INSTALL), "--cpu-off", flag], capture_output=True, text=True)
+        assert r.returncode == 2 and "--cpu-off takes the bench switches off too" in r.stderr, r.stderr
 
 
 # --------------------------------------------------------------------------- fake bins

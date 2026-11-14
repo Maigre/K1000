@@ -29,7 +29,19 @@
 #                                 Nice for k1000) off the box; later runs keep them off. Only a
 #                                 reboot applies it (between shows): --start is refused until then.
 #                                 `--cpu-on` puts them back (the default; when each part applies:
-#                                 step 6b)
+#                                 step 6b). --cpu-off also takes both bench switches off
+#   sudo ./install.sh --usb-cpu0-on  ... and bench switch "usb-cpu0" (D-023): core 0 left to the USB
+#                                 handling: every interrupt that can move, and every process but
+#                                 the engine, on core 1 (cpu/k1000-usb-cpu0.service). Applied at
+#                                 once and at every boot; `--usb-cpu0-off` undoes it at once (the
+#                                 default). No restart, no reboot
+#   sudo ./install.sh --usb-rt-on    ... and bench switch "usb-rt" (D-023): ksoftirqd/0, the kernel's
+#                                 deferred USB work, at real-time priority FIFO 51
+#                                 (cpu/k1000-usb-rt.service). The same: at once, every boot,
+#                                 `--usb-rt-off` (the default) undoes it at once
+#                                 Both switches: off by default, the choice remembered, only with
+#                                 the processor settings on; NOT yet measured against the delay
+#                                 steps. `/opt/k1000/tools/k1000-cpu.py check` says what is in force
 #   ./install.sh --deps           print the apt packages it may install, one per line (bootstrap.sh
 #                                 runs apt-get update only when one is missing)
 #
@@ -70,6 +82,22 @@ CPU_FILES=(
 )
 CPU_CHOICE=/etc/k1000/cpu-tuning
 cpu_choice() { grep -v '^[[:space:]]*#' "$CPU_CHOICE" 2>/dev/null | tr -d '[:space:]'; }   # off = off
+# The two bench switches against the USB stall (D-023 point 3; tools/k1000-cpu.py says why), the
+# same way: "<file in cpu/> <where it goes>", one table each, each with its unit (k1000-<name>
+# .service, which applies the runtime part) and its choice file. OFF unless the file says on, and
+# only with the processor settings on (step 6b).
+USB_CPU0_FILES=(
+  "usb-cpu0-system.conf /etc/systemd/system.conf.d/51-k1000-usb-cpu0.conf"
+  "usb-cpu0-k1000.conf /etc/systemd/system/k1000.service.d/51-k1000-usb-cpu0.conf"
+  "usb-cpu0-camillagui.conf /etc/systemd/system/camillagui.service.d/51-k1000-usb-cpu0.conf"
+  "k1000-usb-cpu0.service /etc/systemd/system/k1000-usb-cpu0.service"
+)
+USB_RT_FILES=(
+  "k1000-usb-rt.service /etc/systemd/system/k1000-usb-rt.service"
+)
+USB_CPU0_CHOICE=/etc/k1000/usb-cpu0
+USB_RT_CHOICE=/etc/k1000/usb-rt
+switch_choice() { grep -v '^[[:space:]]*#' "$1" 2>/dev/null | tr -d '[:space:]'; }   # on = on
 # smbus2 for the knob board (D-008: python3-smbus is GPL-2.0-only), qrcode for the PHONE page's
 # join codes and hostapd for the phone's access point (D-007, net/setup-ap.sh; installed even
 # without --ap, because a venue has no internet. Inert until then: Debian's own hostapd.service
@@ -85,12 +113,16 @@ GUI_URL=https://github.com/HEnquist/camillagui-backend/releases/download/v5.0.0-
 GUI_TGZ_SHA256=854552f3e74a156d25117a1ecca2df44c94aefbeb62e1c47ff23b19d6b0cc8a2
 GUI_BIN_SHA256=d993616caf6c67dc09b11a337d484ca2eca6c21c517305dc9d95df2f2e7bf14e
 
-DO_START=0 DO_BOOT=0 DO_HEADLESS=0 DO_AP=0 DO_CPU=
+DO_START=0 DO_BOOT=0 DO_HEADLESS=0 DO_AP=0 DO_CPU= DO_USB_CPU0= DO_USB_RT=
 for arg in "$@"; do
   case $arg in
     --ap) DO_AP=1 ;;
     --cpu-off) DO_CPU=off ;;
     --cpu-on) DO_CPU=on ;;
+    --usb-cpu0-on) DO_USB_CPU0=on ;;
+    --usb-cpu0-off) DO_USB_CPU0=off ;;
+    --usb-rt-on) DO_USB_RT=on ;;
+    --usb-rt-off) DO_USB_RT=off ;;
     --start) DO_START=1 ;;
     --boot) DO_BOOT=1 ;;
     --headless) DO_HEADLESS=1 ;;
@@ -99,6 +131,10 @@ for arg in "$@"; do
     *) echo "install.sh: unknown option '$arg' (try --help)" >&2; exit 2 ;;
   esac
 done
+if [ "$DO_CPU" = off ] && { [ "$DO_USB_CPU0" = on ] || [ "$DO_USB_RT" = on ]; }; then
+  echo "install.sh: --cpu-off takes the bench switches off too: not with --usb-cpu0-on or --usb-rt-on" >&2
+  exit 2
+fi
 
 CHANGES=0
 note() { printf 'k1000-install: %s\n' "$*"; }
@@ -169,6 +205,11 @@ if [ $DO_START = 1 ] && [ "${DO_CPU:-$(cpu_choice)}" = off ]; then
   if [ "$pid1_cpus" != "$online" ]; then
     die "processor settings off, but systemd still runs on cores $pid1_cpus of $online until the next boot, and an engine restarted now would share them with everything else: run without --start, then reboot (between shows)"
   fi
+fi
+# A bench switch builds on the processor settings (usb-cpu0 moves everything but the engine, which
+# only their drop-in keeps on cores 2-3), so it is refused while they are off, before any change.
+if { [ "$DO_USB_CPU0" = on ] || [ "$DO_USB_RT" = on ]; } && [ "${DO_CPU:-$(cpu_choice)}" = off ]; then
+  die "the processor settings are off (install.sh --cpu-off), and a bench switch needs them: add --cpu-on"
 fi
 
 # --- 0. the phone certificate (K1000_TLS_DIR), checked before anything changes -----------------
@@ -423,7 +464,7 @@ if [ $PUT_CHANGED = 1 ]; then
   note "persistent journal: applies at the next reboot (or now: sudo systemctl restart systemd-journald)"
 fi
 
-# --- 6b. processor settings (CPU_FILES, box/cpu/) ------------------------------------------------
+# --- 6b. processor settings (CPU_FILES, box/cpu/) and the bench switches' files -----------------
 # On unless CPU_CHOICE says off: --cpu-off writes it, --cpu-on rewrites it, so a later plain run
 # (every deploy) keeps the choice. When each part applies:
 # - on: the system-wide cores at the daemon-reload below (PID 1 re-reads system.conf.d), for what
@@ -438,6 +479,50 @@ if [ -n "$DO_CPU" ]; then
 fi
 cpu_on=1
 if [ "$(cpu_choice)" = off ]; then cpu_on=0; fi
+# The bench switches (USB_CPU0_FILES, USB_RT_FILES): on only when their choice file says on and
+# the processor settings are on. --cpu-off writes both off, so --cpu-on alone never brings one
+# back. Off: the unit is stopped and disabled while its file is still there (its ExecStopPost
+# undoes what it applied, at once), then the files go. On: the files here, the unit in step 6c,
+# after the daemon-reload.
+if [ "$DO_CPU" = off ]; then DO_USB_CPU0=off DO_USB_RT=off; fi
+set_choice() {   # FILE on|off NAME: remember a switch's choice
+  printf '# K1000 bench switch %s: on or off. Set by install.sh --%s-on / --%s-off (and --cpu-off).\n%s\n' "$3" "$3" "$3" "$2" > "$TMP/choice-$3"
+  put "$TMP/choice-$3" "$1" 644
+}
+if [ -n "$DO_USB_CPU0" ]; then set_choice "$USB_CPU0_CHOICE" "$DO_USB_CPU0" usb-cpu0; fi
+if [ -n "$DO_USB_RT" ]; then set_choice "$USB_RT_CHOICE" "$DO_USB_RT" usb-rt; fi
+usb_cpu0_on=0 usb_rt_on=0
+if [ $cpu_on = 1 ] && [ "$(switch_choice "$USB_CPU0_CHOICE")" = on ]; then usb_cpu0_on=1; fi
+if [ $cpu_on = 1 ] && [ "$(switch_choice "$USB_RT_CHOICE")" = on ]; then usb_rt_on=1; fi
+SWITCH_CHANGED=0
+switch_files() {   # NAME 0|1 ENTRY...: remove (0) or install (1) a switch's files; sets SWITCH_CHANGED
+  local name=$1 on=$2 e src dst unit=/etc/systemd/system/k1000-$1.service
+  shift 2
+  SWITCH_CHANGED=0
+  if [ "$on" = 0 ] && [ -e "$unit" ]; then
+    if systemctl disable --now --quiet "k1000-$name.service"; then
+      note "k1000-$name.service stopped and disabled: what it applied is undone"
+    else
+      note "WARNING: stopping k1000-$name.service failed (journalctl -u k1000-$name); a reboot undoes it"
+    fi
+  fi
+  for e in "$@"; do
+    src=${e%% *} dst=${e#* }
+    if [ "$on" = 1 ]; then
+      put "$SRC/cpu/$src" "$dst" 644
+      if [ $PUT_CHANGED = 1 ]; then SWITCH_CHANGED=1; fi
+    elif [ -e "$dst" ]; then
+      rm -f "$dst"
+      changed "removed $dst ($name off)"
+      SWITCH_CHANGED=1
+      case $dst in */*.service.d/*) rmdir "${dst%/*}" 2>/dev/null || true ;; esac   # if now empty
+    fi
+  done
+  if [ $SWITCH_CHANGED = 1 ]; then RELOAD=1; fi
+}
+USB_CPU0_NEW=0 USB_RT_NEW=0
+if [ $usb_cpu0_on = 0 ]; then switch_files usb-cpu0 0 "${USB_CPU0_FILES[@]}"; fi
+if [ $usb_rt_on = 0 ]; then switch_files usb-rt 0 "${USB_RT_FILES[@]}"; fi
 CPU_CHANGED=0
 for e in "${CPU_FILES[@]}"; do
   src=${e%% *} dst=${e#* }
@@ -459,6 +544,8 @@ if [ $CPU_CHANGED = 1 ]; then
     note "processor settings off: reboot to apply (between shows). Until then systemd keeps the cores it has, and an engine restarted before the reboot shares cores 0-1 with everything else"
   fi
 fi
+if [ $usb_cpu0_on = 1 ]; then switch_files usb-cpu0 1 "${USB_CPU0_FILES[@]}"; USB_CPU0_NEW=$SWITCH_CHANGED; fi
+if [ $usb_rt_on = 1 ]; then switch_files usb-rt 1 "${USB_RT_FILES[@]}"; USB_RT_NEW=$SWITCH_CHANGED; fi
 
 if [ $RELOAD = 1 ]; then
   systemctl daemon-reload
@@ -474,6 +561,28 @@ for u in "${UNITS[@]}"; do
     changed "enabled $u.service (starts at boot)"
   fi
 done
+
+# --- 6c. the bench switches that are on: applied now, and at every boot ------------------------
+# After the daemon-reload: systemd already gives what it starts the switch's cores. The unit runs
+# again only when its files changed (or it is not active: a failed start is retried); a switch
+# that fails warns and leaves the rest of the install alone (its ExecStopPost has undone it).
+switch_start() {   # NAME 0|1(on) 0|1(files changed)
+  local u=k1000-$1.service
+  [ "$2" = 1 ] || return 0
+  if ! systemctl is-enabled --quiet "$u" 2>/dev/null; then
+    systemctl enable --quiet "$u"
+    changed "enabled $u (applies $1 at every boot)"
+  fi
+  if [ "$3" = 1 ] || ! systemctl is-active --quiet "$u"; then
+    if systemctl restart "$u"; then
+      changed "$1 applied now ($u; no restart or reboot needed): check it with $APP/tools/k1000-cpu.py check"
+    else
+      note "WARNING: $u failed, $1 is NOT applied: journalctl -u ${u%.service}"
+    fi
+  fi
+}
+switch_start usb-cpu0 "$usb_cpu0_on" "$USB_CPU0_NEW"
+switch_start usb-rt "$usb_rt_on" "$USB_RT_NEW"
 
 # --- 7. optional: boot-level setup (--boot) ------------------------------------------------------
 if [ $DO_BOOT = 1 ]; then
@@ -582,7 +691,7 @@ fi
 for u in "${UNITS[@]}"; do
   note "$(printf '%-13s enabled=%-8s active=%s' "$u" "$(systemctl is-enabled "$u.service" 2>/dev/null || true)" "$(systemctl is-active "$u.service" 2>/dev/null || true)")"
 done
-for u in "${AP_UNITS[@]}"; do
+for u in "${AP_UNITS[@]}" k1000-usb-cpu0 k1000-usb-rt; do
   [ -e "/etc/systemd/system/$u.service" ] || continue
   note "$(printf '%-16s enabled=%-8s active=%s' "$u" "$(systemctl is-enabled "$u.service" 2>/dev/null || true)" "$(systemctl is-active "$u.service" 2>/dev/null || true)")"
 done
