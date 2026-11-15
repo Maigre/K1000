@@ -89,7 +89,9 @@ Why it is shaped like this:
   the base (the stream goes on); an underrun's recovery keeps it too (the growth then says what a
   resync would take back). Shown from GROWTH_SHOWN_MS up, never below: the transit part moves in
   USB_STEP_MS bands, the level's 10 s average by a few frames, and the smallest step seen on the
-  box was 1.0 ms (docs/17 §10). A delay that went down shows no growth.
+  box was 1.0 ms (docs/17 §10). The base and the figure are each rounded to 0.1 ms, so a growth
+  shown as 0.5 can be 0.40 ms of real change, one band; from 0.6 it is more than 0.5 ms. A delay
+  that went down shows no growth.
 - **After a restart the engine still reports the old stream's level** for up to its adjust period
   (10 s): the playback level lives outside a run (CamillaDSP lib.rs `PlaybackStatus`, which a new
   run's playback thread updates only at its first average, alsa_backend/device.rs; next5 0930f9b,
@@ -154,7 +156,7 @@ USB_KEEP_MS = 0.6
 # D-023: the growth since the stream last started is shown from this up (see above), and after a
 # restart the old stream's level is not taken for the new one for at most this long: the engine's
 # adjust period (10 s: K1000 leaves adjust_interval_s unset) and two polls.
-GROWTH_SHOWN_MS = 0.5
+GROWTH_SHOWN_MS = 0.6
 RESTART_SETTLE_S = 12.0
 _gaps = random.Random()          # each gap is 0.5 to 1.5 x USB_GAP_S (see read_transits)
 

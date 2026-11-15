@@ -238,7 +238,9 @@ def test_the_growth_counts_from_the_streams_first_reading_and_shows_from_half_a_
     assert (r.grown_ms, r.grown) == (0.0, None)
     clock.t += 10.0
     r = w.note("Running", 536 + 22, 3.8)                         # +0.46 ms: within the band
-    assert r is not None and r.ms == 20.8 and r.grown_ms == 0.5 and r.grown == 0.5
+    assert r is not None and r.ms == 20.8 and r.grown_ms == 0.5 and r.grown is None
+    r = w.note("Running", 536 + 27, 3.8)                         # +0.56 ms: shown
+    assert r is not None and r.ms == 20.9 and r.grown_ms == 0.6 and r.grown == 0.6
     r = w.note("Running", 536 + 20, 3.8)
     assert r is not None and r.grown_ms == 0.4 and r.grown is None
     r = w.note("Running", 536 + 77, 3.8)                         # +1.6 ms

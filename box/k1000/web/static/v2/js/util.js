@@ -73,7 +73,7 @@ export function delaySub(v, short) {
 // not in the figure, docs/16 §2.2). The dropout count only beside a figure, as on the box's
 // screen: without one the engine is not running, and its log may still be the previous run's.
 // D-023: "7.9 ms +1.6 · …", how much it grew since the stream last started (`grown`, shown by
-// the box from 0.5 ms up); while a resync runs, and until the new stream's delay is read
+// the box from 0.6 ms up); while a resync runs, and until the new stream's delay is read
 // (about 10 s), the words say so.
 export function latencyWords(L) {
   L = L || {};

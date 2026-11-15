@@ -515,7 +515,7 @@ the spectrum buffers kept. K1000 changes the one value there that does nothing e
   music (a test holds this line).
 - **The readout says when it is worth it**: `7.9ms +1.6` on the status bar, `7.9 ms +1.6` on
   the Resync row and on the phone, `+1.6 since the stream started` in the journal: how much the
-  delay grew since the stream last started (an engine start or a resync), shown from 0.5 ms up.
+  delay grew since the stream last started (an engine start or a resync), shown from 0.6 ms up.
   After a resync the engine reports the old stream's level for up to 10 s: the readout shows
   nothing meanwhile (`READING…`), then the new delay, and the growth starts again from 0.
   After a k1000 restart on a playing engine the growth counts from its first reading.

@@ -602,7 +602,7 @@ def _latency(status: Any) -> dict[str, Any]:
     reading), `io` the interface's share is in it (false: the engine's alone, a floor), `over`
     above `limit` ms, `buf` the playback buffer level (frames), `drops` the engine's dropout
     lines since it started (None = its log is not read). D-023: `grown` how much it grew since
-    the stream last started (None = not shown: under 0.5 ms, or not known), `resync` "running",
+    the stream last started (None = not shown: under 0.6 ms, or not known), `resync` "running",
     "reading" (restarted, the new stream's delay not read yet) or ""."""
     def whole(v: Any) -> int | None:
         return v if isinstance(v, int) and not isinstance(v, bool) else None
