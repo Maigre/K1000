@@ -922,6 +922,12 @@ def _status_bar(c: _Ctx, page: str, state: Any, status: Any, muted: bool) -> Non
         right = f"{load:.1f}%" if load is not None else ""
         lat = latency_readout(status)
         text, over, drops = lat if lat is not None else ("", False, "")
+        if right and not text:
+            # The pills come first (D-021: "CLIP -12.0" with MUTED and IN CLIP must keep its
+            # number): the DSP load only in the room they and the engine leave.
+            free = x - lx - 8 - (int(d.textlength(eng, font=_fit(d, eng, 17, 150))) + 20)
+            if int(d.textlength(right, font=font(17))) + 4 + 38 > free:
+                right = ""
         if text:
             # Only in the room the pills and the engine leave. What gives way first: the DSP
             # load (of less use at a show), then the dropout count, then the growth (D-023:
@@ -943,6 +949,7 @@ def _status_bar(c: _Ctx, page: str, state: Any, status: Any, muted: bool) -> Non
                 drops, right = (drops if drops_w else ""), (right if load_w else "")
             else:
                 text = ""
+                right = right if load_w <= free else ""
         if right:
             d.text((x, cy), right, font=font(17), fill=FG, anchor="rm")
             x -= int(d.textlength(right, font=font(17))) + 4
@@ -955,9 +962,12 @@ def _status_bar(c: _Ctx, page: str, state: Any, status: Any, muted: bool) -> Non
             d.text((x, cy), text, font=font(17), fill=ORANGE if over else FG, anchor="rm")
             x -= lat_w
     if top is None or eng != "RUNNING":
-        fe = _fit(d, eng, 17, 150)
-        d.text((x, cy), eng, font=fe, fill=col, anchor="rm")
-        x -= int(d.textlength(eng, font=fe)) + 8
+        # Never over the pills: the word shrinks to the room left, or goes (the dot stays).
+        room_eng = int(x - lx - 8 - 20)
+        fe = _fit(d, eng, 17, max(1, min(150, room_eng)))
+        if d.textlength(eng, font=fe) <= room_eng:
+            d.text((x, cy), eng, font=fe, fill=col, anchor="rm")
+            x -= int(d.textlength(eng, font=fe)) + 8
     d.ellipse((x - 12, cy - 6, x, cy + 6), fill=col)
     x -= 12
     if top is not None:

@@ -3616,6 +3616,35 @@ def test_demo_cases_include_the_d016_pictures():
 
 
 # ----------------------------------------------------------------- D-021: the output CLIP latch
+def test_d021_the_status_bar_right_side_gives_way_to_the_pills(monkeypatch):
+    """Review 2026-11-15: MUTED, IN CLIP and "CLIP -12.0" together, with the DSP load: "RUNNING"
+    and "DSP 2.0%" were drawn over the CLIP pill and hid its number. The load gives way first,
+    then the engine word shrinks or goes; the engine's dot stays."""
+    edges: list[float] = []
+    real = pages._pill
+
+    def pill(c, x, text, *a, **k):
+        r = real(c, x, text, *a, **k)
+        edges.append(r)
+        return r
+
+    monkeypatch.setattr(pages, "_pill", pill)
+    s = st.State(muted=True)
+    for page in ("SHOW", "ALIGN", "SETUP"):
+        for over in ((11.99, 3.0, None, None), (12.0, 12.0, 12.0, 12.0), (0.5, None, None, None)):
+            edges.clear()
+            img = pages.render(page, s, pages.ScreenStatus(**RUN, muted=True, in_clip=True, load=2.0,
+                                                           limit_over=over), Focus(), now=0.0)
+            pills = (int(edges[0]), 0, int(max(edges)), pages.STATUS_H)   # after the page's
+            rest = (int(max(edges)), 0, pages.W, pages.STATUS_H)
+            assert _count(img, pills, pages.GREEN) == 0 and _count(img, pills, pages.DIM) == 0, (page, over)
+            assert _count(img, rest, pages.GREEN) > 20, (page, over)          # the dot at least
+    # with room, everything as before: the word and the load
+    edges.clear()
+    img = pages.render("SHOW", st.State(), pages.ScreenStatus(**RUN, load=2.0), Focus(), now=0.0)
+    assert _count(img, STATUS_BAR, pages.DIM) > 0 and _count(img, STATUS_BAR, pages.GREEN) > 200
+
+
 def test_d021_status_bar_says_the_db_to_take_off_until_cleared(monkeypatch):
     """A latched overshoot keeps the status bar's CLIP pill (red) with the dB to take off,
     "CLIP -2.4", on every page, after the 3 s clip boxes have gone; the outputs' clip boxes stay
