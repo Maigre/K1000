@@ -209,6 +209,8 @@ clipped; on the IN pair, `IN CLIP`. ALIGN shows the same meters, larger.
 | `CLIP -2.4` (red pill, stays) | D-021: an output went **2.4 dB over full scale before the limiter**, the most since you last cleared it. Its clip box stays red too. Held until you clear it | **Master down by that much** (it is common to all outputs), then **push E1** on SHOW or ALIGN (E1 alone, no turn): `CLIP CLEARED`. If it comes back, take more off. The phone shows the same, with an OK |
 | `IN CLIP` (red pill) | A program input reached −0.5 dBFS (held 3 s) | Source down, or inline pads. No K1000 knob fixes it |
 
+![CLIP -2.4: the subs went 2.4 dB over full scale, latched](../ui/show_clip_latched.png)
+
 **The limiter (D-021).** Every output ends in a limiter with no delay: nothing above full scale
 ever leaves the box. SETUP › OUTPUT › Limiter chooses how it sounds: **HARD** (default) cuts the
 peaks flat at full scale, as the box always did, and touches nothing under it; **SOFT** rounds the
@@ -350,7 +352,7 @@ why:
 | LIVE EQ › Spectrum | `DISABLED` | `spectrum: enabled: false` in `k1000.yaml`: `SPECTRUM OFF IN k1000.yaml` |
 | INPUT › AUX IN 1/2, AUX level | `NO SPARE INPUT`, the level greyed | The profile has no input left over for AUX (the bench HiFiBerry: its two inputs are the program): `AUX: NO SPARE INPUT ON THIS DEVICE`. The phone shows both rows read-only and the box refuses their edits |
 
-![BOX › Profile pinned](../ui/setup_profile_pinned.png) ![INPUT › AUX IN on the bench profile](../ui/setup_aux_dev.png)
+![BOX › Profile pinned](../ui/setup_profile_pinned.png) ![INPUT › AUX IN on the bench profile](../ui/setup_aux_dev.png) ![OUTPUT › Limiter (D-021)](../ui/setup_limiter.png)
 
 | Group › item | How | Does |
 |---|---|---|

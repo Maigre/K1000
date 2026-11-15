@@ -2183,6 +2183,11 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
         ("hint", "SHOW", s, run, Focus(slot=1, editing=F_MASTER, edit_until=inf,
                                        hint="MASTER: SLOW DOWN", hint_until=inf)),
         ("input_clip", "SHOW", s, in_clip, Focus(slot=1)),
+        # D-021: the subs went 2.4 dB over full scale before the limiter, latched: the pill says
+        # what to take off, their clip boxes stay red, until an E1 push (or a phone) clears it
+        ("show_clip_latched", "SHOW", s,
+         with_(run, levels=(-9.5, -9.5, -12.0, -12.5), limit_over=(2.35, 2.35, None, None)),
+         Focus(slot=1)),
         # D-015: the longest values; show_long_values as they rest (no edit, no FINE),
         # show_long_q with FINE held on all four knobs (the worst case for room: FINE takes a
         # bottom box's inner corner and a top knob's label row), show_long_slope a shelf's SLOPE
@@ -2269,6 +2274,8 @@ def demo_cases() -> list[tuple[str, str, Any, Any, Any]]:
         ("setup_laptop_open", "SETUP", s, dev_open, Focus(item=laptop_i - 1, readonly=ro)),
         # D-023: the delay has grown 1.6 ms since the stream started; Resync delay, then its popup
         ("setup_resync", "SETUP", s, grown, Focus(item=resync_i, readonly=ro_m4)),
+        # D-021: OUTPUT › Limiter, HARD or SOFT as E3 turns (an everyday choice: no popup)
+        ("setup_limiter", "SETUP", s, run, Focus(item=_setup_index("limit_kind"), readonly=ro_m4)),
         ("setup_resync_confirm", "SETUP", s, grown,
          Focus(item=resync_i, confirm=A_RESYNC, confirm_until=inf, readonly=ro_m4)),
         # D-016: the three switches are risky rows like Mono (a rebuild: MAY CLICK)
