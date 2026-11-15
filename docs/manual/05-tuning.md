@@ -374,22 +374,33 @@ default. **A live mic can feed back**: the orange `AUX MIC` pill says it is open
 
 D-021: every output ends in a limiter with no delay; nothing above full scale leaves the box.
 What is chosen by ear is how it sounds while it works: SETUP › OUTPUT › **Limiter**, E3 left
-`HARD`, right `SOFT`, at once, no click, no mute. The phone's SETUP sheet has the same row.
+`HARD`, right `SOFT`, no mute. The change takes about 0.3 s in small steps (the kind flips while
+the limiter stands at +12 dBFS, then its ceiling moves 0.5 dB at a time): computed, no sample
+moves by more than a knob detent at once. Not heard yet: listen for a click at the switch on
+26 Nov. The phone's SETUP sheet has the same row.
 
 | | HARD (default) | SOFT |
 |---|---|---|
-| Under full scale | Untouched, bit for bit | The top few dB of each loud peak rounded: third harmonic −41 dB for a peak at half the ceiling, −53 dB at a quarter |
-| Over full scale | Each sample cut flat at full scale (what the box did at the gig) | A cubic curve up to −0.1 dBFS, flat from 3.5 dB over |
-| The number after `CLIP` | Exact, any size | Exact up to 3.5 dB, then "at least" |
+| Under full scale | Untouched, bit for bit | Every sample bent, more the louder: third harmonic −68 dB at −20 dBFS, −46 dB at −8.6 dBFS (the Meyers' limit point), −40 dB for a peak at half the ceiling. A peak at the ceiling comes out 1.4 dB lower: loud passages play up to 1.4 dB quieter than in HARD |
+| Over full scale | Each sample cut flat at full scale (what the box did at the gig) | A cubic curve up to −0.1 dBFS, flat from 3.52 dB over |
+| The number after `CLIP` | Exact up to 12 dB (the backstop), then `12.0+` ("at least") | Exact up to 3.5 dB, then `3.6+` ("at least"; the phone `TAKE ≥ 3.6`) |
 | The engine's clipped samples | Counted (they are the limiter's), one engine log line per chunk cut | 0 |
 
 **On the desk (26 Nov) and on the rig (27 Nov):**
 
+0. Before the sitting, copy `/var/log/k1000` off the box (the latency evidence): in HARD every
+   chunk the limiter cuts is one engine log line, up to 750 a second at 96 kHz, and two to three
+   minutes of it push the older lines out of the 50 rotated logs.
 1. A track the PA knows, master at the show level, `CLIP` cleared (E1 push).
 2. Raise the input trim (SETUP › INPUT › Trim) until `CLIP -1.0` to `-2.0` shows on the loud parts:
    the limiter at work, on the subs first. Listen in HARD, then SOFT, then HARD (E3 left / right on
    the Limiter row), the same passage each time. Kicks and bass notes are where they differ.
+   **SOFT plays the loud parts up to 1.4 dB quieter**, and louder tends to sound better: judge
+   the attacks and the grit, not the loudness.
 3. Again at `CLIP -4` to `-6` (the gig's worst was +5.67): this is where a choice matters most.
+   **On the desk (26 Nov) only, in short passages.** On the rig the outputs are then near full
+   scale, about 8 to 9 dB past the point where the Meyers' own limiters start (section 3): there,
+   stay at step 2 and keep it short.
 4. Keep the one that sounds less broken at 3 to 6 dB over. Then trim back down until `CLIP` stays
    off at the show's loudest: the limiter is a safety net, not a level control.
 
@@ -400,7 +411,11 @@ master's last dB still raise the level (if not, the chain is over full scale: ta
 
 **The output trims only cut** (D-021, −30 … 0 dB): the gain that sets the PA's level is the
 input trim's (section 3). A box that had a boost on all four trims (the gig's +6 dB) came back
-from the update with that boost in the input trim and the trims at 0: the same sound.
+from the update with that boost in the input trim and the trims at 0: the same sound, **and the
+same problem**. The master acts before every K1000 gain (the engine's order), so that +6 dB still
+drives the outputs 6 dB over full scale at master 0 dB on a full-scale source, before the EQ
+boosts add to it. Bring INPUT › Trim down on the rig (27 Nov) until `CLIP` stays off at the
+show's loudest with the master at its show level: then the master's top really is the top.
 
 ## 11. After the tune
 

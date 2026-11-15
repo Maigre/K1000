@@ -36,7 +36,8 @@ small grey tag by each label (the built-in default, as in the pictures), `bright
 - **The status bar.** The page (white pill), `MUTED` (red pill), `CLIP` / `IN CLIP` (red pills;
   `CLIP -2.4` = an output went 2.4 dB over full scale before the limiter, held until cleared:
   [§3.5](#35-the-meters-and-clipping)), the profile and device (`M4 · MOTU M4`), the engine (● `RUNNING` green, `STARTING` / `PAUSED`
-  yellow, red when down) and its load (`DSP 2.0%`). A system alert takes the bar in its own colour
+  yellow, red when down) and its load (`DSP 2.0%`; when the pills need the room, the load and then
+  the engine's word give way, its coloured dot stays). A system alert takes the bar in its own colour
   ([§7](#7-alerts-hints-and-pills)).
 - **The values**, each next to its knob, in white, flush to its corner's outer edge (left corners
   left-aligned, right corners right-aligned) with its unit beside it. The one being edited turns
@@ -206,7 +207,7 @@ clipped; on the IN pair, `IN CLIP`. ALIGN shows the same meters, larger.
 | Shows | Means | Do |
 |---|---|---|
 | `CLIP` (red pill) | An output reached full scale, or the engine counted clipped samples (held 3 s) | Master down; check the live EQ for a big boost |
-| `CLIP -2.4` (red pill, stays) | D-021: an output went **2.4 dB over full scale before the limiter**, the most since you last cleared it. Its clip box stays red too. Held until you clear it | **Master down by that much** (it is common to all outputs), then **push E1** on SHOW or ALIGN (E1 alone, no turn): `CLIP CLEARED`. If it comes back, take more off. The phone shows the same, with an OK |
+| `CLIP -2.4` (red pill, stays) | D-021: an output went **2.4 dB over full scale before the limiter**, the most since you last cleared it. Its clip box stays red too. Held until you clear it (or until k1000 restarts: the journal keeps it). `CLIP -3.6+`: **at least** 3.6, maybe more (the limiter's reading stops there) | **Master down by that much** (it is common to all outputs), then **push E1** on SHOW or ALIGN (E1 alone, no turn): `CLIP CLEARED`. If it comes back, take more off; with a `+`, take more at once. The phone shows the same, with an OK |
 | `IN CLIP` (red pill) | A program input reached −0.5 dBFS (held 3 s) | Source down, or inline pads. No K1000 knob fixes it |
 
 ![CLIP -2.4: the subs went 2.4 dB over full scale, latched](../ui/show_clip_latched.png)
@@ -214,9 +215,11 @@ clipped; on the IN pair, `IN CLIP`. ALIGN shows the same meters, larger.
 **The limiter (D-021).** Every output ends in a limiter with no delay: nothing above full scale
 ever leaves the box. SETUP › OUTPUT › Limiter chooses how it sounds: **HARD** (default) cuts the
 peaks flat at full scale, as the box always did, and touches nothing under it; **SOFT** rounds the
-loudest peaks off just under full scale, smoother when it works hard, but it colours the top few
-dB of every loud peak. A limiter working is still a distortion: the number after `CLIP` is what
-to take off so that it stops. With SOFT the number reads up to 3.5 and then means "at least".
+peaks off just under full scale, smoother when it works hard, but its curve colours every
+sample, more the louder (a little at −20 dBFS, clearly near the top), and plays loud passages up
+to 1.4 dB quieter. A limiter working is still a distortion: the number after `CLIP` is what to
+take off so that it stops. With SOFT the number is exact up to 3.5 and then reads `3.6+` ("at
+least"); with HARD, the same past 12.
 
 The Meyers start limiting around −14 dBFS at the M4 outputs (research,
 [chapter 5 §3](05-tuning.md#3-gain-structure)).
@@ -373,7 +376,7 @@ why:
 | INPUT › Trim | E3 | −24 … +12 dB, 0.5 dB. Acts after the converter: it cannot fix `IN CLIP` |
 | INPUT › AUX IN 1/2 | E3, push E3 | `off` / `MIC` / `LINE` (D-016, off by default): the M4's front inputs into the program. **MIC**: IN1 on both sides at −3 dB each, under a 100 Hz high-pass. **LINE**: IN1 left, IN2 right. AUX joins after the input trim (the trim is the program's only) and before the EQ (it gets the system EQ, the live EQ and de-harsh). Rebuilds the pipeline (`MAY CLICK`): `AUX IN 1: MIC`, `AUX IN 1/2: LINE`. Pill `AUX MIC` / `AUX LINE`. Read-only `NO SPARE INPUT` on the bench profile. **A mic: master down first, M4 GAIN 1/2 up from minimum, MON 1/2 stay unlit, then AUX level** |
 | INPUT › AUX level | E3 | −40 … +12 dB, 0.5 dB (0 by default): the AUX's own level, after the M4's GAIN knob. It rises like a trim; the phone's raises share master's 6 dB/s |
-| OUTPUT › **Limiter** | E3 | D-021: `HARD` (E3 left, the default) / `SOFT` (E3 right), at once, no click: how the limiter at the end of every output sounds when the signal goes over full scale ([§3.5](#35-the-meters-and-clipping)). Always on: there is no off. `LIMITER HARD` / `LIMITER SOFT`. Chosen by ear: [chapter 5 §10](05-tuning.md#10-the-limiter-by-ear) |
+| OUTPUT › **Limiter** | E3 | D-021: `HARD` (E3 left, the default) / `SOFT` (E3 right), no rebuild, no mute: how the limiter at the end of every output sounds when the signal goes over full scale ([§3.5](#35-the-meters-and-clipping)). The change takes about 0.3 s in small steps, none bigger than a knob detent (computed; whether it is heard is checked on 26 Nov). Always on: there is no off. `LIMITER HARD` / `LIMITER SOFT`. Chosen by ear: [chapter 5 §10](05-tuning.md#10-the-limiter-by-ear) |
 | LIVE EQ › **Reset live EQ** | push E3 ×2 | The popup `Reset live EQ?`, then the four bells and both shelves go flat, smoothly: `LIVE EQ RESET · UNDO IN SETUP` (`LIVE EQ ALREADY FLAT` if there was nothing to reset) |
 | LIVE EQ › **Undo reset** | push E3 | Puts back exactly the live EQ the last reset flattened: `LIVE EQ RESTORED`. The row counts down (`UNDO 4:47`); `—` and greyed when there is nothing to undo (`NOTHING TO UNDO`) |
 | LIVE EQ › **Spectrum** | E3 | `ON` (E3 right) / `off` (left), at once, saved. Read-only `DISABLED` when `spectrum: enabled: false` in `k1000.yaml` |
@@ -565,7 +568,7 @@ Step by step, other Android menus and the fixes: [`docs/06-phone.md`](../06-phon
 |---|---|
 | **MAIN** | Master −6 / −1 / −½ / +½ / +1 dB. Balance ±½ / ±1 dB. Lo-Cut on/off (with a confirm) and its frequency (−10 / −2 / +2 / +10 Hz) |
 | **LIVE EQ** | The six live bands on a graph. **Drag a dot** = frequency and gain. **Long-press empty space = notch here**: the first flat bell goes there at **−6 dB, Q 8, at once** (audible, unlike B3) and stays under the finger: slide to tune it. **Tap a band chip** = select it; **hold a chip** (0.6 s) = that band **IN / OUT** (`P2 OUT`, the chip dashed, its dot hollow). Per band: FREQ, GAIN, Q steps; *FLAT* (hold) = this band to 0 dB and IN. *ALL FLAT…* with a confirm (the undo is on the box) |
-| Always | **Hold to mute** (0.6 s; unmute 1.2 s), the four meters, the engine state, the box's alerts, changes made outside K1000. The v2 page (D-021) also shows the output CLIP: a red line `CLIP SUB L SUB R · TAKE 2.4 dB OFF` until its **OK** (or E1 on the box) clears it |
+| Always | **Hold to mute** (0.6 s; unmute 1.2 s), the four meters, the engine state, the box's alerts, changes made outside K1000. The v2 page (D-021) also shows the output CLIP: a red line `CLIP: TAKE 2.4 dB OFF · SUBS` (`TAKE ≥ 3.6`: at least) until its **OK** (or E1 on the box) clears it; if the figure grew while you tapped, it stays, with the new one |
 
 - **What a hold does is decided when the finger goes down**, and the button says it:
   *MUTE*, *MUTED* (hold to unmute), or *KEEP MUTED* (K1000 is bringing the sound in
@@ -612,7 +615,8 @@ on/off. It has no spectrum.
   click).
 - `NO SPECTRUM`: SETUP › LIVE EQ › Spectrum off; the sound is not affected.
 - **`CLIP -2.4`** (D-021): the limiter has been cutting peaks, up to 2.4 dB, since the last clear.
-  Master down by that much, then push E1 (or OK on the phone) to clear it and watch it stay off.
+  Master down by that much, then push E1 on SHOW (or OK on the phone) to clear it and watch it
+  stay off. `CLIP -3.6+`: at least that much; take more.
 
 | Emergency | Do |
 |---|---|

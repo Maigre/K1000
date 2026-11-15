@@ -251,16 +251,25 @@ engines; not on the box yet.
   ear on 26 and 27 Nov: **HARD** (default) leaves the cut at full scale to the conversion (the
   `Clipper` a backstop at +12 dBFS): the same samples as a `Clipper` at 0 dBFS, bit for bit under
   full scale, and the meters keep the overshoot. **SOFT** is the engine's cubic soft clip under
-  −0.1 dBFS. Neither adds a sample of delay; the look-ahead limiter (1 ms) is not used. A float
-  playback format is refused in the profile.
-- **2, no fixed gain after the master**: Main is applied before the first pipeline step, so every
-  K1000 gain is after it, and in floating point the order of gains changes nothing; what changed
-  is that the output trims only cut (−30 … 0 dB) and a boost the whole PA needs is the input
-  trim's. The box's +6 dB on all four trims comes back as input trim +6, trims 0: the same
-  samples (to 1e-12, on the engine).
+  −0.1 dBFS; it acts on every sample, more the louder (third harmonic −68 dB at −20 dBFS), and
+  plays loud passages up to 1.4 dB quieter. Neither adds a sample of delay; the look-ahead limiter
+  (1 ms) is not used. A float playback format is refused in the profile. The kind switches in
+  about 0.3 s, the kind written alone while the ceiling stands at +12 dBFS, the ceiling in 0.5 dB
+  steps: taken by both engines write by write (tested after review: the first build's 0.0 / 1.0
+  was refused by both); no sample moves more than 0.5 dB at once (computed); not heard yet.
+- **2, no fixed gain after the master: not possible in this engine, the closest built.** Main is
+  applied before the first pipeline step, so every K1000 gain, the input trim's too, is after
+  it, and in floating point the order of gains changes nothing. What is built: the output trims
+  only cut (−30 … 0 dB), and a boost the whole PA needs is the input trim's, in one place. The
+  box's +6 dB on all four trims comes back as input trim +6, trims 0: the same samples (to 1e-12,
+  on the engine). **So the gig's +6 dB is still there**, between the master and the limiter: it
+  is a relabel, not a cure. The cure is by ear on 26 and 27 Nov: INPUT › Trim down until `CLIP`
+  stays off at the show's loudest.
 - **3, CLIP on the phone, latched, with the dB to take off**: HARD, the playback peak above
-  0 dBFS is the overshoot itself; SOFT, the inverse of the curve, exact up to +3.5 dB. Latched per
-  output until cleared (the box: an E1 push on SHOW or ALIGN; the phone: OK on its red CLIP line);
+  0 dBFS is the overshoot itself, exact up to the +12 dBFS backstop; SOFT, the inverse of the
+  curve, exact up to +3.52 dB. Past those it is only a floor (`CLIP -3.6+`, the phone
+  `TAKE ≥ 3.6 dB OFF`). Latched per output until cleared (the box: an E1 push on SHOW or ALIGN;
+  the phone: OK on its red CLIP line, `CLIP: TAKE 2.4 dB OFF · SUBS`) or until k1000 restarts;
   the status bar says `CLIP -2.4`. Display only.
 - With these, the gig's worst moment (master −5 dB, +5.67 dBFS out) would have sounded the same in
   HARD; what is new is the phone's line saying "take 5.7 dB off", held until someone looks.

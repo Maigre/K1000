@@ -23,9 +23,12 @@ the pipeline (a Rebuild, SETUP only); their levels and frequencies are show-time
 
 D-021 (2026-11-15, after the gig's output clipping): a limiter with no delay is the last stage of
 every output (`limit_kind`: "hard" or "soft", a parameter write, never a rebuild; dspconfig has
-what each does), and no fixed gain sits after the master: the output trims only cut (-30..0 dB).
-A file written before D-021 (`schema` below 2) may hold positive output trims: `load_state` moves
-their common boost into the input trim (`fold_legacy_trims`), so every output plays as before.
+what each does), and the output trims only cut (-30..0 dB). That is the closest this engine
+allows to D-021's "no fixed gain after the master": CamillaDSP 5 applies the master before the
+whole pipeline, so every gain here, the input trim included, is after it. A file written before
+D-021 (`schema` below 2) may hold positive output trims: `load_state` moves their common boost
+into the input trim (`fold_legacy_trims`), so every output plays as before: the same fixed gain
+after the master, in one place, for the operator to take down by ear (CLIP says how far).
 """
 from __future__ import annotations
 
@@ -214,11 +217,13 @@ RANGES: dict[str, Range] = {
     "live_highshelf.freq": Range(1000.0, 16000.0, _FREQ_STEP, log=True, fine=_FREQ_FINE, default=8000.0, unit="Hz"),
     "live_highshelf.gain": Range(-12.0, 6.0, 0.5, default=0.0, unit="dB"),
     "live_highshelf.q": Range(0.4, 1.5, _Q_STEP, log=True, fine=_Q_FINE, default=0.707, digits=3),
-    # D-021: cut only. The engine applies the master (Main) before the whole pipeline, so every
-    # gain in it is after the master; a boost here was fixed gain between the master and the
-    # limiter (the gig's +6 dB on all four outputs: the top 6 dB of the master then only drove
-    # the outputs over full scale). A boost the whole PA needs is the input trim's. -30: the old
-    # range's 30 dB span, so a file from before D-021 folds without a clamp (`fold_legacy_trims`).
+    # D-021: cut only, so that no output can add gain of its own. The engine applies the master
+    # (Main) before the whole pipeline, so every gain in it is after the master, the input trim's
+    # too: moving a boost from here to there changes no level and removes no fixed gain (the
+    # box's +6 dB of the gig, folded into the input trim, still drives the outputs 6 dB over full
+    # scale at master 0 dB on a full-scale source). It puts the boost in one place, INPUT > Trim,
+    # where the operator takes it down by ear until CLIP stays off. -30: the old range's 30 dB
+    # span, so a file from before D-021 folds without a clamp (`fold_legacy_trims`).
     "out_trim_db": Range(-30.0, 0.0, 0.5, default=0.0, unit="dB"),
     # AUX IN level (aux_mode != "off"): the AUX's own gain, before the room EQ; the program's
     # input trim does not apply to it. -40 dB tucks a source under the program, +12 dB lifts a

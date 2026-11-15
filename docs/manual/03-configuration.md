@@ -489,7 +489,7 @@ Logical outputs, wherever four values appear: 0 Sub L, 1 Sub R, 2 Top L, 3 Top R
 | `loud_ref_db` | −40 … 0 dB (a master level) | −10 | SETUP › SUBS › Loudness ref, phone: at and above it loudness adds nothing |
 | `aux_mode` | `off`, `mic`, `line` | `off` | SETUP › INPUT › AUX IN 1/2 (D-016; rebuilds the pipeline). The m4 profile's IN1 (mic) or IN1 + IN2 (line); read-only where no input is spare (dev) |
 | `aux_gain_db` | −40 … +12 dB | 0 | SETUP › INPUT › AUX level, phone |
-| `limit_kind` | `hard`, `soft` | `hard` | SETUP › OUTPUT › Limiter, phone (D-021: two parameter writes, no rebuild). The limiter itself is always there |
+| `limit_kind` | `hard`, `soft` | `hard` | SETUP › OUTPUT › Limiter, phone (D-021: two parameters written in small steps, no rebuild). The limiter itself is always there |
 
 A `state.json` saved before D-016 loads with the three features off and their defaults; an older
 build ignores the keys.
@@ -499,7 +499,11 @@ build ignores the keys.
 output trim −T, the AUX level +T and the de-harsh threshold +T: every output plays exactly as
 before, and one journal line says so (`written before D-021 … every output plays as before`). An
 input trim that would go past +12 dB stops there: the PA is then that much quieter, said in the
-same line. Saved again it is schema 2, and an older build reads it at the same level.
+same line. This changes no level and removes no gain: the boost still sits after the master (the
+engine applies the master before every K1000 gain), now in one place, INPUT › Trim, to be taken
+down by ear until `CLIP` stays off ([chapter 5 §10](05-tuning.md#10-the-limiter-by-ear)). Saved
+again it is schema 2, and an older build reads it at the same level, except an output trim under
+−24 dB, which comes back at −24 (up to 6 dB louder).
 
 "Off" for the Lo-Cut and the sub low-pass is a frequency move (10 Hz and 20 kHz), never a pipeline
 change. Delays are applied in whole samples at the engine's rate (96 or 48 kHz, `samplerate`).

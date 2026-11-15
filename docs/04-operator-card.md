@@ -40,7 +40,7 @@ UI v1 (D-009 to D-017), ops `box/README.md`. **New:** SETUP knobs (D-017) · De-
 | NO DEVICE (orange) | M4 gone → reseat USB, rear switch · 30 s → bypass |
 | ENGINE DOWN (red) | back in ~5 s · `no input data`: M4 USB, M4 off-on · 30 s → bypass |
 | CLIP · IN CLIP pill · meter red (> −6 dBFS) | master down · source down; Meyers limit ≈ −14 |
-| CLIP −2.4 (stays) | the limiter cut 2.4 dB: master down 2.4 · **push E1** = clear |
+| CLIP −2.4 (stays; −3.6+ = at least) | the limiter cut 2.4 dB: master down 2.4 · **push E1** on SHOW = clear |
 | Orange `… (GUI)`, `… CHANGED (GUI)` | CamillaGUI: cuts kept, rest restored → no Applies |
 | NO SPECTRUM · ENGINE ? · DEVICE ? · UI ERROR | engine refuses it: sound fine, Spectrum OFF · unsure → wait |
 | Bass boost all the time, poor mids, EQ does nothing | M4 INPUT MONITOR MIX not full right → full right, MONs unlit · test: hold B4, music still on the tops = the M4 |
