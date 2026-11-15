@@ -1757,6 +1757,16 @@ def test_d021_state_carries_the_clip_latch_and_a_phone_clears_it(tmp_path: Path)
         assert clip["top"] is True and clip["take"] == 3.6 and clip["kind"] == "soft"
         ctl.status.limit_kind = "hard"         # review 2026-11-15: the held floor, whatever runs now
         assert PhoneBridge.state_message2(ctl.snapshot(), phone_on=True, phones=1)["clip"]["top"] is True
+        # review 2026-11-15: `seen`, the dB the phone showed; a latch grown since stays (STALE)
+        ok, v, why, code = b.apply2({"t": "act", "a": "clip_ack", "seen": 2.4}, s)
+        assert (ok, code, why, v["take"]) == (False, "STALE", web.HINT_CLIP_GREW_V2, 3.6)
+        assert ctl.status.limit_over == [3.522, None, None, None]
+        assert b.apply2({"t": "act", "a": "clip_ack", "seen": 3.6}, s) == (True, {"cleared": True}, "", "")
+        ctl.status.limit_over = [None, 1.0, None, None]
+        assert b.apply2({"t": "act", "a": "clip_ack", "seen": 4.0}, s)[0] is True    # less: cleared
+        ctl.status.limit_over = [None, 1.0, None, None]
+        assert b.apply2({"t": "act", "a": "clip_ack", "seen": True}, s)[0] is True   # not a number: as without
+        ctl.status.limit_over = [None, 1.0, None, None]
         assert b.apply2({"t": "act", "a": "clip_ack"}, s) == (True, {"cleared": True}, "", "")
         assert ctl.status.limit_over == [None] * 4 and ctl.status.limit_floor == [False] * 4
         assert b.apply2({"t": "act", "a": "clip_ack"}, s) == (True, {"cleared": False}, "", "")

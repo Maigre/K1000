@@ -319,9 +319,9 @@ function rowAction(o) {
     setText(n, o.note());
   });
 }
-function act(a, done) {
+function act(a, done, extra) {
   if (!editOk()) return;
-  request({ t: "act", a }, (ok, r) => {
+  request(Object.assign({ t: "act", a }, extra || {}), (ok, r) => {
     if (ok) hap("ok");
     else if (r.code === "LINK") { toast("LINK LOST · not confirmed: look again", "red"); hap("fail"); }
     else if (r.code === "TIMEOUT") { toast("No answer from K1000: look again", "red"); hap("fail"); }
@@ -713,7 +713,12 @@ export function initSheets() {
   $("#stBtn").addEventListener("click", () => openSheet("status"));
   $("#alertLine").addEventListener("click", () => openSheet("status"));
   // D-021: the CLIP line's tap clears the latch on the box (display only)
-  $("#clipLine").addEventListener("click", () => act("clip_ack", (ok) => { if (ok) toast("CLIP CLEARED", "white"); }));
+  // `seen`: the dB it showed; a latch that grew meanwhile is refused (STALE), the new one shown
+  $("#clipLine").addEventListener("click", () => {
+    const L = clipLatch();
+    if (!L) return;
+    act("clip_ack", (ok) => { if (ok) toast("CLIP CLEARED", "white"); }, { seen: L.take });
+  });
   $("#shX").addEventListener("click", closeSheet);
   $("#shBody").addEventListener("pointerdown", (e) => {
     // touching another row cancels a pending choice

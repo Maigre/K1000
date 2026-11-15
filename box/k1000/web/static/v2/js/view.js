@@ -117,8 +117,13 @@ export function clipLatch() {
   return { take: c.take, top: c.top === true, kind: String(c.kind || ""),
            outs: OUTS.filter((_o, i) => num(over[i])), over };
 }
+// The number first (written to fit at 360 px: what to do before where; review 2026-11-15): the
+// outputs after it, a pair named once (SUBS, TOPS), so the longest is "SUB L TOP R".
 export function clipWords(L) {
-  return "CLIP " + L.outs.join(" ") + " · TAKE " + (L.top ? "≥ " : "") + L.take.toFixed(1) + " dB OFF";
+  const has = (i) => num(L.over[i]);
+  const side = (a, b, both, n1, n2) => (has(a) && has(b) ? [both] : [has(a) ? n1 : "", has(b) ? n2 : ""]);
+  const outs = side(0, 1, "SUBS", "SUB L", "SUB R").concat(side(2, 3, "TOPS", "TOP L", "TOP R")).filter(Boolean);
+  return "CLIP: TAKE " + (L.top ? "≥ " : "") + L.take.toFixed(1) + " dB OFF" + (outs.length ? " · " + outs.join(" ") : "");
 }
 
 // ------------------------------------------------------------------ status strip + alert line

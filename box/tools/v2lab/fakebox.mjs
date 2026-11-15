@@ -230,6 +230,15 @@ export class FakeBox {
           this.state.latency = Object.assign({}, L, { ms: null, grown: null, resync: "reading" });
           this.broadcast();
         }
+        else if (m.a === "clip_ack") {   // D-021: a latch grown past what the page saw is refused
+          const c = this.state.clip || {};
+          if (typeof m.seen === "number" && c.take != null && c.take > m.seen + 1e-6) this.err(ws, id, "STALE", "CLIP GREW MEANWHILE: LOOK AGAIN", c);
+          else {
+            this.state.clip = { over: [null, null, null, null], take: null, top: false, kind: c.kind || "hard" };
+            this.ack(ws, id, { cleared: c.take != null });
+            this.broadcast();
+          }
+        }
         else this.err(ws, id, "BAD", "act");
         break;
       case "grab": {

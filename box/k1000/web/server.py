@@ -221,6 +221,7 @@ RESYNC_BUSY = ("ALREADY RUNNING", "ENGINE BUSY, TRY AGAIN")
 SETUP_PICKS_V2 = {it.field: it for it in SETUP_ITEMS if it.picks}
 HINT_LOCKED_V2 = "LOCKED · HOLD 0.8 s TO EDIT"
 HINT_CHANGED_V2 = "CHANGED MEANWHILE"
+HINT_CLIP_GREW_V2 = "CLIP GREW MEANWHILE: LOOK AGAIN"     # act clip_ack, D-021
 MUTE_FALLBACK_KNOBS = "use B4 on the box"
 MUTE_FALLBACK_NONE = "turn the source down · bypass"
 RTA_MIN_INTERVAL_S = 0.1              # <= 10 frames a second per phone
@@ -1367,7 +1368,7 @@ class PhoneBridge:
         if t == "choose":
             return self._choose(msg, sess)
         if t == "act":
-            return self._act(msg.get("a"), sess)
+            return self._act(msg.get("a"), sess, msg)
         if t == "reset_live":
             if msg.get("confirm") is not True:
                 return False, None, "reset needs confirm: true", "BAD"
@@ -1511,7 +1512,8 @@ class PhoneBridge:
             return False, now, f"{f}: refused", "REFUSED"
         return True, now, "", ""
 
-    def _act(self, a: Any, sess: PhoneSession) -> tuple[bool, Any, str, str]:
+    def _act(self, a: Any, sess: PhoneSession,
+             msg: dict[str, Any] | None = None) -> tuple[bool, Any, str, str]:
         """The SETUP actions (docs/14 §4.7), through the knobs' own Controller methods."""
         if a not in ACTS_V2:
             return False, None, f"act: one of {list(ACTS_V2)}", "BAD"
@@ -1519,6 +1521,13 @@ class PhoneBridge:
             return False, None, "act resync: through the phone server", "BAD"
         ctl = self.ctl
         if a == "clip_ack":              # D-021: display only, never a level
+            # `seen`: the dB to take off the phone showed. A latch that grew since (the round
+            # trip, a stale page) is not cleared unseen: STALE, the phone shows the new one.
+            seen = (msg or {}).get("seen")
+            if isinstance(seen, (int, float)) and not isinstance(seen, bool):
+                now = _clip(getattr(self.ctl, "status", None))
+                if now["take"] is not None and now["take"] > float(seen) + 1e-6:
+                    return False, now, HINT_CLIP_GREW_V2, "STALE"
             fn = getattr(ctl, "clear_clip", None)
             return True, {"cleared": bool(fn(sess.name)) if callable(fn) else False}, "", ""
         if a == "reset_live":

@@ -1144,6 +1144,27 @@ await run("alerts", async () => {
       return { text: sp.textContent, own: al.dataset.own, hidden: al.hidden, cut: sp.scrollWidth > sp.clientWidth + 0.5 };
     });
     const states = [];
+    // D-021: the CLIP line, written to fit at 360 px: the dB to take off first, then the outputs
+    // (a pair named once); its OK sends the dB it showed, and a latch grown meanwhile stays
+    const clipLine = () => page.evaluate(() => {
+      const cl = document.getElementById("clipLine"), sp = cl.firstChild;
+      return { text: sp.textContent, hidden: cl.hidden, cut: sp.scrollWidth > sp.clientWidth + 0.5, h: Math.round(cl.getBoundingClientRect().height) };
+    });
+    for (const [clip, want] of [[{ over: [11.99, 12.0, 3.2, 3.52], take: 12.0, top: true, kind: "hard" }, "CLIP: TAKE ≥ 12.0 dB OFF · SUBS TOPS"],
+                                [{ over: [12.0, null, null, 3.52], take: 12.0, top: true, kind: "soft" }, "CLIP: TAKE ≥ 12.0 dB OFF · SUB L TOP R"],
+                                [{ over: [null, 2.35, null, null], take: 2.4, top: false, kind: "hard" }, "CLIP: TAKE 2.4 dB OFF · SUB R"]]) {
+      box.push({ clip }); await sleep(200);
+      const c = await clipLine();
+      check(`alerts ${L}: the CLIP line is whole, the dB to take off first (${want})`, !c.hidden && !c.cut && c.text === want, c);
+    }
+    box.state.clip = { over: [null, 3.0, null, null], take: 3.0, top: false, kind: "hard" };   // grown, not yet sent
+    box.sent.length = 0;
+    await tapSel(t, page, "#clipLine"); await sleep(250);
+    const ack = box.sent.filter((m) => m.t === "act" && m.a === "clip_ack");
+    check(`alerts ${L}: OK sends the dB it showed; a latch grown meanwhile is not cleared`, ack.length === 1 && ack[0].seen === 2.4 && box.state.clip.take === 3.0, { ack, clip: box.state.clip });
+    box.push({}); await sleep(200);
+    await tapSel(t, page, "#clipLine"); await sleep(250);
+    check(`alerts ${L}: OK on what it shows clears the latch`, box.state.clip.take === null && (await clipLine()).hidden, box.state.clip);
     box.push({ muted: true, hold: "mute", mute_band: { kind: "ramp", text: "RAMPS IN BY ITSELF" } }); await sleep(200);
     states.push(await cut());
     box.push({ mute_band: { kind: "ready", text: "READY" } }); await sleep(200);
