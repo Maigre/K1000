@@ -7230,7 +7230,7 @@ def test_d021_clip_latch_holds_the_db_to_take_off_until_cleared(tmp_path: Path,
         assert st.clip == [False, True, False, True]
         assert ctl.clip_take_off() == 1.3
         assert "output clipping (limiter hard): SUB R 1.23 dB over" in caplog.text
-        assert ctl.focus.hint_now() == "CLIP SUB R TOP R · TAKE 1.3 dB OFF · PUSH E1 = CLEAR"
+        assert ctl.focus.hint_now() == "CLIP: TAKE 1.3 dB OFF · PUSH E1 = CLEAR"
         caplog.clear()
         cl.peaks = [0.5, 0.8]                         # less on R: R keeps 1.23; L latches 0.5
         with caplog.at_level(logging.WARNING):
