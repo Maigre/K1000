@@ -117,6 +117,13 @@ class FakeEngine:
         self._need()
         return "Running"
 
+    async def get_update_interval(self) -> int:
+        self._need()
+        return 100
+
+    async def set_update_interval(self, ms: int) -> None:
+        self._need()
+
     async def get_processing_load(self) -> float:
         return 1.5
 

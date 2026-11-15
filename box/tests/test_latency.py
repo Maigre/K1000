@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import math
 import os
 import random
 import re
@@ -975,6 +976,7 @@ def make(tmp_path: Path, *, io: float | None = 2.3, transit: dict[int, float] | 
     lv = dc.fader_levels(s)
     client.faders[0] = {"volume": lv[0], "mute": s.muted}
     client.faders[MARKER_FADER]["volume"] = MARKER_DB
+    client.run_t0 = -math.inf                    # its run started long before
     ctl = Controller(client, profile, s, Paths(tmp_path / "state.json", tmp_path / "active.yml",
                                                engine_log), settings=settings,
                      sleep=fast_sleep, poll_s=3600, meter_s=3600, persist_debounce_s=0.05,

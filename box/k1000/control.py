@@ -25,7 +25,9 @@ Why it is shaped like this:
   it is Stalled/Paused/Starting at once when audio resumes (README, Volume control), so a ramp
   run "into" a stalled capture is no ramp at all. The boot ramp and the setup guard unmute only
   once GetState reads Running (twice, > 2 chunks apart), check it again before every ramp step,
-  and if the engine stops mid-ramp they mute + park Main again and restart the ramp later.
+  and if the engine stops mid-ramp they mute + park Main again and restart the ramp later. The
+  engine reads Running only once per its status interval after a run starts (1 s by default):
+  every connect sets it to STATUS_INTERVAL_MS first (`_set_status_interval`).
 - **The engine is the truth while it plays.** A k1000 restart, a websocket blip or a CamillaGUI
   edit must never change the sound. On (re)connect, and about once a second, the controller reads
   the running config and faders and adopts what it owns (`dspconfig.state_from_config`), except
@@ -156,12 +158,19 @@ SPECTRUM_WARMED_ANSWERS = ("no audio data available", "insufficient data in buff
 # It is K1000's own value (`_expected` writes it), so the drift check never flags it and active.yml
 # says what runs. Measured on the box (14 Nov, next5, 96 kHz, 128 / 256): the write answered in
 # 1 to 8 ms, the kernel's playback stream not running for 20 to 27 ms, no underrun, Main
-# unchanged, the delay 6.35 to 6.38 ms after each of four restarts.
+# unchanged, the delay 6.35 to 6.38 ms after each of four restarts. 15 Nov, a GetState every
+# 3 ms around a restart made by hand: the stream running again 24 to 29 ms after the write, the
+# engine reading Running 122 to 124 ms after it with its status interval at STATUS_INTERVAL_MS,
+# 1020 ms after it at its default 1000 ms.
 RESTART_KEY = "rate_measure_interval_s"
 RESTART_POINTER = "/devices/" + RESTART_KEY
 RESTART_MARKS = (1.0, 1.001)
 RESTART_LOCK_S = 1.0         # an operator's resync waits this long for the engine work in flight
-RESTART_RUN_S = 1.0          # after the write, the engine must run again within this: else timed out
+# After the write, the engine must read running again within this, else timed out: about 0.12 s
+# with STATUS_INTERVAL_MS set (measured), so a margin of eight. At the engine's default interval
+# the engine reads Running only about 1.0 s after the write: the start restart then times out,
+# as it did on the box (15 Nov), though its stream is back.
+RESTART_RUN_S = 1.0
 RESTART_POLL_S = 0.005       # GetState while waiting for it
 RESTART_START_WAIT_S = 2.0   # at an engine start: the engine must run within this, else no restart
 # At an engine start the restart comes after the spectrum warm-up's stall (its allocation at the
@@ -169,6 +178,20 @@ RESTART_START_WAIT_S = 2.0   # at an engine start: the engine must run within th
 # and underrun in its turn, and the start would land anywhere again (docs/17 §11).
 RESTART_AFTER_WARMUP_S = dc.GUARD_WAIT_S
 RESTART_DONE, RESTART_REFUSED, RESTART_TIMEOUT = "done", "refused", "timeout"
+# The engine's status update interval, ms (cdsp `set_update_interval`), set at every connect
+# (`Controller._set_status_interval`). Every run starts at Starting (CamillaDSP
+# engine_pipeline.rs) and its capture thread publishes its state once per interval
+# (alsa_backend/device.rs, `averager.larger_than_millis(update_interval)`; next5 0930f9b and
+# 5.0.0-beta.1 alike): an engine start or a stream restart reads Starting for one interval while
+# the audio already plays, and the ramp, a guard's unmute and a restart's confirmation all wait
+# for Running. The engine's own default is 1000 ms; the value lives outside a run (kept across
+# in-place restarts, measured) and is 1000 again in a new process: hence every connect. It also
+# paces what else the engine publishes with the state, the capture rate and the signal range
+# (nothing in K1000 reads them), and clears a capture stall's flag (after a stall the capture
+# passes Pause until the next publish; read in the source, not measured). The signal levels,
+# the buffer level (its adjust period, 10 s) and the capture rate's own measurement window
+# (`rate_measure_interval_s`) do not depend on it.
+STATUS_INTERVAL_MS = 100
 MAX_DETENTS = 1000.0         # a sane encoder move (input_map acceleration stays far below)
 
 POLL_S = 1.0                 # config + faders adoption, engine state, load, clipped samples
@@ -1031,6 +1054,7 @@ class Controller:
 
         self._engine_ready = False        # connect sync done on the current link
         self._running_logged = False      # "engine Running" logged on this link (boot timer)
+        self._interval_epoch = -1         # the link the status interval was set on
         self._syncing = False
         self._ramping = False
         self._busy = False                # the worker is running a plan
@@ -2949,6 +2973,7 @@ class Controller:
         if not str(version).startswith("5."):
             self._log_once(("version", version), logging.WARNING,
                            "engine version %s: K1000 v0 is built for CamillaDSP 5.0.0-beta.1", version)
+        await self._set_status_interval(epoch)    # before anything waits for the engine to run
         seq = self._main_mute_gen()
         try:
             live: Any = await self.client.get_config_json()
@@ -3000,6 +3025,31 @@ class Controller:
         self._check_link(epoch)
         self._note_common()
         await self._write_marker()
+
+    async def _set_status_interval(self, epoch: int) -> None:
+        """STATUS_INTERVAL_MS on the engine, once per connection (a sync retried on the same link
+        does not send it again), before anything waits for the engine to run: a fresh engine
+        and one already playing alike, since a new process starts at 1000 ms and anyone may have
+        set another value. One journal line with the value it had. A refusal is a warning and
+        nothing more: the engine then reads Running about one of its own intervals after a
+        stream start, as before (the start restart may time out; the ramp waits for the engine
+        as it always has). Only a lost link goes up (the next connect does it again)."""
+        if self._interval_epoch == epoch:
+            return
+        self._interval_epoch = epoch
+        try:
+            was = f"{await self.client.get_update_interval()} ms"
+        except CdspError:
+            was = "unknown"
+        try:
+            await self.client.set_update_interval(STATUS_INTERVAL_MS)
+        except CdspError as e:
+            log.warning("engine status interval: the engine refused %d ms (%s), it stays at %s: "
+                        "GetState reads Running about one such interval after each stream start "
+                        "(1000 ms in a new process)", STATUS_INTERVAL_MS, e, was)
+            return
+        log.info("engine status interval: %d ms (was %s): the engine reads Running about %d ms "
+                 "after a stream start", STATUS_INTERVAL_MS, was, STATUS_INTERVAL_MS)
 
     async def _sync_fresh(self, live: Any, faders: Any, epoch: int) -> None:
         # A fresh engine's Aux faders are its defaults (0 dB): no offsets to keep. An Aux mute on
@@ -3182,8 +3232,13 @@ class Controller:
         engine and its ramp: an engine that does not run within RESTART_START_WAIT_S, a refusal,
         a timeout or a bug here is a journal line, and the ramp goes on (it waits for the engine
         itself). Only a lost link (CdspUnavailable: the next connect sync takes over) and a
-        cancel go up. Adds RESTART_AFTER_WARMUP_S, the write and the engine's restart (about
-        0.2 s by the code path, not measured) before the ramp."""
+        cancel go up. Adds before the ramp RESTART_AFTER_WARMUP_S (0.15 s), the write, and the
+        time until the engine reads Running again: measured on the box (15 Nov) 122 to 124 ms
+        after the write with STATUS_INTERVAL_MS set at the connect (`_set_status_interval`),
+        the stream itself back after 24 to 29 ms: about 0.3 s in all (added up, not measured
+        whole). At the engine's default interval it read Running only about 1.0 s after the
+        write, the restart timed out at RESTART_RUN_S, and the ramp began 1.41 s after the
+        sync's "freshly started" line instead of about 0.17 s without the restart."""
         self.latency.new_stream()           # a new engine, a new stream: whatever comes next
         t0 = self._clock()
         try:

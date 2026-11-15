@@ -134,15 +134,32 @@ class FakeClient:
         self.hooks: list[asyncio.Task[Any]] = []
         self.on_write: Any = None       # optional async callback(entry) after each write
         self.cap_peaks: list[float] | None = None   # GetCaptureSignalPeakSinceLast (None: unknown)
+        # GetState in time, as the engine answers it (CamillaDSP next5 0930f9b and 5.0.0-beta.1,
+        # read in the source): every run starts at Starting (engine_pipeline.rs), and the capture
+        # thread publishes its state only once per status update interval (alsa_backend/device.rs,
+        # `averager.larger_than_millis(update_interval)`): Starting until one interval has passed
+        # since the run started. The interval is 1000 ms in a new process (lib.rs, CaptureStatus)
+        # until SetUpdateInterval changes it; it lives outside a run, so an in-place restart keeps
+        # it (measured on the box, 15 Nov). `run_t0`: when the current run started, on `clock`
+        # (the engine's time, real by default; -inf: long before the test, an engine already
+        # playing); a fresh FakeClient is a process that has just started. `intervals`: every
+        # SetUpdateInterval value taken, in order (refused: "SetUpdateInterval" in `refuse`).
+        self.clock: Any = time.monotonic
+        self.update_interval_ms = 1000
+        self.intervals: list[int] = []
+        self.run_t0 = self.clock()
         # D-023: a change in `devices` restarts the streams in place, as the engine does
         # (engine.rs ConfigChange::Devices): the write is active once the old streams have
-        # stopped, GetState then reads Inactive, Starting (`down_reads` reads in all), Running
-        # again; the faders and the mute are kept (they live outside a run). `stuck`: it does
-        # not run again. `streams`: the restarts made. `level`: GetBufferLevel (None: unknown).
-        self.down_reads = 3
+        # stopped (Inactive: engine_pipeline.rs `stop`), the new run starts `restart_gap_s`
+        # after it, then reads Starting for one interval, then Running. Measured on the box
+        # (15 Nov, next5, 96 kHz, 128 / 256): Starting from about 15 ms after the write, the
+        # kernel's stream running again 24 to 29 ms after it, Running 1020 ms after it at the
+        # default interval, 122 to 124 ms at 100 ms. The faders and the mute are kept (they live
+        # outside a run). `stuck`: it does not run again. `streams`: the restarts made.
+        # `level`: GetBufferLevel (None: unknown).
+        self.restart_gap_s = 0.02
         self.stuck = False
         self.streams = 0
-        self._down = 0
         self.states: list[str] = []     # every GetState answer, in order
         self.level: Any = None
 
@@ -150,7 +167,7 @@ class FakeClient:
         after = self.cfg.get("devices") if isinstance(self.cfg, dict) else None
         if before != after:
             self.streams += 1
-            self._down = self.down_reads
+            self.run_t0 = self.clock() + self.restart_gap_s
 
     # -- lifecycle
     def _fire(self, hook: Any) -> None:
@@ -174,10 +191,13 @@ class FakeClient:
         await asyncio.sleep(0)
 
     async def restart(self, cfg: dict[str, Any] | None) -> None:
-        """Engine killed and started again from a file: fresh faders, that config."""
+        """Engine killed and started again from a file: fresh faders, that config, a new run, the
+        status interval back at its default."""
         await self.drop()
         self.cfg = copy.deepcopy(cfg)
         self.faders = fresh_faders()
+        self.update_interval_ms = 1000
+        self.run_t0 = self.clock()
         self.connected = True
         self._fire(self.on_connect)
 
@@ -214,15 +234,26 @@ class FakeClient:
 
     async def get_state(self) -> str:
         self._need()
-        if self.stuck:
+        now = self.clock()
+        if self.stuck or now < self.run_t0:
             st = "Inactive"
-        elif self._down > 0:
-            st = "Inactive" if self._down == self.down_reads else "Starting"
-            self._down -= 1
+        elif now - self.run_t0 < self.update_interval_ms / 1000.0:
+            st = "Starting"
         else:
             st = self.engine_state
         self.states.append(st)
         return st
+
+    async def get_update_interval(self) -> int:
+        self._need()
+        return self.update_interval_ms
+
+    async def set_update_interval(self, ms: int) -> None:
+        self._need()
+        if "SetUpdateInterval" in self.refuse:     # an engine without the command
+            raise CdspError("SetUpdateInterval", "Invalid", "unknown variant `SetUpdateInterval`")
+        self.update_interval_ms = ms
+        self.intervals.append(ms)
 
     async def get_processing_load(self) -> float:
         self._need()
@@ -312,6 +343,7 @@ def make(tmp_path: Path, state: State | None = None, *, playing: bool = False,
         client.faders[0] = {"volume": lv[0], "mute": st.muted}
         client.faders[1]["volume"], client.faders[2]["volume"] = lv[1], lv[2]
         client.faders[MARKER_FADER]["volume"] = MARKER_DB
+        client.run_t0 = -math.inf                # its run started long before
     opts: dict[str, Any] = dict(sleep=fast_sleep, poll_s=3600, meter_s=3600,
                                 persist_debounce_s=0.05, persist_max_delay_s=0.5,
                                 device_probe=lambda d: True)
@@ -324,6 +356,15 @@ async def boot(ctl: Controller) -> None:
     await ctl.start()
     await until(lambda: ctl.engine_ready, what="connect sync")
     assert await ctl.settle(timeout=3.0)
+
+
+async def polled_running(ctl: Controller, timeout: float = 3.0) -> None:
+    """Poll, as the 1 s poll does on the box, until it reads the engine Running: a new run reads
+    Inactive, then Starting for one status interval (FakeClient.get_state)."""
+    async def seen() -> bool:
+        await ctl.poll_once()
+        return ctl.status.engine == "Running"
+    await until(seen, timeout=timeout, what="the poll reads the engine Running", step=0.01)
 
 
 def nomark(log: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
@@ -733,6 +774,7 @@ def test_engine_restart_the_spectrum_task_asking_first_still_allocates_before_th
         mark = len(cl.log)
         an.restart()
         await cl.restart(active)
+        await polled_running(ctl)        # the new run reads Starting at first: the task waits
         await until(lambda: asked(cl.log[mark:], "task") >= 1, what="the task asks first")
         assert ("mute", 0, False) not in cl.log[mark:]
         gate.set()
@@ -999,7 +1041,8 @@ def test_a_resync_writes_k1000s_value_and_waits_for_the_engine_to_run_again(
         assert cl.log[n:] == [("set", RP, 1.0)]                 # nothing else: no fader, no mute
         assert cl.faders == faders
         down = cl.states[cl.states.index("Inactive"):]
-        assert down[:4] == ["Inactive", "Starting", "Starting", "Running"]
+        assert [s for i, s in enumerate(down) if not i or s != down[i - 1]][:3] == \
+            ["Inactive", "Starting", "Running"]
         assert ctl._expected(ctl.state)["devices"][ctl_mod.RESTART_KEY] == 1.0
         await ctl.poll_once()
         assert ctl.status.drift == [] and cl.log[n:] == [("set", RP, 1.0)]
@@ -1087,7 +1130,7 @@ def test_a_refused_or_timed_out_resync_says_so_on_the_box_and_in_the_journal(
         elif fault == "refused":
             cl.refuse.add(RP)
         elif fault == "stuck":
-            cl.down_reads, cl.stuck = 3, False
+            cl.stuck = False
 
             async def stick(entry: tuple[Any, ...]) -> None:
                 if entry[:2] == ("set", RP):
@@ -1352,7 +1395,8 @@ def test_a_start_restart_that_fails_never_holds_the_ramp(
     """An engine that does not run within RESTART_START_WAIT_S gets no restart; one that does
     not run again after it times out. A warning, and the ramp goes on: it waits for the engine
     as it always has, Main muted, and comes in once audio flows."""
-    monkeypatch.setattr(ctl_mod, "RESTART_START_WAIT_S", 0.05)
+    if fault == "not running":     # a fresh engine reads Starting for 0.1 s: not shorter there
+        monkeypatch.setattr(ctl_mod, "RESTART_START_WAIT_S", 0.05)
     monkeypatch.setattr(ctl_mod, "RESTART_RUN_S", 0.05)
 
     async def body() -> None:
@@ -1397,6 +1441,96 @@ def test_no_restart_on_an_engine_already_playing(tmp_path: Path) -> None:
             await ctl.stop()
 
     run(body())
+
+
+def _interval_lines(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.getMessage().startswith("engine status interval")]
+
+
+def test_the_start_restart_is_done_in_time_with_the_engine_reporting_every_100_ms(
+        tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """The box, 15 Nov: the engine publishes its state once per status update interval, 1 s in
+    a new process, so after the start restart's write it read Starting until about 1020 ms and
+    the restart timed out at RESTART_RUN_S, although the stream was back 24 to 29 ms after the
+    write; the ramp began 1.41 s after the sync. K1000 sets the interval to 100 ms at the
+    connect, before anything waits for the engine to run: the restart is done in about 0.12 s,
+    the ramp comes in."""
+    async def body() -> tuple[FakeClient, list[bool]]:
+        ctl, cl = make(tmp_path, State(master_db=-6.0))
+        wait = ctl._engine_running
+        set_before: list[bool] = []
+
+        async def engine_running(epoch: int, *, held: bool = False) -> bool:
+            set_before.append(bool(cl.intervals))
+            return await wait(epoch, held=held)
+        ctl._engine_running = engine_running  # type: ignore[method-assign]
+        await boot(ctl)
+        assert restarts(cl.log) == [1.0] and cl.streams == 1
+        assert cl.faders[0] == {"volume": -6.0, "mute": False}
+        await ctl.stop()
+        return cl, set_before
+
+    with caplog.at_level(logging.INFO, logger="k1000.control"):
+        cl, set_before = run(body())
+    said = [r.getMessage() for r in caplog.records if r.getMessage().startswith("stream restart (start)")]
+    assert len(said) == 1 and said[0].startswith("stream restart (start): done"), said
+    ms = float(said[0].split("ran again ")[1].split(" ms")[0])
+    assert 100 <= ms < 500, said
+    assert cl.intervals == [100] and cl.update_interval_ms == 100
+    assert set_before and all(set_before)
+    lines = _interval_lines(caplog)
+    assert len(lines) == 1 and lines[0].levelno == logging.INFO
+    assert "100 ms (was 1000 ms)" in lines[0].getMessage()
+
+
+def test_an_engine_that_refuses_the_status_interval_is_a_journal_line(
+        tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """SetUpdateInterval refused (an engine without it; 5.0.0-beta.1 and next5 both take it): one
+    warning, and the start goes on as it did before K1000 set it: the engine reports Running
+    1 s after the restart's write, so the restart times out, and the ramp still comes in."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-6.0))
+        cl.refuse.add("SetUpdateInterval")
+        await ctl.start()
+        await until(lambda: ctl.engine_ready and not ctl.ramping
+                    and cl.faders[0] == {"volume": -6.0, "mute": False}, timeout=6.0,
+                    what="ramped in")
+        assert cl.intervals == [] and cl.update_interval_ms == 1000
+        await ctl.stop()
+
+    with caplog.at_level(logging.INFO, logger="k1000.control"):
+        run(body())
+    lines = _interval_lines(caplog)
+    assert len(lines) == 1 and lines[0].levelno == logging.WARNING
+    assert "refused" in lines[0].getMessage() and "1000 ms" in lines[0].getMessage()
+    said = [r.getMessage() for r in caplog.records if r.getMessage().startswith("stream restart (start)")]
+    assert len(said) == 1 and "timed out (ENGINE NOT RUNNING AGAIN)" in said[0]
+    assert not any("connect sync failed" in r.getMessage() for r in caplog.records)
+
+
+def test_the_status_interval_is_set_at_every_connect_to_an_engine_already_playing(
+        tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """k1000 restarted on a playing engine still at the engine's 1000 ms, then a link blip: 100 ms
+    at each connection, one journal line each, no ramp, nothing else written; a resync is then
+    done in about 0.12 s, and the engine keeps 100 ms across it (it lives outside a run)."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-6.0), playing=True)
+        await boot(ctl)
+        assert cl.intervals == [100] and cl.log == [] and ctl.status.engine == "Running"
+        await cl.drop()
+        await cl.reconnect()
+        await until(lambda: len(cl.intervals) == 2 and ctl.engine_ready, what="the second sync")
+        assert cl.intervals == [100, 100] and cl.log == []
+        r = await ctl.request_resync("box")
+        assert r.done and r.ms is not None and 100 <= r.ms < 500
+        assert cl.update_interval_ms == 100 and cl.intervals == [100, 100]
+        await ctl.stop()
+
+    with caplog.at_level(logging.INFO, logger="k1000.control"):
+        run(body())
+    lines = [r.getMessage() for r in _interval_lines(caplog)]
+    assert len(lines) == 2
+    assert "100 ms (was 1000 ms)" in lines[0] and "100 ms (was 100 ms)" in lines[1]
 
 
 @pytest.mark.parametrize("where", ["before the write", "after the write"])
@@ -1479,8 +1613,7 @@ def test_a_restart_write_the_engine_makes_active_late_stays_k1000s(
         assert (r.outcome, r.why, r.written) == ("timeout", "ENGINE NOT RUNNING AGAIN", True)
         assert ctl.latency.base_ms is None and ctl.status.latency_ms is None
         await asyncio.sleep(late_s + 0.02)
-        for _ in range(4):                       # the engine passes Inactive, Starting: Running
-            await ctl.poll_once()
+        await polled_running(ctl)                # the engine passes Inactive, Starting: Running
         assert cl.cfg["devices"][ctl_mod.RESTART_KEY] == 1.0 and ctl._stream_mark == 1.0
         assert ctl.status.drift == [] and "DEVICES" not in (ctl.status.message or "")
         assert not any(e[0] == "config" for e in cl.log)
@@ -1530,8 +1663,7 @@ def test_a_timed_out_resync_starts_the_growth_over_and_leaves_main_as_it_is(
             assert cl.faders[0] == {"volume": -6.0, "mute": False}
             assert ctl.status.resync == "" and ctl.status.latency_ms is None
         cl.stuck = False
-        for _ in range(4):                       # Inactive, Starting, then running again
-            await ctl.poll_once()
+        await polled_running(ctl)                # Inactive, Starting, then running again
         assert ctl.status.engine == "Running"    # the engine still says 613
         assert ctl.status.resync == "reading" and ctl.status.latency_ms is None
         cl.level = 540
@@ -1863,6 +1995,7 @@ def make_two_links(tmp_path: Path, state: State, cls: Any = None) -> tuple[Contr
     client.faders[0] = {"volume": lv[0], "mute": st.muted}
     client.faders[1]["volume"], client.faders[2]["volume"] = lv[1], lv[2]
     client.faders[MARKER_FADER]["volume"] = MARKER_DB
+    client.run_t0 = -math.inf                    # its run started long before
     ctl = Controller(client, DEV, st, Paths(tmp_path / "state.json", tmp_path / "active.yml"),
                      sleep=fast_sleep, poll_s=3600, meter_s=3600, persist_debounce_s=0.05,
                      persist_max_delay_s=0.5, device_probe=lambda d: True)
