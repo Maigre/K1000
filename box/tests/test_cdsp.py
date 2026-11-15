@@ -107,6 +107,7 @@ class FakeEngine:
         "PatchConfig": ("value",), "SetConfig": ("value",), "GetFaderVolume": ("fader",),
         "SetFaderVolume": ("fader", "value"), "AdjustFaderVolume": ("fader", "value", "min", "max"),
         "SetFaderMute": ("fader", "value"),
+        "GetUpdateInterval": (), "SetUpdateInterval": ("value",),
     }
 
     def __init__(self) -> None:
@@ -127,6 +128,7 @@ class FakeEngine:
         self.config: dict[str, Any] | None = {
             "filters": {"sub_delay": {"parameters": {"delay": 0.0}}}}
         self.state = "Running"
+        self.update_interval = 1000                # ms, the engine's default in a new process
         self.state_script: list[str] = []
         self.states_after_setconfig: list[str] = []
         self.drop_config_on_setconfig = False
@@ -216,6 +218,11 @@ class FakeEngine:
                 return [ok(self.state)]
             case "GetStopReason":
                 return [ok(self.stop_reason)]
+            case "GetUpdateInterval":
+                return [ok(self.update_interval)]
+            case "SetUpdateInterval":
+                self.update_interval = msg["value"]
+                return [ok()]
             case "GetProcessingLoad":
                 return [ok(0.5)]
             case "GetSignalLevels":
@@ -354,6 +361,12 @@ def test_helpers_send_v5_shapes() -> None:
             assert set(levels) == {"playback_rms", "playback_peak", "capture_rms", "capture_peak"}
             assert await c.get_clipped_samples() == 7
             await c.reset_clipped_samples()
+            assert await c.get_update_interval() == 1000
+            await c.set_update_interval(100)
+            assert await c.get_update_interval() == 100
+            for bad in (0, -5, 100.0, True, "100"):
+                with pytest.raises(ValueError):
+                    await c.set_update_interval(bad)  # type: ignore[arg-type]
 
             p = "/filters/sub_trim/parameters/gain"
             assert await c.set_value(p, -3) == -3.0
@@ -389,6 +402,9 @@ def test_helpers_send_v5_shapes() -> None:
                                                  "value": 3.0, "min": -150.0, "max": -4.0}
             assert sent["SetFaderMute"] == {"command": "SetFaderMute", "fader": 1, "value": True}
             assert sent["GetFaders"] == {"command": "GetFaders"}
+            assert sent["SetUpdateInterval"] == {"command": "SetUpdateInterval", "value": 100}
+            assert sent["GetUpdateInterval"] == {"command": "GetUpdateInterval"}
+            assert names.count("SetUpdateInterval") == 1      # the bad values never went out
 
     run(body())
 
@@ -1307,6 +1323,9 @@ def test_engine_every_helper(engine: Engine) -> None:
             assert abs(max(levels["capture_peak"]) + 20.0) < 0.5  # the -20 dB generator
             assert max(levels["playback_peak"]) < -100.0  # Main muted -> silence out
             assert await c.get_clipped_samples() == 0
+            assert await c.get_update_interval() == 1000          # a new process's default
+            await c.set_update_interval(100)
+            assert await c.get_update_interval() == 100
 
             gain = "/filters/sub_trim/parameters/gain"
             assert await c.set_value(gain, -3.5) == -3.5

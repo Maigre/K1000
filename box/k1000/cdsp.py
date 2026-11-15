@@ -49,6 +49,7 @@ no command name), raised here as ``CdspError(name, "Invalid", error)``.
 Upstream ``next5`` (0930f9b, checked off the box) keeps every shape above, and also answers
 ``Invalid`` to a command with a field it does not take (``"unknown field `minimum`, expected
 one of ..."``), where 5.0.0-beta.1 ignored the field: send only the documented fields.
+``SetUpdateInterval`` takes ``value`` (ms); ``GetUpdateInterval`` answers it (both engines).
 """
 
 from __future__ import annotations
@@ -858,8 +859,28 @@ class CamillaClient:
         return str(await self.command("GetVersion"))
 
     async def get_state(self) -> str:
-        """``Running`` | ``Paused`` | ``Inactive`` | ``Starting`` | ``Stalled``."""
+        """``Running`` | ``Paused`` | ``Inactive`` | ``Starting`` | ``Stalled``. A run starts at
+        ``Starting`` and reads ``Running`` once its capture thread first publishes its status,
+        one update interval later (`set_update_interval`)."""
         return str(await self.command("GetState"))
+
+    async def get_update_interval(self) -> int:
+        """The engine's status update interval, in ms (`set_update_interval`)."""
+        return int(await self.command("GetUpdateInterval"))
+
+    async def set_update_interval(self, ms: int) -> None:
+        """``SetUpdateInterval``: how often, in ms, the engine's capture thread publishes its
+        status: the processing state (GetState), the capture rate it last measured
+        (GetCaptureRate; measured over ``rate_measure_interval_s``, only published here) and the
+        last chunk's signal range (GetSignalRange). A capture stall's flag is cleared at a
+        publish too: until then, after the capture is back, it passes Pause instead of audio.
+        1000 in a new process; it lives outside a run, so an in-place restart or a new config
+        keeps it (CamillaDSP next5 0930f9b and 5.0.0-beta.1, alsa_backend/device.rs and lib.rs,
+        read in the source; the state and the kept value measured on the box). A positive
+        integer: the engine's field is a ``usize``."""
+        if isinstance(ms, bool) or not isinstance(ms, int) or ms <= 0:
+            raise ValueError(f"update interval must be a positive integer of ms, got {ms!r}")
+        await self.command("SetUpdateInterval", value=ms)
 
     async def get_stop_reason(self) -> str | dict[str, Any]:
         """``None`` (still running), ``Done``, ``CaptureError``, ... As sent by the engine:
