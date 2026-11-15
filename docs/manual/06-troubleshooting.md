@@ -350,6 +350,7 @@ Lost in bypass: the Lo-Cut, the delays, the EQ, the mute.
 | The engine's own log (xruns, device errors, config loads) | `tail -f /var/log/k1000/camilladsp_rCURRENT.log` |
 | Older engine logs | `/var/log/k1000/camilladsp_r<date>.log`: up to 50, rotated at every engine start and every 256 kB |
 | Stream restarts (D-023): each engine start's and each resync's, who asked, the outcome, the delay before and after | `journalctl -u k1000 \| grep "stream restart"` |
+| The engine's status interval, set to 100 ms at each connection of k1000 (`100 ms (was 1000 ms)` after an engine start). A start restart `timed out (ENGINE NOT RUNNING AGAIN) after` about 1000 ms, with the ramp about 1.4 s after the sync, means the engine kept its 1 s default: this line then says `refused` | `journalctl -u k1000 \| grep "status interval"` |
 | Did the box reboot? When? | `journalctl --list-boots` |
 | The boot before this one (after a power cut) | `journalctl -b -1 -u k1000 -u camilladsp` |
 | A soak run | `/opt/k1000/tools/k1000-soak.sh --summary /var/log/k1000/<its log>` ([chapter 7](07-maintenance.md#soak-test)) |

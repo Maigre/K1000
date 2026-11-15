@@ -24,7 +24,7 @@ phone (D-007) is `docs/06-phone.md`.
 The order at power-on:
 
 1. The engine starts **muted at −40 dB** from `/var/lib/k1000/active.yml`.
-2. k1000 connects to the engine, checks the config, asks the engine once for its spectrum (the warm-up, below), restarts the engine's audio stream once in place, Main still muted (D-023, below), and, unless the state was saved muted, unmutes and ramps Main up to the saved level over about 1.5 s (`engine.boot_ramp_s`; 3 s until 12/11; saved muted: it stays muted, `READY · hold B4 to unmute`).
+2. k1000 connects to the engine, sets the engine's status interval to 100 ms (D-023, below), checks the config, asks the engine once for its spectrum (the warm-up, below), restarts the engine's audio stream once in place, Main still muted (D-023, below), and, unless the state was saved muted, unmutes and ramps Main up to the saved level over about 1.5 s (`engine.boot_ramp_s`; 3 s until 12/11; saved muted: it stays muted, `READY · hold B4 to unmute`).
 3. The phone/laptop GUI comes up next to them.
 
 - If `active.yml` is missing or broken, the engine waits for a valid one, with no websocket
@@ -506,11 +506,31 @@ late is still K1000's).
   one restart, so that every start comes up at the same delay. Measured on the desk box
   (14 Nov, 96 kHz, 128 / 256, four restarts made by hand): the stream not running for 20 to
   27 ms, no underrun, Main unchanged, then 6.35 to 6.38 ms in to out every time, where a plain
-  start lands anywhere from 6.1 to 7.6 ms. It adds about 0.2 s before the ramp (0.15 s for the
-  warm-up's stall to pass, the restart itself; calculated, not measured), so full level comes
-  at about 14.6 s after power-on instead of 14.4 s. An engine that does not run within 2 s, a
-  refused or timed-out restart, a bug in it: a warning, the ramp goes on. An engine already
-  playing when k1000 starts is left alone.
+  start lands anywhere from 6.1 to 7.6 ms. It adds about 0.3 s before the ramp: 0.15 s for the
+  warm-up's stall to pass, then the restart, done once the engine reads Running again. Measured
+  on 15 Nov (a restart made by hand, the engine's state read every 3 ms): the stream running
+  again 24 to 29 ms after the write, the engine reading Running 122 to 124 ms after it with its
+  status interval at 100 ms (below). The 0.3 s is those figures added up, not measured whole.
+  An engine that does not run within 2 s, a refused or timed-out restart, a bug in it: a
+  warning, the ramp goes on. An engine already playing when k1000 starts is left alone.
+- **The engine's status interval, 100 ms, set by k1000 at every connect.** The engine starts
+  each run at `Starting` and publishes its state once per status interval, 1 s by default: the
+  ramp, a guard's unmute and a restart's confirmation all wait for `Running`. At 1 s, on the box
+  on 15 Nov, the engine read `Starting` until about 1020 ms after the start restart's write
+  though its stream ran after 24 to 29 ms; the restart timed out (`ENGINE NOT RUNNING AGAIN
+  after 1005 ms`) and the ramp began 1.41 s after the sync instead of about 0.17 s. The value
+  lives outside a run (kept across a restart, measured) and is 1 s again in a new engine
+  process: k1000 sets it each time it connects, fresh engine or playing, one journal line each
+  (`engine status interval: 100 ms (was 1000 ms)`; `was 100 ms` after a k1000 restart). An
+  engine that refuses it: a warning, and the start goes on as before (the restart times out
+  after 1 s, the ramp still comes).
+  What else it paces, read in the engine's source (next5 0930f9b and 5.0.0-beta.1 alike):
+  the capture rate (the soak's `rate=`) is still measured over `rate_measure_interval_s`, 1 s,
+  only published sooner; the signal range is the last chunk's, sampled 10 times a second
+  (nothing in K1000 reads it); after a capture stall the engine passes no audio until its next
+  status publish, so at most about 0.1 s after the capture is back instead of up to 1 s (not
+  measured). The meters (signal levels, peaks since the last read), the spectrum and the delay
+  readout (the engine's buffer level, its 10 s average) do not depend on it.
 - **The resync, on the operator's command only**: SETUP › BOX › Resync delay (two E3 pushes,
   the popup between them) or the phone's STATUS sheet (a 1 s hold). About 25 ms of silence,
   then the delay where a start puts it. **Never by itself**: a gap is a click in continuous
@@ -530,15 +550,20 @@ late is still K1000's).
 
 ```sh
 journalctl -u k1000 -b | grep "stream restart"     # who asked, the outcome, the delay before and after
+journalctl -u k1000 -b | grep "status interval"    # one line per connect: 100 ms, and what it was
 grep rate_measure /var/lib/k1000/active.yml       # K1000's value, what the engine runs
 ```
 
 Proven by tests off the box, on a fake engine that restarts its stream as the engine's source
-says: the order at start (warm-up, restart, ramp) on both engines, a mute during a resync, a
-resync during a config write, refusals and timeouts, a write made active late, the growth, the
-phone's `act resync` and the SETUP action. Not proven yet on the box: the code itself (the
-restart was measured by hand, with the same command, on next5 only), the delay after 20 starts,
-the gap with the kernel's stream state, and the resync from a phone. On 5.0.0-beta.1
+says and reads `Starting` for one status interval after each run starts: the order at start
+(warm-up, restart, ramp) on both engines, the start restart done in about 0.12 s with the
+interval set (it times out without it, as on the box), a refused interval, a mute during a
+resync, a resync during a config write, refusals and timeouts, a write made active late, the
+growth, the phone's `act resync` and the SETUP action. Not proven yet on the box: the code
+itself (the restart and the interval were measured by hand, with the same commands, on next5
+only), the delay after 20 starts, the gap with the kernel's stream state, and the resync from a
+phone. Whether CamillaGUI sets the engine's status interval itself is not known (its source is
+not here): a resync after it did could time out again, said as such. On 5.0.0-beta.1
 (`--old-engine`) the restart's effect on the delay is not known: it has no trimming of late
 frames after a playback restart. The two system settings of D-023 point 3 are not built here.
 
@@ -734,12 +759,13 @@ while SHOW is displayed and SETUP › LIVE EQ › Spectrum is ON (`docs/03-v0-ar
   the analyser's buffers (1 MiB per channel; on 5.0.0-beta.1 both sides, on `next5` the side
   asked): the audio stalls and the playback often underruns, once. So when k1000 finds a freshly
   started engine, it asks once (`GetSpectrum`, capture side, program L, on a connection opened for
-  that request alone), while Main is still muted, then ramps in; the stall falls in the ramp's
-  0.15 s wait before the unmute. Warmed, the journal reads `spectrum warm-up: the engine answered
-  in N ms (No audio data available)`. Refused before the engine took the request (no active
-  config, an engine without `GetSpectrum`: `spectrum warm-up: refused … nothing warmed`), or no
-  answer within 0.3 s (`spectrum warm-up: no answer`): it ramps in anyway, and the first spectrum
-  poll may then cause the dropout. Cost: one request (milliseconds); at worst 0.3 s, and closing
+  that request alone), while Main is still muted, then restarts the stream (D-023) and ramps in;
+  the stall falls in the 0.15 s wait before that restart. Warmed, the journal reads
+  `spectrum warm-up: the engine answered in N ms (No audio data available)`. Refused before the
+  engine took the request (no active config, an engine without `GetSpectrum`:
+  `spectrum warm-up: refused … nothing warmed`), or no answer within 0.3 s
+  (`spectrum warm-up: no answer`): it ramps in anyway, and the first spectrum poll may then cause
+  the dropout. Cost: one request (milliseconds); at worst 0.3 s, and closing
   that link has the same bound again: 0.6 s at the very worst. Not after a k1000 restart on a
   playing engine (it was warmed at its own start). Before this, the spectrum task asked first,
   after the ramp: an underrun 3.5 to 4.2 s after the engine start, past full level, on 2 starts
