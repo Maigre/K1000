@@ -63,6 +63,8 @@ body.muted .setupbtn::before { background: var(--red-deep); border-color: #ff606
 .alert span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .alert.crit { background: var(--red-deep); border-left-color: var(--red); color: var(--fg); }
 .alert small { margin-left: auto; color: var(--dim); font-weight: 700; }
+/* D-021: the output CLIP latch; OK is the tap that clears it */
+.alert.clip small { color: var(--fg); border: 1px solid var(--fg); border-radius: 4px; padding: 1px 8px; }
 
 /* ------------------------------------------------ graph */
 .graph { flex: 1 1 auto; min-height: 150px; position: relative; background: var(--graph); border-bottom: 1px solid var(--line); overflow: hidden; }

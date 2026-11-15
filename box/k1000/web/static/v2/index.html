@@ -32,6 +32,8 @@
     <button id="setupBtn" class="setupbtn" type="button" aria-expanded="false">&#9776; SETUP</button>
   </header>
   <button id="alertLine" class="alert" type="button" hidden><span></span><small></small></button>
+  <!-- D-021: the output CLIP latch, until a tap here (or an E1 push on the box) clears it -->
+  <button id="clipLine" class="alert crit clip" type="button" hidden><span></span><small>OK</small></button>
 
   <div id="graph" class="graph">
     <canvas id="cv" aria-label="Live EQ graph: tap a dot to select, drag a dot, long-press for the notch helper"></canvas>

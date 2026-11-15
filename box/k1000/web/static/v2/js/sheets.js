@@ -20,7 +20,7 @@ import { K, UI, linked, render, savePrefs, shortName } from "./store.js";
 import { bindHold, earlyFlash } from "./hold.js";
 import { request, BUILD } from "./link.js";
 import { hap, hapLog } from "./haptics.js";
-import { alerts, editOk, muteWho, pillList, toast, layout } from "./view.js";
+import { alerts, clipLatch, editOk, muteWho, pillList, toast, layout } from "./view.js";
 import { forgetSheetTiles, makeTile, renderTile } from "./tile.js";
 import { closeStepper } from "./stepper.js";
 import { can, hasNative, nativeSend, refused as refusedNative, requestDiag } from "./native.js";
@@ -654,6 +654,13 @@ function buildStatus() {
   kv("Device", () => String(S().device || "--") + (S().device_present === false ? " · NOT FOUND" : ""));
   kv("Profile", () => String(S().profile || "--") + (S().readonly && S().readonly.profile ? " · " + S().readonly.profile : ""));
   kv("Input clip", () => (S().in_clip ? "CLIPPED (latched 3 s)" : "none"));
+  kv("Output clip", () => {                   // D-021: latched until cleared (the line's OK, E1 on the box)
+    const L = clipLatch(), c = S().clip || {};
+    const lim = "limiter " + (c.kind === "soft" ? "SOFT" : "HARD");
+    if (!L) return "none since cleared · " + lim;
+    return L.over.map((v, i) => (num(v) ? ["SUB L", "SUB R", "TOP L", "TOP R"][i] + " +" + v.toFixed(1) : "")).filter(Boolean).join(" · ") +
+      " · take " + (L.top ? "at least " : "") + L.take.toFixed(1) + " dB off · " + lim;
+  });
   kv("Spectrum", () => (S().spectrum ? (S().spectrum.on ? "ON" : "OFF") + " · " + String(S().spectrum.src || "--") + " · " +
     (S().spectrum.state === "off" ? "not running (no screen or phone watching)" : String(S().spectrum.state || "--")) : "--"));
   kv("Mono subs · sub LP", () => {
@@ -705,6 +712,8 @@ export function initSheets() {
   $("#setupBtn").addEventListener("click", () => openSheet("setup"));
   $("#stBtn").addEventListener("click", () => openSheet("status"));
   $("#alertLine").addEventListener("click", () => openSheet("status"));
+  // D-021: the CLIP line's tap clears the latch on the box (display only)
+  $("#clipLine").addEventListener("click", () => act("clip_ack", (ok) => { if (ok) toast("CLIP CLEARED", "white"); }));
   $("#shX").addEventListener("click", closeSheet);
   $("#shBody").addEventListener("pointerdown", (e) => {
     // touching another row cancels a pending choice

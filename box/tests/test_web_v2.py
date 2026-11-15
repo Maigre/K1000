@@ -258,7 +258,8 @@ def test_v2_hello_carries_the_schema(tmp_path: Path) -> None:
             assert h["order"] == [4, 0, 1, 2, 3, 5] and h["bells"] == [0, 1, 2, 3]
             assert h["kind"][4:] == ["low_shelf", "high_shelf"]
             assert h["nudge"] == {k: list(v) for k, v in NUDGE_CAPS_V2.items()}
-            assert h["acts"] == ["reset_live", "undo_reset", "laptop_open", "laptop_close", "resync"]
+            assert h["acts"] == ["reset_live", "undo_reset", "laptop_open", "laptop_close", "resync",
+                                 "clip_ack"]                                  # D-021
             assert h["unlock_s"] == input_map.UNLOCK_S == 30.0
             assert h["notch"]["q"] == pytest.approx(NOTCH_Q, abs=1e-3)
             assert h["limits"]["max_phones"] == 4 and h["limits"]["master_up_db_per_s"] == 6.0
@@ -1725,5 +1726,34 @@ def test_the_v2_page_installs_as_its_own_app(tmp_path: Path) -> None:
             sizes.add(icon["sizes"])
         assert {"192x192", "512x512"} <= sizes
         await srv.stop()
+        await ctl.stop()
+    run(go())
+
+
+# ============================================================================ D-021: output CLIP
+def test_d021_state_carries_the_clip_latch_and_a_phone_clears_it(tmp_path: Path) -> None:
+    """state.clip (docs/14 §3.2): per output the most over the limiter's ceiling since the last
+    clear, the dB to take off (rounded up, 0.1 at least), whether the soft flat top was reached,
+    and the kind the engine runs. `act clip_ack` clears it for every phone and the box (display
+    only); nothing latched is no error, `cleared` false."""
+    async def go() -> None:
+        ctl, _ = make_ctl(tmp_path)
+        await boot(ctl)
+        b, s = PhoneBridge(ctl), sess()
+        snap = ctl.snapshot()
+        clip = PhoneBridge.state_message2(snap, phone_on=True, phones=1)["clip"]
+        assert clip == {"over": [None] * 4, "take": None, "top": False, "kind": "hard"}
+        ctl.status.limit_over = [None, 2.346, None, 0.004]
+        snap = ctl.snapshot()
+        back = json.loads(json.dumps(PhoneBridge.state_message2(snap, phone_on=True, phones=1),
+                                     allow_nan=False))
+        assert back["clip"] == {"over": [None, 2.35, None, 0.0], "take": 2.4, "top": False,
+                                "kind": "hard"}
+        ctl.status.limit_over, ctl.status.limit_kind = [3.522, None, None, None], "soft"
+        clip = PhoneBridge.state_message2(ctl.snapshot(), phone_on=True, phones=1)["clip"]
+        assert clip["top"] is True and clip["take"] == 3.6 and clip["kind"] == "soft"
+        assert b.apply2({"t": "act", "a": "clip_ack"}, s) == (True, {"cleared": True}, "", "")
+        assert ctl.status.limit_over == [None] * 4
+        assert b.apply2({"t": "act", "a": "clip_ack"}, s) == (True, {"cleared": False}, "", "")
         await ctl.stop()
     run(go())

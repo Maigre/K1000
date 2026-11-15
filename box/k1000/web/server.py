@@ -88,6 +88,7 @@ from websockets.http11 import Request, Response
 
 from .. import __version__
 from ..control import MASTER_UP_WINDOW_S, NOTCH_NEAR_OCT, NOTCH_Q, UNDO_RESET_S
+from ..dspconfig import SOFT_OVER_MAX_DB
 from ..state import N_LIVE_PEQ, N_OUT, RANGES, atomic_write, effective_gain, engine_rate, range_for
 from ..tune import MAX_TEXT, TuneDesk
 from ..ui.input_map import (A_LAPTOP, A_RESET_LIVE, A_RESYNC, A_UNDO_RESET, BAND_CYCLE, BELL_SLOTS,
@@ -211,7 +212,8 @@ TRIM_FIELDS_V2: frozenset[str] = frozenset({"input_trim_db", *(f"out_trim_db.{i}
 # What a refused rise names (`err SLOW`): the field's own word, TRIM for the trims.
 SLOW_WORD_V2: dict[str, str] = {"master_db": "MASTER", "aux_gain_db": "AUX",
                                 "loud_boost_db": "LOUDNESS", "loud_ref_db": "LOUDNESS"}
-ACTS_V2 = ("reset_live", "undo_reset", "laptop_open", "laptop_close", "resync")
+# D-021: `clip_ack` clears the output CLIP latch (Controller.clear_clip), the box's E1 push.
+ACTS_V2 = ("reset_live", "undo_reset", "laptop_open", "laptop_close", "resync", "clip_ack")
 # `act resync` (D-023): the err codes of a resync that did not happen or did not finish
 # (control.Restart): BUSY (one runs, or engine work in flight: try again), REFUSED (nothing
 # written: the engine not running, not in sync, or refusing), LATE (written, but the engine did
@@ -615,6 +617,23 @@ def _latency(status: Any) -> dict[str, Any]:
             "drops": whole(getattr(status, "dropouts", None)),
             "grown": _f(getattr(status, "latency_grown_ms", None), 1),
             "resync": r if (r := getattr(status, "resync", "")) in ("running", "reading") else ""}
+
+
+def _clip(status: Any) -> dict[str, Any]:
+    """state.clip (docs/14 §3.2, D-021): the output CLIP latch. `over`: per logical output (Sub L,
+    Sub R, Top L, Top R) the most it went over the limiter's ceiling before the limiter since the
+    last clear, dB (0.01), or None; `take`: the dB to take off (the most of them, rounded UP to
+    0.1 dB, 0.1 at least), None = nothing latched; `top`: the soft limiter's flat top was reached (the overshoot
+    is at least `take`, not exactly it); `kind`: "hard" or "soft", the limiter the engine runs."""
+    raw = [_f(v, 3) for v in list(getattr(status, "limit_over", None) or [None] * N_OUT)[:N_OUT]]
+    raw += [None] * (N_OUT - len(raw))
+    held = [v for v in raw if v is not None]
+    take = max(0.1, math.ceil(max(held) * 10.0 - 1e-6) / 10.0) if held else None
+    over = [None if v is None else round(v, 2) for v in raw]
+    kind = str(getattr(status, "limit_kind", "hard") or "hard")
+    kind = kind if kind in ("hard", "soft") else "hard"
+    top = bool(held) and kind == "soft" and max(held) >= SOFT_OVER_MAX_DB - 0.01
+    return {"over": over, "take": take, "top": top, "kind": kind}
 
 
 def _sys_eq_id(st: Any) -> str | None:
@@ -1314,6 +1333,7 @@ class PhoneBridge:
             "box_page": str(getattr(status, "page", "") or ""),
             "knobs_ok": knobs_ok if isinstance(knobs_ok, bool) else None,
             "latency": _latency(status),
+            "clip": _clip(status),
         })
         return out
 
@@ -1496,6 +1516,9 @@ class PhoneBridge:
         if a == "resync":                # answered when done: PhoneServer._resync2
             return False, None, "act resync: through the phone server", "BAD"
         ctl = self.ctl
+        if a == "clip_ack":              # D-021: display only, never a level
+            fn = getattr(ctl, "clear_clip", None)
+            return True, {"cleared": bool(fn(sess.name)) if callable(fn) else False}, "", ""
         if a == "reset_live":
             before = self._live_now()
             ctl.reset_live()

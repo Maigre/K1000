@@ -105,6 +105,22 @@ export function renderPills() {
   fitPills(el);
 }
 
+// ------------------------------------------------------------------ D-021: the output CLIP latch
+// state.clip (docs/14 §3.2): the outputs that went over the limiter's ceiling since the latch was
+// last cleared, and the dB to take off (the master is common: that much off it). A tap on the line
+// clears it (act clip_ack), as an E1 push on the box does. Display only: nothing moves a level.
+const OUTS = ["SUB L", "SUB R", "TOP L", "TOP R"];
+export function clipLatch() {
+  const S = K.state, c = S && S.clip;
+  if (!linked() || !c || !num(c.take)) return null;
+  const over = Array.isArray(c.over) ? c.over : [];
+  return { take: c.take, top: c.top === true, kind: String(c.kind || ""),
+           outs: OUTS.filter((_o, i) => num(over[i])), over };
+}
+export function clipWords(L) {
+  return "CLIP " + L.outs.join(" ") + " · TAKE " + (L.top ? "≥ " : "") + L.take.toFixed(1) + " dB OFF";
+}
+
 // ------------------------------------------------------------------ status strip + alert line
 export function muteWho() {
   const S = K.state, src = S ? String(S.mute_src || "") : "";
@@ -147,12 +163,16 @@ export function renderStrip() {
     setText(al.firstChild, top[1]);
     setText(al.lastChild, serious.length > 1 ? "+" + (serious.length - 1) : "");
   }
+  const cl = $("#clipLine"), L = clipLatch();
+  const clipWas = cl.hidden;
+  cl.hidden = !L;
+  if (L) setText(cl.firstChild, clipWords(L));
   const b = document.body;
   b.classList.toggle("muted", !!muted);
   b.classList.toggle("nolink", !ok);
   b.classList.toggle("held", !!(ok && S && S.muted && !holdUnmutes()));
   $("#frame").hidden = !muted;
-  return wasHidden !== al.hidden;
+  return wasHidden !== al.hidden || clipWas !== cl.hidden;
 }
 
 // ------------------------------------------------------------------ meters (footer)
@@ -172,10 +192,11 @@ export function drawMeters() {
   if (!mBars) return;
   const M = K.meters;
   if (!linked() || !M || !Array.isArray(M.l)) return;     // frozen, grey (CSS) on link loss
+  const L = clipLatch();                     // D-021: a latched output keeps its box red
   for (let i = 0; i < 4; i++) {
     const v = num(M.l[i]) ? M.l[i] : -60;
     mBars[i].style.height = ((1 - clamp((v + 48) / 48, 0, 1)) * 100).toFixed(1) + "%";
-    mClips[i].classList.toggle("on", !!(M.c && M.c[i]));
+    mClips[i].classList.toggle("on", !!(M.c && M.c[i]) || !!(L && num(L.over[i])));
   }
 }
 

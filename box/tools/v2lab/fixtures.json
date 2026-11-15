@@ -1187,7 +1187,8 @@
    "undo_reset",
    "laptop_open",
    "laptop_close",
-   "resync"
+   "resync",
+   "clip_ack"
   ],
   "notch": {
    "q": 8.651,
@@ -1478,6 +1479,17 @@
    "drops": null,
    "grown": null,
    "resync": ""
+  },
+  "clip": {
+   "over": [
+    null,
+    null,
+    null,
+    null
+   ],
+   "take": null,
+   "top": false,
+   "kind": "hard"
   }
  },
  "m": {
