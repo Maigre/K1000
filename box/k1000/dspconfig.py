@@ -56,8 +56,11 @@ wrapped). So `limit_kind`:
   rounding from about 6 dB under C (third harmonic -41 dB re a peak at C/2), the full ceiling at
   +3.5 dB over it. The curve is monotonic, so the peak before it is known up to +3.5 dB over C
   (`limit_over_db`).
-Switching the kind is two parameter writes (`soft_clip`, `clip_limit`), stepped like a gain: never
-a rebuild. Neither kind adds a sample of delay (no look-ahead: the engine's LookaheadLimiter
+Switching the kind writes two parameters (`soft_clip`, `clip_limit`), never a rebuild: the bool
+alone, once, while the ceiling stands at the HARD backstop, and the ceiling in 0.5 dB steps
+(`smooth_ops`, `_SOFT_CLIP`): no sample moves by more than 0.5 dB at once (computed from the
+curve; the plan is accepted by both engines, tested; not heard on the box yet). Neither kind adds
+a sample of delay (no look-ahead: the engine's LookaheadLimiter
 delays by its attack and is not used).
 
 D-021, the output trims only cut (state.RANGES). A config written before D-021 (it has no
@@ -887,6 +890,18 @@ def _is_trim(ptr: str) -> bool:
     return ptr in _TRIM_POINTERS
 
 
+# D-021: the limiter's kind, a bool the engine takes only as a bool (a float 0.0/1.0 is refused:
+# "invalid type: floating point, expected a boolean", both engines). Never interpolated: written
+# once, alone in its batch, while the ceiling stands at the HARD backstop (LIMIT_HARD_DB), where
+# the soft curve is within 0.08 dB of a straight line up to full scale (a sample at 1.0 moves by
+# 0.0093). So HARD -> SOFT flips first and then steps the ceiling down; SOFT -> HARD steps the
+# soft ceiling up to the backstop and flips last. During the ramp no sample moves by more than
+# one ceiling step at once (max_db_step, 0.5 dB: a detent, measured clean on a Gain): the soft
+# curve's output changes with its ceiling by at most the same ratio. Flipping at -0.1 dBFS would
+# make a sample at -0.1 dBFS jump by 1.39 dB.
+_SOFT_CLIP = _pp(OUT_LIMIT, "soft_clip")
+
+
 def smooth_ops(old_state: State, new_state: State, *, max_db_step: float = 0.5,
                max_trim_step: float = 0.1, max_oct_step: float = 1.0 / 12.0,
                max_steps: int = 100, step_wait_s: float = STEP_WAIT_S) -> Plan:
@@ -897,7 +912,9 @@ def smooth_ops(old_state: State, new_state: State, *, max_db_step: float = 0.5,
     dB / `max_oct_step` octave (the engine smooths each Biquad switch); Gain-filter trims, which
     the engine applies as an instant step, use `max_trim_step`, and so do the AUX level and the
     sub loudness boost (`_is_trim`). The loudness reference and the de-harsh threshold (dB) move
-    like a Biquad gain, the de-harsh frequency like any frequency. Steps are `step_wait_s` apart
+    like a Biquad gain, the de-harsh frequency like any frequency, the limiter's ceiling like a
+    Biquad gain; the limiter's kind (a bool, `_SOFT_CLIP`) is never interpolated: one batch of
+    its own, before the ceiling ramp to SOFT, after it to HARD. Steps are `step_wait_s` apart
     (STEP_WAIT_S at chunk 256; the controller passes `two_chunks_s` of the running chunk), at
     most `max_steps` of them. Delay and polarity changes are wrapped in a mute
     of their group fader (Aux1 subs / Aux2 tops): mute, wait the ramp, write, unmute. Fader ops
@@ -922,10 +939,14 @@ def smooth_ops(old_state: State, new_state: State, *, max_db_step: float = 0.5,
 
     old = param_map(old_state)
     tracks: list[tuple[str, float, float, bool]] = []   # pointer, from, to, log scale
+    switches: list[SetValue] = []     # not numbers (the limiter's soft_clip): once, as they are
     n_steps = 1
     for o in ramped:
         a, b = old.get(o.pointer), o.value
-        if _num(a) is None or _num(b) is None:
+        if _num(b) is None:
+            switches.append(o)
+            continue
+        if _num(a) is None:
             tracks.append((o.pointer, b, b, False))
             continue
         is_log = o.pointer.endswith(("/freq", "/q")) and a > 0 and b > 0
@@ -935,6 +956,11 @@ def smooth_ops(old_state: State, new_state: State, *, max_db_step: float = 0.5,
             span = abs(b - a) / (max_trim_step if _is_trim(o.pointer) else max_db_step)
         n_steps = min(max_steps, max(n_steps, math.ceil(span - 1e-9)))
         tracks.append((o.pointer, float(a), float(b), is_log))
+    # D-021 (_SOFT_CLIP): to SOFT before the ceiling ramp, to HARD (and anything else) after it.
+    early = [o for o in switches if o.pointer == _SOFT_CLIP and o.value is True]
+    late = [o for o in switches if o not in early]
+    if early:
+        plan.append((step_wait_s if plan else 0.0, early))
     if tracks:
         for k in range(1, n_steps + 1):
             t = k / n_steps
@@ -948,6 +974,8 @@ def smooth_ops(old_state: State, new_state: State, *, max_db_step: float = 0.5,
                     v = round(a + (b - a) * t, 3)
                 batch.append(SetValue(ptr, v))
             plan.append((step_wait_s if plan else 0.0, batch))
+    if late:
+        plan.append((step_wait_s if plan else 0.0, late))
 
     groups = sorted({_guard_group(o.pointer) for o in guarded})  # type: ignore[type-var]
     if groups:

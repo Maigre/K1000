@@ -974,6 +974,33 @@ def test_engine_smooth_plan_and_patch(engine_ws):
 
 
 @engine
+@pytest.mark.parametrize("by_patch", [False, True])
+def test_engine_takes_both_limiter_kind_switch_plans(engine_ws, by_patch):
+    """D-021, review 2026-11-15: the HARD -> SOFT and SOFT -> HARD plans, every batch sent as the
+    controller sends it (one value: SetConfigValue; several: one PatchConfig) or every batch as a
+    PatchConfig: the engine takes each one (a float soft_clip was refused by both engines) and
+    holds, after each, the kind and ceiling the plan says."""
+    cmd, log = engine_ws
+    hard, soft = State(), State(limit_kind="soft")
+    assert cmd("GetConfigValue", value="/filters/out_limit/parameters")["value"] == {
+        "clip_limit": d.LIMIT_HARD_DB, "soft_clip": False}
+    for old, new in ((hard, soft), (soft, hard)):
+        plan = d.smooth_ops(old, new)
+        walk = _limiter_walk(old is soft, plan)
+        for (wait, batch), (ceil, kind) in zip(plan, walk[1:]):
+            time.sleep(wait)
+            if by_patch or len(batch) > 1:
+                r = cmd("PatchConfig", value=d.ops_to_patch(batch))
+            else:
+                r = _send(cmd, batch[0])
+            assert r["result"] == "Ok", (batch, r)
+            want = {"clip_limit": ceil, "soft_clip": kind}
+            got = _eventually(cmd, "/filters/out_limit/parameters", want)
+            assert got == want and type(got["soft_clip"]) is bool, (batch, got)
+    assert "invalid type" not in log.read_text()
+
+
+@engine
 def test_engine_rejects_out_of_range_as_last_defence(engine_ws):
     cmd, _log = engine_ws
     r = cmd("SetConfigValue", pointer="/filters/top_lowcut/parameters/freq", value=30000.0)
@@ -2778,22 +2805,101 @@ def test_limiter_is_the_last_step_on_every_output(prof_key, kind):
         assert {k: pm[k] for k in HARD} == (SOFT if kind == "soft" else HARD)
 
 
+LIM_CEIL, LIM_SOFT = "/filters/out_limit/parameters/clip_limit", "/filters/out_limit/parameters/soft_clip"
+
+
+def _clipper(x, ceiling_db, soft):
+    """The engine's Clipper on samples x (clipper.rs, both engines)."""
+    np = pytest.importorskip("numpy")
+    c = 10 ** (ceiling_db / 20)
+    if not soft:
+        return np.clip(x, -c, c)
+    s = np.clip(x / c, -d.SOFT_TOP, d.SOFT_TOP)
+    return c * (s - d.SOFT_CUBE * s ** 3)
+
+
+def _limiter_walk(start_soft, plan):
+    """(ceiling dB, soft) after each batch of a kind-switch plan, from the kind `start_soft`;
+    every limiter value the plan writes is checked for its type (a bool stays a bool, the
+    ceiling a float) and every write of the kind stands alone in its batch."""
+    ceil, soft = (d.LIMIT_SOFT_DB, True) if start_soft else (d.LIMIT_HARD_DB, False)
+    walk = [(ceil, soft)]
+    for _w, batch in plan:
+        for o in batch:
+            if o.pointer == LIM_SOFT:
+                assert type(o.value) is bool and batch == [o], batch
+                soft = o.value
+            elif o.pointer == LIM_CEIL:
+                assert type(o.value) is float, o
+                ceil = o.value
+        walk.append((ceil, soft))
+    return walk
+
+
 def test_limiter_kind_is_two_parameter_writes_never_a_rebuild():
-    """HARD <-> SOFT: the Clipper's two values, stepped like a gain (0.5 dB steps on the
-    ceiling, two chunks apart): never a Rebuild, never a guard, nothing else written."""
+    """HARD <-> SOFT: the Clipper's two values, never a Rebuild, never a guard, nothing else
+    written. The kind is a bool, written once, alone, as a bool (review 2026-11-15: a float
+    0.0/1.0 is refused by both engines), while the ceiling stands at the HARD backstop: to SOFT
+    first, then the ceiling down in 0.5 dB steps; to HARD the ceiling up first, the kind last."""
     a, b = State(profile="m4"), State(profile="m4", limit_kind="soft")
     ops = d.diff_ops(a, b)
     assert set(ops) == {d.SetValue(k, v) for k, v in SOFT.items()}
+    n_ceil = math.ceil((d.LIMIT_HARD_DB - d.LIMIT_SOFT_DB) / 0.5)
     plan = d.smooth_ops(a, b)
     assert not any(isinstance(o, (d.Rebuild, d.FaderMute)) for _w, batch in plan for o in batch)
-    assert plan[-1][1] == [d.SetValue(k, v) for k, v in SOFT.items()]
-    assert len(plan) == math.ceil((d.LIMIT_HARD_DB - d.LIMIT_SOFT_DB) / 0.5)
+    assert plan[0] == (0.0, [d.SetValue(LIM_SOFT, True)])
+    assert all(len(batch) == 1 and batch[0].pointer == LIM_CEIL for _w, batch in plan[1:])
+    assert len(plan) == 1 + n_ceil and plan[-1][1] == [d.SetValue(LIM_CEIL, d.LIMIT_SOFT_DB)]
+    walk = _limiter_walk(False, plan)
+    assert walk[1] == (d.LIMIT_HARD_DB, True) and walk[-1] == (d.LIMIT_SOFT_DB, True)
+    assert all(0 < p[0] - q[0] <= 0.5 + 1e-9 for p, q in zip(walk[1:], walk[2:]))
     back = d.smooth_ops(b, a)
-    assert back[-1][1] == [d.SetValue(k, v) for k, v in HARD.items()]
+    assert len(back) == n_ceil + 1 and back[-1][1] == [d.SetValue(LIM_SOFT, False)]
+    walk = _limiter_walk(True, back)
+    assert walk[-2] == (d.LIMIT_HARD_DB, True) and walk[-1] == (d.LIMIT_HARD_DB, False)
+    assert all(soft for _c, soft in walk[:-1])            # SOFT all the way up, HARD at +12
     # adopted from the engine like any owned value: the kind from soft_clip
     cfg = d.generate(m4(), b)
     assert d.state_from_config(cfg, None, a).limit_kind == "soft"
     assert d.config_drift(cfg, d.generate(m4(), b)).clean
+    # coalesced with a trim: the kind still alone in its batch, the trim ramps with the ceiling
+    c = b.copy()
+    c.out_trim_db[0] = -1.0
+    plan = d.smooth_ops(a, c)
+    assert plan[0][1] == [d.SetValue(LIM_SOFT, True)]
+    assert set(plan[-1][1]) == {d.SetValue(LIM_CEIL, d.LIMIT_SOFT_DB),
+                                d.SetValue("/filters/out_trim_0/parameters/gain", -1.0)}
+
+
+@pytest.mark.parametrize("to_soft", [True, False])
+def test_limiter_kind_switch_moves_no_sample_more_than_a_detent(to_soft):
+    """Review 2026-11-15: what each batch of the kind-switch plan does to the samples the box
+    sends (the engine's Clipper, then the conversion's cut at full scale), for every level from
+    -80 to +12 dBFS: no sample moves by more than 0.5 dB (one detent, measured clean on a Gain)
+    from one batch to the next, and the kind's own flip by less than 0.1 dB (0.0093 FS at full
+    scale). The order matters: a flip at the SOFT ceiling (-0.1 dBFS) moves a sample at
+    -0.1 dBFS by 1.39 dB."""
+    np = pytest.importorskip("numpy")
+    a, b = State(profile="m4"), State(profile="m4", limit_kind="soft")
+    old, new = (a, b) if to_soft else (b, a)
+    walk = _limiter_walk(not to_soft, d.smooth_ops(old, new))
+    x = 10 ** (np.linspace(-80.0, 12.0, 4601) / 20)
+
+    def sent(ceil, soft):
+        return np.clip(_clipper(x, ceil, soft), -1.0, 1.0)     # S32: the conversion's cut
+
+    flips = 0
+    for p, q in zip(walk, walk[1:]):
+        step = np.max(np.abs(20 * np.log10(sent(*q) / sent(*p))))
+        assert step <= 0.5 + 1e-9, (p, q, step)
+        if p[1] != q[1]:
+            flips += 1
+            assert p[0] == q[0] == d.LIMIT_HARD_DB
+            assert step < 0.1 and np.max(np.abs(sent(*q) - sent(*p))) < 0.0094
+    assert flips == 1
+    # the negative control: the flip at the SOFT ceiling (what the first plan did)
+    jump = 20 * np.log10(sent(d.LIMIT_SOFT_DB, False) / sent(d.LIMIT_SOFT_DB, True))
+    assert np.max(np.abs(jump)) > 1.3
 
 
 def test_limiter_drift_keeps_a_lower_ceiling_and_pushes_the_kind():
