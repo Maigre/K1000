@@ -17,18 +17,19 @@ latency is closed). The bench results are in `docs/17-box-record-and-bench.md`: 
 reaches 5 to 8 ms where 5.0.0-beta.1 never gets under 12.5. On 13 Nov, D-022 made 24-bit / 96 kHz
 at chunk 128 / target 256 the main setting (6.2 to 7.5 ms in to out measured on the desk); the
 sample rate is a setting of `k1000.yaml` in the code, with 48 kHz at 64 / 128 kept as the proven
-fallback. Two gates have no record of having run before the gig: the overnight soak on the M4 at
-the show setting, and the USB drills.
+fallback. The two gates that had no record before the gig have one now: the overnight soak on the
+M4 passed at 48 kHz on 12 to 13 Nov (`docs/17` §9), and on 14 Nov the M4 left the USB bus 29 times
+on its own; the box brought the sound back each time with no hand on it (`docs/17` §10).
 
 ## At a glance
 
 | Phase | Goal | State | Gate |
 |---|---|---|---|
 | 0 — Frame | Questions answered, lead picked | **done** 12/10 | — |
-| 1 — v0 for the gig | A trustworthy, bypassable head for Sunday | **played the gig** 18/10 (`025b8f8`): code, Lite, power-cut drill; M4 live 16/10 (loop-tested: routing, levels, 20.3 ms), buttons confirmed, 3 A PSU. **Skipped**: the USB drills and the M4 soak (no record of either before the gig) | ~~Fri 16 rig test~~ held 16–17/10 |
+| 1 — v0 for the gig | A trustworthy, bypassable head for Sunday | **played the gig** 18/10 (`025b8f8`): code, Lite, power-cut drill; M4 live 16/10 (loop-tested: routing, levels, 20.3 ms), buttons confirmed, 3 A PSU. **Skipped**: the USB drills and the M4 soak (no record of either before the gig). Both have a record since: the soak passed 12 to 13/11, and the M4 dropped off USB 29 times on 14/11 with the box recovering alone (`docs/17` §9, §10) | ~~Fri 16 rig test~~ held 16–17/10 |
 | 2 — Live UI v1 | Every live control on one page, EQ curve over a spectrum; phone PWA | **played the gig**: UI v1 accepted on the box 13/10, D-017 in the build that played; the Android app 0.2.2 drove the box at the rig 17/10 (a Pixel) | ~~Wed 14 freeze~~ not held (D-016, D-017 went in on 17/10); ~~Fri go/no-go~~ no per-item record |
 | 3 — Field trial | The gig is the first outing; debrief | **played** Sun 18/10; beatmatching on the speakers impossible (the owner's report) | ~~debrief Mon 19~~ the review is `docs/16` (12/11); bench results in `docs/17` (forthcoming) |
-| Now — Latency | D-018: 10 ms or less in to out, never growing, shown on the box | **open** (13/11): the desk box runs D-019's engine at 48 kHz, chunk 64 / target 128, about 7 ms, shown on its screen; the night run passed (16 h, 185 loop measurements at 7.59 ms, no dropout: `docs/17` §9). D-022 (13/11): 96 kHz at chunk 128 / target 256 becomes the main setting, 6.2 to 7.5 ms measured on the desk; the rate is a `k1000.yaml` setting in the code (tested, not yet deployed). Left at 96 kHz: a night run, the dropout just after a start (3 starts of 4), the USB transit at rest read with the new reader, real power cycles, beatmatching by ear | D-020: met on the box after a night run, and beatmatched on it |
+| Now — Latency | D-018: 10 ms or less in to out, never growing, shown on the box | **open** (15/11): the desk box runs D-019's engine at 96 kHz, chunk 128 / target 256 (D-022), about 6.4 ms, shown on its screen; the 48 kHz night passed (`docs/17` §9). The 96 kHz nights did not: the delay grew in silent steps of 1 to 2 ms. Cause traced (`docs/17` §14): core 0, which handles the M4's USB, stalls one kernel tick (4 ms) in its timer work. D-023: a muted stream restart at every start (the same delay each time) and a resync on the operator's command. A remedy (every movable thread off core 0) is on a long run since 15/11. Left: that run, real power cycles, beatmatching by ear | D-020: met on the box after a night run, and beatmatched on it |
 | 4 — Assist & measurement | Spectrum tools, suggest-notch, phone mic as a measurement input | steps 1-2 pulled in for the tests (Thomas, 14/10): on the box `6a537bb`; the rest waits until the latency is closed (D-020) | — |
 | 5 — Road-proofing | Read-only root, enclosure, power, spare surface | after the gig | — |
 
