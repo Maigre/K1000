@@ -4,7 +4,7 @@
 M4 OUT 1 into LINE IN 4), nothing else plugged. This follows `docs/16-post-gig-audit.md`, which
 was written before the box was powered, and corrects it. Each figure says whether it was
 **measured** on the box, **read** in a log or in source code, or **calculated**. Sections 9 to 13
-were added on 13 Nov, the 96 kHz night of section 10 on 14 Nov.
+were added on 13 Nov, the 96 kHz night of section 10 on 14 Nov, section 14 on 15 Nov.
 
 ## 1. Summary
 
@@ -43,7 +43,13 @@ were added on 13 Nov, the 96 kHz night of section 10 on 14 Nov.
 - **14 Nov: the night run at 96 kHz did not pass (section 10).** No dropout in 13 hours, but the
   delay grew from 7.4 to 10.1 ms in two steps with nothing in any log (measured). The readout
   showed both steps. The 48 kHz night of section 9 had none. The cause is not known yet.
-- **Still open:** why the delay grew at 96 kHz, a few real power cycles, and Thomas's ear on the
+- **15 Nov: the cause of those steps, caught in a kernel trace (section 14).** Twice, core 0, which
+  handles the M4's USB traffic, kept its interrupts off for one whole tick of the kernel's clock
+  (4 ms), starting in its timer work right after a tick. The USB playback queue ran empty, and came
+  back deeper. In both traces core 0 had just run the sleep time-out of a kernel thread that
+  another core was waking at the same moment. Keeping every thread that can move off core 0 is
+  under test: clean since 15 Nov, 10:37.
+- **Still open:** a long run with that remedy, a few real power cycles, and Thomas's ear on the
   result.
 
 ## 2. The gig night, from the box's logs
@@ -271,8 +277,9 @@ baseline. Not proven: that a real power-on times like a reboot, and the 1.5 s ra
 ## 8. Still to do
 
 1. The night run at the candidate setting on the new engine, with the readout logging: passed
-   at 48 kHz, section 9. At 96 kHz the delay grew during the night (section 10): find which of
-   the rate, the buffer or the new transit reader does it, one night per change.
+   at 48 kHz, section 9. At 96 kHz the delay grew during the night (section 10). The cause is
+   traced (section 14); a run with the remedy started 15 Nov, 10:37: about 20 clean hours are
+   needed before it means anything.
 2. The kernel's transit figure in the readout: done, section 12. It followed two real shifts
    during the 96 kHz night. Left: the first power-on with it. The note for upstream is drafted
    for Thomas to send.
@@ -285,6 +292,10 @@ baseline. Not proven: that a real power-on times like a reboot, and the 1.5 s ra
    running box (section 13): Thomas decides.
 8. The engine service starts before the M4 exists at some boots and is started again a second
    later (section 10): to look at, it may cost up to a second of boot.
+9. The stall of section 14 looks like a kernel defect: a short report for the kernel's developers,
+   with both traces, drafted for Thomas to send if he wants.
+10. The M4 left the USB bus 29 times on 14 Nov with nobody touching the box (section 10). Taken
+    as exceptional (D-023); counted at every read of the box since: none.
 
 ## 9. The night run, 12 to 13 Nov
 
@@ -483,3 +494,77 @@ The build recipe now pins its Rust toolchain and base image. Built again from an
 gave the same checksum a third time. There is still no download address for the binary: a fresh
 card needs the recipe (Docker) or a copy from a box that runs it. Where to host it is Thomas's
 decision.
+
+## 14. What stalls the USB, 14 and 15 Nov
+
+Added 15 Nov. The 96 kHz night of section 10 left the delay 2.7 ms higher in two steps, with
+nothing in any log. This section is how the cause was found, and what is being tried against it.
+
+### The mechanism, read in the source
+
+Two research agents read the kernel's USB audio driver and the engine's source (14 Nov). The M4
+uses implicit feedback: its playback stream is paced by its capture stream, and each finished
+capture transfer makes the driver queue one playback transfer. If the handling of USB completions
+on core 0 stalls for about 3 ms, the playback queue rises to its maximum of 12 transfers and never
+shrinks again. Nothing logs it. 12 transfers is 288 frames at 96 kHz (3 ms) and 144 at 48 kHz:
+exactly the two plateaus measured (13 Nov at 20:32, and the load test of section 3.4). With the
+queue full, a further slip stays in the ALSA buffer: the +96 frames of the second step. The engine
+adds nothing. USB completions are handled on core 0, where the M4's host controller takes its
+interrupt; the kernel cannot move that interrupt.
+
+### What did not do it
+
+| Test | Result | |
+|---|---|---|
+| 21 minutes of load on core 0: busy loops, a network flood, SD-card writes, phone edits every 0.5 s, FFTs, all together, at 96 kHz | No step, no USB event, 6.382 ms throughout | measured |
+| The readout's USB reader off (20 reads a second of the kernel's status), 5 h 20 at 96 kHz | No step | measured |
+| The kernel's timer migration off (`/proc/sys/kernel/timer_migration` = 0), 7 h 17 at 96 kHz | A step after 7 h 17: 6.38 → 8.22 ms | measured |
+
+### The traces
+
+A flight recorder on the box (the kernel's own tracer: interrupts, softirqs, timers, scheduling,
+on all four cores, in a 16 MB ring of about 7 s) froze at the first USB event that is neither a
+success nor a short packet: a "Ring Underrun" on the M4's playback endpoint, or a "Ring Overrun" on
+its capture endpoint. Three steps were caught (14 Nov at 19:35, 15 Nov at 03:01 and 10:31). In
+each:
+
+- the USB interrupt arrives on core 0 every 125 µs for the seconds before, except one gap of
+  3.97 to 3.99 ms (read);
+- the gap starts in core 0's timer softirq, a few microseconds after a tick of the kernel's clock
+  (250 ticks a second here), and ends at the next tick, 4.000 ms later (read);
+- during the gap nothing at all is recorded on core 0, and in the two traces made on all four
+  cores, nothing on any core (read);
+- in the two traces with timer names, core 0 had just run `process_timeout` for `rcu_preempt`, a
+  kernel thread asleep on another core, while that other core was waking the same thread by
+  another path (read); the stall ends one microsecond after that other core takes its next tick,
+  when core 0 starts the next timer of the same run (read).
+
+Between two timers of one run, the kernel only takes the timer base's lock again, with interrupts
+off. The reading: the woken thread, back from its sleep, waits for its time-out to be marked
+finished and keeps taking that lock while it waits; core 0 does not get the lock until the other
+core is interrupted by its own tick. A stand-off of one tick, with core 0's interrupts off, which
+is enough to starve the M4's queue (inference: the source of this kernel's timer code was not read
+line by line). It looks like a kernel defect. A short report for its developers is on the to-do
+list of section 8, for Thomas to send if he wants.
+
+The third step, at 03:01, moved the delay down (9.24 → 8.49 ms): a stall can shift the queue either
+way.
+
+### What is being tried
+
+Keep off core 0 every thread that can run elsewhere, so that no sleeping thread has its time-out on
+core 0. Since 15 Nov, 10:37, at 96 kHz / 128 / 256, on the code of D-023 (start restart, resync on
+command):
+
+- the bench switch `--usb-cpu0-on` (section 6 and the manual, chapter 2 §6), in force;
+- every kernel thread the kernel lets move (47 of them, `rcu_preempt` among them) pinned to core 1:
+  by hand on 15 Nov, and part of the switch since (the per-core threads, 85, cannot move);
+- timer migration still off.
+
+Clean to 17:07 (6 h 30): 74 loop measurements, every one at 6.361 ms; the recorder has not fired.
+The steps came after 0.5 to 7.3 hours before, so about 20 clean hours are needed before this means
+anything.
+
+If it holds: the switch becomes a default of the box, and a night is run on a fresh boot. If it
+does not: the next trace says what else core 0 was doing.
+
