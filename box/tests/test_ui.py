@@ -1294,7 +1294,8 @@ def test_field_names_exist_in_state():
             assert item.field in st.BOOL_FIELDS
         else:
             assert item.kind == "choice" and item.field in st.CHOICES, item.field
-            assert item.field in st.REBUILD_FIELDS
+            # every choice rebuilds the pipeline, but D-021's limiter kind (two parameter writes)
+            assert item.field in st.REBUILD_FIELDS or item.field == "limit_kind", item.field
 
 
 # D-013: SETUP grouped by speaker floor, then the rest by what it serves (Thomas, 2026-10-13).
@@ -1311,6 +1312,7 @@ D013_SETUP = (
               ("Loudness ref", "loud_ref_db", "num"))),
     ("INPUT", (("Trim", "input_trim_db", "num"), ("AUX IN 1/2", "aux_mode", "choice"),
                ("AUX level", "aux_gain_db", "num"))),
+    ("OUTPUT", (("Limiter", "limit_kind", "choice"),)),                   # D-021
     ("LIVE EQ", (("Reset live EQ", "reset_live", "action"), ("Undo reset", "undo_reset", "action"),
                  ("Spectrum", "spectrum_on", "bool"))),
     ("PHONE", (("Phone", "PHONE", "page"), ("Laptop access", "laptop_access", "action"))),
@@ -1320,17 +1322,17 @@ D013_SETUP = (
 
 
 def test_setup_groups_are_d013s():
-    """The 28 items under TOPS / SUBS / INPUT / LIVE EQ / PHONE / BOX, in that order; every
-    item knows its group. No Top delay since D-011: ALIGN's signed E3 is the one place to set
-    the alignment (and the Lo-Cut frequency stays on ALIGN E4). D-016 added 8 rows, D-023 BOX ›
-    Resync delay."""
+    """The 29 items under TOPS / SUBS / INPUT / OUTPUT / LIVE EQ / PHONE / BOX, in that order;
+    every item knows its group. No Top delay since D-011: ALIGN's signed E3 is the one place to
+    set the alignment (and the Lo-Cut frequency stays on ALIGN E4). D-016 added 8 rows, D-023 BOX
+    › Resync delay, D-021 OUTPUT › Limiter."""
     assert tuple((g, tuple((it.label, it.field, it.kind) for it in items))
                  for g, items in im.SETUP_GROUPS) == D013_SETUP
-    assert im.SETUP_GROUP_NAMES == ("TOPS", "SUBS", "INPUT", "LIVE EQ", "PHONE", "BOX")
-    assert len(im.SETUP_ITEMS) == 28
+    assert im.SETUP_GROUP_NAMES == ("TOPS", "SUBS", "INPUT", "OUTPUT", "LIVE EQ", "PHONE", "BOX")
+    assert len(im.SETUP_ITEMS) == 29
     assert [(it.group, it.label, it.field, it.kind) for it in im.SETUP_ITEMS] == \
         [(g, *row) for g, rows in D013_SETUP for row in rows]
-    assert len({it.field for it in im.SETUP_ITEMS}) == 28                  # one row per field
+    assert len({it.field for it in im.SETUP_ITEMS}) == 29                  # one row per field
     assert not any(i.field.endswith("_delay_ms") or i.field == im.F_LOWCUT_FREQ
                    for i in im.SETUP_ITEMS)
     assert "Top delay" not in [i.label for i in im.SETUP_ITEMS]
@@ -1344,7 +1346,7 @@ def test_setup_item_kinds_say_how_each_row_is_set():
     assert {f for f, i in by.items() if i.needs_confirm} == {"reset_live", "laptop_access", "resync"}
     assert {f for f, i in by.items() if i.picks} == \
         {"top_inverted", "lowcut_on", "sub_inverted", "mono_subs", "sub_lowpass_on", "spectrum_on",
-         "profile", "dev_audition", "deharsh_on", "loud_on", "aux_mode"}
+         "profile", "dev_audition", "deharsh_on", "loud_on", "aux_mode", "limit_kind"}
     assert {f for f, i in by.items() if i.rebuild} == set(st.REBUILD_FIELDS)
     for f in st.REBUILD_FIELDS:                                       # never one gesture
         assert by[f].picks and by[f].risky and not by[f].needs_confirm, f
@@ -1381,27 +1383,29 @@ def test_setup_risky_rows_are_d017s():
     by = {i.field: i for i in im.SETUP_ITEMS}
     assert im.SETUP_RISKY == D017_RISKY
     assert {f for f, i in by.items() if i.risky} == D017_RISKY
-    assert {f for f, i in by.items() if i.picks and not i.risky} == set(EVERYDAY_ON_OFF)
+    assert {f for f, i in by.items() if i.picks and not i.risky} == \
+        set(EVERYDAY_ON_OFF) | {"limit_kind"}                # D-021: a choice with no click
     assert not any(i.risky for i in im.SETUP_ITEMS if not i.picks)
 
 
 def test_setup_group_helpers():
     first = {g: next(i for i, it in enumerate(im.SETUP_ITEMS) if it.group == g)
              for g in im.SETUP_GROUP_NAMES}
-    assert list(first.values()) == [0, 7, 16, 19, 22, 24]
+    assert list(first.values()) == [0, 7, 16, 19, 20, 23, 25]
     mono = _item("mono_subs")
     assert im.setup_group_start(mono) == first["SUBS"]
     assert im.setup_group_pos(mono) == ("SUBS", 4, 9)
     assert im.setup_group_pos(0) == ("TOPS", 1, 7)
     assert im.setup_group_pos(_item("input_trim_db")) == ("INPUT", 1, 3)
     assert im.setup_group_pos(_item("aux_gain_db")) == ("INPUT", 3, 3)
-    assert im.setup_group_pos(27) == ("BOX", 4, 4)                     # D-023: Resync delay first
+    assert im.setup_group_pos(_item("limit_kind")) == ("OUTPUT", 1, 1)   # D-021
+    assert im.setup_group_pos(28) == ("BOX", 4, 4)                     # D-023: Resync delay first
     assert im.setup_group_pos(99) == ("BOX", 4, 4) and im.setup_group_pos(-4) == ("TOPS", 1, 7)
     assert im.setup_group_step(mono, 1) == first["INPUT"]
     assert im.setup_group_step(mono, -1) == first["SUBS"]             # its own first item first
     assert im.setup_group_step(first["SUBS"], -1) == first["TOPS"]
     assert im.setup_group_step(mono, -2) == first["TOPS"]
-    assert im.setup_group_step(0, 99) == first["BOX"] and im.setup_group_step(27, -99) == 0
+    assert im.setup_group_step(0, 99) == first["BOX"] and im.setup_group_step(28, -99) == 0
     assert im.setup_group_step(0, -1) == 0 and im.setup_group_step(first["BOX"], 1) == first["BOX"]
 
 
@@ -1871,6 +1875,23 @@ def test_setup_everyday_on_off_applies_as_e3_turns_by_direction(field):
         assert map_event("SETUP", f, Enc(2, 1, ts=5.0), state=s) == right
 
 
+def test_setup_limiter_kind_is_an_everyday_choice():
+    """D-021: OUTPUT › Limiter, HARD / SOFT, chosen by ear: E3 right = SOFT, left = HARD, applied
+    as it turns (two parameter writes, no rebuild, no click: never a popup); a turn towards the
+    kind already held only says so."""
+    item = im.SETUP_ITEMS[_item("limit_kind")]
+    assert (item.group, item.label, item.kind) == ("OUTPUT", "Limiter", "choice")
+    assert item.choices == ("hard", "soft") and not item.risky and not item.rebuild
+    assert [im.choice_name(item, c) for c in item.choices] == ["HARD", "SOFT"]
+    for cur, right, left in (("hard", [SetChoice("limit_kind", "soft")], [ShowHint("ALREADY HARD")]),
+                             ("soft", [ShowHint("ALREADY SOFT")], [SetChoice("limit_kind", "hard")])):
+        s = st.State(limit_kind=cur)
+        f = Focus(item=_item("limit_kind"))
+        assert map_event("SETUP", f, Enc(2, 3, ts=1.0), state=s) == right
+        assert map_event("SETUP", f, Enc(2, -1, ts=2.0), state=s) == left
+        assert f.pick is None and im.setup_popup(f, 2.0) is None
+
+
 @pytest.mark.parametrize("field", sorted(D017_RISKY))
 def test_setup_every_risky_row_proposes_on_a_turn_and_applies_only_on_an_e3_push(field):
     """D-017: an E3 turn on a risky row opens the popup (`now -> proposed`) and sets nothing,
@@ -2186,7 +2207,7 @@ def test_e2_jumps_one_group_per_event_and_clamps():
         assert acts == [SelectGroup(1)], d
         assert apply_focus(f, acts[0]) is True
         seen.append(im.SETUP_ITEMS[f.item].group)
-    assert seen == ["SUBS", "INPUT", "LIVE EQ", "PHONE", "BOX", "BOX", "BOX"]
+    assert seen == ["SUBS", "INPUT", "OUTPUT", "LIVE EQ", "PHONE", "BOX", "BOX"]
     assert f.item == first[-1]
     f.item = _item("dev_audition")                                         # BOX 2/3
     back = []
@@ -2195,7 +2216,7 @@ def test_e2_jumps_one_group_per_event_and_clamps():
         assert acts == [SelectGroup(-1)]
         apply_focus(f, acts[0])
         back.append(f.item)
-    assert back == [first[5], first[4], first[3], first[2], first[1], first[0], first[0]]
+    assert back == [first[6], first[5], first[4], first[3], first[2], first[1], first[0]]
     # inside a group, back once = that group's top; from its top, the previous group's top
     f.item = _item("mono_subs")
     apply_focus(f, SelectGroup(-1))

@@ -27,9 +27,10 @@ HWTEST reached from SETUP.
   UNLOCK_S, renewed by every input on ALIGN (so any UNLOCK_S of idle relocks); a B2 tap relocks
   at once; leaving ALIGN relocks.
 - SETUP (D-013 groups, D-017 knobs): the items grouped by speaker floor (TOPS, SUBS, INPUT,
-  LIVE EQ, PHONE, BOX). E1 selects the item (drawn on a fixed screen row), E2 jumps a group, E3
-  is the value: a number moves as E3 turns, an everyday ON/off goes ON on a right turn and off on
-  a left one, applied at once. A RISKY row (SETUP_RISKY: every pipeline rebuild, both polarities,
+  OUTPUT (D-021: the limiter's kind), LIVE EQ, PHONE, BOX). E1 selects the item (drawn on a
+  fixed screen row), E2 jumps a group, E3 is the value: a number moves as E3 turns, an everyday
+  ON/off goes ON on a right turn and off on a left one (a choice: the next one, the previous
+  one), applied at once. A RISKY row (SETUP_RISKY: every pipeline rebuild, both polarities,
   Lo-Cut) only PROPOSES on an E3 turn (a popup, `now -> proposed`) and an E3 push applies it: two
   gestures, the value always visible; an E1 or E2 turn, leaving the page or PICK_WINDOW_S
   cancels. Pages open and actions run on an E3 push; Reset live EQ, opening Laptop access and
@@ -252,6 +253,7 @@ F_DEHARSH_ON = "deharsh_on"    # SETUP > TOPS > De-harsh (D-016, a rebuild)
 F_LOUD_ON = "loud_on"          # SETUP > SUBS > Loudness (D-016, a rebuild)
 F_AUX_MODE = "aux_mode"        # SETUP > INPUT > AUX IN 1/2: off | mic | line (D-016, a rebuild)
 F_AUX_GAIN = "aux_gain_db"     # SETUP > INPUT > AUX level
+F_LIMIT_KIND = "limit_kind"    # SETUP > OUTPUT > Limiter: hard | soft (D-021, a parameter write)
 F_SLOT = "slot"                # pseudo-field: highlight when the selected band changes
 
 LIVE_SLOTS: tuple[str, ...] = ("live_peq.0", "live_peq.1", "live_peq.2", "live_peq.3",
@@ -379,6 +381,12 @@ SETUP_GROUPS: tuple[tuple[str, tuple[SetupItem, ...]], ...] = (
         # D-016: the M4's IN1 (a mic) or IN1 + IN2 (a line pair) into the program, after the trim
         SetupItem("AUX IN 1/2", F_AUX_MODE, "choice"),
         SetupItem("AUX level", "aux_gain_db", "num"),
+    )),
+    ("OUTPUT", (
+        # D-021: the limiter, the last stage of every output, always on: HARD (full scale cut
+        # flat, transparent under it) or SOFT (peaks rounded off under -0.1 dBFS). Chosen by ear;
+        # a parameter write (no rebuild, no click): an everyday choice, applied as E3 turns.
+        SetupItem("Limiter", F_LIMIT_KIND, "choice"),
     )),
     ("LIVE EQ", (
         SetupItem("Reset live EQ", A_RESET_LIVE, "action", confirm=True),

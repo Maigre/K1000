@@ -515,8 +515,8 @@
    "out_trim_db": {
     "label": "TRIM",
     "unit": "dB",
-    "min": -24.0,
-    "max": 6.0,
+    "min": -30.0,
+    "max": 0.0,
     "default": 0.0,
     "log": false,
     "step": 0.5,
@@ -1044,6 +1044,26 @@
     ]
    },
    {
+    "group": "OUTPUT",
+    "items": [
+     {
+      "label": "Limiter",
+      "f": "limit_kind",
+      "kind": "choice",
+      "choices": [
+       "hard",
+       "soft"
+      ],
+      "names": [
+       "HARD",
+       "SOFT"
+      ],
+      "rebuild": false,
+      "phone": "edit"
+     }
+    ]
+   },
+   {
     "group": "LIVE EQ",
     "items": [
      {
@@ -1428,6 +1448,7 @@
    "input_trim_db": 0.0,
    "aux_mode": "off",
    "aux_gain_db": 0.0,
+   "limit_kind": "hard",
    "spectrum_on": true,
    "profile": "dev",
    "dev_audition": "sum"
