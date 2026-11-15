@@ -722,7 +722,7 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
   same day, continues and can share the desk time.
 - **Closed means**: D-018 holds on the box after a night run, and Thomas has beatmatched on it.
 
-## D-021 — Output clipping: a limiter as the last stage, no gain after the master, clipping shown on the phone · proposed 2026-11-12
+## D-021 — Output clipping: a limiter as the last stage, no gain after the master, clipping shown on the phone · proposed 2026-11-12 · decided 2026-11-15
 
 - **Context**: the engine's log of the gig night holds 5,718 output-clipping warnings, peaks up to
   +5.67 dBFS, mostly on the two sub outputs (`docs/17-box-record-and-bench.md` §5). At the worst
@@ -738,6 +738,11 @@ One entry per decision. States: `proposed` (Claude or anyone suggests) → `deci
 - **Proposed** (Claude): A with no delay, B, C and D together. Thomas decides, and decides by ear
   between the limiter kinds. Nothing is built.
 - **Constraint**: D-018's 10 ms. A look-ahead limiter costs 1 ms of it; the others cost none.
+- **Decision** (Thomas, 2026-11-15): **A with no delay, B and C**, built before the gig of 28 Nov:
+  a limiter that adds no delay as the last stage of every output; no fixed gain after the master
+  (the output trims move in front of it); clipping shown on the phone too. D stays proposed. An
+  exception to D-020, like the easy install page. The kind of no-delay limiter is chosen by ear at
+  the desk sitting of 26 Nov and on the rig on 27 Nov.
 
 ## D-022 — Sample rate: 24-bit / 96 kHz at chunk 128 / target 256 · decided 2026-11-13
 
