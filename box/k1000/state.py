@@ -23,7 +23,9 @@ the pipeline (a Rebuild, SETUP only); their levels and frequencies are show-time
 
 D-021 (2026-11-15, after the gig's output clipping): a limiter with no delay is the last stage of
 every output (`limit_kind`: "hard" or "soft", a parameter write, never a rebuild; dspconfig has
-what each does).
+what each does), and no fixed gain sits after the master: the output trims only cut (-30..0 dB).
+A file written before D-021 (`schema` below 2) may hold positive output trims: `load_state` moves
+their common boost into the input trim (`fold_legacy_trims`), so every output plays as before.
 """
 from __future__ import annotations
 
@@ -40,7 +42,8 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+# 2 (D-021): the output trims only cut. A file without it (1, or none) is folded on load.
+SCHEMA_VERSION = 2
 
 N_SYS_PEQ = 8
 N_LIVE_PEQ = 4
@@ -88,6 +91,9 @@ DEHARSH_RELEASE_MS = 80.0
 # read how far above it a peak went (the dB to take off); "soft": the engine's cubic soft clip
 # rounds the peaks off under LIMIT_SOFT_DB and never lets one through above it.
 LIMIT_KINDS: tuple[str, ...] = ("hard", "soft")
+# D-021: the output trims only cut since then; the files written before held -24..+6 dB.
+OUT_TRIM_LEGACY_MAX_DB = 6.0
+OUT_TRIM_LEGACY_MIN_DB = -24.0
 
 # The engine's sample rate (D-022): one rate for the whole run of the control service, the
 # profile's `samplerate` (profiles.load_profile), set by the Controller when it is built
@@ -208,7 +214,12 @@ RANGES: dict[str, Range] = {
     "live_highshelf.freq": Range(1000.0, 16000.0, _FREQ_STEP, log=True, fine=_FREQ_FINE, default=8000.0, unit="Hz"),
     "live_highshelf.gain": Range(-12.0, 6.0, 0.5, default=0.0, unit="dB"),
     "live_highshelf.q": Range(0.4, 1.5, _Q_STEP, log=True, fine=_Q_FINE, default=0.707, digits=3),
-    "out_trim_db": Range(-24.0, 6.0, 0.5, default=0.0, unit="dB"),
+    # D-021: cut only. The engine applies the master (Main) before the whole pipeline, so every
+    # gain in it is after the master; a boost here was fixed gain between the master and the
+    # limiter (the gig's +6 dB on all four outputs: the top 6 dB of the master then only drove
+    # the outputs over full scale). A boost the whole PA needs is the input trim's. -30: the old
+    # range's 30 dB span, so a file from before D-021 folds without a clamp (`fold_legacy_trims`).
+    "out_trim_db": Range(-30.0, 0.0, 0.5, default=0.0, unit="dB"),
     # AUX IN level (aux_mode != "off"): the AUX's own gain, before the room EQ; the program's
     # input trim does not apply to it. -40 dB tucks a source under the program, +12 dB lifts a
     # quiet one (the M4's front-panel gain stays the first level control).
@@ -545,6 +556,56 @@ def drop_common_delay(s: State, where: str = "") -> float:
     return common
 
 
+def legacy_trim_boost(trims: Any) -> float:
+    """D-021: the boost a file from before D-021 holds on its output trims, i.e. the highest of
+    the four read in that file's range (-24..+6 dB) when it is above 0 dB, else 0.0. Anything
+    unreadable reads 0 dB (`State.from_dict`'s fallback for a trim)."""
+    if not isinstance(trims, (list, tuple)):
+        return 0.0
+    old = Range(OUT_TRIM_LEGACY_MIN_DB, OUT_TRIM_LEGACY_MAX_DB, 0.5)
+    vals = [old.clamp(trims[i] if i < len(trims) else None, 0.0) for i in range(N_OUT)]
+    return max(0.0, max(vals))
+
+
+def fold_legacy_trims(data: dict[str, Any], where: str = "") -> float:
+    """D-021: move the boost of a pre-D-021 state's output trims into its input trim, in place on
+    the raw dict (before `State.from_dict`, which would clamp the boost away). Returns the dB
+    moved (0.0: nothing to do).
+
+    T = the highest output trim when above 0 dB (`legacy_trim_boost`): the input trim gets +T and
+    every output trim -T, so every output plays exactly as before at every master position
+    (the gains multiply: the engine's pipeline is linear up to the limiter). What sits between
+    the input trim and the output trims and depends on the level gets T with it: the AUX level
+    (the AUX joins after the input trim) and the de-harsh threshold (its compressor reads the
+    program after the input trim). Where a range stops it (the input trim at +12, the AUX level
+    at +12, the threshold at 0 dB), that part plays quieter, or de-harsh acts sooner: the
+    journal line says so. `where` set: one journal line."""
+    t = legacy_trim_boost(data.get("out_trim_db"))
+    if t <= 0.0:
+        return 0.0
+    old = Range(OUT_TRIM_LEGACY_MIN_DB, OUT_TRIM_LEGACY_MAX_DB, 0.5)
+    trims = data["out_trim_db"]
+    data["out_trim_db"] = [round(old.clamp(trims[i] if i < len(trims) else None, 0.0) - t, 2)
+                           for i in range(N_OUT)]
+    lost: list[str] = []
+    defaults = State()
+    for name in ("input_trim_db", "aux_gain_db", "deharsh_thresh_db"):
+        rng = RANGES[name]
+        was = rng.clamp(data.get(name), getattr(defaults, name))
+        data[name] = rng.clamp(was + t)
+        if was + t > rng.max + 1e-9:
+            lost.append(f"{name} stops at {rng.max:+.1f} dB ({was + t - rng.max:.1f} dB short)")
+    if where:
+        log.warning("%s: written before D-021, its output trims (%s dB) held %+.1f dB after the "
+                    "master; moved into the input trim (now %+.1f dB), with the AUX level and the "
+                    "de-harsh threshold: every output plays as before%s", where,
+                    " ".join(f"{v:+.1f}" for v in (old.clamp(trims[i] if i < len(trims) else None,
+                                                             0.0) for i in range(N_OUT))),
+                    t, data["input_trim_db"],
+                    ("; " + "; ".join(lost)) if lost else "")
+    return t
+
+
 def nudge_align_delay(value: Any, detents: int | float, fine: bool = False) -> float:
     """The signed delay moved by `detents` (0.1 ms, fine = one sample), stopping at exactly 0
     when the move would cross it: the operator feels the zero (ALIGNED) before the other side."""
@@ -648,6 +709,8 @@ def load_state(path: str | os.PathLike[str]) -> State:
     Missing -> defaults. Unreadable/corrupt/not-an-object -> defaults, and the file is copied to
     `<path>.bad` so the evidence survives the next save. Old/partial -> upgraded field by field.
     A sub and a top delay both set lose their common part (`drop_common_delay`, journal line).
+    A file from before D-021 (`schema` not an integer >= 2) with boosted output trims has the
+    boost moved into the input trim (`fold_legacy_trims`, journal line): the PA plays as before.
     """
     p = Path(path)
     try:
@@ -666,6 +729,8 @@ def load_state(path: str | os.PathLike[str]) -> State:
         schema = data.get("schema")
         if schema != SCHEMA_VERSION:
             log.info("state schema %r != %d, upgrading tolerantly", schema, SCHEMA_VERSION)
+        if not (isinstance(schema, int) and not isinstance(schema, bool) and schema >= 2):
+            fold_legacy_trims(data, f"state {p}")
         st = State.from_dict(data)
         drop_common_delay(st, f"state {p}")
         return st

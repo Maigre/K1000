@@ -667,7 +667,7 @@ def test_adopts_external_edits_in_any_form():
     assert math.isclose(s.input_trim_db, -6.02, abs_tol=0.01)
     assert s.lowcut_on is False and s.lowcut_hz == base.lowcut_hz       # off keeps the remembered freq
     assert s.sub_lowpass_on is True and s.sub_lowpass_hz == 80.0
-    assert s.out_trim_db[1] == -24.0                                     # clamped
+    assert s.out_trim_db[1] == -30.0                                     # clamped (D-021)
     assert s.sys_peq[7].gain == base.sys_peq[7].gain                     # garbage ignored
     assert s.mono_subs is True
     assert s.master_db == -12.0 and s.muted is True and s.balance_db == 4.0
@@ -1560,7 +1560,7 @@ def _srcs(mixer, dest):
 def test_features_off_config_is_byte_identical_to_f2671b0(profile_key, state_key):
     """THE hard rule: all three off -> exactly the YAML f2671b0 wrote (fixtures captured from a
     `git archive f2671b0` copy before the features existed), whatever the features' own values,
-    but for D-021's addition (the limiter: `golden.d021`)."""
+    but for D-021's additions (the limiter, the trims at 0 dB at most: `golden.d021`)."""
     want = golden.golden_text(d, profile_key, state_key)
     assert golden.render(d, pf, State, profile_key, state_key) == want
     name, ov = golden.PROFILES[profile_key]
@@ -2959,3 +2959,67 @@ def test_engine_soft_limiter_follows_the_curve_and_stays_under_its_ceiling(tmp_p
         assert got == pytest.approx(want, abs=0.2)          # the chain is near flat at 997 Hz
         y32, log_text = _offline_s32(tmp_path, cfg, x, tag=f"s32{peak}")
         assert "Clipping detected" not in log_text and np.max(np.abs(y32)) < 2 ** 31 - 1
+
+
+# ----------------------------------------------------------------- D-021: trims that only cut
+def _legacy(cfg, in_db=0.0, trims=(6.0, 6.0, 6.0, 6.0)):
+    """A config as a build before D-021 wrote it: no limiter, the given input and output trims."""
+    old = copy.deepcopy(cfg)
+    del old["filters"]["out_limit"]
+    assert old["pipeline"][-1]["names"] == ["out_limit"]
+    old["pipeline"] = old["pipeline"][:-1]
+    old["filters"]["in_trim"]["parameters"]["gain"] = in_db
+    for i, t in enumerate(trims):
+        old["filters"][f"out_trim_{i}"]["parameters"]["gain"] = t
+    return old
+
+
+def test_a_pre_d021_config_is_read_with_its_boost_in_the_input_trim():
+    """active.yml of an older build, or an engine still running one: its +6 dB trims read as
+    the input trim +6 and the trims at 0 (the same gain on every output), the AUX level and the
+    de-harsh threshold +6 with it. Nothing else moves; it is never written anywhere."""
+    s = State(profile="m4", aux_mode="mic", deharsh_on=True, aux_gain_db=-10.0,
+              deharsh_thresh_db=-30.0, input_trim_db=6.0)
+    old = _legacy(d.generate(m4(), s), 0.0, (6.0, 6.0, 3.0, 3.0))
+    old["filters"]["aux_gain"]["parameters"]["gain"] = -16.0
+    old["processors"]["dh_comp"]["parameters"]["threshold"] = -36.0
+    f = d.fold_legacy_config(old)
+    assert f is not old and old["filters"]["in_trim"]["parameters"]["gain"] == 0.0   # a copy
+    assert f["filters"]["in_trim"]["parameters"]["gain"] == 6.0
+    assert [f["filters"][f"out_trim_{i}"]["parameters"]["gain"] for i in range(4)] == \
+        [0.0, 0.0, -3.0, -3.0]
+    assert f["filters"]["aux_gain"]["parameters"]["gain"] == -10.0
+    assert f["processors"]["dh_comp"]["parameters"]["threshold"] == -30.0
+    v = d.state_from_config(old, None, State(profile="m4"))
+    assert (v.input_trim_db, v.out_trim_db, v.aux_gain_db, v.deharsh_thresh_db) == (
+        6.0, [0.0, 0.0, -3.0, -3.0], -10.0, -30.0)
+    # a D-021 config (it has the limiter) with a boosted trim: a GUI edit, clamped, not folded
+    new = d.generate(m4(), State(profile="m4"))
+    new["filters"]["out_trim_0"]["parameters"]["gain"] = 4.0
+    assert d.fold_legacy_config(new) == new
+    v = d.state_from_config(new, None, State(profile="m4"))
+    assert v.input_trim_db == 0.0 and v.out_trim_db == [0.0] * 4
+    # no boost: nothing to fold
+    plain = _legacy(d.generate(m4(), State(profile="m4")), -2.0, (0.0, -1.0, 0.0, 0.0))
+    assert d.fold_legacy_config(plain) == plain
+
+
+@engine
+@needs_cdsp
+@pytest.mark.parametrize("prof_key", ["m4_48k", "m4_96k"])
+def test_engine_the_boxs_6db_trims_play_the_same_folded(tmp_path, prof_key):
+    """The box's own setting (out_trim_db = [6, 6, 6, 6], input trim 0, read on 15 Nov) as the
+    old build played it, and as D-021 plays it (input trim +6, trims 0, the limiter): the same
+    samples on every output to 1e-12 (the gains multiply in another order), with the master
+    at -5 dB and a program at -10 dBFS (under full scale: no limiting). No level change."""
+    np = pytest.importorskip("numpy")
+    prof = _limiter_profiles()[prof_key]
+    tune = State(profile="m4", mono_subs=True, sub_lowpass_on=True, sub_lowpass_hz=95.0)
+    tune.sys_peq[0].gain, tune.live_lowshelf.gain = 4.0, 3.0
+    folded = tune.copy()
+    folded.input_trim_db = 6.0
+    old = _legacy(d.generate(prof, folded), 0.0, (6.0,) * 4)
+    x = _hot_program(prof, prof.samplerate // 2, -10.0)
+    y_old = _offline(tmp_path, old, x, -5.0, "old")
+    y_new = _offline(tmp_path, d.generate(prof, folded), x, -5.0, "new")
+    assert np.max(np.abs(y_new - y_old)) < 1e-12 and np.max(np.abs(y_old)) > 0.1

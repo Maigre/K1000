@@ -77,7 +77,7 @@ def test_from_dict_clamps_everything():
     assert s.master_db == 0.0 and s.balance_db == -12.0 and s.input_trim_db == 12.0
     assert s.sub_delay_ms == 0.0 and s.top_delay_ms == 50.0
     assert s.lowcut_hz == 20.0 and s.sub_lowpass_hz == 250.0
-    assert s.out_trim_db == [6.0, -24.0, 0.0, 0.0]
+    assert s.out_trim_db == [0.0, -30.0, 0.0, 0.0]       # D-021: the trims only cut
     assert s.profile == "dev" and s.dev_audition == "sum"
     assert s.muted is False and s.mono_subs is False      # non-bools are not truthy-coerced
     assert s.sys_peq[0] == PeqBand(20000.0, 10.0, 0.3)
@@ -692,6 +692,16 @@ def test_a_state_saved_before_the_features_loads_with_them_off(tmp_path):
 
 
 # ----------------------------------------------------------------------------- D-021
+def _pre_d021(**fields):
+    """A state.json as a build before D-021 wrote it: schema 1, no limit_kind."""
+    raw = State(**{k: v for k, v in fields.items() if k != "out_trim_db"}).to_dict()
+    raw["schema"] = 1
+    del raw["limit_kind"]
+    if "out_trim_db" in fields:
+        raw["out_trim_db"] = list(fields["out_trim_db"])
+    return raw
+
+
 def test_limiter_kind_is_hard_by_default_and_a_plain_choice():
     s = State()
     assert s.limit_kind == "hard" and st.CHOICES["limit_kind"] == ("hard", "soft")
@@ -701,3 +711,86 @@ def test_limiter_kind_is_hard_by_default_and_a_plain_choice():
         s.set("limit_kind", "off")                          # always on: no "off"
     assert State.from_dict({"limit_kind": "off"}).limit_kind == "hard"
     assert State.from_dict({"limit_kind": "soft"}).limit_kind == "soft"
+    assert st.SCHEMA_VERSION == 2 and s.to_dict()["schema"] == 2
+
+
+def test_output_trims_only_cut():
+    """D-021: no fixed gain after the master: -30..0 dB (the old span, shifted down)."""
+    r = RANGES["out_trim_db"]
+    assert (r.min, r.max, r.default) == (-30.0, 0.0, 0.0)
+    s = State()
+    assert s.set("out_trim_db.0", 6.0) == 0.0 and s.nudge("out_trim_db.1", 4) == 0.0
+
+
+def test_the_boxs_own_state_with_6db_trims_loads_at_the_same_level(tmp_path, caplog):
+    """The box's state.json (read on the box on 15 Nov: out_trim_db = [6, 6, 6, 6]) loads with
+    the +6 dB in the input trim and the trims at 0: every output's gain from the input to the
+    limiter is the same (in + trim), at every master position; one journal line says so."""
+    p = tmp_path / "state.json"
+    p.write_text(json.dumps(_pre_d021(master_db=-5.0, input_trim_db=0.0,
+                                      out_trim_db=[6.0, 6.0, 6.0, 6.0], profile="m4")))
+    with caplog.at_level("WARNING"):
+        s = load_state(p)
+    assert s.input_trim_db == 6.0 and s.out_trim_db == [0.0, 0.0, 0.0, 0.0]
+    assert s.master_db == -5.0 and s.limit_kind == "hard"
+    assert "written before D-021" in caplog.text and "every output plays as before" in caplog.text
+    # saved again (schema 2), it loads as it is: folded once, never twice
+    st.save_state_atomic(p, s)
+    assert json.loads(p.read_text())["schema"] == 2
+    assert load_state(p) == s
+
+
+@pytest.mark.parametrize("trims,in_trim,want_in,want_trims", [
+    ([6.0, 6.0, 6.0, 6.0], 0.0, 6.0, [0.0, 0.0, 0.0, 0.0]),
+    ([6.0, 6.0, 0.0, 0.0], -3.0, 3.0, [0.0, 0.0, -6.0, -6.0]),       # subs only: tops down 6
+    ([2.5, -24.0, 1.0, -10.0], 1.0, 3.5, [0.0, -26.5, -1.5, -12.5]),  # the old minimum still fits
+    ([0.0, -3.0, -6.0, -24.0], 0.0, 0.0, [0.0, -3.0, -6.0, -24.0]),   # no boost: untouched
+    ([9.0, "x", None, 6.0], 0.0, 6.0, [0.0, -6.0, -6.0, 0.0]),        # old range: +9 was +6
+])
+def test_pre_d021_trims_fold_exactly(tmp_path, trims, in_trim, want_in, want_trims):
+    """in + trim, the gain from the input to the limiter, is the same on every output."""
+    p = tmp_path / "state.json"
+    p.write_text(json.dumps(_pre_d021(input_trim_db=in_trim, out_trim_db=trims)))
+    s = load_state(p)
+    assert s.input_trim_db == want_in and s.out_trim_db == want_trims
+    old = [min(6.0, max(-24.0, t)) if isinstance(t, (int, float)) else 0.0 for t in trims]
+    assert [s.input_trim_db + t for t in s.out_trim_db] == [in_trim + t for t in old]
+
+
+def test_the_fold_carries_the_aux_level_and_the_deharsh_threshold(tmp_path):
+    """The AUX joins after the input trim, de-harsh reads the program after it: both get the
+    boost too, so they play and act exactly as before (D-016's features, on or off)."""
+    p = tmp_path / "state.json"
+    p.write_text(json.dumps(_pre_d021(out_trim_db=[4.0, 4.0, 4.0, 4.0], aux_gain_db=-10.0,
+                                      deharsh_thresh_db=-24.0, aux_mode="mic", deharsh_on=True)))
+    s = load_state(p)
+    assert (s.input_trim_db, s.aux_gain_db, s.deharsh_thresh_db) == (4.0, -6.0, -20.0)
+
+
+def test_the_fold_says_what_a_range_stopped(tmp_path, caplog):
+    """An input trim already high: it stops at +12, the PA is that much quieter (the safe side),
+    and the journal says so."""
+    p = tmp_path / "state.json"
+    p.write_text(json.dumps(_pre_d021(input_trim_db=10.0, out_trim_db=[6.0] * 4)))
+    with caplog.at_level("WARNING"):
+        s = load_state(p)
+    assert s.input_trim_db == 12.0 and s.out_trim_db == [0.0] * 4
+    assert "input_trim_db stops at +12.0 dB (4.0 dB short)" in caplog.text
+
+
+def test_a_d021_file_with_a_boosted_trim_is_clamped_not_folded(tmp_path):
+    """Schema 2 never holds a boost; one written by hand is out of range: clamped to 0."""
+    raw = State(input_trim_db=1.0).to_dict()
+    raw["out_trim_db"] = [6.0, 0.0, 0.0, 0.0]
+    p = tmp_path / "state.json"
+    p.write_text(json.dumps(raw))
+    s = load_state(p)
+    assert s.input_trim_db == 1.0 and s.out_trim_db == [0.0] * 4
+
+
+def test_an_older_build_reads_a_d021_file_at_the_same_level():
+    """Rollback: a build before D-021 reads in_trim and the trims as they are (its range holds
+    them both): the same sound. It ignores limit_kind."""
+    s = State(input_trim_db=6.0, limit_kind="soft")
+    raw = s.to_dict()
+    assert raw["input_trim_db"] == 6.0 and raw["out_trim_db"] == [0.0] * 4

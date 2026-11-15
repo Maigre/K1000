@@ -104,7 +104,8 @@ def render_params(dspconfig: Any, State: Any) -> str:
 
 
 # ------------------------------------------------------------------ D-021 (2026-11-15)
-# D-021 adds two things to EVERY config (the output limiter, always there). The fixtures stay f2671b0's own bytes; what D-021 writes is derived from them by
+# D-021 adds two things to EVERY config (the output limiter, always there) and caps the output
+# trims at 0 dB. The fixtures stay f2671b0's own bytes; what D-021 writes is derived from them by
 # `d021` and nothing else, so "f2671b0's bytes but for D-021's additions" is still checked byte
 # for byte (`test_dspconfig.test_golden_round_trip_is_the_identity` shows the YAML round trip
 # itself changes nothing).
@@ -116,9 +117,12 @@ D021_LIMITER = {"type": "Clipper",
 
 
 def d021(cfg: dict[str, Any]) -> dict[str, Any]:
-    """An f2671b0 config (parsed) as D-021 writes it, in place and returned: the `out_limit`
-    filter after the output trims (the last filter) and its step after the output mixer (the
-    last step), on every playback channel."""
+    """An f2671b0 config (parsed) as D-021 writes it, in place and returned: the output trims at
+    0 dB at most, the `out_limit` filter after them (the last filter) and its step after the
+    output mixer (the last step), on every playback channel."""
+    for i in range(4):
+        p = cfg["filters"][f"out_trim_{i}"]["parameters"]
+        p["gain"] = min(0.0, p["gain"])
     cfg["filters"]["out_limit"] = {**D021_LIMITER, "parameters": dict(D021_LIMITER["parameters"])}
     n = cfg["devices"]["playback"]["channels"]
     cfg["pipeline"].append({"type": "Filter", "channels": list(range(n)), "names": ["out_limit"],
@@ -135,11 +139,14 @@ def golden_text(dspconfig: Any, profile_key: str, state_key: str) -> str:
 
 
 def d021_params(text: str) -> str:
-    """param_map.json (f2671b0's) as D-021 makes it: the limiter's two values added."""
+    """param_map.json (f2671b0's) as D-021 makes it: trims capped at 0, the limiter's two."""
     import json
 
     data = json.loads(text)
     for pm in data.values():
+        for i in range(4):
+            k = f"/filters/out_trim_{i}/parameters/gain"
+            pm[k] = min(0.0, pm[k])
         pm["/filters/out_limit/parameters/clip_limit"] = 12.0
         pm["/filters/out_limit/parameters/soft_clip"] = False
     return json.dumps(data, indent=1, sort_keys=True) + "\n"

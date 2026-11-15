@@ -806,10 +806,15 @@ def _keep_cuts(cfg: dict[str, Any], live: Any) -> dict[str, Any]:
     on the AUX routing (`dspconfig.carry_mixer_cuts`: an `aux_mix` source muted or turned down,
     an AUX source of the input mixer turned down: a mic muted from CamillaGUI stays muted). A
     pipeline restore puts the STRUCTURE back; it must not unmute an output or raise a trim
-    nobody at the box asked for (the same rule as the 1 Hz fixes). D-021: a lower limiter
-    ceiling (`out_limit` clip_limit) is a cut like the others."""
+    nobody at the box asked for (the same rule as the 1 Hz fixes).
+
+    D-021: a running config from before D-021 is compared folded (`dc.fold_legacy_config`):
+    its input trim is then not "lower" than K1000's, which holds the same boost there instead of
+    on the output trims (the restore of an engine still on an old config changes no level). A
+    lower limiter ceiling (`out_limit` clip_limit) is a cut like the others."""
     if not isinstance(live, dict):
         return cfg
+    live = dc.fold_legacy_config(live)
     out = copy.deepcopy(cfg)
     lm_sec = live.get("mixers")
     for name, m in ((out.get("mixers") or {}).items() if isinstance(lm_sec, dict) else ()):

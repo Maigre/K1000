@@ -1877,7 +1877,7 @@ def test_every_value_is_clamped_to_the_contract_ranges(tmp_path: Path) -> None:
         s = ctl.state
         assert s.master_db == 0.0 and s.balance_db == -12.0
         assert s.live_peq[0].gain == RANGES["live_peq.gain"].max == 6.0
-        assert s.input_trim_db == 12.0 and s.out_trim_db[3] == -24.0
+        assert s.input_trim_db == 12.0 and s.out_trim_db[3] == -30.0     # D-021: -30..0
         assert s.sub_delay_ms == 0.0 and s.live_peq[2].q == 16.0
         assert max(faders_sent(cl.log, 0)) <= 0.0
         assert max(faders_sent(cl.log, 1)) <= 6.0 and min(faders_sent(cl.log, 2)) >= -6.0
@@ -7144,3 +7144,66 @@ def test_engine_d016_loudness_boost_detents_and_a_mute_right_after_one(tmp_path:
             await asyncio.to_thread(eng.kill)
 
     run(body(), limit=90.0)
+
+
+# ======================================================================= D-021: trims that only cut
+def _pre_d021_cfg(state: State, profile: Any = DEV) -> dict[str, Any]:
+    """The config an older build wrote for `state` with its input trim's boost on the output
+    trims instead (the box's own: in 0, trims +6): no limiter, the same sound."""
+    cfg = dc.generate(profile, state)
+    del cfg["filters"]["out_limit"]
+    cfg["pipeline"] = cfg["pipeline"][:-1]
+    t = state.input_trim_db
+    cfg["filters"]["in_trim"]["parameters"]["gain"] = 0.0
+    for i in range(4):
+        cfg["filters"][f"out_trim_{i}"]["parameters"]["gain"] = state.out_trim_db[i] + t
+    return cfg
+
+
+def _gains(cfg: dict[str, Any]) -> list[float]:
+    """in + out trim per output: the fixed gain from the input to the limiter."""
+    f = cfg["filters"]
+    return [f["in_trim"]["parameters"]["gain"] + f[f"out_trim_{i}"]["parameters"]["gain"]
+            for i in range(4)]
+
+
+def test_d021_torn_state_json_and_a_pre_d021_active_yml(tmp_path: Path) -> None:
+    """recover_state from an older build's active.yml (+6 dB trims): the state comes back with
+    the boost in the input trim, the trims at 0 (the same gain on every output)."""
+    want = State(profile="m4", input_trim_db=6.0)
+    (tmp_path / "active.yml").write_text(dc.to_yaml(_pre_d021_cfg(want, M4)))
+    (tmp_path / "state.json").write_text('{"schema": 1, "out_trim_db": [6, 6')
+    st, note = recover_state(Paths(tmp_path / "state.json", tmp_path / "active.yml"))
+    assert note == ctl_mod.NOTE_REBUILT
+    assert st.input_trim_db == 6.0 and st.out_trim_db == [0.0] * 4
+
+
+def test_d021_k1000_restarted_over_an_engine_on_a_pre_d021_config(tmp_path: Path) -> None:
+    """The deploy without --start: k1000 (D-021) starts while the engine still plays the old
+    build's config (+6 dB trims, no limiter). It adopts it folded (the same sound), restores the
+    structure (the limiter: Main muted around the upload, as for any pipeline restore) with the
+    boost in the input trim, and keeps no "cut": every output's gain is what it was."""
+    async def body() -> None:
+        st = State(master_db=-5.0, input_trim_db=6.0)        # what load_state folds the box's to
+        old = _pre_d021_cfg(st)
+        assert _gains(old) == [6.0] * 4
+        ctl, cl = make(tmp_path, st, playing=True, cfg=old)
+        await boot(ctl)
+        ups = [e[1] for e in cl.log if e[0] == "config"]
+        assert len(ups) == 1, "one restore: the limiter"
+        up = ups[0]
+        assert up["filters"]["in_trim"]["parameters"]["gain"] == 6.0      # not "kept" at 0
+        assert [up["filters"][f"out_trim_{i}"]["parameters"]["gain"] for i in range(4)] == [0.0] * 4
+        assert up["pipeline"][-1]["names"] == ["out_limit"]
+        assert _gains(cl.cfg) == _gains(old)                  # no level change
+        assert ctl.state.input_trim_db == 6.0 and ctl.state.out_trim_db == [0.0] * 4
+        assert ctl.status.drift == []                          # nothing held as a cut
+        assert cl.faders[0] == {"volume": -5.0, "mute": False}    # unmuted again at the master
+        # and the poll after it finds nothing to fix
+        n = len(cl.log)
+        await ctl.poll_once()
+        assert await ctl.settle(3.0)
+        assert [e for e in nomark(cl.log[n:]) if e[0] in ("set", "patch", "config")] == []
+        await ctl.stop()
+
+    run(body())

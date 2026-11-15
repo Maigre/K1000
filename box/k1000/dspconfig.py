@@ -59,6 +59,11 @@ wrapped). So `limit_kind`:
 Switching the kind is two parameter writes (`soft_clip`, `clip_limit`), stepped like a gain: never
 a rebuild. Neither kind adds a sample of delay (no look-ahead: the engine's LookaheadLimiter
 delays by its attack and is not used).
+
+D-021, the output trims only cut (state.RANGES). A config written before D-021 (it has no
+`out_limit`: active.yml of an older build, an engine still running one) may hold boosted trims:
+`fold_legacy_config` reads it as the same sound with the boost in the input trim
+(`state_from_config`, and control's restore), so adopting it changes no level.
 """
 from __future__ import annotations
 
@@ -75,7 +80,7 @@ from .state import (
     AUX_MIC_HP_HZ, AUX_MIC_HP_Q, AUX_MIC_PAN_DB, DEHARSH_ATTACK_MS, DEHARSH_Q, DEHARSH_RATIO,
     DEHARSH_RELEASE_MS, LIMIT_KINDS, LOUD_HIGH_BOOST_DB, LOUD_LOW_FREQ_HZ, LOWCUT_OFF_HZ, LOWCUT_Q,
     N_LIVE_PEQ, N_OUT, N_SYS_PEQ, RANGES, SAMPLERATES, SUB_LOWPASS_OFF_HZ, SUB_LOWPASS_Q, PeqBand,
-    ShelfBand, State, delay_samples, effective_gain, engine_rate, sample_ms,
+    ShelfBand, State, delay_samples, effective_gain, engine_rate, legacy_trim_boost, sample_ms,
 )
 
 # devices.chunksize / target_level come from the profile (profiles.CHUNKSIZE, default 256, and
@@ -636,8 +641,8 @@ def generate(profile: Profile, state: State) -> dict[str, Any]:
     With aux_mode "off", loud_on and deharsh_on False, the profile's chunksize and target at 256
     and its rate at 48 kHz, it is byte for byte f2671b0's config (key order included: the
     optional filters, mixers and steps are inserted, never reordered) plus D-021's two
-    additions: the `out_limit` filter after the output trims and its step after the output
-    mixer. `devices.samplerate` is
+    additions: the `out_limit` filter after the output trims and its step after the output mixer
+    (and the output trims at 0 dB at most). `devices.samplerate` is
     the profile's rate (`profile_rate`), and the delays are put on whole samples of that same
     rate: one config never mixes two rates, whatever rate the process runs (the Controller
     makes the two the same, D-022).
@@ -1061,6 +1066,45 @@ def feature_switches(cfg_json: Any) -> dict[str, Any]:
     return {"aux_mode": aux, "loud_on": SUB_LOUDNESS in filters, "deharsh_on": DH_COMP in procs}
 
 
+def fold_legacy_config(cfg_json: Any) -> dict[str, Any]:
+    """D-021: a config written before D-021 (it has no `out_limit` filter), read as the same
+    sound with its output trims' boost in the input trim (state.fold_legacy_trims, on a config):
+    T = the highest output trim above 0 dB; `in_trim` +T, every `out_trim_N` -T, the AUX level +T
+    and the de-harsh threshold +T where the config has them. Returns a copy (the dict as it is
+    when there is nothing to fold: a D-021 config, a config with no boost, not a config).
+
+    Only for READING a config K1000 wrote before D-021 (adoption, active.yml after a torn
+    state.json, the cuts a restore keeps): never sent anywhere. A boosted trim in a D-021 config
+    (a CamillaGUI edit) is not folded: it is out of range, clamped and pulled down like any
+    value above K1000's."""
+    cfg = _as_cfg(cfg_json)
+    filters = _dict(cfg.get("filters"))
+    if not filters or OUT_LIMIT in filters:
+        return cfg
+    gains = [_gain_db(_params(cfg, name)) for name in OUT_TRIM]
+    t = legacy_trim_boost([g if g is not None else 0.0 for g in gains])
+    if t <= 0.0:
+        return cfg
+    out = copy.deepcopy(cfg)
+    of = out["filters"]
+
+    def shift(name: str, db: float) -> None:
+        p = _dict(_dict(of.get(name)).get("parameters"))
+        g = _gain_db(p)
+        if g is not None:
+            p["gain"], p["scale"] = round(g + db, 6), "dB"
+
+    shift("in_trim", t)
+    shift(AUX_GAIN, t)
+    for name in OUT_TRIM:
+        shift(name, -t)
+    th = _proc_params(out, DH_COMP)
+    x = _num(th.get("threshold"))
+    if x is not None:
+        th["threshold"] = round(x + t, 6)
+    return out
+
+
 def state_from_config(cfg_json: Any, faders: Any, base_state: State, *,
                       skip_pointers: Iterable[str] = (), skip_faders: Iterable[int] = ()) -> State:
     """`base_state` updated with the owned values found in the running config and faders.
@@ -1092,10 +1136,11 @@ def state_from_config(cfg_json: Any, faders: Any, base_state: State, *,
     of the time (for < 2 ms), and adopting that would undo the knob move. Also skip the Main
     fader while a boot ramp runs.
 
-    D-021: the limiter's kind is adopted from `out_limit`'s `soft_clip` (its `clip_limit`
-    follows the kind: a fixed value, pushed back or kept as a cut).
+    D-021: a config from before D-021 is read folded (`fold_legacy_config`: its output trims'
+    boost in the input trim, the same sound); the limiter's kind is adopted from `out_limit`'s
+    `soft_clip` (its `clip_limit` follows the kind: a fixed value, pushed back or kept as a cut).
     """
-    cfg = _as_cfg(cfg_json)
+    cfg = fold_legacy_config(_as_cfg(cfg_json))
     skip = frozenset(skip_pointers)
     if skip:
         cfg = copy.deepcopy(cfg)
