@@ -275,6 +275,7 @@ FEATURE_SAID: dict[str, dict[Any, str]] = {
     "deharsh_on": {True: "DE-HARSH ON", False: "DE-HARSH OFF"},
     "loud_on": {True: "LOUDNESS ON", False: "LOUDNESS OFF"},
     "aux_mode": {"off": "AUX IN OFF", "mic": "AUX IN 1: MIC", "line": "AUX IN 1/2: LINE"},
+    "limit_kind": {"hard": "LIMITER HARD", "soft": "LIMITER SOFT"},       # D-021
 }
 HINT_NO_CHANGE = "NO CHANGE: ALREADY SET"
 HINT_LAPTOP_NA = "LAPTOP ACCESS: NOT AVAILABLE"
@@ -791,6 +792,8 @@ def _num(v: Any) -> float | None:
 _LOWER_IS_QUIETER: dict[str, tuple[tuple[str, str], ...]] = {
     "Loudness": (("low_boost", "BOOST"), ("high_boost", "TREBLE"), ("reference_level", "REF")),
     "Compressor": (("threshold", "THRESH"), ("makeup_gain", "MAKEUP")),
+    # D-021's limiter: a ceiling set lower outside K1000 is a cut, kept and shown.
+    "Clipper": (("clip_limit", "CEILING"),),
 }
 _HIGHER_IS_QUIETER: dict[str, tuple[tuple[str, str], ...]] = {"Compressor": (("factor", "RATIO"),)}
 
@@ -803,7 +806,8 @@ def _keep_cuts(cfg: dict[str, Any], live: Any) -> dict[str, Any]:
     on the AUX routing (`dspconfig.carry_mixer_cuts`: an `aux_mix` source muted or turned down,
     an AUX source of the input mixer turned down: a mic muted from CamillaGUI stays muted). A
     pipeline restore puts the STRUCTURE back; it must not unmute an output or raise a trim
-    nobody at the box asked for (the same rule as the 1 Hz fixes)."""
+    nobody at the box asked for (the same rule as the 1 Hz fixes). D-021: a lower limiter
+    ceiling (`out_limit` clip_limit) is a cut like the others."""
     if not isinstance(live, dict):
         return cfg
     out = copy.deepcopy(cfg)
@@ -840,8 +844,8 @@ def _keep_cuts(cfg: dict[str, Any], live: Any) -> dict[str, Any]:
             g, w = _num(lp.get("limit")), _num(p.get("limit"))
             if g is not None and w is not None and g < w:
                 p["limit"] = g
-        elif f["type"] == "Loudness":
-            _carry_quieter("Loudness", lp, p)
+        elif f["type"] in ("Loudness", "Clipper"):
+            _carry_quieter(f["type"], lp, p)
     return out
 
 

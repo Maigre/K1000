@@ -103,6 +103,48 @@ def render_params(dspconfig: Any, State: Any) -> str:
                       sort_keys=True) + "\n"
 
 
+# ------------------------------------------------------------------ D-021 (2026-11-15)
+# D-021 adds two things to EVERY config (the output limiter, always there). The fixtures stay f2671b0's own bytes; what D-021 writes is derived from them by
+# `d021` and nothing else, so "f2671b0's bytes but for D-021's additions" is still checked byte
+# for byte (`test_dspconfig.test_golden_round_trip_is_the_identity` shows the YAML round trip
+# itself changes nothing).
+D021_LIMITER = {"type": "Clipper",
+                "description": ("limiter (D-021), last, no delay. HARD: backstop at +12 dB, full "
+                                "scale is cut by the conversion. SOFT: soft clip, never above "
+                                "-0.1 dBFS"),
+                "parameters": {"clip_limit": 12.0, "soft_clip": False}}
+
+
+def d021(cfg: dict[str, Any]) -> dict[str, Any]:
+    """An f2671b0 config (parsed) as D-021 writes it, in place and returned: the `out_limit`
+    filter after the output trims (the last filter) and its step after the output mixer (the
+    last step), on every playback channel."""
+    cfg["filters"]["out_limit"] = {**D021_LIMITER, "parameters": dict(D021_LIMITER["parameters"])}
+    n = cfg["devices"]["playback"]["channels"]
+    cfg["pipeline"].append({"type": "Filter", "channels": list(range(n)), "names": ["out_limit"],
+                            "description": "limiter (D-021): the last stage"})
+    return cfg
+
+
+def golden_text(dspconfig: Any, profile_key: str, state_key: str) -> str:
+    """The YAML D-021 writes for a golden case: the fixture, parsed, `d021`, written again."""
+    import yaml
+
+    cfg = yaml.safe_load(golden_path(profile_key, state_key).read_text(encoding="utf-8"))
+    return dspconfig.to_yaml(d021(cfg))
+
+
+def d021_params(text: str) -> str:
+    """param_map.json (f2671b0's) as D-021 makes it: the limiter's two values added."""
+    import json
+
+    data = json.loads(text)
+    for pm in data.values():
+        pm["/filters/out_limit/parameters/clip_limit"] = 12.0
+        pm["/filters/out_limit/parameters/soft_clip"] = False
+    return json.dumps(data, indent=1, sort_keys=True) + "\n"
+
+
 def write_golden(box_dir: str) -> list[Path]:
     """Write every fixture from the k1000 package found in `box_dir` (a HEAD copy)."""
     import importlib

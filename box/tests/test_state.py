@@ -689,3 +689,15 @@ def test_a_state_saved_before_the_features_loads_with_them_off(tmp_path):
     s = load_state(p)
     assert s == old and (s.aux_mode, s.loud_on, s.deharsh_on) == ("off", False, False)
     assert not (tmp_path / "state.json.bad").exists()
+
+
+# ----------------------------------------------------------------------------- D-021
+def test_limiter_kind_is_hard_by_default_and_a_plain_choice():
+    s = State()
+    assert s.limit_kind == "hard" and st.CHOICES["limit_kind"] == ("hard", "soft")
+    assert "limit_kind" not in st.REBUILD_FIELDS             # a parameter write, never a rebuild
+    assert s.set("limit_kind", "soft") == "soft"
+    with pytest.raises(ValueError):
+        s.set("limit_kind", "off")                          # always on: no "off"
+    assert State.from_dict({"limit_kind": "off"}).limit_kind == "hard"
+    assert State.from_dict({"limit_kind": "soft"}).limit_kind == "soft"

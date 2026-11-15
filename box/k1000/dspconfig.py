@@ -38,6 +38,27 @@ but nothing is routed through it (the config plays exactly as with AUX off).
   peaking cut as deep as the gain reduction; under the threshold the gain is exactly 1 and the
   sum is x - B + B, a pass-through. Placed after the input EQ, before `split`.
 - Sub loudness (`loud_on`): `sub_loudness` (Loudness on Main) in the subs chain after the low-pass.
+
+D-021 (2026-11-15), the output limiter: `out_limit`, the engine's Clipper filter, is the LAST step
+of every config, on every playback channel, after the output mixer: always there, no switch.
+Neither engine can measure a signal inside its pipeline (its meters read the playback chunk after
+the last step, its websocket has no tap and no gain-reduction readout), but the meters read that
+chunk BEFORE the conversion to the interface's integer samples, which clamps at full scale with
+no delay (both engines, measured here: a sample of 1.0 or more is counted as clipped, never
+wrapped). So `limit_kind`:
+- "hard" (default): the Clipper stands at LIMIT_HARD_DB (+12 dBFS) and the conversion cuts at full
+  scale, sample for sample what a hard Clipper at 0 dBFS gives, and what the box did at the gig;
+  the meters still see the peak before the cut: its dB above full scale is exact (the dB to take
+  off), and the engine's clipped-samples count is the limiter's own. Under full scale nothing is
+  touched, bit for bit. Needs an integer playback format: `profiles` refuses a float one.
+- "soft": the engine's cubic soft clip (clipper.rs: s = x/C clamped to +-1.5, s - s^3/6.75, times
+  C) at C = LIMIT_SOFT_DB: never above C (just under full scale, so the conversion never clips),
+  rounding from about 6 dB under C (third harmonic -41 dB re a peak at C/2), the full ceiling at
+  +3.5 dB over it. The curve is monotonic, so the peak before it is known up to +3.5 dB over C
+  (`limit_over_db`).
+Switching the kind is two parameter writes (`soft_clip`, `clip_limit`), stepped like a gain: never
+a rebuild. Neither kind adds a sample of delay (no look-ahead: the engine's LookaheadLimiter
+delays by its attack and is not used).
 """
 from __future__ import annotations
 
@@ -52,9 +73,9 @@ import yaml
 from .profiles import CHUNKSIZE, CHUNKSIZES, LOGICAL_NAMES, Profile, target_level_range
 from .state import (
     AUX_MIC_HP_HZ, AUX_MIC_HP_Q, AUX_MIC_PAN_DB, DEHARSH_ATTACK_MS, DEHARSH_Q, DEHARSH_RATIO,
-    DEHARSH_RELEASE_MS, LOUD_HIGH_BOOST_DB, LOUD_LOW_FREQ_HZ, LOWCUT_OFF_HZ, LOWCUT_Q, N_LIVE_PEQ,
-    N_OUT, N_SYS_PEQ, RANGES, SAMPLERATES, SUB_LOWPASS_OFF_HZ, SUB_LOWPASS_Q, PeqBand, ShelfBand,
-    State, delay_samples, effective_gain, engine_rate, sample_ms,
+    DEHARSH_RELEASE_MS, LIMIT_KINDS, LOUD_HIGH_BOOST_DB, LOUD_LOW_FREQ_HZ, LOWCUT_OFF_HZ, LOWCUT_Q,
+    N_LIVE_PEQ, N_OUT, N_SYS_PEQ, RANGES, SAMPLERATES, SUB_LOWPASS_OFF_HZ, SUB_LOWPASS_Q, PeqBand,
+    ShelfBand, State, delay_samples, effective_gain, engine_rate, sample_ms,
 )
 
 # devices.chunksize / target_level come from the profile (profiles.CHUNKSIZE, default 256, and
@@ -100,6 +121,17 @@ MIXERS: tuple[str, ...] = ("input", "split", "output")
 AUX_GAIN, AUX_HP, AUX_MIX = "aux_gain", "aux_hp", "aux_mix"
 DH_SPLIT, DH_BAND, DH_COMP, DH_SUM = "dh_split", "dh_band", "dh_comp", "dh_sum"
 SUB_LOUDNESS = "sub_loudness"
+# D-021: the output limiter (module docstring), one Clipper filter on every playback channel.
+OUT_LIMIT = "out_limit"
+# "hard": the Clipper's backstop, above anything the chain can reach in practice (the gig's worst
+# was +5.67 dBFS): the cut at full scale is the conversion's, and the meters read up to here.
+LIMIT_HARD_DB = 12.0
+# "soft": the ceiling of the cubic curve, just under full scale (at exactly 0 dBFS its flat top,
+# 1.0, would be counted as clipped by the conversion, measured on both engines).
+LIMIT_SOFT_DB = -0.1
+# The soft curve (engine clipper.rs): y/C = s - s^3 * SOFT_CUBE, s = x/C clamped to +-SOFT_TOP.
+SOFT_CUBE = 1.0 / 6.75
+SOFT_TOP = 1.5
 # Channels after `dh_split`: 0/1 program L/R, 2/3 the band copies subtracted, 4/5 the band copies
 # compressed (and monitored: their SUM is the compressor's level, +6 dB for a centred source).
 DH_CHANNELS = 6
@@ -244,6 +276,64 @@ def aux_inputs(profile: Profile, aux_mode: str) -> tuple[int, ...]:
     return spare_capture_channels(profile)[:2]
 
 
+def limit_kind(state: Any) -> str:
+    """The state's limiter kind (D-021), "hard" for anything else."""
+    k = getattr(state, "limit_kind", "hard")
+    return k if k in LIMIT_KINDS else "hard"
+
+
+def limit_ceiling_db(kind: str) -> float:
+    """The Clipper's `clip_limit` for a limiter kind (module docstring)."""
+    return LIMIT_SOFT_DB if kind == "soft" else LIMIT_HARD_DB
+
+
+def soft_curve(s: float) -> float:
+    """The engine's soft clip on a value already divided by the ceiling (clipper.rs)."""
+    s = min(SOFT_TOP, max(-SOFT_TOP, s))
+    return s - SOFT_CUBE * s ** 3
+
+
+# The soft curve's output for an input AT the ceiling (s = 1): above it, the peak before the
+# limiter was above the ceiling. 0.852 = -1.39 dB re the ceiling.
+SOFT_AT_CEILING = soft_curve(1.0)
+# How far over the ceiling the soft curve can tell (its flat top): +3.52 dB.
+SOFT_OVER_MAX_DB = 20.0 * math.log10(SOFT_TOP)
+
+
+def limit_over_db(kind: str, peak_dbfs: Any) -> float | None:
+    """D-021: how far above the limiter's ceiling the signal went BEFORE the limiter, in dB, from
+    a playback peak the engine measured AFTER the pipeline (dBFS); None when it did not go over
+    (or the peak is not a number). That is the dB to take off.
+
+    - "hard": the meters read before the conversion that cuts at full scale (module docstring):
+      the peak above 0 dBFS is the overshoot itself, exact, whatever its size (up to the
+      Clipper's backstop, LIMIT_HARD_DB).
+    - "soft": the peak after the curve (<= the ceiling C); the curve is monotonic up to its flat
+      top, so the peak before it is its inverse: exact up to SOFT_OVER_MAX_DB (+3.5 dB) over C, and
+      SOFT_OVER_MAX_DB once the peak reaches the flat top (it went at least that far over)."""
+    if isinstance(peak_dbfs, bool) or not isinstance(peak_dbfs, (int, float)):
+        return None
+    p = float(peak_dbfs)
+    if not math.isfinite(p):
+        return None
+    if kind != "soft":
+        return round(p, 3) if p > 0.0 else None
+    y = 10.0 ** ((p - LIMIT_SOFT_DB) / 20.0)          # the peak / C, <= 1 after the curve
+    if y <= SOFT_AT_CEILING:
+        return None
+    top = soft_curve(SOFT_TOP)
+    if y >= top - 1e-6:
+        return round(SOFT_OVER_MAX_DB, 3)
+    lo, hi = 1.0, SOFT_TOP                            # soft_curve rises on [1, 1.5]
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        if soft_curve(mid) < y:
+            lo = mid
+        else:
+            hi = mid
+    return round(20.0 * math.log10(0.5 * (lo + hi)), 3)
+
+
 def param_map(state: State, rate: float | None = None) -> dict[str, Any]:
     """Every config value K1000 owns, as {JSON pointer: value}, from the clamped state.
 
@@ -253,7 +343,7 @@ def param_map(state: State, rate: float | None = None) -> dict[str, Any]:
     The optional blocks' values are owned only while their feature is on (module docstring):
     `aux_gain` gain (aux_mode "mic"/"line"), `dh_band` freq + `dh_comp` threshold (deharsh_on),
     `sub_loudness` reference_level + low_boost (loud_on). Kept in the state while off, written
-    to nothing.
+    to nothing. D-021's `out_limit` (clip_limit, soft_clip) is always there.
     """
     s = state.clamped()
     m: dict[str, Any] = {_pp("in_trim", "gain"): s.input_trim_db}
@@ -281,6 +371,9 @@ def param_map(state: State, rate: float | None = None) -> dict[str, Any]:
     if s.loud_on:
         m[_pp(SUB_LOUDNESS, "reference_level")] = s.loud_ref_db
         m[_pp(SUB_LOUDNESS, "low_boost")] = s.loud_boost_db
+    kind = limit_kind(s)                              # D-021: always there
+    m[_pp(OUT_LIMIT, "clip_limit")] = limit_ceiling_db(kind)
+    m[_pp(OUT_LIMIT, "soft_clip")] = kind == "soft"
     return m
 
 
@@ -377,6 +470,16 @@ def _loudness(reference_db: float, low_boost_db: float) -> dict[str, Any]:
             "parameters": {"fader": "Main", "reference_level": reference_db,
                            "low_boost": low_boost_db, "high_boost": LOUD_HIGH_BOOST_DB,
                            "low_freq": LOUD_LOW_FREQ_HZ, "attenuate_mid": False}}
+
+
+def _limiter(clip_limit: float, soft_clip: bool) -> dict[str, Any]:
+    """D-021's `out_limit` (module docstring): the engine's Clipper, no delay, no state."""
+    # One description for both kinds: a kind change writes the parameters only.
+    return {"type": "Clipper",
+            "description": (f"limiter (D-021), last, no delay. HARD: backstop at "
+                            f"{LIMIT_HARD_DB:+g} dB, full scale is cut by the conversion. SOFT: "
+                            f"soft clip, never above {LIMIT_SOFT_DB:g} dBFS"),
+            "parameters": {"clip_limit": clip_limit, "soft_clip": soft_clip}}
 
 
 def _deharsh_compressor(threshold_db: float) -> dict[str, Any]:
@@ -532,7 +635,9 @@ def generate(profile: Profile, state: State) -> dict[str, Any]:
 
     With aux_mode "off", loud_on and deharsh_on False, the profile's chunksize and target at 256
     and its rate at 48 kHz, it is byte for byte f2671b0's config (key order included: the
-    optional filters, mixers and steps are inserted, never reordered). `devices.samplerate` is
+    optional filters, mixers and steps are inserted, never reordered) plus D-021's two
+    additions: the `out_limit` filter after the output trims and its step after the output
+    mixer. `devices.samplerate` is
     the profile's rate (`profile_rate`), and the delays are put on whole samples of that same
     rate: one config never mixes two rates, whatever rate the process runs (the Controller
     makes the two the same, D-022).
@@ -576,6 +681,7 @@ def generate(profile: Profile, state: State) -> dict[str, Any]:
     filters["top_fader"] = _volume("Aux2", "tops group (balance -b/2)")
     for i, name in enumerate(OUT_TRIM):
         filters[name] = _gain(v(name, "gain"), description=f"output trim {LOGICAL_NAMES[i]}")
+    filters[OUT_LIMIT] = _limiter(v(OUT_LIMIT, "clip_limit"), v(OUT_LIMIT, "soft_clip"))
 
     pipeline: list[dict[str, Any]] = []
     if aux:
@@ -617,6 +723,10 @@ def generate(profile: Profile, state: State) -> dict[str, Any]:
         pipeline.append({"type": "Filter", "channels": [i], "names": [name],
                          "description": f"trim {LOGICAL_NAMES[i]}"})
     pipeline.append({"type": "Mixer", "name": "output", "description": "to physical outputs"})
+    # D-021: the last step, on every playback channel, after everything (the output mixer and the
+    # dev audition's sums included): nothing after it can raise a sample.
+    pipeline.append({"type": "Filter", "channels": list(range(profile.playback_channels)),
+                     "names": [OUT_LIMIT], "description": "limiter (D-021): the last stage"})
 
     mixers: dict[str, Any] = {"input": _input_mixer(profile, aux)}
     if aux:
@@ -981,6 +1091,9 @@ def state_from_config(cfg_json: Any, faders: Any, base_state: State, *,
     the box: GetConfigJson issued right after a SetConfigValue returns the previous value ~2 %
     of the time (for < 2 ms), and adopting that would undo the knob move. Also skip the Main
     fader while a boot ramp runs.
+
+    D-021: the limiter's kind is adopted from `out_limit`'s `soft_clip` (its `clip_limit`
+    follows the kind: a fixed value, pushed back or kept as a cut).
     """
     cfg = _as_cfg(cfg_json)
     skip = frozenset(skip_pointers)
@@ -1063,6 +1176,9 @@ def state_from_config(cfg_json: Any, faders: Any, base_state: State, *,
     x = _num(_proc_params(cfg, DH_COMP).get("threshold"))
     if x is not None:
         s.deharsh_thresh_db = x
+    soft = _params(cfg, OUT_LIMIT).get("soft_clip")
+    if isinstance(soft, bool):
+        s.limit_kind = "soft" if soft else "hard"
 
     mixers = _dict(cfg.get("mixers"))
     sub_l = _sources(mixers.get("split"), 0)

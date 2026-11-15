@@ -65,6 +65,8 @@ ALSA_TO_CDSP: dict[str, str] = {
 # CamillaDSP's own auto-select order: 32-bit int, 24-bit, 16-bit, floats last.
 FORMAT_PREFERENCE: tuple[str, ...] = ("S32_LE", "S24_3_LE", "S24_4_LE", "S16_LE", "F32_LE", "F64_LE")
 CDSP_FORMATS = frozenset(FORMAT_PREFERENCE)
+# Formats the conversion does not clamp at full scale (measured on both engines): never playback.
+FLOAT_FORMATS = frozenset({"F32_LE", "F64_LE"})
 
 # devices.chunksize and devices.target_level: the engine's share of the in-to-out delay is about
 # one chunk plus the target level (docs/16 §3.3; D-018 asks 10 ms or less in to out), set per
@@ -544,6 +546,13 @@ def _pick_format(name: str, kind: str, explicit: Any, current: str | None, hw: H
     f = explicit if isinstance(explicit, str) and explicit in CDSP_FORMATS else None
     if isinstance(explicit, str) and f is None:
         warnings.append(f"{name}: unknown {kind}_format {explicit!r} ignored")
+    if kind == "playback" and f in FLOAT_FORMATS:
+        # D-021: the HARD limiter's cut at full scale is the engine's conversion to integer
+        # samples (dspconfig's module docstring); a float format would pass a sample above full
+        # scale to the device. Auto-select (None) picks an integer format first.
+        warnings.append(f"{name}: playback_format {f} refused (the limiter needs an integer "
+                        "format); letting CamillaDSP choose (integer first)")
+        f = None
     chosen = f if f is not None else current
     if hw is None:
         return chosen

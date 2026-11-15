@@ -20,6 +20,10 @@ the M4's IN1/IN2 into the program, mic or line), sub loudness (`loud_on`: the su
 grows as the master goes down, so the subs still fill the room at low level) and de-harsh
 (`deharsh_on`: a dynamic cut around 2.7 kHz that only acts on hard attacks). Each switch changes
 the pipeline (a Rebuild, SETUP only); their levels and frequencies are show-time values.
+
+D-021 (2026-11-15, after the gig's output clipping): a limiter with no delay is the last stage of
+every output (`limit_kind`: "hard" or "soft", a parameter write, never a rebuild; dspconfig has
+what each does).
 """
 from __future__ import annotations
 
@@ -77,6 +81,13 @@ DEHARSH_Q = 1.4
 DEHARSH_RATIO = 3.0
 DEHARSH_ATTACK_MS = 1.0
 DEHARSH_RELEASE_MS = 80.0
+
+# D-021, the limiter (`limit_kind`), the last stage of every output, no delay (dspconfig
+# OUT_LIMIT: the engine's Clipper filter). "hard" (the default): full scale is cut flat by the
+# engine's conversion to the interface's integer samples, as it always was, and the meters still
+# read how far above it a peak went (the dB to take off); "soft": the engine's cubic soft clip
+# rounds the peaks off under LIMIT_SOFT_DB and never lets one through above it.
+LIMIT_KINDS: tuple[str, ...] = ("hard", "soft")
 
 # The engine's sample rate (D-022): one rate for the whole run of the control service, the
 # profile's `samplerate` (profiles.load_profile), set by the Controller when it is built
@@ -263,7 +274,7 @@ BOOL_FIELDS: tuple[str, ...] = (
     "spectrum_on", "loud_on", "deharsh_on",
 )
 CHOICES: dict[str, tuple[str, ...]] = {"profile": PROFILES, "dev_audition": AUDITIONS,
-                                       "aux_mode": AUX_MODES}
+                                       "aux_mode": AUX_MODES, "limit_kind": LIMIT_KINDS}
 
 # Changing these rebuilds the CamillaDSP pipeline (mixers/devices): SETUP page only, with confirm.
 REBUILD_FIELDS: frozenset[str] = frozenset({"mono_subs", "profile", "dev_audition",
@@ -375,6 +386,9 @@ class State:
     deharsh_on: bool = False
     deharsh_hz: float = 2700.0
     deharsh_thresh_db: float = -24.0
+    # D-021: the kind of the output limiter (LIMIT_KINDS). Always on: there is no "off". A
+    # parameter write (click-free), never a rebuild; an older build ignores the key.
+    limit_kind: str = "hard"
 
     # ----------------------------------------------------------------- copies / clamping
     def copy(self) -> "State":

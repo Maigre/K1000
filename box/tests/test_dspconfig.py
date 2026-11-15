@@ -202,7 +202,7 @@ def test_chunksize_256_written_out_is_still_the_golden_config(profile_key):
     prof = pf.load_profile(name, {"profiles": {name: sec}}, probe=False)
     assert not prof.warnings
     for state_key in golden.STATES:
-        want = golden.golden_path(profile_key, state_key).read_text(encoding="utf-8")
+        want = golden.golden_text(d, profile_key, state_key)
         assert d.to_yaml(d.generate(prof, golden.STATES[state_key](State))) == want, state_key
 
 
@@ -376,7 +376,7 @@ CONTRACT_FILTERS = (
     {"in_trim", "live_lowshelf", "live_highshelf", "sub_trim", "sub_lowpass", "sub_delay",
      "sub_fader", "top_trim", "top_lowcut", "top_delay", "top_fader"}
     | {f"sys_peq_{i}" for i in range(1, 9)} | {f"live_peq_{i}" for i in range(1, 5)}
-    | {f"out_trim_{i}" for i in range(4)}
+    | {f"out_trim_{i}" for i in range(4)} | {"out_limit"}             # D-021: the limiter
 )
 
 
@@ -400,6 +400,9 @@ def test_generate_structure_matches_contract():
     assert steps[4][2:] == (("top_trim", "top_lowcut", "top_delay", "top_fader"), (2, 3))
     assert [s[2:] for s in steps[5:9]] == [((f"out_trim_{i}",), (i,)) for i in range(4)]
     assert steps[9] == ("Mixer", "output", (), ())
+    # D-021: the limiter, the last step, on every playback channel (dev: 2)
+    assert steps[10] == ("Filter", None, ("out_limit",), (0, 1)) and len(steps) == 11
+    assert cfg["filters"]["out_limit"]["type"] == "Clipper"
 
 
 def test_fader_ramps_are_100ms_and_an_old_300ms_engine_is_fixed_safely():
@@ -1556,8 +1559,9 @@ def _srcs(mixer, dest):
 @pytest.mark.parametrize("profile_key,state_key", golden.cases())
 def test_features_off_config_is_byte_identical_to_f2671b0(profile_key, state_key):
     """THE hard rule: all three off -> exactly the YAML f2671b0 wrote (fixtures captured from a
-    `git archive f2671b0` copy before the features existed), whatever the features' own values."""
-    want = golden.golden_path(profile_key, state_key).read_text(encoding="utf-8")
+    `git archive f2671b0` copy before the features existed), whatever the features' own values,
+    but for D-021's addition (the limiter: `golden.d021`)."""
+    want = golden.golden_text(d, profile_key, state_key)
     assert golden.render(d, pf, State, profile_key, state_key) == want
     name, ov = golden.PROFILES[profile_key]
     prof = pf.load_profile(name, ov or None, probe=False)
@@ -1570,8 +1574,10 @@ def test_features_off_config_is_byte_identical_to_f2671b0(profile_key, state_key
 
 
 def test_features_off_param_map_is_f2671b0s():
-    """The owned pointers (diff_ops, adoption, drift all derive from them) are f2671b0's too."""
-    assert golden.render_params(d, State) == golden.params_path().read_text(encoding="utf-8")
+    """The owned pointers (diff_ops, adoption, drift all derive from them) are f2671b0's too, and
+    D-021's limiter (`golden.d021_params`)."""
+    assert golden.render_params(d, State) == golden.d021_params(
+        golden.params_path().read_text(encoding="utf-8"))
     for name, f in golden.STATES.items():
         s = f(State)
         base = d.param_map(s)
@@ -1579,6 +1585,14 @@ def test_features_off_param_map_is_f2671b0s():
             setattr(s, k, v)
         assert d.param_map(s) == base, name
         assert d.diff_ops(f(State), s) == [], name           # a hidden feature value sends nothing
+
+
+def test_golden_round_trip_is_the_identity():
+    """D-021: the golden YAML parsed and written again is the fixture byte for byte, so what
+    `golden.golden_text` adds (`golden.d021`) is the only difference the identity tests allow."""
+    for p, s in golden.cases():
+        text = golden.golden_path(p, s).read_text(encoding="utf-8")
+        assert d.to_yaml(yaml.safe_load(text)) == text, (p, s)
 
 
 def test_golden_fixtures_are_complete():
@@ -1683,7 +1697,7 @@ def test_aux_is_off_for_garbage_modes():
     assert d.aux_inputs(m4(), "off") == () and d.aux_inputs(m4(), "usb") == ()
     s = State(profile="m4")
     s.aux_mode = "usb"                         # unvalidated: clamped to "off"
-    assert d.to_yaml(d.generate(m4(), s)) == golden.golden_path("m4", "default_m4").read_text()
+    assert d.to_yaml(d.generate(m4(), s)) == golden.golden_text(d, "m4", "default_m4")
 
 
 # ----------------------------------------------------------------- de-harsh
@@ -2570,7 +2584,7 @@ def test_samplerate_48000_written_out_is_still_the_golden_config(profile_key):
     for run_rate in (48000, 96000):
         kst.set_engine_rate(run_rate)
         for state_key in golden.STATES:
-            want = golden.golden_path(profile_key, state_key).read_text(encoding="utf-8")
+            want = golden.golden_text(d, profile_key, state_key)
             assert d.to_yaml(d.generate(prof, golden.STATES[state_key](State))) == want, state_key
 
 
@@ -2583,7 +2597,7 @@ def test_d022_config_is_the_golden_one_but_for_three_device_values(state_key):
     prof = pf.load_profile("m4", None, probe=False)
     s = golden.STATES[state_key](State)
     s.profile = "m4"
-    want = yaml.safe_load(golden.golden_path("m4", state_key).read_text(encoding="utf-8"))
+    want = golden.d021(yaml.safe_load(golden.golden_path("m4", state_key).read_text(encoding="utf-8")))
     want["devices"].update(samplerate=96000, chunksize=128, target_level=256)
     for run_rate in (48000, 96000):          # the profile's rate, whatever the process was set to
         kst.set_engine_rate(run_rate)
@@ -2720,3 +2734,228 @@ def test_the_probe_asks_and_checks_the_profiles_rate(monkeypatch):
     p = pf.load_profile("m4", _rate_file(samplerate=48000), probe=True)
     assert asked and all(r == 48000 for _t, r in asked)
     assert not any("does not list" in w for w in p.warnings)
+
+
+# ----------------------------------------------------------------- D-021: the output limiter
+HARD = {"/filters/out_limit/parameters/clip_limit": d.LIMIT_HARD_DB,
+        "/filters/out_limit/parameters/soft_clip": False}
+SOFT = {"/filters/out_limit/parameters/clip_limit": d.LIMIT_SOFT_DB,
+        "/filters/out_limit/parameters/soft_clip": True}
+
+
+def _limiter_profiles():
+    return {"dev": dev(), "m4_48k": m4(), "m4_96k": pf.load_profile("m4", None, probe=False),
+            "m4_6ch": m4(capture_channels=6), "m4_3ch": m4(capture_channels=3, input_map=[1, 2])}
+
+
+@pytest.mark.parametrize("prof_key", list(_limiter_profiles()))
+@pytest.mark.parametrize("kind", ["hard", "soft"])
+def test_limiter_is_the_last_step_on_every_output(prof_key, kind):
+    """D-021: whatever the features (D-016's three, mono, the dev audition), at 48 and 96 kHz,
+    the last step is the limiter on every playback channel, after the output mixer: nothing
+    after it can raise a sample. One Clipper, the kind's two values."""
+    prof = _limiter_profiles()[prof_key]
+    assert prof.samplerate == (96000 if prof_key == "m4_96k" else 48000)
+    states = list(feature_states(prof.name).values())
+    states += [State(profile=prof.name, dev_audition=a) for a in ("sum", "tops", "subs")]
+    for s in states:
+        s.limit_kind = kind
+        cfg = d.generate(prof, s)
+        assert cfg["pipeline"][-2] == {"type": "Mixer", "name": "output",
+                                       "description": "to physical outputs"}
+        assert cfg["pipeline"][-1] == {"type": "Filter",
+                                       "channels": list(range(prof.playback_channels)),
+                                       "names": ["out_limit"],
+                                       "description": "limiter (D-021): the last stage"}
+        assert sum("out_limit" in st.get("names", ()) for st in cfg["pipeline"]) == 1
+        lim = cfg["filters"]["out_limit"]
+        assert lim["type"] == "Clipper"
+        assert lim["parameters"] == {"clip_limit": d.limit_ceiling_db(kind),
+                                     "soft_clip": kind == "soft"}
+        assert list(cfg["filters"])[-1] == "out_limit"
+        _channel_flow(cfg)
+        pm = d.param_map(s)
+        assert {k: pm[k] for k in HARD} == (SOFT if kind == "soft" else HARD)
+
+
+def test_limiter_kind_is_two_parameter_writes_never_a_rebuild():
+    """HARD <-> SOFT: the Clipper's two values, stepped like a gain (0.5 dB steps on the
+    ceiling, two chunks apart): never a Rebuild, never a guard, nothing else written."""
+    a, b = State(profile="m4"), State(profile="m4", limit_kind="soft")
+    ops = d.diff_ops(a, b)
+    assert set(ops) == {d.SetValue(k, v) for k, v in SOFT.items()}
+    plan = d.smooth_ops(a, b)
+    assert not any(isinstance(o, (d.Rebuild, d.FaderMute)) for _w, batch in plan for o in batch)
+    assert plan[-1][1] == [d.SetValue(k, v) for k, v in SOFT.items()]
+    assert len(plan) == math.ceil((d.LIMIT_HARD_DB - d.LIMIT_SOFT_DB) / 0.5)
+    back = d.smooth_ops(b, a)
+    assert back[-1][1] == [d.SetValue(k, v) for k, v in HARD.items()]
+    # adopted from the engine like any owned value: the kind from soft_clip
+    cfg = d.generate(m4(), b)
+    assert d.state_from_config(cfg, None, a).limit_kind == "soft"
+    assert d.config_drift(cfg, d.generate(m4(), b)).clean
+
+
+def test_limiter_drift_keeps_a_lower_ceiling_and_pushes_the_kind():
+    """A ceiling set lower outside K1000 differs (a fix the controller holds as a cut, like a
+    trim turned down); the kind and a higher ceiling are value fixes, never a rebuild."""
+    want = d.generate(m4(), State(profile="m4"))
+    live = copy.deepcopy(want)
+    live["filters"]["out_limit"]["parameters"]["clip_limit"] = -6.0
+    dr = d.config_drift(live, want)
+    assert dr.rebuild == [] and dr.fixes == [d.SetValue(
+        "/filters/out_limit/parameters/clip_limit", d.LIMIT_HARD_DB)]
+    live = copy.deepcopy(want)
+    del live["filters"]["out_limit"]
+    live["pipeline"] = live["pipeline"][:-1]
+    assert "filter out_limit missing" in d.config_drift(live, want).rebuild
+
+
+def test_limit_over_is_the_db_to_take_off():
+    """HARD: the meters read before the conversion's cut: a peak above 0 dBFS IS the overshoot.
+    SOFT: the inverse of the engine's curve, exact up to its flat top (+3.52 dB over C)."""
+    assert d.limit_over_db("hard", -0.5) is None and d.limit_over_db("hard", 0.0) is None
+    assert d.limit_over_db("hard", 5.67) == 5.67 and d.limit_over_db("hard", 0.004) == 0.004
+    assert d.limit_over_db("hard", float("nan")) is None and d.limit_over_db("hard", True) is None
+    c = 10 ** (d.LIMIT_SOFT_DB / 20)
+    assert d.soft_curve(1.5) == pytest.approx(1.0) and d.SOFT_AT_CEILING == pytest.approx(0.8519, 1e-3)
+    for over in (0.01, 0.5, 1.0, 2.0, 3.0, 3.5):
+        y = c * d.soft_curve(10 ** (over / 20))            # the peak after the curve
+        assert d.limit_over_db("soft", 20 * math.log10(y)) == pytest.approx(over, abs=2e-3), over
+    for over in (3.6, 6.0, 20.0):                           # the flat top: at least +3.5
+        y = c * d.soft_curve(10 ** (over / 20))
+        assert d.limit_over_db("soft", 20 * math.log10(y)) == pytest.approx(d.SOFT_OVER_MAX_DB, abs=1e-3)
+    assert d.limit_over_db("soft", 20 * math.log10(c * d.soft_curve(0.99))) is None
+    assert d.limit_over_db("soft", -6.0) is None
+
+
+def test_a_float_playback_format_is_refused():
+    """HARD's cut at full scale is the conversion to integer samples: a float format would pass a
+    sample above full scale to the device (measured on both engines): refused, auto-select (which
+    picks integer first) instead."""
+    p = pf.load_profile("m4", {"profile": "m4", "profiles": {"m4": {"playback_format": "F32_LE"}}},
+                        probe=False)
+    assert p.playback_format is None and any("F32_LE refused" in w for w in p.warnings)
+    p = pf.load_profile("m4", {"profile": "m4", "profiles": {"m4": {"capture_format": "F32_LE"}}},
+                        probe=False)
+    assert p.capture_format == "F32_LE"                     # capture: no limiter concern
+    assert pf.load_profile("dev", None, probe=False).playback_format == "S32_LE"
+
+
+def _offline_s32(tmp_path, cfg, x, main_db=0.0, tag="s32"):
+    """`_offline`, but the playback file is S32_LE as on the M4: (int32 frames, engine log)."""
+    np = pytest.importorskip("numpy")
+    if CDSP is None:
+        pytest.skip("camilladsp binary not installed")
+    cfg = copy.deepcopy(cfg)
+    src, out, conf = (tmp_path / f"{tag}.in.raw", tmp_path / f"{tag}.out.raw", tmp_path / f"{tag}.yml")
+    np.ascontiguousarray(x, dtype="<f8").tofile(src)
+    n_out = cfg["devices"]["playback"]["channels"]
+    cfg["devices"]["capture"] = {"type": "RawFile", "channels": int(x.shape[1]), "filename": str(src),
+                                 "format": "F64_LE"}
+    cfg["devices"]["playback"] = {"type": "File", "channels": n_out, "filename": str(out),
+                                  "format": "S32_LE"}
+    conf.write_text(d.to_yaml(cfg))
+    r = subprocess.run([CDSP, f"-g{main_db:g}", str(conf)], capture_output=True, text=True, timeout=180)
+    assert r.returncode == 0, r.stdout[-1000:] + r.stderr[-2000:]
+    return np.fromfile(out, dtype="<i4").reshape(-1, n_out), r.stdout + r.stderr
+
+
+def _hot_program(prof, n, peak_db):
+    """Capture frames: a 997 Hz sine on both program inputs (incommensurate with the chunk) whose
+    peak is `peak_db` dBFS, plus a click (one sample at that peak) to show no sample moves."""
+    np = pytest.importorskip("numpy")
+    x = np.zeros((n, prof.capture_channels))
+    a = 10 ** (peak_db / 20)
+    t = np.arange(n) / prof.samplerate
+    for ch in prof.input_map:
+        x[:, ch] = a * np.sin(2 * np.pi * 997.0 * t)
+    x[n // 3, prof.input_map[0]] = a
+    return x
+
+
+def _limiter_state(prof, kind):
+    """Lo-Cut off (parked at 10 Hz), sub low-pass off (parked at 20 kHz): the chain is near flat
+    at 997 Hz, but its exact gain does not matter: each run is compared with the same config
+    WITHOUT the limiter step, sample by sample."""
+    return State(profile=prof.name, lowcut_on=False, limit_kind=kind)
+
+
+def _without_limiter(cfg):
+    out = copy.deepcopy(cfg)
+    assert out["pipeline"][-1]["names"] == ["out_limit"]
+    out["pipeline"] = out["pipeline"][:-1]
+    return out
+
+
+@engine
+@needs_cdsp
+@pytest.mark.parametrize("prof_key", ["m4_48k", "m4_96k"])
+def test_engine_hard_limiter_passes_everything_under_full_scale_bit_for_bit(tmp_path, prof_key):
+    """D-021 HARD, the real engine, F64 out (no conversion): every sample is the one the same
+    config without the limiter plays, bit for bit, up to the backstop (+12 dBFS): a +6 dBFS
+    peak too (the cut at full scale is the integer conversion's, after the meters). The same
+    index: no delay."""
+    np = pytest.importorskip("numpy")
+    prof = _limiter_profiles()[prof_key]
+    cfg = d.generate(prof, _limiter_state(prof, "hard"))
+    for peak in (-0.01, 6.0):
+        x = _hot_program(prof, prof.samplerate // 2, peak)
+        y = _offline(tmp_path, cfg, x, 0.0, f"lim{peak}")
+        y_ref = _offline(tmp_path, _without_limiter(cfg), x, 0.0, f"ref{peak}")
+        assert np.array_equal(y, y_ref), peak
+        assert np.max(np.abs(y)) == pytest.approx(10 ** (peak / 20), rel=0.02)
+
+
+@engine
+@needs_cdsp
+@pytest.mark.parametrize("prof_key", ["m4_48k", "m4_96k"])
+def test_engine_hard_limiter_never_sends_a_sample_above_full_scale(tmp_path, prof_key):
+    """D-021 HARD on the M4's format (S32_LE): a program 4 dB over full scale comes out cut at
+    full scale, never above, every other sample as without a limit, at the same index; the
+    engine's own log (the conversion: the chunk the meters read) says how far over it went: the
+    dB to take off, exact."""
+    np = pytest.importorskip("numpy")
+    prof = _limiter_profiles()[prof_key]
+    cfg = d.generate(prof, _limiter_state(prof, "hard"))
+    x = _hot_program(prof, prof.samplerate // 2, 4.0)
+    y, log_text = _offline_s32(tmp_path, cfg, x)
+    y_ref = _offline(tmp_path, _without_limiter(cfg), x, 0.0, "ref")     # F64: unbounded
+    full = 2 ** 31
+    assert y.max() <= full - 1 and y.min() >= -full
+    over = np.abs(y_ref) >= 1.0
+    assert over.any() and (~over).any()
+    assert np.all(y[over & (y_ref > 0)] == full - 1) and np.all(y[over & (y_ref < 0)] == -full)
+    assert np.max(np.abs(y[~over] - y_ref[~over] * full)) <= 1.0          # one LSB of rounding
+    peaks = [float(m) for m in re.findall(r"Clipping detected, \d+ samples clipped, peak \+([0-9.]+) dB",
+                                          log_text)]
+    want = d.limit_over_db("hard", 20 * math.log10(np.max(np.abs(y_ref))))
+    assert peaks and max(peaks) == pytest.approx(want, abs=0.01)
+    assert want == pytest.approx(4.0, abs=0.2)                  # the chain is near flat
+
+
+@engine
+@needs_cdsp
+@pytest.mark.parametrize("prof_key", ["m4_48k", "m4_96k"])
+def test_engine_soft_limiter_follows_the_curve_and_stays_under_its_ceiling(tmp_path, prof_key):
+    """D-021 SOFT, the real engine: every sample is the engine's curve (clipper.rs) applied to
+    what the same config plays without it (same index: no delay), never above -0.1 dBFS, the
+    S32 conversion never clips; the peak after it gives back the overshoot (2 dB here) and a
+    signal 8 dB over reads the flat top (+3.5: at least)."""
+    np = pytest.importorskip("numpy")
+    prof = _limiter_profiles()[prof_key]
+    cfg = d.generate(prof, _limiter_state(prof, "soft"))
+    c = 10 ** (d.LIMIT_SOFT_DB / 20)
+    for peak, want in ((d.LIMIT_SOFT_DB + 2.0, 2.0), (8.0, d.SOFT_OVER_MAX_DB)):
+        x = _hot_program(prof, prof.samplerate // 2, peak)
+        y = _offline(tmp_path, cfg, x, 0.0, f"soft{peak}")
+        y_ref = _offline(tmp_path, _without_limiter(cfg), x, 0.0, f"ref{peak}")
+        s = np.clip(y_ref / c, -d.SOFT_TOP, d.SOFT_TOP)
+        assert np.max(np.abs(y - c * (s - d.SOFT_CUBE * s ** 3))) < 1e-12
+        assert np.max(np.abs(y)) <= c + 1e-12
+        got = d.limit_over_db("soft", 20 * math.log10(np.max(np.abs(y))))
+        pre = 20 * math.log10(np.max(np.abs(y_ref))) - d.LIMIT_SOFT_DB
+        assert got == pytest.approx(min(pre, d.SOFT_OVER_MAX_DB), abs=0.01)
+        assert got == pytest.approx(want, abs=0.2)          # the chain is near flat at 997 Hz
+        y32, log_text = _offline_s32(tmp_path, cfg, x, tag=f"s32{peak}")
+        assert "Clipping detected" not in log_text and np.max(np.abs(y32)) < 2 ** 31 - 1
