@@ -567,6 +567,60 @@ not here): a resync after it did could time out again, said as such. On 5.0.0-be
 (`--old-engine`) the restart's effect on the delay is not known: it has no trimming of late
 frames after a playback restart. The two system settings of D-023 point 3 are not built here.
 
+## The output limiter, the trims, and CLIP on the phone (D-021)
+
+At the gig of 18 Oct the outputs went up to +5.67 dBFS (`docs/17` §5). D-021 (15 Nov): A, a
+limiter with no delay as the last stage of every output; B, no fixed gain after the master; C,
+clipping shown on the phone too, latched, with the dB to take off.
+
+- **The limiter** is the last step of every config K1000 writes, on every playback channel, after
+  the output mixer: `out_limit`, the engine's `Clipper` filter. Always there, no switch. Its kind
+  is SETUP › OUTPUT › **Limiter** (`limit_kind` in `state.json`), chosen by ear; switching it is two
+  parameter writes, stepped, never a rebuild:
+  - **HARD** (default): every sample above full scale is cut to full scale, **by the engine's
+    conversion to the M4's 32-bit samples**, as it always was (that is what the 5,718 warnings of
+    the gig counted). The `Clipper` stands at +12 dBFS behind it. Why not a `Clipper` at 0 dBFS:
+    it gives the same samples (both engines, tested), but the engine's meters read the chunk
+    after the pipeline and before the conversion, so with the cut in the conversion they still
+    see how far over full scale a peak went: the dB to take off, exact. Under full scale nothing
+    is touched, bit for bit. The engine still counts these samples (`GetClippedSamples`) and logs
+    `Clipping detected … peak +X dB` for every chunk it cuts (as at the gig): two minutes of
+    heavy limiting at 96 kHz fill the 50 rotated engine logs. A float playback format would pass
+    a sample above full scale to the device: `profiles.<name>.playback_format: F32_LE` or
+    `F64_LE` is refused (auto, the M4's `null`, picks an integer format first).
+  - **SOFT**: the engine's cubic soft clip under −0.1 dBFS: never above it (the conversion never
+    cuts, the clipped count stays 0), the peaks rounded from about 6 dB under it, the third
+    harmonic at −41 dB for a peak at half the ceiling. Not transparent near the top: that is
+    what is judged by ear. The dB to take off is read back through the curve, exact up to
+    +3.5 dB over, then "at least 3.5".
+  - Neither adds a sample of delay (no look-ahead; the engine's look-ahead limiter would add its
+    attack, 1 ms, and is not used). CPU: a compare per sample (HARD), a few multiplies (SOFT).
+- **The output trims only cut**: −30 … 0 dB (was −24 … +6). The engine applies the master before
+  the whole pipeline, so every K1000 gain is after it and in floating point their order changes
+  nothing: what counted was the +6 dB of fixed gain on all four outputs, the top 6 dB of the
+  master only driving them over full scale. A boost the whole PA needs is the input trim's.
+  **The box's own state (trims +6 on all four, read on 15 Nov) loads with SETUP › INPUT › Trim
+  +6 dB and the four trims at 0** (`state.json` schema 1 → 2, one journal line): every output
+  plays exactly as before at every master position; so do the AUX level and the de-harsh
+  threshold, moved with it. An engine still running the old config when k1000 restarts alone is
+  read the same way, and gets the limiter with a pipeline restore (Main muted around the upload,
+  a dip, as for any restore): deploy with `--start` to avoid it.
+- **CLIP, latched.** Per output, the most it went over the ceiling since the last clear. The
+  status bar's red pill says the dB to take off (`CLIP -2.4`, rounded up) on every page, the
+  output's clip box stays red, the journal has a line per new latch; the phone's v2 page shows a
+  red line `CLIP SUB L SUB R · TAKE 2.4 dB OFF` with OK. Cleared by an **E1 push on SHOW or ALIGN**
+  (E1 alone, no turn) or the phone's OK. The 3 s `CLIP` stays as it was. It only shows: nothing
+  automatic changes a level.
+
+Proven by tests (both engines on PATH, here): the limiter last on every output at 48 and 96 kHz
+with every feature; under full scale the same samples as without it, at the same index (no
+delay); 4 dB over on S32 never above full scale, the engine's own peak = the overshoot; SOFT = the
+engine's curve sample by sample, never above −0.1 dBFS, its inverse = the overshoot; the box's +6
+dB trims folded play the same samples to 1e-12; the latch, its clear, the phone's `clip` and
+`clip_ack`. **Not yet verified on the box**: the M4's real format (S32_LE expected), the delay in
+to out before and after (no change expected), HARD and SOFT by ear, the CLIP line on a real phone,
+and the deploy over a running engine.
+
 ## MOTU M4 bring-up (Tuesday)
 
 Speakers OFF, or their XLRs unplugged, for all of it.
@@ -888,7 +942,10 @@ The tool writes one line every 10 s:
   The manual says why (`docs/manual/02-installation.md` §9).
 - **Settings:** `/etc/k1000/k1000.yaml` is never touched by install.sh. Fix it by hand, then
   `sudo systemctl restart k1000`.
-- **Sound state:** `/var/lib/k1000/state.json` holds the levels and EQ.
+- **Sound state:** `/var/lib/k1000/state.json` holds the levels and EQ. Rolled back past D-021,
+  an older version reads a newer `state.json` at the same level (its boost in the input trim, the
+  output trims at 0 or under) and ignores the limiter's kind; its own config has no limiter, so
+  HARD is what it plays (the conversion's cut), without the CLIP latch.
   - Live EQ: SETUP › LIVE EQ › Reset live EQ, push E3 twice within 5 s. Undo reset (one E3 push) puts it
     back exactly, once, until the next audible live-EQ edit or 5 min.
   - A torn `state.json` is rebuilt from `active.yml` (the bad copy is kept as `state.json.bad`) and

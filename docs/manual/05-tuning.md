@@ -67,7 +67,10 @@ limiters act well before the M4 clips, and the M4 cannot overdrive a Meyer input
 2. Bring the master up to the loudest level the show will need, watching the Meyer limit LEDs.
    Stop below the point where they light. Note that master value: it is the show level.
 3. Output trims (SETUP › SUBS › Trim L/R, TOPS › Trim L/R) only to match boxes or sides, not to set
-   the level.
+   the level: they only cut (−30 … 0 dB, D-021). The level is the input trim's and the master's.
+4. Then the loudest passage of the show at that master: `CLIP` must stay off. `CLIP -2.4` = the
+   outputs went 2.4 dB over full scale before the limiter: take that much off (the input trim
+   for good, or the master), push E1 to clear it, play it again (section 10).
 
 **The ceiling for remote controls.**
 
@@ -367,7 +370,39 @@ default. **A live mic can feed back**: the orange `AUX MIC` pill says it is open
    **cut first and sweep** (the `NO PEAK` way).
 5. Done: AUX IN back to `off` (muted), M4 GAIN 1/2 back to minimum.
 
-## 10. After the tune
+## 10. The limiter, by ear
+
+D-021: every output ends in a limiter with no delay; nothing above full scale leaves the box.
+What is chosen by ear is how it sounds while it works: SETUP › OUTPUT › **Limiter**, E3 left
+`HARD`, right `SOFT`, at once, no click, no mute. The phone's SETUP sheet has the same row.
+
+| | HARD (default) | SOFT |
+|---|---|---|
+| Under full scale | Untouched, bit for bit | The top few dB of each loud peak rounded: third harmonic −41 dB for a peak at half the ceiling, −53 dB at a quarter |
+| Over full scale | Each sample cut flat at full scale (what the box did at the gig) | A cubic curve up to −0.1 dBFS, flat from 3.5 dB over |
+| The number after `CLIP` | Exact, any size | Exact up to 3.5 dB, then "at least" |
+| The engine's clipped samples | Counted (they are the limiter's), one engine log line per chunk cut | 0 |
+
+**On the desk (26 Nov) and on the rig (27 Nov):**
+
+1. A track the PA knows, master at the show level, `CLIP` cleared (E1 push).
+2. Raise the input trim (SETUP › INPUT › Trim) until `CLIP -1.0` to `-2.0` shows on the loud parts:
+   the limiter at work, on the subs first. Listen in HARD, then SOFT, then HARD (E3 left / right on
+   the Limiter row), the same passage each time. Kicks and bass notes are where they differ.
+3. Again at `CLIP -4` to `-6` (the gig's worst was +5.67): this is where a choice matters most.
+4. Keep the one that sounds less broken at 3 to 6 dB over. Then trim back down until `CLIP` stays
+   off at the show's loudest: the limiter is a safety net, not a level control.
+
+What to watch: the Meyer limit LEDs (the Meyers start limiting near −8.6 dBFS at the M4 outputs,
+research: section 3, so they act long before K1000's limiter at full scale), and that the
+master's last dB still raise the level (if not, the chain is over full scale: take off what
+`CLIP` says).
+
+**The output trims only cut** (D-021, −30 … 0 dB): the gain that sets the PA's level is the
+input trim's (section 3). A box that had a boost on all four trims (the gig's +6 dB) came back
+from the update with that boost in the input trim and the trims at 0: the same sound.
+
+## 11. After the tune
 
 - Everything is saved automatically. Note the key values on paper anyway (master show level,
   delays, Lo-Cut, the eight system bands).

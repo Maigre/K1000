@@ -115,7 +115,7 @@ One section per profile. Every key is optional: a missing key keeps the built-in
 |---|---|---|---|
 | `capture_device`, `playback_device` | An ALSA name, by card **name**, never number: `hw:<card id>` | `hw:sndrpihifiberry` | `hw:M4` |
 | `capture_channels`, `playback_channels` | A whole number, or `null` | 2, 2 | `null` = probe the device (assumed 4 when it cannot be probed) |
-| `capture_format`, `playback_format` | `S16_LE`, `S24_3_LE`, `S24_4_LE`, `S32_LE`, `F32_LE`, `F64_LE`, or `null` | `S32_LE` | `null` = CamillaDSP picks (S32_LE first) |
+| `capture_format`, `playback_format` | `S16_LE`, `S24_3_LE`, `S24_4_LE`, `S32_LE`, `F32_LE`, `F64_LE`, or `null` | `S32_LE` | `null` = CamillaDSP picks (S32_LE first). D-021: `playback_format` `F32_LE` / `F64_LE` is refused (journal line) and `null` used instead: the HARD limiter's cut at full scale is the conversion to integer samples, and a float format would pass a sample above full scale to the device |
 | `input_map` | `[L, R]`: the capture channels (0-based) that carry the program | `[0, 1]` | `[2, 3]` = LINE IN 3 and 4 |
 | `output_map` | One entry per physical output, in order: which logical channel it carries. `SubL`, `SubR`, `TopL`, `TopR` (or 0–3) | (not used: `dev` has an audition mixer) | `[TopL, TopR, SubL, SubR]` = out1 Top L, out2 Top R, out3 Sub L, out4 Sub R. The Sunday patch (D-012) feeds both subs from out3 (SETUP › SUBS › Mono L+R ON makes out3 = out4 = the L+R sum); out4 is spare |
 | `probe` | `true` / `false` | `false` (the HiFiBerry is never opened by the probe) | `true` |
@@ -477,7 +477,7 @@ Logical outputs, wherever four values appear: 0 Sub L, 1 Sub R, 2 Top L, 3 Top R
 | `live_peq` | 4 bands: freq 20 Hz–20 kHz, gain −20 … **+6** dB, Q 0.3–16 | flat at 250, 1k, 2.5k, 5k Hz, Q 4 | SHOW (E2–E4, B3), phone |
 | `live_lowshelf` | freq 30–1000 Hz, gain −12 … +6 dB, Q 0.4–1.5 | 120 Hz, flat, Q 0.707 | SHOW, phone |
 | `live_highshelf` | freq 1–16 kHz, gain −12 … +6 dB, Q 0.4–1.5 | 8 kHz, flat, Q 0.707 | SHOW, phone |
-| `out_trim_db` | 4 × −24 … +6 dB | 0 | SETUP › SUBS › Trim L, Trim R, TOPS › Trim L, Trim R |
+| `out_trim_db` | 4 × −30 … 0 dB (cut only, D-021) | 0 | SETUP › SUBS › Trim L, Trim R, TOPS › Trim L, Trim R |
 | `profile` | `dev`, `m4` | `dev` | SETUP › BOX › Profile (read-only while pinned) |
 | `dev_audition` | `sum`, `tops`, `subs` | `sum` | SETUP › BOX › Audition (dev) (profile `dev` only) |
 | `spectrum_on` | bool | true | SETUP › LIVE EQ › Spectrum. The screen only: it never touches the engine config |
@@ -489,9 +489,17 @@ Logical outputs, wherever four values appear: 0 Sub L, 1 Sub R, 2 Top L, 3 Top R
 | `loud_ref_db` | −40 … 0 dB (a master level) | −10 | SETUP › SUBS › Loudness ref, phone: at and above it loudness adds nothing |
 | `aux_mode` | `off`, `mic`, `line` | `off` | SETUP › INPUT › AUX IN 1/2 (D-016; rebuilds the pipeline). The m4 profile's IN1 (mic) or IN1 + IN2 (line); read-only where no input is spare (dev) |
 | `aux_gain_db` | −40 … +12 dB | 0 | SETUP › INPUT › AUX level, phone |
+| `limit_kind` | `hard`, `soft` | `hard` | SETUP › OUTPUT › Limiter, phone (D-021: two parameter writes, no rebuild). The limiter itself is always there |
 
 A `state.json` saved before D-016 loads with the three features off and their defaults; an older
 build ignores the keys.
+
+**A `state.json` saved before D-021** (`"schema": 1`, or none) may hold output trims above 0 dB
+(the box's own did: +6 dB on all four). It loads with that boost in the input trim (+T), every
+output trim −T, the AUX level +T and the de-harsh threshold +T: every output plays exactly as
+before, and one journal line says so (`written before D-021 … every output plays as before`). An
+input trim that would go past +12 dB stops there: the PA is then that much quieter, said in the
+same line. Saved again it is schema 2, and an older build reads it at the same level.
 
 "Off" for the Lo-Cut and the sub low-pass is a frequency move (10 Hz and 20 kHz), never a pipeline
 change. Delays are applied in whole samples at the engine's rate (96 or 48 kHz, `samplerate`).

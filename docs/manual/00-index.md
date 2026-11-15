@@ -46,7 +46,7 @@ and the history; this manual says how the box works today.
 | 2 | [Installation](02-installation.md) | A fresh card with `bootstrap.sh`, `install.sh` flags, the control service's watchdog, the processor settings and the two bench switches against the USB stall (D-023), converting a desktop card, the spare card, rollback |
 | 3 | [Configuration](03-configuration.md) | Every key of `/etc/k1000/k1000.yaml` (profiles, knobs, spectrum, phone), what needs a restart, the state files |
 | 4 | [Usage](04-usage.md) | Power on to sound, SHOW (master, live EQ, notching, spectrum), ALIGN, SETUP (by speaker floor, E3 turn = change, a popup and an E3 push for the risky rows, incl. Laptop access and `/tune`), mute, alerts, the phone, end of night, bypass |
-| 5 | [Tuning a Meyer rig](05-tuning.md) | Power order, gain structure, sub alignment, Lo-Cut, system EQ with a mic, live notching |
+| 5 | [Tuning a Meyer rig](05-tuning.md) | Power order, gain structure, sub alignment, Lo-Cut, system EQ with a mic, live notching, the output limiter by ear |
 | 6 | [Troubleshooting](06-troubleshooting.md) | Every screen message, common faults, the bypass, logs |
 | 7 | [Maintenance](07-maintenance.md) | Updates, rollback, the spare card, the certificate, SD cards, power cuts, soak test |
 | 8 | [Development](08-development.md) | Repo layout, architecture, tests, the bench console, the knob trace, printing the cards, coding rules |

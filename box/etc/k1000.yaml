@@ -22,6 +22,9 @@ profiles:
     capture_channels: null       # null = probe the M4 (assumed 4 if it cannot be probed)
     playback_channels: null      # null = probe (assumed 4)
     capture_format: null         # null = best format the device offers (S32_LE first)
+    # D-021: never a float format here (F32_LE / F64_LE are refused, null used): the limiter's
+    # HARD cut at full scale is the engine's conversion to integer samples. Its kind (HARD /
+    # SOFT) is SETUP > OUTPUT > Limiter, saved in state.json, not a setting of this file.
     playback_format: null
     input_map: [2, 3]            # program L, R = M4 line inputs 3-4 (0-based capture channels)
     output_map: [TopL, TopR, SubL, SubR]   # physical out1..out4 <- logical channel

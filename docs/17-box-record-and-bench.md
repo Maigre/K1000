@@ -237,6 +237,36 @@ attack flattened before it reaches them.
 4. **EQ, balance and delay edits written to the journal**, so that the next record of a gig can
    be read whole.
 
+**Built (D-021, decided 15 Nov: 1, 2 and 3; 4 stays proposed).** Tested off the box with both
+engines; not on the box yet.
+
+- **What the engine allows, read in its source.** Its meters read the playback chunk after the
+  last pipeline step; no websocket command reads a point inside the pipeline or a limiter's gain
+  reduction (next5 `0930f9b` and 5.0.0-beta.1 alike). But they read it BEFORE the conversion to
+  the interface's integer samples, and that conversion clamps at full scale, with no delay,
+  counting what it clamps (measured on both engines: never a wrap; a float format clamps
+  nothing). That is what clipped at the gig, and why the log could say "+5.67 dB".
+- **1, the limiter**: the engine's `Clipper` filter, the last step of every config on every
+  playback channel, after the output mixer, always on. Its kind is SETUP › OUTPUT › Limiter, by
+  ear on 26 and 27 Nov: **HARD** (default) leaves the cut at full scale to the conversion (the
+  `Clipper` a backstop at +12 dBFS): the same samples as a `Clipper` at 0 dBFS, bit for bit under
+  full scale, and the meters keep the overshoot. **SOFT** is the engine's cubic soft clip under
+  −0.1 dBFS. Neither adds a sample of delay; the look-ahead limiter (1 ms) is not used. A float
+  playback format is refused in the profile.
+- **2, no fixed gain after the master**: Main is applied before the first pipeline step, so every
+  K1000 gain is after it, and in floating point the order of gains changes nothing; what changed
+  is that the output trims only cut (−30 … 0 dB) and a boost the whole PA needs is the input
+  trim's. The box's +6 dB on all four trims comes back as input trim +6, trims 0: the same
+  samples (to 1e-12, on the engine).
+- **3, CLIP on the phone, latched, with the dB to take off**: HARD, the playback peak above
+  0 dBFS is the overshoot itself; SOFT, the inverse of the curve, exact up to +3.5 dB. Latched per
+  output until cleared (the box: an E1 push on SHOW or ALIGN; the phone: OK on its red CLIP line);
+  the status bar says `CLIP -2.4`. Display only.
+- With these, the gig's worst moment (master −5 dB, +5.67 dBFS out) would have sounded the same in
+  HARD; what is new is the phone's line saying "take 5.7 dB off", held until someone looks.
+  Detail and the checks still owed on the box: `box/README.md` "The output limiter, the trims,
+  and CLIP on the phone (D-021)".
+
 ## 6. What came out of the day, in the repository
 
 Built in parallel streams, each reviewed by a second reader, tests green; on the box only where
@@ -286,7 +316,9 @@ baseline. Not proven: that a real power-on times like a reboot, and the 1.5 s ra
 3. A few real power cycles: the power-on delay (24.35 ms once, at the old setting), and the boot
    times.
 4. Thomas listens: beatmatching at the new setting, the ramp.
-5. The decisions of section 5.
+5. The decisions of section 5: decided 15 Nov (D-021), 1 to 3 built (section 5, "Built"),
+   4 proposed. On the box: the delay in to out before and after, HARD and SOFT by ear (26 and
+   27 Nov).
 6. The dropout just after a start: done, section 11.
 7. Where the pinned engine binary is hosted, so that a fresh card needs neither Docker nor a
    running box (section 13): Thomas decides.

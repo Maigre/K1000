@@ -23,7 +23,7 @@ UI v1 (D-009 to D-017), ops `box/README.md`. **New:** SETUP knobs (D-017) · De-
 
 **ALIGN lock.** E2/E4 turned while locked: `LOCKED · HOLD B2 TO EDIT`. Unlocked (`EDIT 0:30`; a B2 tap relocks), the first E2 click after 2.5 s at rest only wakes DELAY; each change dips the group whose delay changes (both when crossing `ALIGNED` fast). **DELAY**: clockwise `SUBS LATER` (subs in front), anticlockwise `TOPS LATER` (tops in front); one click on `ALIGNED` before crossing.
 
-**SETUP**: TOPS Trim L/R · Polarity · **Lo-Cut** · De-harsh (freq, thresh) | SUBS Trim L/R · Polarity · Mono · Low-pass (freq) · Loudness (boost, ref) | INPUT Trim · AUX IN (level) | LIVE EQ **Reset ×2** · **Undo** 5 min · **Spectrum** | PHONE Phone · **Laptop ×2** (GUI, SSH, `/tune`, 2 h) | BOX Profile · Audition · Knob test. **E3 = change**; Polarity, Lo-Cut, Mono, De-harsh, Loudness, AUX, Profile: popup, **push E3 = apply**. ×2 in 5 s. AUX MIC IN1 → L+R, LINE IN1/2 → L/R; mic: master down, M4 GAIN from min.
+**SETUP**: TOPS Trim L/R · Polarity · **Lo-Cut** · De-harsh (freq, thresh) | SUBS Trim L/R · Polarity · Mono · Low-pass (freq) · Loudness (boost, ref) | INPUT Trim · AUX IN (level) | OUTPUT Limiter HARD/SOFT | LIVE EQ **Reset ×2** · **Undo** 5 min · **Spectrum** | PHONE Phone · **Laptop ×2** (GUI, SSH, `/tune`, 2 h) | BOX Profile · Audition · Knob test. **E3 = change**; Polarity, Lo-Cut, Mono, De-harsh, Loudness, AUX, Profile: popup, **push E3 = apply**. ×2 in 5 s. AUX MIC IN1 → L+R, LINE IN1/2 → L/R; mic: master down, M4 GAIN from min.
 
 **Emergency.** Silence: **hold B4**. Feedback, on SHOW: **B3, E4 down, E3 up** (no B1); from ALIGN or SETUP: tap B1, wait for the cyan PEAK (~2 s), then B3. KNOBS OFFLINE (B4 dead): phone mute if proven, else source down, bypass. Any doubt: bypass.
 
@@ -40,6 +40,7 @@ UI v1 (D-009 to D-017), ops `box/README.md`. **New:** SETUP knobs (D-017) · De-
 | NO DEVICE (orange) | M4 gone → reseat USB, rear switch · 30 s → bypass |
 | ENGINE DOWN (red) | back in ~5 s · `no input data`: M4 USB, M4 off-on · 30 s → bypass |
 | CLIP · IN CLIP pill · meter red (> −6 dBFS) | master down · source down; Meyers limit ≈ −14 |
+| CLIP −2.4 (stays) | the limiter cut 2.4 dB: master down 2.4 · **push E1** = clear |
 | Orange `… (GUI)`, `… CHANGED (GUI)` | CamillaGUI: cuts kept, rest restored → no Applies |
 | NO SPECTRUM · ENGINE ? · DEVICE ? · UI ERROR | engine refuses it: sound fine, Spectrum OFF · unsure → wait |
 | Bass boost all the time, poor mids, EQ does nothing | M4 INPUT MONITOR MIX not full right → full right, MONs unlit · test: hold B4, music still on the tops = the M4 |

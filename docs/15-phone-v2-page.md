@@ -60,6 +60,7 @@ style-src 'self'`); the box stamps its v2 build into every `.js`.
 | MUTE hold 0.6 s / 1.2 s | `mute {on, id: "mute-<n>"}`, `seq` on an unmute (v1's message; each press its own id, so a late ack of an earlier press that timed out never confirms this one) |
 | SETUP choice, then SET | `choose {f, v, seen}` |
 | ALL FLAT… / UNDO (hold 1 s), laptop OPEN (hold 1 s) / CLOSE (tap) | `act {a}` |
+| The red CLIP line's OK (tap; D-021, shown while `state.clip.take` is set) | `act {a: "clip_ack"}`: the output CLIP latch cleared on the box and every phone. Display only, so a tap (no hold) |
 | STATUS › RESYNC (hold 1 s; D-023, beside the delay readout) | `act {a: "resync"}`: answered once the box has restarted the stream (or refused it); a refusal is a red toast with the box's words, as for every action. Never sent otherwise |
 | LIVE visible with the box spectrum | `sub {rta: true}`; hidden, a sheet up, OFF, PHONE MIC only, FROZEN or RESPONSE: `sub {rta: false}` |
 | RESPONSE shown (MEASURE), page visible | `sub {pgm: true}`; otherwise `sub {pgm: false}`; again after `unsub {what: "pgm"}` or a reconnect. Nothing else for the mic: audio never leaves the phone |
@@ -214,7 +215,10 @@ lists the fingers that lift).
   is: with today's box (`±1, ±2` detents of ⅙ oct) the keys read `−2 · − · + · +2`, not the
   prototype's ×½ / ×2 (box gap 6 below: one line, and the page follows by itself).
 - The alert line is a 28 px full-width bar (DESIGN §5.1): the one target under 44 px; it repeats
-  the 44 px STATUS key of the status strip (the fit test names this exception).
+  the 44 px STATUS key of the status strip (the fit test names this exception). D-021's CLIP line
+  (`CLIP SUB L SUB R · TAKE 2.4 dB OFF`, OK) is a second such bar under it, its tap the only way
+  the phone clears the latch: not yet in the Chromium checks (no Playwright where it was built),
+  so its fit at 360 px is not proven.
 - Landscape: the portrait notice (as the prototype); MEASURE in landscape is after the gig (the
   mic stops while the notice covers the graph).
 - Pairing SETUP rows is by label: two `num` rows ending `L` / `R` with the same

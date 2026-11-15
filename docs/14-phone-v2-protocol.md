@@ -113,7 +113,7 @@ page                                     box
  "fields": { "...": "§3.1.1" },
  "slide": { "...": "§3.1.2" },
  "setup": ["… §3.1.3 …"],
- "acts": ["reset_live", "undo_reset", "laptop_open", "laptop_close", "resync"],
+ "acts": ["reset_live", "undo_reset", "laptop_open", "laptop_close", "resync", "clip_ack"],
  "notch": {"q": 8.651, "near_oct": 0.1667},
  "unlock_s": 30.0, "pick_window_s": 8.0, "undo_reset_s": 300.0, "fs": 48000,
  "rta": {"enabled": true, "src": "PGM", "hz": 10.0, "step_db": 0.5, "idle_s": 10.0},
@@ -330,7 +330,8 @@ meaning; v2 adds the rest. Numbers are rounded, never NaN or infinite (`null` in
  "readonly": {"profile": "PROFILE PINNED IN k1000.yaml", "dev_audition": "AUDITION: DEV PROFILE ONLY"},
  "box_band": 1, "box_page": "SHOW", "knobs_ok": true,
  "latency": {"ms": 20.3, "io": true, "over": true, "limit": 10.0, "buf": 536, "drops": 0,
-             "grown": 1.6, "resync": ""}}
+             "grown": 1.6, "resync": ""},
+ "clip": {"over": [2.35, 2.35, null, null], "take": 2.4, "top": false, "kind": "hard"}}
 ```
 
 | Key | Meaning |
@@ -359,6 +360,8 @@ meaning; v2 adds the rest. Numbers are rounded, never NaN or infinite (`null` in
 | `box_page` | The box screen's page (`SHOW`, `ALIGN`, `SETUP`, `PHONE`, `HWTEST`) |
 | `knobs_ok` | `true` knobs answer, `false` KNOBS OFFLINE, `null` no knobs expected |
 | `latency` | The box's delay readout (D-018, `k1000/latency.py`): `ms` in to out, estimated (`null` = no reading); `io` `false` = the interface's share is not known, `ms` is the engine's alone (a floor); `over` above `limit` ms (it only informs); `buf` the engine's playback buffer level, frames; `drops` the engine's dropout lines since it started (`null` = its log is not read). `ms` is a floor too once `drops` is above 0; the page then says `at least`, and shows `drops` only beside a figure. D-023 (2026-11-14, additive): `grown` how much `ms` grew since the stream last started (an engine start, a resync, a device change K1000 made), ms, `null` = nothing to show (under 0.6 ms, a delay that went down, or not known yet); `resync` `running` (a stream restart under way), `reading` (restarted: `ms` is `null` until the new stream's delay is read, about 10 s), or `""`. v2 only: v1's state is unchanged |
+
+| `clip` | D-021 (2026-11-15, additive): the output CLIP latch. `over`: per logical output (Sub L, Sub R, Top L, Top R) the most it went over the limiter's ceiling **before** the limiter since the latch was last cleared, dB (0.01), or `null`; `take`: the dB to take off, the most of them rounded **up** to 0.1 dB (0.1 at least), `null` = nothing latched; `top`: the SOFT limiter's flat top was reached, the overshoot is **at least** `take`; `kind`: `hard` or `soft`, the limiter the engine runs. Held until a phone's `act clip_ack` or the box's E1 push on SHOW / ALIGN clears it (every phone sees it cleared). It only shows: nothing moves a level. The page shows a red line with an OK (its tap is `clip_ack`) and keeps the outputs' clip boxes red. `m.c` stays the 3 s mark |
 
 Countdowns are the values when the state was built; the box resends when something else changes,
 so the page counts down from the last one it got.
@@ -639,6 +642,7 @@ apply unchanged.
 | `undo_reset` | `undo_reset()` | `{"undo_s": 0}` | `NOCHANGE` `NOTHING TO UNDO` |
 | `laptop_open` | `setup_actions["laptop_access"]` (= `laptop_toggle`) when closed | `{"state": "opening", "s": 0}` (already open: its state, nothing done) | `UNAVAILABLE`; `REFUSED` when root refuses |
 | `laptop_close` | the same toggle when open or opening | `{"state": "closed", "s": 0}` (already closed: nothing done) | `UNAVAILABLE` |
+| `clip_ack` | `clear_clip("phone N")` (D-021): the output CLIP latch cleared, for every phone and the box's status bar. Display only | `{"cleared": true}` (`false`: nothing was latched, no error) | — |
 | `resync` | `request_resync("phone N")` (D-023): the engine's audio stream restarted in place, about 25 ms of silence, Main untouched | `{"outcome": "done", "ms": 31, "before": 7.9, "grown": 1.6}`: `ms` from the write to the engine running again as the box saw it (not the gap in the sound), `before` and `grown` the readout when asked (`null`: none) | `BUSY`; `REFUSED` (`RESYNC REFUSED: ENGINE NOT RUNNING`, `… ENGINE NOT IN SYNC`, `… ENGINE REFUSED`); `LATE`. `v` is the same object, `outcome` `refused` or `timeout` |
 
 `reset_live`, `laptop_open` and `resync` are 1 s holds on the page (the box asks two pushes). v1's
