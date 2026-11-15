@@ -219,7 +219,10 @@ CLIP_HOLD_S = 3.0
 # operator clears it (an E1 push on SHOW / ALIGN, a phone's OK). A new peak this much above the
 # held one is a journal line again (the first one of each output always is).
 CLIP_LOG_STEP_DB = 1.0
-HINT_CLIP_LATCH = "CLIP: TAKE {db} dB OFF · PUSH E1 = CLEAR"    # the outputs: their red boxes
+# The outputs: their red boxes. An E1 push clears only on SHOW / ALIGN (E1 is MASTER there):
+# elsewhere the hint says where. Both read at 18 px in the strip, "≥12.0" included.
+HINT_CLIP_LATCH = "CLIP: TAKE {db} dB OFF · PUSH E1 = CLEAR"
+HINT_CLIP_LATCH_AWAY = "CLIP: TAKE {db} dB OFF · CLEAR ON SHOW"
 HINT_CLIP_CLEARED = "CLIP CLEARED"
 OUT_SHORT = ("SUB L", "SUB R", "TOP L", "TOP R")
 IN_CLIP_DBFS = -0.5             # a capture (ADC) peak at/above this lights IN CLIP
@@ -4205,7 +4208,8 @@ class Controller:
                             f"{self.status.limit_over[i]:.2f} dB over" for i in said),
                         self.clip_take_words())
         if first:
-            self.show_hint(HINT_CLIP_LATCH.format(db=self.clip_take_words()))
+            hint = HINT_CLIP_LATCH if self.page in ("SHOW", "ALIGN") else HINT_CLIP_LATCH_AWAY
+            self.show_hint(hint.format(db=self.clip_take_words()))
 
     def clip_take_off(self) -> float | None:
         """The dB to take off (D-021): the most any output went over the limiter's ceiling since

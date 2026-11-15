@@ -7306,6 +7306,28 @@ def test_d021_clip_latch_reads_the_soft_curve_back(tmp_path: Path) -> None:
     run(body())
 
 
+def test_d021_the_clip_hint_says_where_e1_clears(tmp_path: Path) -> None:
+    """Review 2026-11-15: an E1 push clears the latch on SHOW and ALIGN only (E1 is MASTER
+    there); a latch that comes up on another page says where instead. Both fit the strip."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        for page, want in (("SETUP", "CLIP: TAKE 2.0 dB OFF · CLEAR ON SHOW"),
+                           ("ALIGN", "CLIP: TAKE 2.0 dB OFF · PUSH E1 = CLEAR"),
+                           ("PHONE", "CLIP: TAKE 2.0 dB OFF · CLEAR ON SHOW"),
+                           ("SHOW", "CLIP: TAKE 2.0 dB OFF · PUSH E1 = CLEAR")):
+            ctl.page = page
+            cl.peaks = [2.0, -20.0]
+            await ctl.meter_once()
+            assert ctl.focus.hint_now() == want, page
+            assert pages._fit_size(want.replace("2.0", "≥12.0"), 24, pages.W - 20,
+                                   pages.FONT_BOLD) >= 18
+            ctl.clear_clip("test")
+        await ctl.stop()
+
+    run(body())
+
+
 def test_d021_a_floor_reading_says_at_least_until_cleared(tmp_path: Path,
                                                           caplog: pytest.LogCaptureFixture) -> None:
     """Review 2026-11-15: a reading that is only a floor (HARD at its +12 dBFS backstop, SOFT at
