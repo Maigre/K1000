@@ -93,6 +93,24 @@ async def until(pred: Any, timeout: float = 3.0, what: str = "condition", step: 
 # ======================================================================= fake engine
 # Config keys the engine stores as f32 (camilladsp-schema LoudnessParameters: FiniteF32).
 F32_KEYS = frozenset({"reference_level", "low_boost", "high_boost"})
+# Config keys both engines parse as a bool and refuse as anything else ("invalid type: floating
+# point `0.0`, expected a boolean", measured 2026-11-15): the limiter's kind (D-021), a polarity.
+BOOL_KEYS = frozenset({"soft_clip", "inverted"})
+
+
+def _refuse_non_bools(name: str, pairs: list[tuple[str, Any]]) -> None:
+    for key, v in pairs:
+        if key in BOOL_KEYS and not isinstance(v, bool):
+            raise CdspError(name, "ConfigReadError", f"invalid type: {v!r}, expected a boolean")
+
+
+def _leaves(d: Any) -> list[tuple[str, Any]]:
+    if not isinstance(d, dict):
+        return []
+    out: list[tuple[str, Any]] = []
+    for k, v in d.items():
+        out += _leaves(v) if isinstance(v, dict) else [(k, v)]
+    return out
 
 
 def _set_ptr(cfg: dict[str, Any], pointer: str, value: Any) -> None:
@@ -282,6 +300,7 @@ class FakeClient:
         self._need()
         if pointer in self.refuse:
             raise CdspError("SetConfigValue", "ConfigValidationError", "fake refusal")
+        _refuse_non_bools("SetConfigValue", [(pointer.rsplit("/", 1)[-1], value)])
         # The real client confirms with GetConfigValue, and 5.0.0-beta.1 keeps the Loudness
         # boosts and reference as f32: it reads them back widened (6.1 -> 6.099999904632568;
         # GetConfigJson, below, prints the short form). The same confirmation as CamillaClient.
@@ -298,6 +317,7 @@ class FakeClient:
 
     async def patch_config(self, patch: dict[str, Any]) -> None:
         self._need()
+        _refuse_non_bools("PatchConfig", _leaves(patch))
         before = copy.deepcopy(self.cfg.get("devices"))
         _merge(self.cfg, patch)
         self._devices_changed(before)
@@ -7278,6 +7298,36 @@ def test_d021_clip_latch_reads_the_soft_curve_back(tmp_path: Path) -> None:
         cl.peaks = [after(9.0), -60.0]
         await ctl.meter_once()
         assert st.limit_over[0] == pytest.approx(dc.SOFT_OVER_MAX_DB, abs=0.01)
+        await ctl.stop()
+
+    run(body())
+
+
+def test_d021_the_limiter_kind_switches_both_ways_as_a_bool(tmp_path: Path) -> None:
+    """Review 2026-11-15: SETUP > OUTPUT > Limiter reaches the engine (the fake refuses a
+    non-bool soft_clip, as both engines do): HARD -> SOFT writes the kind first, alone, then
+    steps the ceiling down; SOFT -> HARD steps it up, the kind last. No rebuild, no refusal."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        lim = "/filters/out_limit/parameters/"
+        for kind, first, last in (("soft", (lim + "soft_clip", True), (lim + "clip_limit", dc.LIMIT_SOFT_DB)),
+                                  ("hard", None, (lim + "soft_clip", False))):
+            n = len(cl.log)
+            assert ctl.set_choice("limit_kind", kind)
+            assert await ctl.settle(5.0)
+            sets = [e[1:] for e in nomark(cl.log[n:]) if e[0] == "set"]
+            assert sets[-1] == last, sets
+            if first:
+                assert sets[0] == first, sets
+            else:                                    # SOFT: the ceiling goes up first
+                assert sets[0][0] == lim + "clip_limit" and 0 < sets[0][1] - dc.LIMIT_SOFT_DB <= 0.5
+                assert sets[-2] == (lim + "clip_limit", dc.LIMIT_HARD_DB)
+            assert len(sets) == 1 + math.ceil((dc.LIMIT_HARD_DB - dc.LIMIT_SOFT_DB) / 0.5)
+            assert not any(e[0] in ("config", "patch") for e in cl.log[n:])
+            assert cl.cfg["filters"]["out_limit"]["parameters"] == {
+                "clip_limit": dc.limit_ceiling_db(kind), "soft_clip": kind == "soft"}
+            assert dc.limit_kind(ctl._applied) == kind and ctl.status.alert == ""
         await ctl.stop()
 
     run(body())
