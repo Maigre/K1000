@@ -15,12 +15,15 @@ Commands (apply and undo run as root, from their units; check needs no root and 
   usb-cpu0 apply  k1000-usb-cpu0.service, "core 0 left to the USB handling": every interrupt the
                   kernel lets move goes to core 1, and new ones too; the kernel's unbound
                   workqueues leave core 0; every user-space thread allowed on core 0 goes to
-                  core 1, except the engine's. Never the xHCI's interrupt. Writes what it did to
+                  core 1, except the engine's; so does every kernel thread the kernel lets move
+                  (the RCU threads, jbd2, kswapd, the interrupt threads...), never kthreadd nor a
+                  per-core one. Never the xHCI's interrupt. Writes what it did to
                   $RUNTIME_DIRECTORY/report (/run/k1000-usb-cpu0/report).
   usb-cpu0 undo   Interrupts and workqueues back on every core; each thread apply moved back on
                   the cores it had (the report names them), the threads systemd started meanwhile
                   on cores 0 and 1 (the processor settings' cores). A login session's commands
                   started meanwhile keep their cores (a reader the bench pinned to core 1 too).
+                  A kernel thread is only ever given back the cores apply found it on.
   usb-rt apply    k1000-usb-rt.service, "real-time priority for the deferred USB work":
                   ksoftirqd/0, and the xHCI's interrupt thread if the kernel runs one (threadirqs),
                   at SCHED_FIFO 51. Refused, with nothing changed, while sched_rt_runtime_us lifts
@@ -58,6 +61,8 @@ USB_RT_PRIO = 51                        # above the interrupt threads, far below
 IRQ_THREAD_PRIO = 50                    # the kernel's priority for interrupt threads
 SCHED_OTHER, SCHED_FIFO = 0, 1          # Linux's numbers (os.SCHED_* on Linux)
 PF_KTHREAD = 0x00200000                 # /proc/<pid>/stat flags: a kernel thread
+PF_NO_SETAFFINITY = 0x04000000          # ... whose cores only the kernel sets (per-core, workqueue workers)
+KTHREADD = 2                            # the kernel thread that starts the others: never moved
 POLICY = {0: "SCHED_OTHER", 1: "SCHED_FIFO", 2: "SCHED_RR", 3: "SCHED_BATCH", 5: "SCHED_IDLE",
           6: "SCHED_DEADLINE"}
 
@@ -227,6 +232,17 @@ def _usb_irq(irq: Irq) -> bool:
     return any(USB_IRQ.search(n) for n in irq.names)
 
 
+def _movable_kthread(t: Task) -> bool:
+    """A kernel thread allowed on core 0 that the kernel lets move: not kthreadd, not one whose
+    cores only the kernel sets (PF_NO_SETAFFINITY: ksoftirqd/N, migration/N, the workqueue
+    workers), not one bound to core 0 alone. Why they matter (docs/17 §14): the two stalls traced
+    on 14 and 15 Nov both start when core 0's timer softirq runs the sleep time-out of a kernel
+    thread (rcu_preempt) that another core is waking at the same moment; core 0 then holds its
+    interrupts off for one tick. A thread kept off core 0 has its timers off core 0."""
+    return (t.kernel and t.tid != KTHREADD and not t.flags & PF_NO_SETAFFINITY
+            and USB_CPU in t.cpus and t.cpus != frozenset({USB_CPU}))
+
+
 def _short(items: list[str], n: int = 12) -> str:
     return " · ".join(items[:n]) + (f" · and {len(items) - n} more" if len(items) > n else "")
 
@@ -239,7 +255,7 @@ def apply_usb_cpu0(box: Box, report_dir: str | None = None) -> tuple[list[str], 
     if not target:
         return [f"core {fmt_cpus(USB_CPU0_CORES)} is not online: nothing changed"], 1
     record: dict = {"applied": time.strftime("%Y-%m-%dT%H:%M:%S"), "moved": [], "kept": [],
-                    "refused": [], "elsewhere": [], "thread_cores": []}
+                    "refused": [], "elsewhere": [], "thread_cores": [], "kernel_cores": []}
     for irq in irqs(box):
         if not irq.names:            # no handler, or a demultiplexer's (the PCIe MSI's): left alone
             continue
@@ -295,6 +311,23 @@ def apply_usb_cpu0(box: Box, report_dir: str | None = None) -> tuple[list[str], 
     log.append(f"{moved} user-space threads moved to core {fmt_cpus(target)}; the engine's left alone")
     if failed:
         log.append("could not move: " + _short(failed))
+    kmoved, kleft = [], []
+    for t in tasks(box):
+        if not _movable_kthread(t):
+            continue
+        try:
+            box.kernel.set_affinity(t.tid, target)
+            kmoved.append(t.label())
+            record["kernel_cores"].append([t.tid, t.start, fmt_cpus(t.cpus)])   # for undo
+        except ProcessLookupError:
+            pass
+        except OSError as e:           # bound by the kernel without the flag showing: left, not an error
+            kleft.append(f"{t.label()} ({e.strerror or e})")
+    log.append(f"{len(kmoved)} kernel threads moved to core {fmt_cpus(target)}"
+               + (f": {_short(kmoved, 10)}" if kmoved else "")
+               + "; kthreadd and the per-core ones left")
+    if kleft:
+        log.append("kernel threads the kernel kept: " + _short(kleft, 8))
     if engine0:
         log.append(f"WARNING: the engine is allowed on core {USB_CPU} ({len(engine0)} threads): the processor "
                    "settings reach it at its next start (between shows: sudo systemctl restart camilladsp)")
@@ -304,9 +337,9 @@ def apply_usb_cpu0(box: Box, report_dir: str | None = None) -> tuple[list[str], 
             # thread's cores, are the first run's view (this run found those threads on core 1)
             first = json.loads(Path(report_dir, "report").read_text())
             record["elsewhere"] = first["elsewhere"]
-            seen = {(r[0], r[1]) for r in first.get("thread_cores", [])}
-            record["thread_cores"] = first.get("thread_cores", []) + [
-                r for r in record["thread_cores"] if (r[0], r[1]) not in seen]
+            for key in ("thread_cores", "kernel_cores"):
+                seen = {(r[0], r[1]) for r in first.get(key, [])}
+                record[key] = first.get(key, []) + [r for r in record[key] if (r[0], r[1]) not in seen]
         except (OSError, ValueError, KeyError, TypeError, IndexError):
             pass
         try:
@@ -323,17 +356,21 @@ def undo_usb_cpu0(box: Box, report_dir: str | None = None) -> tuple[list[str], i
     thread on core 1 alone gets the processor settings' cores when systemd started it (PID 1, a
     service: it inherited core 1 from the switch), and is left alone otherwise (a login session's
     commands, such as a reader the bench pinned to core 1). Both lists come from apply's report;
-    without one, only the second rule applies."""
+    without one, only the second rule applies. A kernel thread gets back the cores apply found it
+    on, if it still has core 1 alone and the same start time; any other kernel thread is never
+    touched (ksoftirqd/1 and the other per-core threads of core 1 have core 1 alone too)."""
     log, rc = [], 0
     on = box.online()
     target = USB_CPU0_CORES & on
     elsewhere: set[int] = set()
     had: dict[tuple[int, int], frozenset] = {}
+    khad: dict[tuple[int, int], frozenset] = {}
     if report_dir:
         try:
             report = json.loads(Path(report_dir, "report").read_text())
             elsewhere = set(report.get("elsewhere", []))
             had = {(int(r[0]), int(r[1])): parse_cpus(r[2]) for r in report.get("thread_cores", [])}
+            khad = {(int(r[0]), int(r[1])): parse_cpus(r[2]) for r in report.get("kernel_cores", [])}
         except (OSError, ValueError, AttributeError, TypeError, IndexError):
             pass
     back = []
@@ -375,6 +412,17 @@ def undo_usb_cpu0(box: Box, report_dir: str | None = None) -> tuple[list[str], i
     log.append(f"{back_had} user-space threads back on the cores they had, {back_base} started by systemd "
                f"meanwhile on cores {fmt_cpus(base)}"
                + (f"; {left} of login sessions left on core {fmt_cpus(target)}" if left else ""))
+    kback = 0
+    for t in tasks(box):
+        cores = khad.get((t.tid, t.start))
+        if not t.kernel or cores is None or t.cpus != target:
+            continue
+        try:
+            box.kernel.set_affinity(t.tid, (cores & on) or on)
+            kback += 1
+        except OSError:
+            continue
+    log.append(f"{kback} kernel threads back on the cores they had")
     if report_dir:
         Path(report_dir, "report").unlink(missing_ok=True)
     return log, rc
@@ -516,6 +564,7 @@ def check(box: Box, sample: float = 2.0, sleep=time.sleep) -> tuple[list[str], i
     other0 = [i for i in on0 if i.n not in excused | moved and not _usb_irq(i)]
     k1000_units = {u: c for u, c in units.items() if u != ENGINE_UNIT}
     threads0 = [t for t in user if USB_CPU in t.cpus]
+    kthreads0 = [t for t in ts if _movable_kthread(t)]
     conds = [
         (f"applied by k1000-usb-cpu0.service" + (f" at {report.get('applied')}" if report else
                                                  f" (no {REPORT})"), report is not None),
@@ -523,6 +572,8 @@ def check(box: Box, sample: float = 2.0, sleep=time.sleep) -> tuple[list[str], i
         (f"K1000 units on core {fmt_cpus(target)}", bool(k1000_units) and all(c == target for c in k1000_units.values())),
         (f"no user-space thread allowed on core {USB_CPU}" + (f" ({len(threads0)}: {_short([t.label() for t in threads0], 6)})"
                                                               if threads0 else ""), not threads0),
+        (f"no movable kernel thread allowed on core {USB_CPU}" + (f" ({len(kthreads0)}: {_short([t.label() for t in kthreads0], 6)})"
+                                                                  if kthreads0 else ""), not kthreads0),
         (f"new interrupts on core {fmt_cpus(target)} (default_smp_affinity {(box.read(DEFAULT_IRQ_MASK) or '?').strip()})",
          parse_mask(box.read(DEFAULT_IRQ_MASK)) == target),
     ]

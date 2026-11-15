@@ -17,6 +17,9 @@
 # - Every user-space thread allowed on core 0 goes to core 1, except the engine's (its unit keeps
 #   it on 2-3). systemd itself has core 1 from 51-k1000-usb-cpu0.conf at install.sh's
 #   daemon-reload; this moves what was already running.
+# - Every kernel thread the kernel lets move goes to core 1 too (rcu_preempt, jbd2, kswapd0, the
+#   interrupt threads); never kthreadd nor a per-core thread (docs/17 §14: both stalls traced on
+#   the box began with core 0 running rcu_preempt's sleep time-out).
 # It writes what it moved, kept and was refused to /run/k1000-usb-cpu0/report, which
 # `k1000-cpu.py check` reads, with the cores each thread it moved had, which undo reads.
 #

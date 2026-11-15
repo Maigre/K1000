@@ -407,6 +407,7 @@ add it to everything else there.
 | Interrupts set up later (Ethernet when its link comes up, the knob board's lines when k1000 starts…): core 1 | `/proc/irq/default_smp_affinity` = `2` | the unit's start |
 | The kernel's unbound workqueues: cores 1-3. The Wi-Fi driver's receive work and the SD card's writeback run there | `/sys/devices/virtual/workqueue/cpumask` = `e` | the unit's start |
 | Every user-space thread allowed on core 0, except the engine's: core 1 | `sched_setaffinity` | the unit's start |
+| Every kernel thread the kernel lets move (the RCU threads, `jbd2`, `kswapd0`, the interrupt threads…): core 1. Never `kthreadd`, a per-core thread, or a workqueue worker: the kernel sets their cores itself and refuses a move | `sched_setaffinity` | the unit's start |
 
 The unit (`/opt/k1000/tools/k1000-cpu.py usb-cpu0 apply`) logs what it moved, what it kept on core
 0 and what the kernel refused, and writes it to `/run/k1000-usb-cpu0/report` for the check. It
@@ -425,9 +426,15 @@ it) and its completion work, which runs on the core that took the interrupt; the
 interrupts (the timer tick, the inter-processor ones); the per-core kernel threads
 (`ksoftirqd/0`, `kworker/0:*`, `migration/0`…); any interrupt the kernel refuses to move (the unit
 names them; the GPIO lines, demultiplexed by the GPIO controller, may be among them). Not moved by
-the switch: the kernel threads that may run on any core (`jbd2` for the SD card's journal,
-`rcu_preempt`, `kswapd0`…), and the PCIe controller's own MSI interrupt, which has no handler of
-its own (moving it might move USB with it: untested).
+the switch: the PCIe controller's own MSI interrupt, which has no handler of its own (moving it
+might move USB with it: untested).
+
+Why the kernel threads too (added 15 Nov, `docs/17-box-record-and-bench.md` §14): both stalls
+traced on the box began when core 0's timer work ran the sleep time-out of a kernel thread
+(`rcu_preempt`) that another core was waking at the same moment; core 0 then kept its interrupts
+off for a whole tick (4 ms) and the M4's playback queue ran empty. A thread kept off core 0 has its
+timers off core 0. Undo gives each kernel thread it moved back the cores it found it on, and
+touches no other (core 1's own per-core threads have core 1 alone too).
 
 Why a unit and not `irqaffinity=1` on the kernel command line: the same interrupts move either
 way, but the unit needs no edit of the boot files and no reboot, on or off, so the bench can

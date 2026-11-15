@@ -479,7 +479,7 @@ Wi-Fi's interrupt threads, still on core 0 then, and nothing in the kernel caps 
 
 | Switch | On | What it changes |
 |---|---|---|
-| usb-cpu0, core 0 left to the USB handling | `--usb-cpu0-on` | Every process but the engine on core 1 (systemd's default cores, k1000, CamillaGUI, the other K1000 units); every interrupt the kernel lets move on core 1, the SD card's and the Wi-Fi's first; the kernel's unbound work (SD writeback, the Wi-Fi's receive work) on cores 1-3, off core 0 but still allowed on the engine's cores, as it is without the switch. The xHCI's interrupt stays on core 0: it cannot move |
+| usb-cpu0, core 0 left to the USB handling | `--usb-cpu0-on` | Every process but the engine on core 1 (systemd's default cores, k1000, CamillaGUI, the other K1000 units), and every kernel thread the kernel lets move (the RCU threads first: `docs/17` §14); every interrupt the kernel lets move on core 1, the SD card's and the Wi-Fi's first; the kernel's unbound work (SD writeback, the Wi-Fi's receive work) on cores 1-3, off core 0 but still allowed on the engine's cores, as it is without the switch. The xHCI's interrupt stays on core 0: it cannot move |
 | usb-rt, real-time priority for the deferred USB work | `--usb-rt-on` | `ksoftirqd/0`, which finishes the USB completion work when it is deferred, at `SCHED_FIFO 51` instead of normal priority |
 
 ```sh

@@ -37,6 +37,7 @@ def _load():
 
 kc = _load()
 PF_KTHREAD = 0x00200000
+PF_NO_SETAFFINITY = 0x04000000
 
 
 class FakeKernel:
@@ -102,11 +103,15 @@ class FakePi:
         self.irq(45, ["fe215040.serial"], cpus="1")        # already off core 0
         # threads: kernel, then user space (processor settings on: 0-1, the engine 2-3)
         self.task(2, comm="kthreadd", kernel=True, cpus="0-3")
-        self.task(14, comm="ksoftirqd/0", kernel=True, cpus="0")
-        self.task(22, comm="ksoftirqd/1", kernel=True, cpus="1")
-        self.task(12, comm="migration/0", kernel=True, cpus="0", policy=1, prio=99)
-        self.task(95, comm="irq/40-mmc0", kernel=True, cpus="0-3", policy=1, prio=50)
-        self.task(96, comm="irq/40-mmc1", kernel=True, cpus="0-3", policy=1, prio=50)
+        self.task(14, comm="ksoftirqd/0", kernel=True, bound=True, cpus="0")
+        self.task(22, comm="ksoftirqd/1", kernel=True, bound=True, cpus="1")
+        self.task(12, comm="migration/0", kernel=True, bound=True, cpus="0", policy=1, prio=99)
+        self.task(15, comm="rcu_preempt", kernel=True, cpus="0-3", start=40)
+        self.task(60, comm="kworker/u8:1-events_unbound", kernel=True, bound=True, cpus="0-3")
+        self.task(70, comm="kworker/1:1-events", kernel=True, bound=True, cpus="1")
+        self.task(95, comm="irq/40-mmc0", kernel=True, cpus="0-3", policy=1, prio=50, start=90)
+        self.task(96, comm="irq/40-mmc1", kernel=True, cpus="0-3", policy=1, prio=50, start=91)
+        self.task(110, comm="jbd2/mmcblk0p2-8", kernel=True, cpus="0-3", start=110)
         self.task(1, comm="systemd", cpus="0-1")
         self.task(300, comm="systemd-journal", cpus="0-1", unit="systemd-journald.service")
         self.task(700, comm="camilladsp", cpus="2-3", unit="camilladsp.service")
@@ -132,9 +137,12 @@ class FakePi:
             self.kernel.refuse.add(self.root / f"proc/irq/{n}/smp_affinity_list")
 
     def task(self, pid: int, tid: int | None = None, comm: str = "x", cpus: str = "0-3",
-             kernel: bool = False, policy: int = 0, prio: int = 0, unit: str = "", start: int = 0) -> None:
+             kernel: bool = False, policy: int = 0, prio: int = 0, unit: str = "", start: int = 0,
+             bound: bool = False) -> None:
+        """`bound`: a kernel thread whose cores only the kernel sets (PF_NO_SETAFFINITY)."""
         tid = tid or pid
-        self.tasks[tid] = dict(pid=pid, comm=comm, cpus=cpus, flags=PF_KTHREAD if kernel else 0x400100,
+        flags = (PF_KTHREAD | (PF_NO_SETAFFINITY if bound else 0)) if kernel else 0x400100
+        self.tasks[tid] = dict(pid=pid, comm=comm, cpus=cpus, flags=flags,
                                policy=policy, prio=prio, start=start)
         self.w(f"proc/{pid}/cgroup", f"0::/system.slice/{unit}\n" if unit else "0::/\n")
         self._write_task(tid)
@@ -244,9 +252,14 @@ def test_usb_cpu0_moves_what_can_move_off_core_0_and_keeps_the_usb_host(pi, tmp_
     for tid in (1, 300, 800, 801, 900, 950, 1200):                                         # user space: 1
         assert pi.cpus(tid) == "1", tid
     assert pi.cpus(700) == pi.cpus(705) == "2-3"                                           # the engine
-    for tid in (2, 14, 12, 95):                                                            # kernel threads
+    for tid in (2, 14, 12, 60):                     # kthreadd, the per-core and workqueue ones: never
         assert pi.tasks[tid]["cpus"] in ("0", "0-3"), tid
+    for tid in (15, 95, 96, 110):                   # the kernel threads the kernel lets move: core 1
+        assert pi.cpus(tid) == "1", tid
+    assert pi.cpus(22) == pi.cpus(70) == "1"        # core 1's own: untouched
+    assert not [c for c in pi.kernel.calls if c[0] == "affinity" and c[1] in (2, 12, 14, 22, 60, 70)]
     assert "7 user-space threads moved to core 1" in text
+    assert "4 kernel threads moved to core 1" in text and "rcu_preempt(15)" in text
     rec = json.loads((run / "report").read_text())
     assert rec["kept"] == [[37, ["xhci_hcd"]]]
     assert [r[:2] for r in rec["refused"]] == [[11, ["arch_timer"]]]
@@ -254,6 +267,7 @@ def test_usb_cpu0_moves_what_can_move_off_core_0_and_keeps_the_usb_host(pi, tmp_
     assert rec["elsewhere"] == [45]
     assert [r[0] for r in rec["thread_cores"]] == [1, 300, 800, 801, 900, 950, 1200]   # for undo
     assert {r[2] for r in rec["thread_cores"]} == {"0-1"}
+    assert rec["kernel_cores"] == [[15, 40, "0-3"], [95, 90, "0-3"], [96, 91, "0-3"], [110, 110, "0-3"]]
 
 
 def test_usb_cpu0_never_moves_the_engine_even_when_it_is_on_core_0(pi):
@@ -333,8 +347,61 @@ def test_usb_cpu0_twice_changes_nothing_more(pi, tmp_path):
     rec = json.loads((run / "report").read_text())
     assert rec["elsewhere"] == [45] and len(rec["thread_cores"]) == 7
     assert {r[2] for r in rec["thread_cores"]} == {"0-1"}
+    assert [r[0] for r in rec["kernel_cores"]] == [15, 95, 96, 110] and {r[2] for r in rec["kernel_cores"]} == {"0-3"}
     kc.undo_usb_cpu0(pi.box(), str(run))
     assert [pi.irq_cpus(n) for n in (40, 41, 42, 45)] == ["0-3", "0-3", "0-3", "1"]
+
+
+def test_usb_cpu0_undo_gives_the_kernel_threads_back_their_cores_and_touches_no_other(pi, tmp_path):
+    """The stalls of 14 and 15 Nov began with core 0 running a kernel thread's sleep time-out
+    (rcu_preempt) while another core woke it (docs/17 §14): the switch moves the kernel threads the
+    kernel lets move. Undo gives back exactly what it found, by thread and start time, and never
+    touches a kernel thread it did not move: core 1's per-core threads have core 1 alone too."""
+    pi.task(120, comm="kswapd0", kernel=True, cpus="0-1", start=120)
+    run = tmp_path / "run"
+    run.mkdir()
+    kc.apply_usb_cpu0(pi.box(), str(run))
+    assert pi.cpus(120) == "1"
+    pi.task(130, comm="kworker/1:2", kernel=True, bound=True, cpus="1", start=9000)   # core 1's, started since
+    pi.task(140, comm="later_kthread", kernel=True, cpus="1", start=9100)          # not moved by apply
+    pi.set_task(110, start=9200)                     # jbd2's id, reused by another kernel thread
+    n = len(pi.kernel.calls)
+    log, rc = kc.undo_usb_cpu0(pi.box(), str(run))
+    assert rc == 0, log
+    assert [pi.cpus(t) for t in (15, 95, 96, 120)] == ["0-3", "0-3", "0-3", "0-1"]
+    assert [pi.cpus(t) for t in (22, 70, 130, 140, 110)] == ["1", "1", "1", "1", "1"]
+    moved_back = {c[1] for c in pi.kernel.calls[n:] if c[0] == "affinity" and pi.tasks[c[1]]["flags"] & PF_KTHREAD}
+    assert moved_back == {15, 95, 96, 120}
+    assert "4 kernel threads back on the cores they had" in "\n".join(log)
+
+
+def test_usb_cpu0_a_kernel_thread_the_kernel_refuses_to_move_is_left_and_named(pi, tmp_path):
+    class Refuses(FakeKernel):
+        def set_affinity(self, tid, cpus):
+            if tid == 110:
+                raise OSError(errno.EINVAL, "Invalid argument")
+            super().set_affinity(tid, cpus)
+    k = Refuses(pi)
+    log, rc = kc.apply_usb_cpu0(pi.box(k))
+    text = "\n".join(log)
+    assert rc == 0, text
+    assert pi.cpus(110) == "0-3" and pi.cpus(15) == "1"
+    assert "3 kernel threads moved to core 1" in text
+    assert "kernel threads the kernel kept: jbd2/mmcblk0p2-8(110) (Invalid argument)" in text
+
+
+def test_check_wants_the_movable_kernel_threads_off_core_0(pi, tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    pi.choose(usb_cpu0="on")
+    kc.apply_usb_cpu0(pi.box(), str(run))
+    shutil.copy(run / "report", pi.w("run/k1000-usb-cpu0/report", ""))
+    text, rc = _check(pi)
+    assert rc == 0 and "[x] no movable kernel thread allowed on core 0" in text, text
+    pi.task(150, comm="new_kthread", kernel=True, cpus="0-3")      # started after the unit ran
+    text, rc = _check(pi)
+    assert rc == 1 and "[ ] no movable kernel thread allowed on core 0 (1: new_kthread(150))" in text, text
+    assert "PARTLY in force: NOT AS CHOSEN" in text
 
 
 def test_usb_cpu0_fails_when_the_new_interrupt_mask_cannot_be_written(pi):
