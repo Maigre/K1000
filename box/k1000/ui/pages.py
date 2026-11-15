@@ -195,6 +195,9 @@ class ScreenStatus:
     limit_over: D-021, per output, the most it went over the limiter's ceiling (dB) since the
             operator last cleared it (None = not since): latched until cleared. The status bar
             shows `CLIP -2.4` (the dB to take off) and the output's clip box stays red.
+    limit_floor: D-021, per output, True when its held value is only a floor (the signal went
+            at least that far over: the soft limiter's flat top, the hard one's backstop): the
+            pill then says `CLIP -3.6+`.
     in_peak_db: the program input's capture peaks, L R (dBFS, before any gain): the IN meters
             (D-015). Missing or short: the meters read the floor.
     UI v1 (D-009), same names as control.Status:
@@ -234,6 +237,7 @@ class ScreenStatus:
     alert: str = ""
     in_clip: bool = False
     limit_over: Sequence[float | None] = (None, None, None, None)
+    limit_floor: Sequence[bool] = (False, False, False, False)
     in_peak_db: Sequence[float] = (-100.0, -100.0)
     alerts: Sequence[tuple[str, str]] | None = None
     pills: Sequence[str] | None = None
@@ -901,9 +905,11 @@ def _status_bar(c: _Ctx, page: str, state: Any, status: Any, muted: bool) -> Non
     # output reached full scale, IN CLIP = the input ADC did (no K1000 knob fixes that one).
     # D-021: with an output's overshoot latched, CLIP carries the dB to take off ("CLIP -2.4")
     # until the operator clears it (E1 push on SHOW / ALIGN, a phone).
+    # A floor ("+": it went at least that far over) when a held reading was only one.
     take = clip_take_off(status)
+    floor = "+" if take is not None and clip_take_floor(status) else ""
     for t, on in (("IN CLIP", _truth(_get(status, "in_clip", None))),
-                  ("CLIP" if take is None else f"CLIP -{take:.1f}",
+                  ("CLIP" if take is None else f"CLIP -{take:.1f}{floor}",
                    take is not None or any(bool(_truth(v)) for v in _seq(_get(status, "clip", None))))):
         if on:
             lx = _pill(c, lx, t, RED, FG)
@@ -1024,6 +1030,15 @@ def clip_take_off(status: Any) -> float | None:
         if f is not None and math.isfinite(f):
             held.append(f)
     return max(0.1, math.ceil(max(held) * 10.0 - 1e-6) / 10.0) if held else None
+
+
+def clip_take_floor(status: Any) -> bool:
+    """D-021: True when the dB to take off is only a floor: an output with a value held has
+    status.limit_floor set (control.Controller.clip_take_floor's rule, for any status object)."""
+    held = _seq(_get(status, "limit_over", None))
+    floors = _seq(_get(status, "limit_floor", None))
+    return any(i < len(floors) and floors[i] is True for i, v in enumerate(held)
+               if v is not None and not isinstance(v, bool))
 
 
 def meter_bars(status: Any) -> list[tuple[float, bool]]:

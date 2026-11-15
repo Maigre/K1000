@@ -3658,6 +3658,16 @@ def test_d021_status_bar_says_the_db_to_take_off_until_cleared(monkeypatch):
         pages.render(page, s, pages.ScreenStatus(**RUN, limit_over=(None, 2.346, None, None)),
                      Focus(), now=0.0)
         assert "CLIP -2.4" in said, (page, said)
+    said.clear()                     # review 2026-11-15: a floor (the flat top) says "+"
+    pages.render("SHOW", s, pages.ScreenStatus(**RUN, limit_over=(3.522, 1.0, None, None),
+                                               limit_floor=(True, False, False, False)),
+                 Focus(), now=0.0)
+    assert "CLIP -3.6+" in said, said
+    said.clear()
+    pages.render("SHOW", s, pages.ScreenStatus(**RUN, limit_over=(None, 1.0, None, None),
+                                               limit_floor=(True, False, False, False)),
+                 Focus(), now=0.0)
+    assert "CLIP -1.0" in said, said                # a floor flag with nothing held: no floor
     said.clear()
     pages.render("SHOW", s, pages.ScreenStatus(**RUN, clip=(False, True, False, False)), Focus(), now=0.0)
     assert "CLIP" in said and not any(t.startswith("CLIP -") for t in said)

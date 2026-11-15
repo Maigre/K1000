@@ -519,6 +519,10 @@ class Status:
     # D-021: per logical output, the most it went over the limiter's ceiling since the operator
     # last cleared it (dB to take off; None = not since). Latched until cleared (`clear_clip`).
     limit_over: list[float | None] = field(default_factory=lambda: [None] * 4)
+    # D-021: per logical output, True once a reading since the last clear was only a floor (the
+    # soft limiter's flat top, the hard one's +12 dBFS backstop: dspconfig.limit_over_is_floor):
+    # the held value is then "at least" (`CLIP -3.6+`, `TAKE ≥3.6 dB OFF`). Cleared with it.
+    limit_floor: list[bool] = field(default_factory=lambda: [False] * 4)
     limit_kind: str = "hard"         # the limiter kind the engine runs (how `limit_over` is read)
     knobs_ok: bool | None = None     # None = no knobs expected (--no-hw) / not reported
     # ---- UI v1 (D-009), refreshed by Controller.snapshot(); see docs in Controller.snapshot
@@ -562,7 +566,8 @@ class Status:
         return dataclasses.replace(self, levels=list(self.levels), clip=list(self.clip),
                                    drift=list(self.drift), pills=list(self.pills),
                                    alerts=list(self.alerts), in_peak_db=list(self.in_peak_db),
-                                   limit_over=list(self.limit_over))
+                                   limit_over=list(self.limit_over),
+                                   limit_floor=list(self.limit_floor))
 
 
 # =========================================================================== helpers
@@ -4128,7 +4133,7 @@ class Controller:
             over = dc.limit_over_db(kind, lv) if self.client.connected and steady else None
             if lv >= CLIP_DBFS or over is not None:
                 self._clip_until[i] = now + CLIP_HOLD_S
-            if over is not None and self._latch_over(i, over):
+            if over is not None and self._latch_over(i, over, dc.limit_over_is_floor(kind, over)):
                 latched.append(i)
         if latched:
             self._say_clip(latched, kind)
@@ -4168,14 +4173,19 @@ class Controller:
             self._changed()
 
     # ------------------------------------------------------------------ D-021: the CLIP latch
-    def _latch_over(self, i: int, over: float) -> bool:
+    def _latch_over(self, i: int, over: float, floor: bool = False) -> bool:
         """Hold output `i`'s overshoot (dB over the ceiling before the limiter) if it is the
-        most since the last clear. True = the held value changed (the screen and the phones get
-        it)."""
-        held = self.status.limit_over[i]
-        if held is not None and over <= held:
+        most since the last clear; `floor`: this reading is only a floor (it went at least that
+        far over). One floor reading since the clear makes the held value a floor, whatever comes
+        after (an exact reading above it does not say how far the floor one went). True = what is
+        held changed (the screen and the phones get it)."""
+        held, was = self.status.limit_over[i], self.status.limit_floor[i]
+        grew = held is None or over > held
+        if not grew and (was or not floor):
             return False
-        self.status.limit_over[i] = round(over, 3)
+        if grew:
+            self.status.limit_over[i] = round(over, 3)
+        self.status.limit_floor[i] = was or floor
         return True
 
     def _say_clip(self, outs: list[int], kind: str) -> None:
@@ -4190,11 +4200,12 @@ class Controller:
             self._clip_logged[i] = self.status.limit_over[i]
         if said:
             log.warning("output clipping (limiter %s): %s; the most since the last clear: take "
-                        "%.1f dB off", kind, ", ".join(
-                            f"{OUT_SHORT[i]} {self.status.limit_over[i]:.2f} dB over" for i in said),
-                        self.clip_take_off() or 0.0)
+                        "%s dB off", kind, ", ".join(
+                            f"{OUT_SHORT[i]} {'at least ' if self.status.limit_floor[i] else ''}"
+                            f"{self.status.limit_over[i]:.2f} dB over" for i in said),
+                        self.clip_take_words())
         if first:
-            self.show_hint(HINT_CLIP_LATCH.format(db=f"{self.clip_take_off():.1f}"))
+            self.show_hint(HINT_CLIP_LATCH.format(db=self.clip_take_words()))
 
     def clip_take_off(self) -> float | None:
         """The dB to take off (D-021): the most any output went over the limiter's ceiling since
@@ -4207,6 +4218,19 @@ class Controller:
             return None
         return max(0.1, math.ceil(max(held) * 10.0 - 1e-6) / 10.0)
 
+    def clip_take_floor(self) -> bool:
+        """True when the dB to take off is only a floor: one of the held readings was (the soft
+        limiter's flat top, the hard one's backstop: `Status.limit_floor`). Take more off."""
+        return any(f for v, f in zip(self.status.limit_over, self.status.limit_floor)
+                   if v is not None)
+
+    def clip_take_words(self) -> str:
+        """The dB to take off as the box says it: "2.4", or "≥3.6" for a floor; "" = nothing."""
+        take = self.clip_take_off()
+        if take is None:
+            return ""
+        return ("≥" if self.clip_take_floor() else "") + f"{take:.1f}"
+
     def clear_clip(self, source: str = "local") -> bool:
         """The operator has seen the latched CLIP (an E1 push on SHOW / ALIGN, a phone's OK, the
         console): clear it. Display only: no level moves. False = nothing was latched."""
@@ -4214,8 +4238,10 @@ class Controller:
         if not any(v is not None for v in held):
             return False
         log.info("output CLIP cleared by %s (was %s)", source, ", ".join(
-            f"{OUT_SHORT[i]} {v:.2f} dB over" for i, v in enumerate(held) if v is not None))
+            f"{OUT_SHORT[i]} {'at least ' if self.status.limit_floor[i] else ''}{v:.2f} dB over"
+            for i, v in enumerate(held) if v is not None))
         self.status.limit_over = [None] * 4
+        self.status.limit_floor = [False] * 4
         self._clip_logged = [None] * 4
         self.show_hint(HINT_CLIP_CLEARED)
         self._changed()

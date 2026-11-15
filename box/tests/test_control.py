@@ -7295,9 +7295,46 @@ def test_d021_clip_latch_reads_the_soft_curve_back(tmp_path: Path) -> None:
         st = ctl.status
         assert st.limit_kind == "soft" and st.limit_over[0] is None
         assert st.limit_over[1] == pytest.approx(2.0, abs=0.01) and ctl.clip_take_off() == 2.0
+        assert st.limit_floor == [False] * 4 and ctl.clip_take_words() == "2.0"
         cl.peaks = [after(9.0), -60.0]
         await ctl.meter_once()
         assert st.limit_over[0] == pytest.approx(dc.SOFT_OVER_MAX_DB, abs=0.01)
+        assert st.limit_floor[:2] == [True, False] and ctl.clip_take_floor()   # dev 'sum': L = Sub L, Top L
+        assert ctl.clip_take_words() == "≥3.6"           # at least: the flat top
+        await ctl.stop()
+
+    run(body())
+
+
+def test_d021_a_floor_reading_says_at_least_until_cleared(tmp_path: Path,
+                                                          caplog: pytest.LogCaptureFixture) -> None:
+    """Review 2026-11-15: a reading that is only a floor (HARD at its +12 dBFS backstop, SOFT at
+    its flat top) is held as "at least": the pill's "+", the hint's and the phone's "≥", the
+    journal's "at least". It stays a floor after a bigger exact reading (that one does not say how
+    far the floor one went) and after a switch of kind; a clear forgets it."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        st = ctl.status
+        cl.peaks = [-3.0, 1.0]
+        await ctl.meter_once()
+        assert ctl.clip_take_words() == "1.0" and not ctl.clip_take_floor()
+        assert ctl.focus.hint_now() == "CLIP: TAKE 1.0 dB OFF · PUSH E1 = CLEAR"
+        with caplog.at_level(logging.WARNING):
+            cl.peaks = [-3.0, dc.LIMIT_HARD_DB]                 # the backstop: at least +12
+            await ctl.meter_once()
+        assert st.limit_over[1] == dc.LIMIT_HARD_DB and st.limit_floor[1] is True
+        assert ctl.clip_take_words() == "≥12.0"
+        assert pages.clip_take_floor(st) and "SUB R at least 12.00 dB over" in caplog.text
+        ctl.clear_clip("test")
+        assert st.limit_floor == [False] * 4 and ctl.clip_take_words() == ""
+        cl.peaks = [-3.0, 5.0]                                 # exact again after a clear
+        await ctl.meter_once()
+        assert ctl.clip_take_words() == "5.0"
+        assert ctl._latch_over(1, 5.0, True)                    # the same value, now a floor
+        assert ctl.clip_take_words() == "≥5.0"
+        assert ctl._latch_over(1, 6.0, False) and ctl.clip_take_words() == "≥6.0"   # stays a floor
+        assert not ctl._latch_over(1, 6.0, True)              # nothing new
         await ctl.stop()
 
     run(body())

@@ -314,11 +314,12 @@ def limit_over_db(kind: str, peak_dbfs: Any) -> float | None:
     (or the peak is not a number). That is the dB to take off.
 
     - "hard": the meters read before the conversion that cuts at full scale (module docstring):
-      the peak above 0 dBFS is the overshoot itself, exact, whatever its size (up to the
-      Clipper's backstop, LIMIT_HARD_DB).
+      the peak above 0 dBFS is the overshoot itself, exact up to the Clipper's backstop
+      (LIMIT_HARD_DB); at the backstop, at least that.
     - "soft": the peak after the curve (<= the ceiling C); the curve is monotonic up to its flat
-      top, so the peak before it is its inverse: exact up to SOFT_OVER_MAX_DB (+3.5 dB) over C, and
-      SOFT_OVER_MAX_DB once the peak reaches the flat top (it went at least that far over)."""
+      top, so the peak before it is its inverse: exact up to SOFT_OVER_MAX_DB (+3.52 dB) over C,
+      and SOFT_OVER_MAX_DB once the peak reaches the flat top (it went at least that far over).
+    `limit_over_is_floor` says which readings are only a floor."""
     if isinstance(peak_dbfs, bool) or not isinstance(peak_dbfs, (int, float)):
         return None
     p = float(peak_dbfs)
@@ -340,6 +341,16 @@ def limit_over_db(kind: str, peak_dbfs: Any) -> float | None:
         else:
             hi = mid
     return round(20.0 * math.log10(0.5 * (lo + hi)), 3)
+
+
+def limit_over_is_floor(kind: str, over: Any) -> bool:
+    """D-021: True when `limit_over_db(kind, ...)` = `over` is only a floor (the signal went AT
+    LEAST that far over): SOFT at its flat top (SOFT_OVER_MAX_DB), HARD at its backstop
+    (LIMIT_HARD_DB, the Clipper's own cut there). Below those the reading is exact."""
+    if isinstance(over, bool) or not isinstance(over, (int, float)) or not math.isfinite(over):
+        return False
+    top = SOFT_OVER_MAX_DB if kind == "soft" else LIMIT_HARD_DB
+    return float(over) >= top - 0.01
 
 
 def param_map(state: State, rate: float | None = None) -> dict[str, Any]:

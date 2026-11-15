@@ -88,7 +88,6 @@ from websockets.http11 import Request, Response
 
 from .. import __version__
 from ..control import MASTER_UP_WINDOW_S, NOTCH_NEAR_OCT, NOTCH_Q, UNDO_RESET_S
-from ..dspconfig import SOFT_OVER_MAX_DB
 from ..state import N_LIVE_PEQ, N_OUT, RANGES, atomic_write, effective_gain, engine_rate, range_for
 from ..tune import MAX_TEXT, TuneDesk
 from ..ui.input_map import (A_LAPTOP, A_RESET_LIVE, A_RESYNC, A_UNDO_RESET, BAND_CYCLE, BELL_SLOTS,
@@ -623,16 +622,19 @@ def _clip(status: Any) -> dict[str, Any]:
     """state.clip (docs/14 §3.2, D-021): the output CLIP latch. `over`: per logical output (Sub L,
     Sub R, Top L, Top R) the most it went over the limiter's ceiling before the limiter since the
     last clear, dB (0.01), or None; `take`: the dB to take off (the most of them, rounded UP to
-    0.1 dB, 0.1 at least), None = nothing latched; `top`: the soft limiter's flat top was reached (the overshoot
-    is at least `take`, not exactly it); `kind`: "hard" or "soft", the limiter the engine runs."""
+    0.1 dB, 0.1 at least), None = nothing latched; `top`: `take` is only a floor (a held reading
+    was: the soft limiter's flat top, the hard one's backstop; status.limit_floor), the overshoot
+    was at least that; `kind`: "hard" or "soft", the limiter the engine runs."""
     raw = [_f(v, 3) for v in list(getattr(status, "limit_over", None) or [None] * N_OUT)[:N_OUT]]
     raw += [None] * (N_OUT - len(raw))
+    floors = list(getattr(status, "limit_floor", None) or [])[:N_OUT]
+    floors += [False] * (N_OUT - len(floors))
     held = [v for v in raw if v is not None]
     take = max(0.1, math.ceil(max(held) * 10.0 - 1e-6) / 10.0) if held else None
     over = [None if v is None else round(v, 2) for v in raw]
     kind = str(getattr(status, "limit_kind", "hard") or "hard")
     kind = kind if kind in ("hard", "soft") else "hard"
-    top = bool(held) and kind == "soft" and max(held) >= SOFT_OVER_MAX_DB - 0.01
+    top = any(f is True for v, f in zip(raw, floors) if v is not None)
     return {"over": over, "take": take, "top": top, "kind": kind}
 
 

@@ -1751,9 +1751,14 @@ def test_d021_state_carries_the_clip_latch_and_a_phone_clears_it(tmp_path: Path)
                                 "kind": "hard"}
         ctl.status.limit_over, ctl.status.limit_kind = [3.522, None, None, None], "soft"
         clip = PhoneBridge.state_message2(ctl.snapshot(), phone_on=True, phones=1)["clip"]
+        assert clip["top"] is False and clip["take"] == 3.6        # exact unless held as a floor
+        ctl.status.limit_floor = [True, False, False, False]
+        clip = PhoneBridge.state_message2(ctl.snapshot(), phone_on=True, phones=1)["clip"]
         assert clip["top"] is True and clip["take"] == 3.6 and clip["kind"] == "soft"
+        ctl.status.limit_kind = "hard"         # review 2026-11-15: the held floor, whatever runs now
+        assert PhoneBridge.state_message2(ctl.snapshot(), phone_on=True, phones=1)["clip"]["top"] is True
         assert b.apply2({"t": "act", "a": "clip_ack"}, s) == (True, {"cleared": True}, "", "")
-        assert ctl.status.limit_over == [None] * 4
+        assert ctl.status.limit_over == [None] * 4 and ctl.status.limit_floor == [False] * 4
         assert b.apply2({"t": "act", "a": "clip_ack"}, s) == (True, {"cleared": False}, "", "")
         await ctl.stop()
     run(go())

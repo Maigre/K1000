@@ -2933,6 +2933,12 @@ def test_limit_over_is_the_db_to_take_off():
         assert d.limit_over_db("soft", 20 * math.log10(y)) == pytest.approx(d.SOFT_OVER_MAX_DB, abs=1e-3)
     assert d.limit_over_db("soft", 20 * math.log10(c * d.soft_curve(0.99))) is None
     assert d.limit_over_db("soft", -6.0) is None
+    # which readings are only a floor (review 2026-11-15): SOFT's flat top, HARD's backstop
+    assert d.limit_over_is_floor("soft", d.limit_over_db("soft", d.LIMIT_SOFT_DB))
+    assert not d.limit_over_is_floor("soft", 3.5) and not d.limit_over_is_floor("hard", 3.522)
+    assert d.limit_over_is_floor("hard", d.limit_over_db("hard", d.LIMIT_HARD_DB))
+    assert not d.limit_over_is_floor("hard", 11.9) and not d.limit_over_is_floor("hard", None)
+    assert not d.limit_over_is_floor("hard", float("nan")) and not d.limit_over_is_floor("soft", True)
 
 
 def test_a_float_playback_format_is_refused():
