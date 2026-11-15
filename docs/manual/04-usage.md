@@ -587,8 +587,9 @@ on/off. It has no spectrum.
 - Leave ALIGN locked and SETUP alone, except Reset live EQ / Undo reset and, if needed, the D-016
   numbers (De-harsh freq and thresh, Loudness boost and ref, AUX level): they move without a click.
 - **The delay grew** (D-023): the status bar reads `7.9ms +1.6`, the `+` being how much the delay
-  grew since the audio stream last started. Every start comes up at the same delay; a step of 1 to
-  2 ms can come later in a long night. When it matters (orange, over 10 ms, or a DJ who feels it),
+  grew since the audio stream last started. Every start should come up at about the same delay
+  (to confirm on the box: four restarts made by hand landed at 6.35 to 6.38 ms); a step of 1 to
+  2 ms can come later in a long night (seen on the night of 13 to 14 Nov). When it matters (orange, over 10 ms, or a DJ who feels it),
   **SETUP › BOX › Resync delay**, two E3 pushes, or the phone's STATUS › RESYNC (hold 1 s), at a
   moment a gap of about 25 ms does not hurt: between two tracks, in a break. The box never does
   it by itself.

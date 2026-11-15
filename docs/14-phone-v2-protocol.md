@@ -358,7 +358,7 @@ meaning; v2 adds the rest. Numbers are rounded, never NaN or infinite (`null` in
 | `box_band` | The band the knobs are on (the `E` mark). Not the phone's selection: each phone keeps its own |
 | `box_page` | The box screen's page (`SHOW`, `ALIGN`, `SETUP`, `PHONE`, `HWTEST`) |
 | `knobs_ok` | `true` knobs answer, `false` KNOBS OFFLINE, `null` no knobs expected |
-| `latency` | The box's delay readout (D-018, `k1000/latency.py`): `ms` in to out, estimated (`null` = no reading); `io` `false` = the interface's share is not known, `ms` is the engine's alone (a floor); `over` above `limit` ms (it only informs); `buf` the engine's playback buffer level, frames; `drops` the engine's dropout lines since it started (`null` = its log is not read). `ms` is a floor too once `drops` is above 0; the page then says `at least`, and shows `drops` only beside a figure. D-023 (2026-11-14, additive): `grown` how much `ms` grew since the stream last started (an engine start or a resync), ms, `null` = nothing to show (under 0.6 ms, a delay that went down, or not known yet); `resync` `running` (a stream restart under way), `reading` (restarted: `ms` is `null` until the new stream's delay is read, about 10 s), or `""`. v2 only: v1's state is unchanged |
+| `latency` | The box's delay readout (D-018, `k1000/latency.py`): `ms` in to out, estimated (`null` = no reading); `io` `false` = the interface's share is not known, `ms` is the engine's alone (a floor); `over` above `limit` ms (it only informs); `buf` the engine's playback buffer level, frames; `drops` the engine's dropout lines since it started (`null` = its log is not read). `ms` is a floor too once `drops` is above 0; the page then says `at least`, and shows `drops` only beside a figure. D-023 (2026-11-14, additive): `grown` how much `ms` grew since the stream last started (an engine start, a resync, a device change K1000 made), ms, `null` = nothing to show (under 0.6 ms, a delay that went down, or not known yet); `resync` `running` (a stream restart under way), `reading` (restarted: `ms` is `null` until the new stream's delay is read, about 10 s), or `""`. v2 only: v1's state is unchanged |
 
 Countdowns are the values when the state was built; the box resends when something else changes,
 so the page counts down from the last one it got.
@@ -451,7 +451,7 @@ Without a picture (`st` not `live`) the frame is `{"t":"rta","seq":…,"src":"PG
 | `NOFREE` | `grab`: all four bells in use (`NO FREE BAND`) |
 | `UNAVAILABLE` | Laptop access on a box without it |
 | `BUSY` | `act resync` while one runs (`RESYNC REFUSED: ALREADY RUNNING`), or while other engine work holds the engine more than 1 s (`RESYNC REFUSED: ENGINE BUSY, TRY AGAIN`): nothing written |
-| `LATE` | `act resync` written, but the engine did not run again within 1 s, or its link went (`RESYNC: ENGINE NOT RUNNING AGAIN (SEE LOG)`, `RESYNC: ENGINE LINK LOST (SEE LOG)`) |
+| `LATE` | `act resync` that did not finish: written, but the engine did not run again within 1 s or did not show the write active in time (`RESYNC: ENGINE NOT RUNNING AGAIN (SEE LOG)`), its link went (`RESYNC: ENGINE LINK LOST (SEE LOG)`), or a box bug (`RESYNC: INTERNAL ERROR (SEE LOG)`). Main is not touched; the sound comes back when the engine runs |
 | `HELD` | An unmute while K1000 itself holds the mute on its way in (§5) |
 | `REFUSED` | The controller refused it (e.g. an engine-side rule) |
 | `INTERNAL` | A box bug (logged); nothing was half-applied by the bridge |
@@ -644,12 +644,16 @@ apply unchanged.
 `reset_live`, `laptop_open` and `resync` are 1 s holds on the page (the box asks two pushes). v1's
 `{"t":"reset_live","confirm":true}` is accepted too.
 
-**`resync` is answered when it is done**, not at once: about 30 ms on the box (the engine
-answers its write in 1 to 8 ms and runs again 20 to 27 ms later, measured 14 Nov), 2.5 s at
-most (1 s for engine work in flight, the write's read-back, 1 s for the engine to run again),
-under the page's 5 s. Nothing else on this connection waits for it. It is the only way a phone
-restarts the stream, and the box never does it by itself: only at an engine start, Main still
-muted (D-023).
+**`resync` is answered when it is done**, not at once. Calculated from the code path, not
+measured with this code: about 35 to 45 ms (the engine answered the same write in 1 to 8 ms and
+ran again 20 to 27 ms later, measured by hand on 14 Nov; then two Running reads 12 ms apart);
+about 2.1 s at most while the engine answers promptly (1 s waiting for engine work in flight,
+then 1 s from the write for the engine to run again, the write's read-back inside it). An
+engine reply that does not come resets the link after 2 s (`LATE`, `ENGINE LINK LOST`), so a
+slow engine can stretch it; past the page's 5 s it shows its usual `No answer from K1000: look
+again`, and the box's journal says what came of it. Nothing else on this connection waits for
+it. It is the only way a phone restarts the stream, and the box never does it by itself: only
+at an engine start, Main still muted (D-023).
 
 ### 4.8 `sub`: the box spectrum and RESPONSE
 

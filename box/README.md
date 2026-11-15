@@ -498,7 +498,9 @@ The engine can restart its audio stream in place: any change in the `devices` se
 config makes it stop and start its capture and playback streams in the same process, Main and
 the spectrum buffers kept. K1000 changes the one value there that does nothing else,
 `rate_measure_interval_s` (how often the engine measures the capture rate), alternately 1.0 and
-1.001. That value is K1000's own: `active.yml` carries it, and the drift check never flags it.
+1.001. That value is K1000's own: `active.yml` carries it, and the drift check never flags it
+(K1000 takes it from the engine at connect and at every poll, so a write the engine makes active
+late is still K1000's).
 
 - **At every engine start**, after the spectrum warm-up and before the ramp, Main still muted:
   one restart, so that every start comes up at the same delay. Measured on the desk box
@@ -507,27 +509,38 @@ the spectrum buffers kept. K1000 changes the one value there that does nothing e
   start lands anywhere from 6.1 to 7.6 ms. It adds about 0.2 s before the ramp (0.15 s for the
   warm-up's stall to pass, the restart itself; calculated, not measured), so full level comes
   at about 14.6 s after power-on instead of 14.4 s. An engine that does not run within 2 s, a
-  refused or timed-out restart: a warning, the ramp goes on. An engine already playing when
-  k1000 starts is left alone.
+  refused or timed-out restart, a bug in it: a warning, the ramp goes on. An engine already
+  playing when k1000 starts is left alone.
 - **The resync, on the operator's command only**: SETUP › BOX › Resync delay (two E3 pushes,
   the popup between them) or the phone's STATUS sheet (a 1 s hold). About 25 ms of silence,
   then the delay where a start puts it. **Never by itself**: a gap is a click in continuous
-  music (a test holds this line).
+  music (a test holds this line). Not finished in time (`RESYNC: … (SEE LOG)`): Main is not
+  touched, the sound comes back when the engine runs; an engine that cannot reopen the
+  interface exits and systemd starts it again muted, as at any engine stop.
 - **The readout says when it is worth it**: `7.9ms +1.6` on the status bar, `7.9 ms +1.6` on
   the Resync row and on the phone, `+1.6 since the stream started` in the journal: how much the
-  delay grew since the stream last started (an engine start or a resync), shown from 0.6 ms up.
-  After a resync the engine reports the old stream's level for up to 10 s: the readout shows
-  nothing meanwhile (`READING…`), then the new delay, and the growth starts again from 0.
-  After a k1000 restart on a playing engine the growth counts from its first reading.
+  delay grew since the stream last started (an engine start, a resync, also one written but not
+  finished in time, or a device change K1000 uploaded), shown from 0.6 ms up: the base and the
+  figure are each rounded to 0.1 ms, so from 0.6 it is more than 0.5 ms of real growth, clear of
+  the readout's own 0.4 ms band. After a resync the engine reports the old stream's level for up
+  to 10 s: the readout shows nothing meanwhile (`READING…`, only while the engine runs), then
+  the new delay, and the growth starts again from 0. After a k1000 restart on a playing engine
+  the growth counts from its first reading. On a crowded status bar the `+1.6` gives way before
+  the delay does.
 
 ```sh
 journalctl -u k1000 -b | grep "stream restart"     # who asked, the outcome, the delay before and after
 grep rate_measure /var/lib/k1000/active.yml       # K1000's value, what the engine runs
 ```
 
-Not proven yet on the box: the code itself (the restart was measured by hand, with the same
-command), the delay after 20 starts, the gap with the kernel's stream state, and the resync from
-a phone. The two system settings of D-023 point 3 are not built here.
+Proven by tests off the box, on a fake engine that restarts its stream as the engine's source
+says: the order at start (warm-up, restart, ramp) on both engines, a mute during a resync, a
+resync during a config write, refusals and timeouts, a write made active late, the growth, the
+phone's `act resync` and the SETUP action. Not proven yet on the box: the code itself (the
+restart was measured by hand, with the same command, on next5 only), the delay after 20 starts,
+the gap with the kernel's stream state, and the resync from a phone. On 5.0.0-beta.1
+(`--old-engine`) the restart's effect on the delay is not known: it has no trimming of late
+frames after a playback restart. The two system settings of D-023 point 3 are not built here.
 
 ## MOTU M4 bring-up (Tuesday)
 

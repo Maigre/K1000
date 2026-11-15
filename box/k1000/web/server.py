@@ -2949,8 +2949,9 @@ class PhoneServer:
 
     def _resync2(self, c: _Client, sess: PhoneSession, mid: Any) -> dict[str, Any] | None:
         """`act resync` (docs/14 §4.7, D-023): answered once the resync is done, refused or timed
-        out, not at once (about 30 ms; RESTART_LOCK_S + RESTART_RUN_S and a read-back at
-        worst, under the page's 5 s). Nothing here awaits: the reply goes through the sender."""
+        out, not at once (calculated: about 40 ms; about RESTART_LOCK_S + RESTART_RUN_S at most
+        while the engine answers promptly, under the page's 5 s; docs/14 §4.7). Nothing here
+        awaits: the reply goes through the sender."""
         try:
             fut = self.bridge.resync(sess)
         except Exception as e:  # noqa: BLE001 - a controller error stays with this message
