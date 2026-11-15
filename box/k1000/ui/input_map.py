@@ -41,6 +41,8 @@ HWTEST reached from SETUP.
   threshold, SUBS Loudness (ON/off, a rebuild) + its boost and reference, INPUT AUX IN 1/2
   (off / MIC / LINE, a rebuild) + its level. The switches are risky rows like Mono; the numbers
   turn like a trim.
+- D-021: an E1 push on SHOW or ALIGN (pressed and released without turning E1, the MASTER knob
+  there) clears the latched output CLIP and its dB to take off (ClearClip); a phone can too.
 - B1: tap (on release) = SHOW <-> ALIGN, and back from SETUP to SHOW, from PHONE to SETUP;
   hold = SETUP from SHOW/ALIGN, SHOW from SETUP/PHONE. The Controller brings ALIGN and SETUP
   back to SHOW after HOME_AFTER_S without input.
@@ -223,6 +225,13 @@ class PhoneToggle:
 
 
 @dataclass(frozen=True)
+class ClearClip:
+    """SHOW / ALIGN, an E1 push (pressed and released without turning): the operator has seen
+    the latched output CLIP (D-021) and clears it (Controller.clear_clip). Display only: nothing
+    the sound depends on moves."""
+
+
+@dataclass(frozen=True)
 class PhoneQr:
     """PHONE page, E1 turn: the big QR steps Wi-Fi -> page URL -> first-time setup page."""
     delta: int
@@ -232,7 +241,7 @@ Action = (Nudge | Toggle | SetChoice | SelectSlot | SelectBand | SelectItem | Se
           | NextPage | GotoPage | Mute
           | ResetLive | UndoReset | SetupAction | NotchHelper | ToggleBand | Unlock | Lock
           | ShowHint
-          | PhoneToggle | PhoneQr)
+          | PhoneToggle | PhoneQr | ClearClip)
 
 # ------------------------------------------------------------------------------------------
 # Field names, slots, pages, SETUP items (shared with pages.py)
@@ -992,6 +1001,10 @@ def map_event(page: str, focus: Focus, event: Any, cfg: Any = None, *,
         # 'select': on SETUP it would apply the value the E3 turn proposed, or open a page.
         if page == "PHONE" and kind == "short" and n in (0, 1) and not turned:
             return [PhoneToggle()]
+        if page in ("SHOW", "ALIGN") and kind == "short" and n == 0 and not turned:
+            # D-021: E1 is MASTER there; its push alone (no turn: a fine turn's release is not
+            # one) clears the latched output CLIP once the operator has seen it.
+            return [ClearClip()]
         if page == "SETUP" and kind == "short" and not turned:
             if n == SETUP_VALUE_KNOB:           # D-017: E3's push sets, opens, runs
                 return _setup_push(focus, now, state)

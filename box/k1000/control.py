@@ -96,7 +96,8 @@ from .ui.input_map import (
     A_LAPTOP, ALL_PAGES, AUTO_HOME_PAGES, BELL_SLOTS, EDIT_HIGHLIGHT_S, F_AUX_GAIN, F_AUX_MODE,
     A_RESYNC, F_LOWCUT_ON, F_SPECTRUM_ON,
     HINT_S, HOME_AFTER_S, HOME_PAGE, LIVE_SLOT_LABELS, LIVE_SLOT_SHORT, LIVE_SLOTS, MUTE_TOGGLE,
-    PAGES, ControlMap, Focus, GotoPage, Mute, NextPage, NotchHelper, Nudge, PhoneQr, PhoneToggle,
+    PAGES, ClearClip, ControlMap, Focus, GotoPage, Mute, NextPage, NotchHelper, Nudge, PhoneQr,
+    PhoneToggle,
     B1_TAP, SETUP_ITEMS, ResetLive, SetChoice, SetupAction, Toggle, ToggleBand, UndoReset,
     apply_focus, knob_tag_style,
     map_event, page_name, parse_knob_tags,
@@ -213,6 +214,14 @@ REPAIR_MAX_TRIES = 3
 REPAIR_FORGET_S = 600.0
 CLIP_DBFS = -0.1                # a playback peak at/above this lights the clip box
 CLIP_HOLD_S = 3.0
+# D-021: the output CLIP latch. Per logical output, the most the signal went over the limiter's
+# ceiling BEFORE the limiter (dspconfig.limit_over_db: the dB to take off), held until the
+# operator clears it (an E1 push on SHOW / ALIGN, a phone's OK). A new peak this much above the
+# held one is a journal line again (the first one of each output always is).
+CLIP_LOG_STEP_DB = 1.0
+HINT_CLIP_LATCH = "CLIP {outs} · TAKE {db} dB OFF · PUSH E1 = CLEAR"
+HINT_CLIP_CLEARED = "CLIP CLEARED"
+OUT_SHORT = ("SUB L", "SUB R", "TOP L", "TOP R")
 IN_CLIP_DBFS = -0.5             # a capture (ADC) peak at/above this lights IN CLIP
 METER_FLOOR_DB = -100.0
 # The screen's meter shows -60..0 dBFS at ~4 px/dB: level changes below that floor or under
@@ -507,6 +516,10 @@ class Status:
     ready: bool = False              # connect sync done: edits reach the engine
     alert: str = ""                  # most urgent message (priority >= ALERT_PRIO)
     in_clip: bool = False            # an input_map capture channel clipped (latched)
+    # D-021: per logical output, the most it went over the limiter's ceiling since the operator
+    # last cleared it (dB to take off; None = not since). Latched until cleared (`clear_clip`).
+    limit_over: list[float | None] = field(default_factory=lambda: [None] * 4)
+    limit_kind: str = "hard"         # the limiter kind the engine runs (how `limit_over` is read)
     knobs_ok: bool | None = None     # None = no knobs expected (--no-hw) / not reported
     # ---- UI v1 (D-009), refreshed by Controller.snapshot(); see docs in Controller.snapshot
     page: str = HOME_PAGE            # SHOW | ALIGN | SETUP | PHONE | HWTEST
@@ -548,7 +561,8 @@ class Status:
     def copy(self) -> "Status":
         return dataclasses.replace(self, levels=list(self.levels), clip=list(self.clip),
                                    drift=list(self.drift), pills=list(self.pills),
-                                   alerts=list(self.alerts), in_peak_db=list(self.in_peak_db))
+                                   alerts=list(self.alerts), in_peak_db=list(self.in_peak_db),
+                                   limit_over=list(self.limit_over))
 
 
 # =========================================================================== helpers
@@ -1087,6 +1101,8 @@ class Controller:
         self._write_inflight: tuple[list[tuple[Path, str, str, bool]],
                                     asyncio.Future[list[OSError | None]]] | None = None
         self._clip_until = [0.0] * 4
+        self._clip_logged: list[float | None] = [None] * 4    # D-021: the latch's last journal line
+        self._limit_kind_read = dc.limit_kind(state)         # the kind the last meter read used
         self._peak_hold = [METER_FLOOR_DB] * 4
         self._last_clipped: int | None = None
         self._rebuild_seen = 0
@@ -2032,6 +2048,8 @@ class Controller:
             if self.phone is not None:
                 self.phone.select_qr(action.delta)
                 self._changed()
+        elif isinstance(action, ClearClip):
+            self.clear_clip("E1")
         else:
             log.debug("unhandled action %r", action)
 
@@ -4099,10 +4117,21 @@ class Controller:
             except (CdspUnavailable, CdspError):
                 cap = None
         now = self._clock()
+        kind = dc.limit_kind(self._applied)          # what the engine runs (D-021)
+        # A kind change steps the ceiling for a moment (dspconfig.smooth_ops): a peak read
+        # meanwhile, or in the read that spans its end, belongs to neither kind. Not latched.
+        steady = kind == dc.limit_kind(self.state) == self._limit_kind_read
+        self._limit_kind_read = kind
+        latched: list[int] = []
         for i, lv in enumerate(levels):
             self._peak_hold[i] = max(self._peak_hold[i], lv)
-            if lv >= CLIP_DBFS:
+            over = dc.limit_over_db(kind, lv) if self.client.connected and steady else None
+            if lv >= CLIP_DBFS or over is not None:
                 self._clip_until[i] = now + CLIP_HOLD_S
+            if over is not None and self._latch_over(i, over):
+                latched.append(i)
+        if latched:
+            self._say_clip(latched, kind)
         in_peak: list[float] = []
         if isinstance(cap, (list, tuple)):
             for ch in set(self.profile.input_map):
@@ -4126,6 +4155,7 @@ class Controller:
                      for lv in levels), tuple(clip), in_clip)
         self.status.levels, self.status.clip, self.status.in_clip = levels, clip, in_clip
         self.status.in_peak_db = in_peak
+        self.status.limit_kind = kind
         in_key = tuple(round(max(METER_SHOWN_FLOOR_DB, lv) / METER_STEP_DB) for lv in in_peak)
         if in_key != self._in_key:
             self._in_key = in_key
@@ -4136,6 +4166,62 @@ class Controller:
             self._meter_key = key
             self.meter_seq += 1
             self._changed()
+
+    # ------------------------------------------------------------------ D-021: the CLIP latch
+    def _latch_over(self, i: int, over: float) -> bool:
+        """Hold output `i`'s overshoot (dB over the ceiling before the limiter) if it is the
+        most since the last clear. True = the held value changed (the screen and the phones get
+        it)."""
+        held = self.status.limit_over[i]
+        if held is not None and over <= held:
+            return False
+        self.status.limit_over[i] = round(over, 3)
+        return True
+
+    def _say_clip(self, outs: list[int], kind: str) -> None:
+        """A latch that appeared or grew: wake the screen and the phones; one journal line for a
+        new latch and for each CLIP_LOG_STEP_DB more; the hint at the first latch since a clear
+        (the pill stays: `pages`, the phone's banner)."""
+        self._changed()
+        first = not any(self._clip_logged[i] is not None for i in range(4))
+        said = [i for i in outs if self._clip_logged[i] is None
+                or self.status.limit_over[i] >= self._clip_logged[i] + CLIP_LOG_STEP_DB]
+        for i in said:
+            self._clip_logged[i] = self.status.limit_over[i]
+        if said:
+            log.warning("output clipping (limiter %s): %s; the most since the last clear: take "
+                        "%.1f dB off", kind, ", ".join(
+                            f"{OUT_SHORT[i]} {self.status.limit_over[i]:.2f} dB over" for i in said),
+                        self.clip_take_off() or 0.0)
+        if first:
+            self.show_hint(HINT_CLIP_LATCH.format(
+                outs=" ".join(OUT_SHORT[i] for i in range(4) if self.status.limit_over[i] is not None),
+                db=f"{self.clip_take_off():.1f}"))
+
+    def clip_take_off(self) -> float | None:
+        """The dB to take off (D-021): the most any output went over the limiter's ceiling since
+        the last clear, rounded UP to 0.1 dB (0.1 at least); None = nothing latched. The master is common to
+        every output: taking this much off it keeps the loudest one under the ceiling (with the
+        sub loudness on and the master under its reference, its boost grows as the master goes
+        down: a little more, there)."""
+        held = [v for v in self.status.limit_over if v is not None]
+        if not held:
+            return None
+        return max(0.1, math.ceil(max(held) * 10.0 - 1e-6) / 10.0)
+
+    def clear_clip(self, source: str = "local") -> bool:
+        """The operator has seen the latched CLIP (an E1 push on SHOW / ALIGN, a phone's OK, the
+        console): clear it. Display only: no level moves. False = nothing was latched."""
+        held = list(self.status.limit_over)
+        if not any(v is not None for v in held):
+            return False
+        log.info("output CLIP cleared by %s (was %s)", source, ", ".join(
+            f"{OUT_SHORT[i]} {v:.2f} dB over" for i, v in enumerate(held) if v is not None))
+        self.status.limit_over = [None] * 4
+        self._clip_logged = [None] * 4
+        self.show_hint(HINT_CLIP_CLEARED)
+        self._changed()
+        return True
 
     # ------------------------------------------------------------------ persistence
     def _mark_dirty(self, urgent: bool = False) -> None:

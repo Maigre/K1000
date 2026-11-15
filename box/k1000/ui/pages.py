@@ -192,6 +192,9 @@ class ScreenStatus:
     ramping: a boot ramp is pending or running (K1000 brings Main in by itself).
     alert:  the controller's most urgent message (shown inside the MUTED band).
     in_clip: the INPUT (ADC) clipped recently (latched by the controller).
+    limit_over: D-021, per output, the most it went over the limiter's ceiling (dB) since the
+            operator last cleared it (None = not since): latched until cleared. The status bar
+            shows `CLIP -2.4` (the dB to take off) and the output's clip box stays red.
     in_peak_db: the program input's capture peaks, L R (dBFS, before any gain): the IN meters
             (D-015). Missing or short: the meters read the floor.
     UI v1 (D-009), same names as control.Status:
@@ -230,6 +233,7 @@ class ScreenStatus:
     ramping: bool = False
     alert: str = ""
     in_clip: bool = False
+    limit_over: Sequence[float | None] = (None, None, None, None)
     in_peak_db: Sequence[float] = (-100.0, -100.0)
     alerts: Sequence[tuple[str, str]] | None = None
     pills: Sequence[str] | None = None
@@ -895,8 +899,12 @@ def _status_bar(c: _Ctx, page: str, state: Any, status: Any, muted: bool) -> Non
         return
     # A latched clip, readable at arm's length (the meter's clip boxes are small): CLIP = an
     # output reached full scale, IN CLIP = the input ADC did (no K1000 knob fixes that one).
+    # D-021: with an output's overshoot latched, CLIP carries the dB to take off ("CLIP -2.4")
+    # until the operator clears it (E1 push on SHOW / ALIGN, a phone).
+    take = clip_take_off(status)
     for t, on in (("IN CLIP", _truth(_get(status, "in_clip", None))),
-                  ("CLIP", any(bool(_truth(v)) for v in _seq(_get(status, "clip", None))))):
+                  ("CLIP" if take is None else f"CLIP -{take:.1f}",
+                   take is not None or any(bool(_truth(v)) for v in _seq(_get(status, "clip", None))))):
         if on:
             lx = _pill(c, lx, t, RED, FG)
     # right side first, so the left text gets whatever room is left
@@ -993,20 +1001,39 @@ def _level(levels: list, i: int) -> float:
 _METER_ZONES = ((METER_FLOOR_DB, -18.0, GREEN), (-18.0, -6.0, YELLOW), (-6.0, 0.0, RED))
 
 
+def clip_take_off(status: Any) -> float | None:
+    """D-021: the dB to take off from status.limit_over (the most any output went over the
+    limiter's ceiling since the last clear), rounded up to 0.1 dB (0.1 at least); None = nothing latched
+    (control.Controller.clip_take_off's rule, for any status object)."""
+    held = []
+    for v in _seq(_get(status, "limit_over", None)):
+        try:
+            f = float(v) if v is not None and not isinstance(v, bool) else None
+        except (TypeError, ValueError):
+            f = None
+        if f is not None and math.isfinite(f):
+            held.append(f)
+    return max(0.1, math.ceil(max(held) * 10.0 - 1e-6) / 10.0) if held else None
+
+
 def meter_bars(status: Any) -> list[tuple[float, bool]]:
     """The six meters as drawn (D-015), left to right: IN L, IN R (the program input's capture
     peaks, status.in_peak_db; IN CLIP lights both clip boxes), SUB L, SUB R, TOP L, TOP R
-    (status.levels / clip). (dBFS, clipped) each; anything unreadable reads the floor. A single
-    input peak (an older status) is drawn on both IN bars."""
+    (status.levels / clip; D-021: an output with an overshoot latched keeps its box red until
+    the operator clears it, status.limit_over). (dBFS, clipped) each; anything unreadable reads
+    the floor. A single input peak (an older status) is drawn on both IN bars."""
     ins = _seq(_get(status, "in_peak_db", None))
     if len(ins) == 1:
         ins = ins * 2
     in_clip = bool(_truth(_get(status, "in_clip", None)))
     levels = _seq(_get(status, "levels", None))     # numpy arrays welcome (no `x or ()`)
     clips = _seq(_get(status, "clip", None))
+    held = _seq(_get(status, "limit_over", None))
     out = [(_level(ins, i), in_clip) for i in range(2)]
     for i in range(4):
-        out.append((_level(levels, i), bool(_truth(clips[i])) if i < len(clips) else False))
+        on = bool(_truth(clips[i])) if i < len(clips) else False
+        on = on or (i < len(held) and held[i] is not None)
+        out.append((_level(levels, i), on))
     return out
 
 

@@ -46,7 +46,8 @@ from k1000.control import (
     marker_db, recover_state,
 )
 from k1000.hw.mcp23017 import EncoderEvent, SwitchEvent
-from k1000.ui.input_map import Toggle
+from k1000.ui import pages
+from k1000.ui.input_map import ClearClip, Toggle
 from k1000.profiles import ProfileChoice, load_profile
 from k1000.state import RANGES, State, delay_samples, engine_rate
 
@@ -7204,6 +7205,106 @@ def test_d021_k1000_restarted_over_an_engine_on_a_pre_d021_config(tmp_path: Path
         await ctl.poll_once()
         assert await ctl.settle(3.0)
         assert [e for e in nomark(cl.log[n:]) if e[0] in ("set", "patch", "config")] == []
+        await ctl.stop()
+
+    run(body())
+
+
+# ======================================================================= D-021: the CLIP latch
+def test_d021_clip_latch_holds_the_db_to_take_off_until_cleared(tmp_path: Path,
+                                                                 caplog: pytest.LogCaptureFixture) -> None:
+    """HARD: a playback peak above 0 dBFS IS how far over the limiter's ceiling (full scale) the
+    output went: latched per output, the most since the last clear, through quiet reads, until
+    the operator clears it (E1 push, a phone); the dB to take off rounds up to 0.1. One journal
+    line per new latch (and per 1 dB more), the hint once. Display only: nothing is sent."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(master_db=-5.0), playing=True)
+        await boot(ctl)
+        n = len(cl.log)
+        st = ctl.status
+        assert st.limit_over == [None] * 4 and ctl.clip_take_off() is None
+        cl.peaks = [-3.0, 1.23]                      # dev 'sum': R is Sub R and Top R
+        with caplog.at_level(logging.WARNING):
+            await ctl.meter_once()
+        assert st.limit_over == [None, 1.23, None, 1.23] and st.limit_kind == "hard"
+        assert st.clip == [False, True, False, True]
+        assert ctl.clip_take_off() == 1.3
+        assert "output clipping (limiter hard): SUB R 1.23 dB over" in caplog.text
+        assert ctl.focus.hint_now() == "CLIP SUB R TOP R · TAKE 1.3 dB OFF · PUSH E1 = CLEAR"
+        caplog.clear()
+        cl.peaks = [0.5, 0.8]                         # less on R: R keeps 1.23; L latches 0.5
+        with caplog.at_level(logging.WARNING):
+            await ctl.meter_once()
+        assert st.limit_over == [0.5, 1.23, 0.5, 1.23]
+        cl.peaks = [-40.0, 5.67]                      # the gig's worst
+        with caplog.at_level(logging.WARNING):
+            await ctl.meter_once()
+        assert st.limit_over == [0.5, 5.67, 0.5, 5.67] and ctl.clip_take_off() == 5.7
+        assert caplog.text.count("output clipping") == 2      # L new; R 4.4 dB more
+        cl.peaks = [-40.0, -40.0]
+        for _ in range(3):
+            await ctl.meter_once()
+        assert st.limit_over == [0.5, 5.67, 0.5, 5.67]       # latched, not a 3 s hold
+        assert pages.meter_bars(st)[2:] == [(-40.0, True), (-40.0, True), (-40.0, True), (-40.0, True)]
+        # cleared from the box: E1's push on SHOW
+        ctl.handle_action(ClearClip())
+        assert st.limit_over == [None] * 4 and ctl.clip_take_off() is None
+        assert ctl.focus.hint_now() == ctl_mod.HINT_CLIP_CLEARED
+        assert ctl.clear_clip("phone 1") is False            # nothing left to clear
+        cl.peaks = [0.004, -1.0]                     # the next over latches again, said again
+        with caplog.at_level(logging.WARNING):
+            await ctl.meter_once()
+        assert st.limit_over == [0.004, None, 0.004, None] and ctl.clip_take_off() == 0.1
+        assert [e for e in nomark(cl.log[n:]) if e[0] in ("set", "patch", "config", "fader", "mute")] == []
+        await ctl.stop()
+
+    run(body())
+
+
+def test_d021_clip_latch_reads_the_soft_curve_back(tmp_path: Path) -> None:
+    """SOFT: the playback peak is after the curve (never above -0.1 dBFS); its inverse gives the
+    overshoot, exact up to +3.5 dB, then 3.5 (at least). A peak the curve leaves under its knee
+    (the signal under the ceiling) latches nothing."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(limit_kind="soft"), playing=True)
+        await boot(ctl)
+        c = 10 ** (dc.LIMIT_SOFT_DB / 20)
+        after = lambda over: 20 * math.log10(c * dc.soft_curve(10 ** (over / 20)))   # noqa: E731
+        cl.peaks = [after(-0.5), after(2.0)]
+        await ctl.meter_once()
+        st = ctl.status
+        assert st.limit_kind == "soft" and st.limit_over[0] is None
+        assert st.limit_over[1] == pytest.approx(2.0, abs=0.01) and ctl.clip_take_off() == 2.0
+        cl.peaks = [after(9.0), -60.0]
+        await ctl.meter_once()
+        assert st.limit_over[0] == pytest.approx(dc.SOFT_OVER_MAX_DB, abs=0.01)
+        await ctl.stop()
+
+    run(body())
+
+
+def test_d021_no_latch_while_the_limiter_kind_changes(tmp_path: Path) -> None:
+    """HARD -> SOFT steps the Clipper's ceiling for a moment: a peak read then belongs to neither
+    kind (a soft clip at +0.4 dB read as SOFT would say +3.5): not latched, nor in the read that
+    spans the end of the change."""
+    async def body() -> None:
+        ctl, cl = make(tmp_path, State(), playing=True)
+        await boot(ctl)
+        assert ctl.set_choice("limit_kind", "soft")
+        assert ctl.focus.hint_now() == "LIMITER SOFT"
+        cl.peaks = [0.4, 0.4]
+        await ctl.meter_once()                       # state soft, the engine not yet: skipped
+        assert ctl.status.limit_over == [None] * 4
+        assert await ctl.settle(5.0)
+        assert dc.limit_kind(ctl._applied) == "soft"
+        assert cl.cfg["filters"]["out_limit"]["parameters"] == {"clip_limit": dc.LIMIT_SOFT_DB,
+                                                                "soft_clip": True}
+        assert not any(e[0] == "config" for e in cl.log)                # no rebuild
+        await ctl.meter_once()                       # the read spanning the end: skipped
+        assert ctl.status.limit_over == [None] * 4
+        cl.peaks = [-0.1, -30.0]                      # the flat top, read as SOFT now
+        await ctl.meter_once()
+        assert ctl.status.limit_over[0] == pytest.approx(dc.SOFT_OVER_MAX_DB, abs=0.01)
         await ctl.stop()
 
     run(body())

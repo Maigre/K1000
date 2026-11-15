@@ -22,7 +22,7 @@ from PIL import Image
 from k1000 import control as ctl_mod
 from k1000 import state as st
 from k1000.ui import display, eqgraph, input_map as im, pages
-from k1000.ui.input_map import (ControlMap, Focus, GotoPage, Lock, Mute, NextPage, NotchHelper,
+from k1000.ui.input_map import (ClearClip, ControlMap, Focus, GotoPage, Lock, Mute, NextPage, NotchHelper,
                                 Nudge, ResetLive, SelectBand, SelectGroup, SelectItem, SelectSlot,
                                 SetChoice, ShowHint, Toggle, ToggleBand, UndoReset, Unlock,
                                 apply_focus, map_event)
@@ -1432,8 +1432,14 @@ def test_show_knobs_follow_the_selected_band():
     assert map_event("SHOW", f, Sw(1, "press")) == []             # E2 push = fine frequency
     assert map_event("SHOW", f, Enc(1, -3, ts=5.0)) == [Nudge("live_lowshelf.freq", -3, True)]
     assert map_event("SHOW", f, Sw(1, "short")) == []             # a push never selects on SHOW
-    for n in range(4):                                            # not even without a turn
+    for n in range(1, 4):                                         # not even without a turn
         assert map_event("SHOW", f, Sw(n, "press")) == [] and map_event("SHOW", f, Sw(n, "short")) == []
+    # D-021: E1's push alone (MASTER's) clears the latched output CLIP; after a turn it does not
+    assert map_event("SHOW", f, Sw(0, "press")) == [] and map_event("SHOW", f, Sw(0, "short")) == [ClearClip()]
+    assert map_event("ALIGN", f, Sw(0, "press")) == [] and map_event("ALIGN", f, Sw(0, "short")) == [ClearClip()]
+    map_event("SHOW", f, Sw(0, "press"))
+    map_event("SHOW", f, Enc(0, -1, ts=5.5))                      # a fine master turn
+    assert map_event("SHOW", f, Sw(0, "release")) == [] and map_event("SHOW", f, Sw(0, "short")) == []
     assert map_event("SHOW", f, Enc(0, 0, ts=6.0)) == []
     f.slot = 101                                                  # tolerant: wraps (101 % 6 = HS)
     assert map_event("SHOW", f, Enc(3, 1, ts=7.0)) == [Nudge("live_highshelf.gain", 1, False)]
@@ -3607,3 +3613,29 @@ def test_demo_cases_include_the_d016_pictures():
     names = {c[0] for c in pages.demo_cases()}
     assert {"show_pills_d016", "setup_deharsh_pick", "setup_loudness", "setup_aux_pick",
             "setup_aux_dev"} <= names
+
+
+# ----------------------------------------------------------------- D-021: the output CLIP latch
+def test_d021_status_bar_says_the_db_to_take_off_until_cleared(monkeypatch):
+    """A latched overshoot keeps the status bar's CLIP pill (red) with the dB to take off,
+    "CLIP -2.4", on every page, after the 3 s clip boxes have gone; the outputs' clip boxes stay
+    red too. Cleared: as before."""
+    said: list[str] = []
+    real = pages._pill
+    monkeypatch.setattr(pages, "_pill", lambda c, x, text, *a, **k: (said.append(text), real(c, x, text, *a, **k))[1])
+    s = st.State()
+    for page in ("SHOW", "ALIGN", "SETUP"):
+        said.clear()
+        pages.render(page, s, pages.ScreenStatus(**RUN, limit_over=(None, 2.346, None, None)),
+                     Focus(), now=0.0)
+        assert "CLIP -2.4" in said, (page, said)
+    said.clear()
+    pages.render("SHOW", s, pages.ScreenStatus(**RUN, clip=(False, True, False, False)), Focus(), now=0.0)
+    assert "CLIP" in said and not any(t.startswith("CLIP -") for t in said)
+    said.clear()
+    pages.render("SHOW", s, pages.ScreenStatus(**RUN), Focus(), now=0.0)
+    assert not any(t.startswith("CLIP") for t in said)
+    held = pages.ScreenStatus(**RUN, levels=(-40.0,) * 4, limit_over=(0.004, None, None, None))
+    assert pages.clip_take_off(held) == 0.1
+    assert [c for _db, c in pages.meter_bars(held)] == [False, False, True, False, False, False]
+    assert pages.clip_take_off(pages.ScreenStatus(**RUN)) is None
