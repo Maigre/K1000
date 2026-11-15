@@ -163,10 +163,10 @@ export function renderStrip() {
     setText(al.firstChild, top[1]);
     setText(al.lastChild, serious.length > 1 ? "+" + (serious.length - 1) : "");
   }
-  const cl = $("#clipLine"), L = clipLatch();
+  const cl = $("#clipLine"), CL = clipLatch();      // D-021 (L is the link state above)
   const clipWas = cl.hidden;
-  cl.hidden = !L;
-  if (L) setText(cl.firstChild, clipWords(L));
+  cl.hidden = !CL;
+  if (CL) setText(cl.firstChild, clipWords(CL));
   const b = document.body;
   b.classList.toggle("muted", !!muted);
   b.classList.toggle("nolink", !ok);

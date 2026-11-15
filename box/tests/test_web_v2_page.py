@@ -106,6 +106,21 @@ def _v2_files() -> list[str]:
                   if p.is_file() and not any(part.startswith(".") for part in p.relative_to(V2).parts))
 
 
+@needs_node
+def test_every_v2_script_parses(tmp_path: Path) -> None:
+    """One module that does not parse stops the whole page (main.js imports them all), MUTE
+    included: review 2026-11-15 found view.js declaring `L` twice, a page that never linked.
+    `node --check` each module as a module, the service worker as a classic script."""
+    files = sorted(V2.rglob("*.js"))
+    assert any(js.name == "view.js" for js in files)
+    for js in files:
+        dst = tmp_path / (js.stem + (".mjs" if js.parent.name == "js" else ".js"))
+        dst.write_text(js.read_text())
+        r = subprocess.run([NODE or "node", "--check", str(dst)], capture_output=True, text=True,
+                           timeout=30)
+        assert r.returncode == 0, f"{js.relative_to(V2)}: {r.stderr[-800:]}"
+
+
 def test_v2_page_keeps_the_csp() -> None:
     """script-src 'self'; style-src 'self' (docs/14 §1): no inline script, no <style>, no style=
     attribute, no eval; every script is a module from the box."""
