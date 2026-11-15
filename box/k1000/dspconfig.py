@@ -52,10 +52,11 @@ wrapped). So `limit_kind`:
   off), and the engine's clipped-samples count is the limiter's own. Under full scale nothing is
   touched, bit for bit. Needs an integer playback format: `profiles` refuses a float one.
 - "soft": the engine's cubic soft clip (clipper.rs: s = x/C clamped to +-1.5, s - s^3/6.75, times
-  C) at C = LIMIT_SOFT_DB: never above C (just under full scale, so the conversion never clips),
-  rounding from about 6 dB under C (third harmonic -41 dB re a peak at C/2), the full ceiling at
-  +3.5 dB over it. The curve is monotonic, so the peak before it is known up to +3.5 dB over C
-  (`limit_over_db`).
+  C) at C = LIMIT_SOFT_DB: never above C (just under full scale, so the conversion never clips).
+  It bends every sample, more the louder (third harmonic -68 dB at -20 dBFS, -40 dB for a peak
+  at C/2; a peak at C comes out 1.39 dB lower), never bit-transparent; the full ceiling at
+  +3.52 dB over C. The curve is monotonic, so the peak before it is known up to +3.52 dB over C,
+  then only as a floor (`limit_over_db`, `limit_over_is_floor`).
 Switching the kind writes two parameters (`soft_clip`, `clip_limit`), never a rebuild: the bool
 alone, once, while the ceiling stands at the HARD backstop, and the ceiling in 0.5 dB steps
 (`smooth_ops`, `_SOFT_CLIP`): no sample moves by more than 0.5 dB at once (computed from the

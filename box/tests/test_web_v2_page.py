@@ -109,7 +109,8 @@ def _v2_files() -> list[str]:
 @needs_node
 def test_every_v2_script_parses(tmp_path: Path) -> None:
     """One module that does not parse stops the whole page (main.js imports them all), MUTE
-    included: review 2026-11-15 found view.js declaring `L` twice, a page that never linked.
+    included: on 15 Nov, after the reviews, view.js was found declaring `L` twice (the real page
+    in headless Chromium never linked).
     `node --check` each module as a module, the service worker as a classic script."""
     files = sorted(V2.rglob("*.js"))
     assert any(js.name == "view.js" for js in files)

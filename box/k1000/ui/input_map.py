@@ -393,8 +393,9 @@ SETUP_GROUPS: tuple[tuple[str, tuple[SetupItem, ...]], ...] = (
     )),
     ("OUTPUT", (
         # D-021: the limiter, the last stage of every output, always on: HARD (full scale cut
-        # flat, transparent under it) or SOFT (peaks rounded off under -0.1 dBFS). Chosen by ear;
-        # a parameter write (no rebuild, no click): an everyday choice, applied as E3 turns.
+        # flat, transparent under it) or SOFT (a soft clip under -0.1 dBFS). Chosen by ear;
+        # two parameters written in small steps (no rebuild, dspconfig.smooth_ops): an everyday
+        # choice, applied as E3 turns.
         SetupItem("Limiter", F_LIMIT_KIND, "choice"),
     )),
     ("LIVE EQ", (
