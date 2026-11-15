@@ -1794,6 +1794,33 @@ def test_setup_resync_row_says_the_delay_its_growth_and_the_resync():
     assert bar(latency_ms=7.9, latency_grown_ms=1.6) != bar(latency_ms=7.9)
 
 
+def test_the_growth_gives_way_before_the_delay_on_a_crowded_status_bar():
+    """D-023, review of 15 Nov: with MUTED and IN CLIP on the bar, "10.1ms +2.7" does not fit:
+    the growth goes, the over-limit delay stays, orange (it used to go whole, and the DSP load
+    took its place). When even the delay does not fit, the bar is as without a reading
+    (test_latency's `the_readout_gives_way_to_three_pills`)."""
+    muted = st.State.from_dict({**st.State().to_dict(), "muted": True})
+    base = dict(RUN, profile="m4", device="MOTU M4", load=2.0, latency_ms=10.1,
+                latency_over=True, in_clip=True)
+    box = (0, 0, pages.W, pages.STATUS_H)
+    right = (pages.W // 2, 0, pages.W, pages.STATUS_H)
+
+    def bar(**kw):
+        return pages.render("SHOW", muted, pages.ScreenStatus(**{**base, **kw}), Focus(), now=0.0)
+
+    grown, plain = bar(latency_grown_ms=2.7), bar()
+    assert _count(plain, right, pages.ORANGE) > 100                    # "10.1ms", orange
+    assert grown.crop(box).tobytes() == plain.crop(box).tobytes()       # the "+2.7" gave way
+    # Room for the growth (no IN CLIP): it is drawn
+    assert bar(in_clip=False, latency_grown_ms=2.7).crop(box).tobytes() != \
+        bar(in_clip=False).crop(box).tobytes()
+    # No room for the delay at all (CLIP too): the bar as without a reading
+    full = bar(clip=(True,) * 4, latency_grown_ms=2.7)
+    none = bar(clip=(True,) * 4, latency_ms=None, latency_over=False)
+    assert _count(full, right, pages.ORANGE) == 0
+    assert full.crop(box).tobytes() == none.crop(box).tobytes()
+
+
 def test_setup_laptop_access_opens_on_a_double_e3_push_and_closes_on_one():
     """SETUP > Laptop access emits SetupAction("laptop_access") after its double E3 push (the
     opening: the first opens the popup); while the Controller marks it open (Focus.no_confirm)

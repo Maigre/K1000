@@ -867,7 +867,7 @@ def _status_bar(c: _Ctx, page: str, state: Any, status: Any, muted: bool) -> Non
     The delay in to out (D-018, `latency_readout`) sits beside the engine it belongs to: white,
     orange above the limit (it informs, it is not an alert), a small orange "N DROP" after it
     once the engine logged a dropout. When the pills leave too little room, the DSP load goes
-    first, then the dropout count, then the delay.
+    first, then the dropout count, then the growth (D-023's "+1.6"), then the delay.
 
     A system alert (status.alerts[0]) takes the profile/device place in its level's colour
     (critical red, warning orange, info blue; never amber, which is the hints'), and the right
@@ -916,15 +916,22 @@ def _status_bar(c: _Ctx, page: str, state: Any, status: Any, muted: bool) -> Non
         text, over, drops = lat if lat is not None else ("", False, "")
         if text:
             # Only in the room the pills and the engine leave. What gives way first: the DSP
-            # load (of less use at a show), then the dropout count, then the delay itself.
+            # load (of less use at a show), then the dropout count, then the growth (D-023:
+            # "7.9ms +1.6" -> "7.9ms"), then the delay itself (the bar is then as without a
+            # reading).
+            grown = latency_growth(status)
+            texts = [text]
+            if grown and text.endswith(" " + grown):
+                texts.append(text[:-len(grown) - 1])
             load_w = int(d.textlength(right, font=font(17))) + 4 + 38 if right else 0
-            lat_w = int(d.textlength(text, font=font(17))) + 10
             drops_w = int(d.textlength(drops, font=font(12))) + 4 if drops else 0
             free = x - lx - 8 - (int(d.textlength(eng, font=_fit(d, eng, 17, 150))) + 20)
-            fits = [(dw, lw) for dw in (drops_w, 0) for lw in (load_w, 0)
+            fits = [(t, lat_w, dw, lw) for t in texts
+                    for lat_w in (int(d.textlength(t, font=font(17))) + 10,)
+                    for dw in (drops_w, 0) for lw in (load_w, 0)
                     if lat_w + dw + lw <= free]
             if fits:
-                drops_w, load_w = fits[0]
+                text, lat_w, drops_w, load_w = fits[0]
                 drops, right = (drops if drops_w else ""), (right if load_w else "")
             else:
                 text = ""
