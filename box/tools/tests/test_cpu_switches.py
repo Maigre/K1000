@@ -92,6 +92,7 @@ class FakePi:
         w("proc/irq/default_smp_affinity", "f\n")
         w("proc/sys/kernel/sched_rt_runtime_us", "950000\n")
         w("proc/sys/kernel/sched_rt_period_us", "1000000\n")
+        w("proc/sys/kernel/timer_migration", "1\n")
         # interrupts as on the box: per-CPU ones refuse a move, the xHCI's MSI too, the PCIe MSI's
         # own parent has no handler directory (a chained demultiplexer)
         self.irq(11, ["arch_timer"], refuse=True)
@@ -337,11 +338,13 @@ def test_usb_cpu0_twice_changes_nothing_more(pi, tmp_path):
     n = len(pi.kernel.calls)
     log, rc = kc.apply_usb_cpu0(pi.box(), str(run))
     again = pi.kernel.calls[n:]
-    # only the refused per-CPU interrupt and the two masks are written again; no thread moves
+    # only the refused per-CPU interrupt, the two masks and timer migration are written again (the
+    # same values); no thread moves
     assert rc == 0 and not [c for c in again if c[0] == "affinity"], again
     assert {c[1] for c in again if c[0] == "write"} == {"proc/irq/11/smp_affinity_list",
                                                         "proc/irq/default_smp_affinity",
-                                                        "sys/devices/virtual/workqueue/cpumask"}
+                                                        "sys/devices/virtual/workqueue/cpumask",
+                                                        "proc/sys/kernel/timer_migration"}
     # and its undo still knows which interrupt was off core 0 before the first run, and the cores
     # each thread had before it
     rec = json.loads((run / "report").read_text())
@@ -402,6 +405,20 @@ def test_check_wants_the_movable_kernel_threads_off_core_0(pi, tmp_path):
     text, rc = _check(pi)
     assert rc == 1 and "[ ] no movable kernel thread allowed on core 0 (1: new_kthread(150))" in text, text
     assert "PARTLY in force: NOT AS CHOSEN" in text
+
+
+def test_usb_cpu0_turns_timer_migration_off_and_undo_puts_it_back(pi, tmp_path):
+    """Part of the state the 15 h run held with no delay step (docs/17 §14)."""
+    run = tmp_path / "run"
+    run.mkdir()
+    log, rc = kc.apply_usb_cpu0(pi.box(), str(run))
+    assert rc == 0 and pi.read("proc/sys/kernel/timer_migration") == "0"
+    assert "kernel timer migration: off (was 1)" in "\n".join(log)
+    assert json.loads((run / "report").read_text())["timer_migration"] == "1"
+    kc.apply_usb_cpu0(pi.box(), str(run))                 # twice: still remembers 1
+    assert json.loads((run / "report").read_text())["timer_migration"] == "1"
+    log, rc = kc.undo_usb_cpu0(pi.box(), str(run))
+    assert rc == 0 and pi.read("proc/sys/kernel/timer_migration") == "1"
 
 
 def test_usb_cpu0_fails_when_the_new_interrupt_mask_cannot_be_written(pi):

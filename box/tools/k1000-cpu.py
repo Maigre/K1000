@@ -17,8 +17,9 @@ Commands (apply and undo run as root, from their units; check needs no root and 
                   workqueues leave core 0; every user-space thread allowed on core 0 goes to
                   core 1, except the engine's; so does every kernel thread the kernel lets move
                   (the RCU threads, jbd2, kswapd, the interrupt threads...), never kthreadd nor a
-                  per-core one. Never the xHCI's interrupt. Writes what it did to
-                  $RUNTIME_DIRECTORY/report (/run/k1000-usb-cpu0/report).
+                  per-core one; the kernel's timer migration goes off. Never the xHCI's
+                  interrupt. Writes what it did to $RUNTIME_DIRECTORY/report
+                  (/run/k1000-usb-cpu0/report).
   usb-cpu0 undo   Interrupts and workqueues back on every core; each thread apply moved back on
                   the cores it had (the report names them), the threads systemd started meanwhile
                   on cores 0 and 1 (the processor settings' cores). A login session's commands
@@ -72,6 +73,7 @@ USB_RT_CHOICE = "/etc/k1000/usb-rt"      # --usb-rt-on/-off: the same
 REPORT = "/run/k1000-usb-cpu0/report"    # k1000-usb-cpu0.service's RuntimeDirectory + "report"
 WQ_MASK = "/sys/devices/virtual/workqueue/cpumask"
 DEFAULT_IRQ_MASK = "/proc/irq/default_smp_affinity"
+TIMER_MIGRATION = "/proc/sys/kernel/timer_migration"   # 0: a timer runs on the core that set it
 
 
 # --------------------------------------------------------------------------- cpu lists and masks
@@ -311,6 +313,16 @@ def apply_usb_cpu0(box: Box, report_dir: str | None = None) -> tuple[list[str], 
     log.append(f"{moved} user-space threads moved to core {fmt_cpus(target)}; the engine's left alone")
     if failed:
         log.append("could not move: " + _short(failed))
+    # Timer migration off: part of the state a 15 h run at 96 kHz held with no delay step (docs/17
+    # §14). Alone it did not prevent one (a step after 7 h 17), so it goes with the rest.
+    tm = (box.read(TIMER_MIGRATION) or "").strip()
+    if tm:
+        record["timer_migration"] = tm
+        try:
+            box.kernel.write(box.p(TIMER_MIGRATION), "0\n")
+            log.append(f"kernel timer migration: off (was {tm})")
+        except OSError as e:
+            log.append(f"WARNING: {TIMER_MIGRATION}: {e.strerror or e}")
     kmoved, kleft = [], []
     for t in tasks(box):
         if not _movable_kthread(t):
@@ -337,6 +349,7 @@ def apply_usb_cpu0(box: Box, report_dir: str | None = None) -> tuple[list[str], 
             # thread's cores, are the first run's view (this run found those threads on core 1)
             first = json.loads(Path(report_dir, "report").read_text())
             record["elsewhere"] = first["elsewhere"]
+            record["timer_migration"] = first.get("timer_migration", record.get("timer_migration"))
             for key in ("thread_cores", "kernel_cores"):
                 seen = {(r[0], r[1]) for r in first.get(key, [])}
                 record[key] = first.get(key, []) + [r for r in record[key] if (r[0], r[1]) not in seen]
@@ -365,9 +378,11 @@ def undo_usb_cpu0(box: Box, report_dir: str | None = None) -> tuple[list[str], i
     elsewhere: set[int] = set()
     had: dict[tuple[int, int], frozenset] = {}
     khad: dict[tuple[int, int], frozenset] = {}
+    tm_was = "1"                     # the kernel's default
     if report_dir:
         try:
             report = json.loads(Path(report_dir, "report").read_text())
+            tm_was = str(report.get("timer_migration") or "1")
             elsewhere = set(report.get("elsewhere", []))
             had = {(int(r[0]), int(r[1])): parse_cpus(r[2]) for r in report.get("thread_cores", [])}
             khad = {(int(r[0]), int(r[1])): parse_cpus(r[2]) for r in report.get("kernel_cores", [])}
@@ -423,6 +438,12 @@ def undo_usb_cpu0(box: Box, report_dir: str | None = None) -> tuple[list[str], i
         except OSError:
             continue
     log.append(f"{kback} kernel threads back on the cores they had")
+    if box.p(TIMER_MIGRATION).exists():
+        try:
+            box.kernel.write(box.p(TIMER_MIGRATION), tm_was + "\n")
+            log.append(f"kernel timer migration: back to {tm_was}")
+        except OSError as e:
+            log.append(f"WARNING: {TIMER_MIGRATION}: {e.strerror or e}")
     if report_dir:
         Path(report_dir, "report").unlink(missing_ok=True)
     return log, rc
@@ -577,6 +598,9 @@ def check(box: Box, sample: float = 2.0, sleep=time.sleep) -> tuple[list[str], i
         (f"new interrupts on core {fmt_cpus(target)} (default_smp_affinity {(box.read(DEFAULT_IRQ_MASK) or '?').strip()})",
          parse_mask(box.read(DEFAULT_IRQ_MASK)) == target),
     ]
+    if box.p(TIMER_MIGRATION).exists():
+        tmv = (box.read(TIMER_MIGRATION) or "?").strip()
+        conds.append((f"kernel timer migration off (timer_migration {tmv})", tmv == "0"))
     if box.p(WQ_MASK).exists():
         wq = parse_mask(box.read(WQ_MASK))
         conds.append((f"kernel workqueues off core {USB_CPU} (cores {fmt_cpus(wq)})", bool(wq) and USB_CPU not in wq))
