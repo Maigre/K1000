@@ -408,6 +408,7 @@ add it to everything else there.
 | The kernel's unbound workqueues: cores 1-3. The Wi-Fi driver's receive work and the SD card's writeback run there | `/sys/devices/virtual/workqueue/cpumask` = `e` | the unit's start |
 | Every user-space thread allowed on core 0, except the engine's: core 1 | `sched_setaffinity` | the unit's start |
 | Every kernel thread the kernel lets move (the RCU threads, `jbd2`, `kswapd0`, the interrupt threads…): core 1. Never `kthreadd`, a per-core thread, or a workqueue worker: the kernel sets their cores itself and refuses a move | `sched_setaffinity` | the unit's start |
+| The kernel's timer migration: off (a timer runs on the core that set it) | `/proc/sys/kernel/timer_migration` = `0` | the unit's start |
 
 The unit (`/opt/k1000/tools/k1000-cpu.py usb-cpu0 apply`) logs what it moved, what it kept on core
 0 and what the kernel refused, and writes it to `/run/k1000-usb-cpu0/report` for the check. It
@@ -435,6 +436,12 @@ traced on the box began when core 0's timer work ran the sleep time-out of a ker
 off for a whole tick (4 ms) and the M4's playback queue ran empty. A thread kept off core 0 has its
 timers off core 0. Undo gives each kernel thread it moved back the cores it found it on, and
 touches no other (core 1's own per-core threads have core 1 alone too).
+
+The processor settings themselves (not a switch) also give the kernel's connection tracker a table
+of 1024 buckets (`/etc/modprobe.d/k1000-conntrack.conf`; install.sh resizes a loaded table at
+once). The phone Wi-Fi's fence uses connection tracking, and with the default table (262,144
+buckets on this Pi) its once-a-minute sweep held a core for 7.3 ms with preemption off; on 16 Nov
+it held the engine's capture thread and the audio dropped out (`docs/17` §14).
 
 Why a unit and not `irqaffinity=1` on the kernel command line: the same interrupts move either
 way, but the unit needs no edit of the boot files and no reboot, on or off, so the bench can

@@ -48,7 +48,8 @@ were added on 13 Nov, the 96 kHz night of section 10 on 14 Nov, section 14 on 15
   (4 ms), starting in its timer work right after a tick. The USB playback queue ran empty, and came
   back deeper. In both traces core 0 had just run the sleep time-out of a kernel thread that
   another core was waking at the same moment. Keeping every thread that can move off core 0 is
-  under test: clean since 15 Nov, 10:37.
+  under test: 14 h 54 with no step (15 to 16 Nov). That run ended on an audible dropout of another
+  cause, the connection tracker's sweep on one of the engine's cores, now fixed.
 - **Still open:** a long run with that remedy, a few real power cycles, and Thomas's ear on the
   result.
 
@@ -602,10 +603,30 @@ command):
   by hand on 15 Nov, and part of the switch since (the per-core threads, 85, cannot move);
 - timer migration still off.
 
-Clean to 17:07 (6 h 30): 74 loop measurements, every one at 6.361 ms; the recorder has not fired.
-The steps came after 0.5 to 7.3 hours before, so about 20 clean hours are needed before this means
-anything.
+**Result: 14 h 54 with no step** (10:37 to 01:31): 169 loop measurements, every one at
+6.361 ms (measured). The runs before had steps after 0.5 to 7.3 hours, and once after 11.4. Then
+an audible dropout of another kind ended the run (below).
 
-If it holds: the switch becomes a default of the box, and a night is run on a fresh boot. If it
-does not: the next trace says what else core 0 was doing.
+### A dropout from the connection tracker, 16 Nov
+
+At 01:31:20 the engine logged a capture overrun ("Capture: read overrun") and restarted its
+playback: a short gap in the sound, logged, with the delay back at 6.37 ms right after (read,
+measured). The trace (all four cores) shows why: on core 3, one of the engine's two cores, a kernel
+worker ran `gc_worker` of `nf_conntrack`, the connection tracker's garbage collector, for more than
+4 ms without letting the engine's capture thread in; the thread had been woken there and waited
+(read). The capture buffer holds 5.3 ms at 96 kHz.
+
+The connection tracker is loaded by the phone Wi-Fi's fence (`ct state`, `ct count` in its rules).
+Its collector sweeps the whole table once a minute, on whatever core its timer fires. The table
+had 262,144 buckets for 13 connections (read), and every sweep in the traces of 15 and 16 Nov took
+7.3 to 7.7 ms, on core 3 each time (read). Most sweeps found the capture thread on the other core.
+This is not the stall of the steps above: in those traces the sweeps ran 10 to 16 s away from the
+stall.
+
+**Fixed in the processor settings** (on by default): `/etc/modprobe.d/k1000-conntrack.conf` gives the
+table 1024 buckets, which the fence's 64 connections at most never fill; install.sh resizes a
+loaded table at once. The sweep should be about 250 times shorter: to measure on the box.
+
+The usb-cpu0 switch now also turns the kernel's timer migration off, so that the switch alone
+reproduces the state this run held.
 
