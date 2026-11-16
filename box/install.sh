@@ -267,10 +267,11 @@ fi
 # read-only for k1000. Hidden files, caches and REVISION are never mirrored nor deleted; directory
 # mtimes are not mirrored (-O), so writing REVISION does not make the next run see a change.
 # apk/ neither: step 5b installs one APK from it, and keeps the box's when the source has none.
+# Nor splash.rgb565: step 5c renders it for this deploy (a rollback copy carries the old one).
 # Before anything changes, the running version is kept in /opt/k1000.prev (rollback: README).
 if [ "$SRC" != "$APP" ]; then
   RSYNC=(rsync -rlptgoO --delete --chown=root:root "--chmod=D755,Fu+rw,Fgo+r,Fgo-w"
-         --exclude='.*' --exclude=__pycache__ --exclude='*.pyc' --exclude=/REVISION --exclude=/apk)
+         --exclude='.*' --exclude=__pycache__ --exclude='*.pyc' --exclude=/REVISION --exclude=/apk --exclude=/splash.rgb565)
   pending=$("${RSYNC[@]}" --dry-run --itemize-changes "$SRC/" "$APP/" 2>/dev/null || true)
   if [ -n "$pending" ]; then
     if [ -d "$APP/k1000" ]; then
@@ -420,6 +421,30 @@ else
 fi
 if [ $APK_NEW = 1 ] && [ $DO_START = 0 ] && systemctl is-active --quiet k1000.service; then
   note "new Android app: the first-time page offers it once k1000 has started again (between shows: sudo systemctl restart k1000)"
+fi
+
+# --- 5c. the boot splash (k1000/ui/splash.py; k1000-console.service paints it) ------------------
+# What the panel shows from the moment it registers until k1000's first frame: the K1000 name and
+# the build this deploy recorded in REVISION, or /etc/k1000/splash.png (his picture, fitted whole)
+# when there is one; re-run install.sh after changing it. Rendered here, once, as the panel's raw
+# frame, so the boot only copies a file (no Python on the boot path), by the code just deployed.
+# The same build and picture give the same bytes: a re-run with nothing new stays at 0 changes.
+# A render that fails (no PIL yet, a broken install) only warns, and removes the old splash rather
+# than let the panel name a build that is no longer the one running: the box boots as before, the
+# console kept off the panel, no splash.
+SPLASH=$APP/splash.rgb565
+SPLASH_IMAGE=/etc/k1000/splash.png
+splash_args=(--revision "$(head -n 1 "$APP/REVISION" 2>/dev/null || true)" --out "$TMP/splash.rgb565")
+if [ -f "$SPLASH_IMAGE" ]; then splash_args+=(--image "$SPLASH_IMAGE"); fi
+if PYTHONPATH=$APP PYTHONDONTWRITEBYTECODE=1 python3 -m k1000.ui.splash "${splash_args[@]}" 2> "$TMP/splash.err"; then
+  put "$TMP/splash.rgb565" "$SPLASH" 644
+  if [ -s "$TMP/splash.err" ]; then note "WARNING: $(tail -n 1 "$TMP/splash.err")"; fi
+else
+  note "WARNING: boot splash not rendered (the panel shows none): $(tail -n 1 "$TMP/splash.err")"
+  if [ -e "$SPLASH" ]; then
+    rm -f -- "$SPLASH"
+    changed "removed $SPLASH (it named the build deployed before this one)"
+  fi
 fi
 
 # --- 6. systemd: units, hardware watchdog --------------------------------------------------------

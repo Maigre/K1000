@@ -19,6 +19,8 @@
 #
 # The events (first match in this boot's journal):
 #   userspace start     systemd's first line
+#   splash on panel     "k1000-console: splash on fbN" (the boot splash painted; the panel is dark
+#                       until its driver registers, a moment before)
 #   k1000 started       "k1000 <version>: profile ..."
 #   engine Running      "engine Running" (k1000 saw the engine processing audio)
 #   ramp start          "boot ramp: start" (older k1000: "pushing the state, ramping in")
@@ -72,6 +74,7 @@ awk -v fw="$fw" '
     if (first == "") first = m
     msg = substr($0, RLENGTH + 1)
     if (!("user" in at) && msg ~ / systemd\[1\]: /) at["user"] = m
+    if (!("splash" in at) && msg ~ /k1000-console: splash on fb/) at["splash"] = m
     if (!("k1000" in at) && msg ~ /: INFO k1000: k1000 [^ ]+: profile /) at["k1000"] = m
     if (!("run" in at) && msg ~ /k1000\.control: engine Running$/) at["run"] = m
     if (!("ramp" in at) && msg ~ /k1000\.control: boot ramp: start/) at["ramp"] = m
@@ -98,6 +101,7 @@ awk -v fw="$fw" '
       print "k1000-boottime: this boot, seconds after LINUX START (no firmware \"Starting ARM\" line: run as root, vclog --msg)"
     }
     row("userspace start", "user")
+    row("splash on panel", "splash")
     row("k1000 started", "k1000")
     row("engine Running", "run")
     row("ramp start", "ramp", "ramp_old", "sync start: older k1000")

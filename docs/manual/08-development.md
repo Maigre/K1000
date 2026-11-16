@@ -47,6 +47,7 @@ this chapter is the map and the working habits.
 | `hw/mcp23017.py` | The knob and button driver (MCP23017 + gpiod interrupts, the quadrature decoder) |
 | `hw/simchip.py` | A real-time simulated MCP23017, for the knob timing test and the knob trace's bench |
 | `ui/pages.py`, `ui/display.py` | The screen pages (SHOW, ALIGN, SETUP, the Knob test) and the framebuffer (changed rows only) |
+| `ui/splash.py` | The boot splash, rendered by install.sh as one raw panel frame; `k1000-console.service` paints it at boot |
 | `ui/input_map.py` | Knob and button meaning per page, as a table |
 | `ui/qr.py` | The PHONE page, with its QR codes |
 | `ui/eqgraph.py` | The EQ curve maths (the engine's own biquads) and the graph drawing |

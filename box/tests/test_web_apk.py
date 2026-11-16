@@ -747,7 +747,7 @@ class _Install:
     def __init__(self, tmp: Path, k1000_active: bool = False) -> None:
         text = INSTALL.read_text()
         helpers = text[text.index("# put SRC DST MODE"):text.index("# revision_of SRC")]
-        step = text[text.index("# --- 5b. the Android app"):text.index("# --- 6. systemd")]
+        step = text[text.index("# --- 5b. the Android app"):text.index("# --- 5c. the boot splash")]
         self.src, self.app = tmp / "src", tmp / "opt-k1000"
         self.src.mkdir()
         self.app.mkdir()

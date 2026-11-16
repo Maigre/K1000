@@ -11,7 +11,7 @@ D-009: pages SHOW · ALIGN · SETUP, the buttons, the screen states) in `docs/04
 | `camilladsp.service` | the audio engine, CamillaDSP: the pinned build of D-019 (upstream `next5` at `0930f9b`, "The engine build" below), user `k1000`, real-time threads | nothing (audio never waits for the UI) |
 | `k1000.service` | `python3 -m k1000` in `/opt/k1000`: knobs, screen, state, persistence, and the phone page (https://10.42.0.1/, `k1000/web/`; ports 80/443/8080 on the AP address only) | wants the engine, copes when it is down |
 | `camillagui.service` | CamillaGUI v5 beta.2 on port 5005 (phone compact view, laptop editor) | nothing; lowest CPU priority, sandboxed |
-| `k1000-console.service` | at boot, waits for the ZynScreen's framebuffer, then keeps the Linux text console off it; done ~3 s later | nothing; k1000 wants it but never waits for it |
+| `k1000-console.service` | at boot, waits for the ZynScreen's framebuffer, then keeps the Linux text console off it and paints the boot splash on it (« Boot splash » below); done ~3 s later | nothing; k1000 wants it but never waits for it |
 | `k1000-usbwatch.service` | root: when the audio interface named in `active.yml` (the M4) stays missing 10 s, resets the USB hub above it (then after 30 s, 60 s … every 300 s at most): the kernel stops retrying a port after a flaky reconnect burst (M4 day, 2026-10-16) | nothing; never touches the engine or k1000 |
 | `k1000-ap-fence.service` | the phone AP's firewall (its own nftables table): from the K1000 Wi-Fi only DHCP, DNS, 80, 443, 8080 reach the box (16 connections per phone, 64 in all); 10.42.0.1 unreachable from `eth0` | nothing; loaded before any network |
 | `k1000-ap-hostapd.service` | the phone's Wi-Fi access point "K1000" on `wlan0` (hostapd, WPA2, PMF off, 5 GHz ch 36) | requires the fence (refuses to start without its table); bound to `wlan0`; refuses while another interface is in 10.42.0.0/24; NetworkManager leaves `wlan0` alone |
@@ -263,7 +263,8 @@ after it; `k1000-console.service` still logs `console unbound 1 time(s)` at ever
 Those figures start at the kernel, not at power-on: the firmware's ~10.4 s before Linux (measured
 2026-10-16) are not in them. **Boot timer**: `ssh k1000 "sudo /opt/k1000-src/tools/k1000-boottime.sh"`
 prints this boot from power-on (the firmware's `vclog --msg` + the journal): Linux start, userspace
-start, k1000 started, engine Running, ramp start, Main at level, first screen frame. Read-only;
+start, splash on panel, k1000 started, engine Running, ramp start, Main at level, first screen
+frame. Read-only;
 `--save DIR` keeps the two raw logs. Run it after each power cycle when you change a boot setting.
 
 Left as they are, on purpose:
@@ -308,6 +309,27 @@ Later that day, on the build that became main (the boot levers plus the processo
 everything but the engine runs on cores 0 and 1): full level 14.5 s, first screen 16.1 s.
 Not proven yet: that a real power-on times like a reboot (one switch cycle, then the timer), and
 the 1.5 s ramp by ear. Details: `docs/17-box-record-and-bench.md` §7.
+
+## Boot splash
+
+From the moment the panel exists until k1000 draws its first frame, the panel shows the boot
+splash: **K1000** and the build (`build 9184861`, the first word of `/opt/k1000/REVISION`). Before
+that moment the panel is dark: its driver registers about 2 s after Linux starts (12/10; the firmware's
+seconds before Linux, about 8 s, have nothing that can drive it). Until #t-030 that window showed
+black, or the console's text.
+
+- **Rendered at each deploy**, never at boot: install.sh step 5c runs `k1000/ui/splash.py` and
+  writes `/opt/k1000/splash.rgb565`, one raw frame of the panel (480x320 RGB565). At boot
+  `k1000-console.service` copies it onto the panel with `cat` (no Python on the boot path), once
+  the console is off the panel and again after any later unbind, and stops once k1000 is about to
+  draw (k1000 touches `/run/k1000/screen-up` first). Nothing waits for it.
+- **Your own picture:** put it at `/etc/k1000/splash.png` (any picture PIL reads; fitted whole,
+  black bars) and run install.sh again. Remove it, run install.sh again: back to K1000 and the build.
+  A picture it cannot read: install.sh warns and renders the default.
+- **See it without the box:** `cd box && python3 -m k1000.ui.splash --revision abc1234 --png /tmp/s.png`.
+- **When it appeared:** the boot timer's `splash on panel` row. `systemctl status k1000-console`
+  ends with `splash painted N time(s)`, and says why when it did not (`no /opt/k1000/splash.rgb565`:
+  run install.sh; `k1000 drew first`: nothing to cover).
 
 ## Fresh card (bootstrap)
 

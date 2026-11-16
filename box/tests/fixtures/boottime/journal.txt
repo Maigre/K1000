@@ -2,6 +2,7 @@
 [    0.000000] k1000 kernel: Linux version 6.12.47+rpt-rpi-v8
 [    3.214502] k1000 systemd[1]: systemd 257.8-1~deb13u2 running in system mode
 [    3.520011] k1000 systemd[1]: Detected architecture arm64.
+[    4.100230] k1000 sh[301]: k1000-console: splash on fb0
 [    5.402200] k1000 python3[612]: INFO k1000: k1000 0.9.0: profile m4 (card M4 present), engine ws://127.0.0.1:1234, state /var/lib/k1000/state.json
 [    6.110340] k1000 python3[612]: INFO k1000.control: engine freshly started (Main -100.0 dB muted, no K1000 marker): pushing the state, ramping in
 [    7.012004] k1000 python3[612]: INFO k1000.control: engine Running

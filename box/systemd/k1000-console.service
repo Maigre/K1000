@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# K1000 panel guard: keeps the Linux text console off the ZynScreen. Installed by box/install.sh.
+# K1000 panel guard: keeps the Linux text console off the ZynScreen, and paints the boot splash on
+# it until k1000 draws. Installed by box/install.sh.
 #
 # Why it exists:
 # - The kernel's framebuffer console (fbcon) takes over a framebuffer the moment it registers, and
@@ -22,11 +23,20 @@
 # - Unbinding detaches the console from every framebuffer (HDMI too), exactly as k1000's
 #   ExecStartPre does; the console on an HDMI monitor is gone from then on (SSH is the way in).
 # - No panel after 60 s: nothing is touched (k1000 keeps retrying the screen by itself).
+# - The boot splash (#t-030, k1000/ui/splash.py): /opt/k1000/splash.rgb565, one raw RGB565 frame
+#   install.sh renders at each deploy (the K1000 name and build, or /etc/k1000/splash.png). It is
+#   copied onto the panel once the console is off it (the first pass of the watch), and again after
+#   every later unbind: until then fbcon draws its text there. Never once k1000 is about to draw
+#   (it touches /run/k1000/screen-up first), never on a panel that is not 480x320 at 16 bpp with
+#   960-byte rows (the file would land scrambled), never when the file is missing. A `cat`, so
+#   nothing waits on it: fbtft sends the frame over SPI on its own. The first paint logs
+#   `k1000-console: splash on fbN`, the line tools/k1000-boottime.sh times; the last line says
+#   how many times it was painted, and why it stopped or never started.
 # - The script has no backslash, no single quote and no `%` (systemd escapes); `$$` is a literal
 #   `$` for the shell (see camilladsp.service).
 
 [Unit]
-Description=K1000 panel guard (keeps the Linux console off the ZynScreen)
+Description=K1000 panel guard (keeps the Linux console off the ZynScreen, boot splash)
 Documentation=file:///opt/k1000/README.md
 
 [Service]
@@ -34,6 +44,7 @@ Type=simple
 RemainAfterExit=yes
 ExecStart=/bin/sh -c '\
   gfx=/sys/class/graphics; vtc=/sys/class/vtconsole; wmax=600; watch=30; \
+  splash=/opt/k1000/splash.rgb565; devs=/dev; drawn=/run/k1000/screen-up; \
   fb=; w=0; \
   while [ -z "$$fb" ] && [ "$$w" -lt "$$wmax" ]; do \
     for n in "$$gfx"/fb*/name; do \
@@ -45,16 +56,29 @@ ExecStart=/bin/sh -c '\
     echo "k1000-console: no ZynScreen framebuffer (fb_ili9486) after $$((wmax / 10)) s: console left as it is" >&2; \
     exit 0; \
   fi; \
+  name=$$(basename "$$fb"); p=0; why=; \
+  if [ ! -s "$$splash" ]; then why="no $$splash"; \
+  elif [ "$$(cat "$$fb/virtual_size" 2>/dev/null)" != 480,320 ] || [ "$$(cat "$$fb/bits_per_pixel" 2>/dev/null)" != 16 ] || \
+       [ "$$(cat "$$fb/stride" 2>/dev/null)" != 960 ]; then why="the panel is not 480x320 RGB565"; \
+  fi; \
   i=0; n=0; \
   while [ "$$i" -lt "$$watch" ]; do \
+    u=0; \
     for v in "$$vtc"/vtcon*; do \
       if grep -q "frame buffer" "$$v/name" 2>/dev/null && [ "$$(cat "$$v/bind" 2>/dev/null)" = 1 ]; then \
-        echo 0 > "$$v/bind" && n=$$((n + 1)); \
+        echo 0 > "$$v/bind" && n=$$((n + 1)) && u=1; \
       fi; \
     done; \
+    if [ -z "$$why" ] && { [ "$$i" = 0 ] || [ "$$u" = 1 ]; }; then \
+      if [ -e "$$drawn" ]; then why="k1000 drew first"; \
+      elif cat "$$splash" > "$$devs/$$name" 2>/dev/null; then \
+        p=$$((p + 1)); \
+        if [ "$$p" = 1 ]; then echo "k1000-console: splash on $$name"; fi; \
+      else why="writing $$devs/$$name failed"; fi; \
+    fi; \
     i=$$((i + 1)); sleep 0.1; \
   done; \
-  echo "k1000-console: ZynScreen is $$(basename "$$fb") (waited $$((w / 10)) s); console unbound $$n time(s)"'
+  echo "k1000-console: ZynScreen is $$name (waited $$((w / 10)) s); console unbound $$n time(s); splash painted $$p time(s)$${why:+ ($$why)}"'
 
 [Install]
 WantedBy=multi-user.target

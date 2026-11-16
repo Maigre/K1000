@@ -41,6 +41,7 @@ def test_counts_from_power_on(tmp_path):
     t = table(r.stdout)
     assert t["Linux start"] == "10.40"          # the last "Starting ARM", ms -> s
     assert t["userspace start"] == "13.61"      # 10.398 + 3.2145
+    assert t["splash on panel"] == "14.50"      # 10.398 + 4.1002 (k1000-console.service)
     assert t["k1000 started"] == "15.80"
     assert t["engine Running"] == "17.41"       # the FIRST one
     assert t["ramp start"] == "17.60"
@@ -67,6 +68,16 @@ def test_older_k1000_falls_back_and_says_so(tmp_path):
     assert t["ramp start"] == "16.51" and "older k1000" in r.stdout
     assert t["first screen frame"] == "20.01"
     assert t["engine Running"] == "-" and t["Main at level"] == "-"
+
+
+def test_a_box_without_the_splash_says_so(tmp_path):
+    """A box deployed before the boot splash (or with no splash file): the row reads "-"."""
+    old = "".join(line + "\n" for line in (FIX / "journal.txt").read_text().splitlines()
+                  if "k1000-console" not in line)
+    r = run(tmp_path, journal=old)
+    assert r.returncode == 0, r.stderr
+    t = table(r.stdout)
+    assert t["splash on panel"] == "-" and t["k1000 started"] == "15.80"
 
 
 def test_without_the_firmware_log_counts_from_linux_start(tmp_path):
@@ -99,3 +110,5 @@ def test_the_markers_it_reads_are_the_ones_k1000_logs():
     assert "pushing the state, ramping in" in control
     assert 'log.info("screen: first frame")' in main and 'log.info("screen on %s", dev)' in main
     assert 'log.info("k1000 %s: profile %s' in main
+    console = (BOX / "systemd" / "k1000-console.service").read_text()
+    assert 'echo "k1000-console: splash on $$name"' in console

@@ -591,6 +591,7 @@ copy these from the main card (they are not in the repository):
 | File | Why |
 |---|---|
 | `/etc/k1000/k1000.yaml` | The profile pin and the confirmed knob map |
+| `/etc/k1000/splash.png` | Only if you use your own boot splash picture (box/README.md « Boot splash »); then run install.sh on the spare |
 | `/var/lib/k1000/state.json` | The tune (system EQ, trims, delays) and the levels. Copy it with **both** services stopped (below) |
 | The phone certificate | `K1000_TLS_DIR`, as in §5 |
 | `/etc/k1000/ap.psk` | The Wi-Fi password. Without it the spare generates its own and every phone must scan the QR again. Back it up with the other files ([chapter 7](07-maintenance.md#the-spare-card)); on the spare: `scp ~/k1000-backup/ap.psk k1000:/tmp/ && ssh k1000 'sudo install -o root -g k1000 -m 0640 /tmp/ap.psk /etc/k1000/ap.psk && rm /tmp/ap.psk && sudo /opt/k1000/net/setup-ap.sh'` (it keeps an existing password). A secret: never in the repository |

@@ -289,6 +289,7 @@ The full table is [`docs/06-phone.md`](../06-phone.md) §7. The usual ones:
 | The panel registered | `cat /sys/class/graphics/fb*/name` lists `fb_ili9486` |
 | k1000 runs | `systemctl status k1000`. It retries the screen every 2 s for its whole life |
 | Text drawn over the UI | The Linux console won the panel: `systemctl status k1000-console` should say `console unbound N time(s)`; `sudo systemctl restart k1000` unbinds it again |
+| No splash at power-on (K1000 and the build) | `systemctl status k1000-console`: its last line ends `splash painted N time(s)`, with the reason when N is 0. `no /opt/k1000/splash.rgb565`: run install.sh (it renders it). The panel stays dark for the first ~10 s after power-on in any case: the splash comes when the panel's driver does |
 
 The audio does not depend on the screen.
 

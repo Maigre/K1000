@@ -65,6 +65,10 @@ RENDER_STREAM_FPS = 10.0  # frames nobody's hand caused: meters, the SHOW spectr
 RENDER_IDLE_S = 1.0      # re-render at least this often (hints/highlights wake it on expiry)
 HW_RETRY_S = 2.0         # screen / knobs not there: try again this often
 FORCE_WRITE_S = 5.0      # rewrite the panel even if the frame did not change (heals overdraw)
+# Touched just before the first frame: k1000-console.service paints the boot splash
+# (ui/splash.py) only while this does not exist, so it never paints over the UI. /run/k1000 is
+# k1000.service's RuntimeDirectory; without it (a bench run) nothing paints a splash anyway.
+SCREEN_UP = Path("/run/k1000/screen-up")
 KNOBS_ALARM_S = 1.0      # knobs unhealthy this long -> KNOBS OFFLINE (a retried glitch is not)
 # Python's GIL switch interval (default 5 ms). The knob worker is an I/O thread that needs the
 # GIL 3-4 times per chip read (after gpiod's wait, around the I2C ioctl, the INT level check);
@@ -182,6 +186,14 @@ def _stop_frame(fb: Any) -> None:
         log.debug("stop frame failed: %s", e)
 
 
+def _mark_screen_up(path: Path | None = None) -> None:
+    """SCREEN_UP exists from now on: the boot splash is never painted again (this boot)."""
+    try:
+        (path or SCREEN_UP).touch()
+    except OSError:   # no /run/k1000: not the box's service, no splash to stop
+        pass
+
+
 def _next_wake(focus: Any, now: float) -> float:
     """Seconds until the next frame that would differ without any change: a hint, an edit
     highlight, a SETUP confirm or choice or the ALIGN unlock expiring (+10 ms), capped at
@@ -240,6 +252,8 @@ async def render_loop(ctl: Controller, fb: Any) -> None:
             # cached values (presence is refreshed every 2 s, RENDER_IDLE_S redraws it)
             phone = getattr(ctl, "phone", None)
             info = phone.screen_info() if (phone is not None and page == "PHONE") else None
+            if not drawn:
+                _mark_screen_up()
             await asyncio.to_thread(_draw, fb, page, st, status, focus, info)
             failed = False
             if not drawn:

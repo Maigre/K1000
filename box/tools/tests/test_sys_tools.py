@@ -274,30 +274,53 @@ def test_switch_back_to_a_present_card_while_waiting(tmp_path):
 
 
 # --------------------------------------------------------------------------- k1000-console.service
-class ConsoleGuard:
-    """k1000-console.service's script against a fake /sys: graphics/fbN/name and
-    vtconsole/vtconN/{name,bind}, as the kernel lays them out."""
+PANEL_GEOMETRY = ("480,320", "16", "960")     # virtual_size, bits_per_pixel, stride: the ZynScreen
+SPLASH = bytes(range(256)) * 4                 # the unit never reads it, only copies it
 
-    def __init__(self, tmp: Path, wmax: int = 40, watch: int = 10) -> None:
+
+class ConsoleGuard:
+    """k1000-console.service's script against a fake /sys: graphics/fbN/{name,virtual_size,
+    bits_per_pixel,stride} and vtconsole/vtconN/{name,bind}, as the kernel lays them out; /dev/fbN
+    is a plain file in a fake /dev, the splash and k1000's screen-up marker live in tmp (never the
+    box's own: on the box these tests would otherwise paint the real panel)."""
+
+    def __init__(self, tmp: Path, wmax: int = 40, watch: int = 10, splash: bool = True) -> None:
         self.gfx = tmp / "graphics"
         self.vtc = tmp / "vtconsole"
+        self.devs = tmp / "dev"
+        self.splash = tmp / "splash.rgb565"
+        self.drawn = tmp / "run-k1000" / "screen-up"
         self.gfx.mkdir()
+        self.devs.mkdir()
+        self.drawn.parent.mkdir()
+        if splash:
+            self.splash.write_bytes(SPLASH)
         for vt, name, bind in (("vtcon0", "(S) dummy device", "1"), ("vtcon1", "(M) frame buffer device", "0")):
             (self.vtc / vt).mkdir(parents=True)
             (self.vtc / vt / "name").write_text(name + "\n")
             (self.vtc / vt / "bind").write_text(bind + "\n")
         s = exec_start(CONSOLE_UNIT.read_text())
         for a, b in (("gfx=/sys/class/graphics", f"gfx={self.gfx}"), ("vtc=/sys/class/vtconsole", f"vtc={self.vtc}"),
-                     ("wmax=600", f"wmax={wmax}"), ("watch=30", f"watch={watch}")):
+                     ("wmax=600", f"wmax={wmax}"), ("watch=30", f"watch={watch}"),
+                     ("splash=/opt/k1000/splash.rgb565", f"splash={self.splash}"), ("devs=/dev;", f"devs={self.devs};"),
+                     ("drawn=/run/k1000/screen-up", f"drawn={self.drawn}")):
             assert s.count(a) == 1, a
             s = s.replace(a, b)
         assert s.count("sleep 0.1") == 2
         self.script = s.replace("sleep 0.1", "sleep 0.02")
         self.proc: subprocess.Popen | None = None
 
-    def fb(self, n: int, name: str) -> None:
-        (self.gfx / f"fb{n}").mkdir()
-        (self.gfx / f"fb{n}" / "name").write_text(name + "\n")
+    def fb(self, n: int, name: str, geometry: tuple[str, str, str] | None = PANEL_GEOMETRY) -> None:
+        d = self.gfx / f"fb{n}"
+        d.mkdir()
+        (d / "name").write_text(name + "\n")
+        for f, v in zip(("virtual_size", "bits_per_pixel", "stride"), geometry or ()):
+            (d / f).write_text(v + "\n")
+
+    def panel(self, n: int = 0) -> bytes | None:
+        """What was written to /dev/fbN, None if nothing."""
+        p = self.devs / f"fb{n}"
+        return p.read_bytes() if p.exists() else None
 
     def bind(self, vt: str = "vtcon1") -> str:
         return (self.vtc / vt / "bind").read_text().strip()
@@ -391,6 +414,96 @@ def test_console_guard_without_a_panel_touches_nothing(tmp_path):
     rc, out, err = g.finish()
     assert rc == 0 and g.bind() == "1"
     assert "no ZynScreen framebuffer" in err and out == ""
+    assert g.panel(0) is None                        # and no splash on the HDMI framebuffer
+
+
+# --- the boot splash (#t-030): painted by the same unit, until k1000 draws
+def test_console_guard_paints_the_splash_once_the_console_is_off(tmp_path):
+    g = ConsoleGuard(tmp_path)
+    g.fb(0, "fb_ili9486")
+    g.takeover()                                     # fbcon bound at registration, as on the box
+    g.start()
+    rc, out, err = g.finish()
+    assert rc == 0, err
+    assert g.bind() == "0" and g.panel(0) == SPLASH
+    lines = out.splitlines()
+    assert lines[0] == "k1000-console: splash on fb0"            # timed by tools/k1000-boottime.sh
+    assert lines[-1].endswith("console unbound 1 time(s); splash painted 1 time(s)"), out
+
+
+def test_console_guard_paints_the_splash_behind_hdmi_on_the_panel_only(tmp_path):
+    g = ConsoleGuard(tmp_path)
+    g.fb(0, "vc4drmfb", geometry=("1920,1080", "16", "3840"))
+    g.fb(1, "fb_ili9486")
+    g.start()
+    rc, out, _ = g.finish()
+    assert rc == 0 and g.panel(1) == SPLASH and g.panel(0) is None
+    assert "splash on fb1" in out
+
+
+def test_console_guard_repaints_the_splash_after_a_late_bind(tmp_path):
+    """fbcon can bind after the first pass painted (see the test above): its text would cover the
+    splash, so every unbind paints it again."""
+    g = ConsoleGuard(tmp_path, watch=15)
+    g.fb(0, "fb_ili9486")
+    g.start()
+    time.sleep(0.12)
+    g.takeover()
+    rc, out, _ = g.finish()
+    assert rc == 0 and g.bind() == "0" and g.panel(0) == SPLASH
+    assert "console unbound 1 time(s); splash painted 2 time(s)" in out
+    assert out.count("splash on fb0") == 1
+
+
+def test_console_guard_never_paints_once_k1000_is_drawing(tmp_path):
+    g = ConsoleGuard(tmp_path)
+    g.drawn.touch()                                  # k1000 is about to draw its first frame
+    g.fb(0, "fb_ili9486")
+    g.takeover()
+    g.start()
+    rc, out, _ = g.finish()
+    assert rc == 0 and g.bind() == "0" and g.panel(0) is None
+    assert "console unbound 1 time(s); splash painted 0 time(s) (k1000 drew first)" in out
+    assert "splash on" not in out
+
+
+def test_console_guard_stops_repainting_once_k1000_is_drawing(tmp_path):
+    g = ConsoleGuard(tmp_path, watch=15)
+    g.fb(0, "fb_ili9486")
+    g.start()
+    time.sleep(0.1)
+    g.drawn.touch()
+    (g.devs / "fb0").write_bytes(b"k1000 UI")         # k1000's first frame
+    g.takeover()                                     # a late bind: unbound, but no repaint
+    rc, out, _ = g.finish()
+    assert rc == 0 and g.bind() == "0" and g.panel(0) == b"k1000 UI"
+    assert "splash painted 1 time(s) (k1000 drew first)" in out
+
+
+@pytest.mark.parametrize("geometry", [("320,480", "16", "640"), ("480,320", "32", "1920"),
+                                      ("480,320", "16", "1024"), None],
+                         ids=["portrait", "32bpp", "padded-rows", "unreadable"])
+def test_console_guard_never_paints_another_geometry(tmp_path, geometry):
+    """The file is one 480x320 RGB565 frame with 960-byte rows: on anything else it would land
+    scrambled (a portrait panel has the same byte count)."""
+    g = ConsoleGuard(tmp_path)
+    g.fb(0, "fb_ili9486", geometry=geometry)
+    g.takeover()
+    g.start()
+    rc, out, _ = g.finish()
+    assert rc == 0 and g.bind() == "0" and g.panel(0) is None
+    assert "splash painted 0 time(s) (the panel is not 480x320 RGB565)" in out
+
+
+def test_console_guard_without_a_splash_file_still_unbinds(tmp_path):
+    """A box deployed before #t-030, or a render that failed: the console is kept off as before."""
+    g = ConsoleGuard(tmp_path, splash=False)
+    g.fb(0, "fb_ili9486")
+    g.takeover()
+    g.start()
+    rc, out, _ = g.finish()
+    assert rc == 0 and g.bind() == "0" and g.panel(0) is None
+    assert f"console unbound 1 time(s); splash painted 0 time(s) (no {g.splash})" in out
 
 
 # --------------------------------------------------------------------------- k1000-usbwatch.service
