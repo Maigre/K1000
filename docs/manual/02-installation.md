@@ -401,7 +401,7 @@ add it to everything else there.
 
 | What | How | When |
 |---|---|---|
-| Every process systemd starts (the other K1000 units, sshd, journald…): core 1 | `/etc/systemd/system.conf.d/51-k1000-usb-cpu0.conf`: `CPUAffinity=` then `CPUAffinity=1`. The lines add up, so the empty one resets the `0 1` of `50-k1000-cpu.conf` | install.sh's daemon-reload |
+| Every process systemd starts (the other K1000 units, sshd, journald…): core 1 | The unit moves systemd itself (PID 1) to core 1, so what it starts inherits core 1, and puts `/run/systemd/system.conf.d/51-k1000-usb-cpu0.conf` (`CPUAffinity=` then `CPUAffinity=1`; the lines add up, so the empty one resets the `0 1` of `50-k1000-cpu.conf`) so that a daemon-reload keeps it. `/run` is empty at boot, so the boot runs on cores 0-1: with this file in `/etc` until 16 Nov the whole boot ran on core 1, and full level came 4 to 5 s later | the unit's start, once k1000 and the engine have started; removed when it stops |
 | k1000 and CamillaGUI: core 1 | `/etc/systemd/system/{k1000,camillagui}.service.d/51-k1000-usb-cpu0.conf`, the same two lines (k1000's `Nice=5` stays) | their next start; the unit has already moved the running ones |
 | Every interrupt the kernel lets move: core 1. The SD card's and the Wi-Fi's (one shared interrupt, two threads at FIFO 50) matter most; their threads follow | `/proc/irq/<n>/smp_affinity_list` | the unit's start |
 | Interrupts set up later (Ethernet when its link comes up, the knob board's lines when k1000 starts…): core 1 | `/proc/irq/default_smp_affinity` = `2` | the unit's start |
@@ -409,6 +409,10 @@ add it to everything else there.
 | Every user-space thread allowed on core 0, except the engine's: core 1 | `sched_setaffinity` | the unit's start |
 | Every kernel thread the kernel lets move (the RCU threads, `jbd2`, `kswapd0`, the interrupt threads…): core 1. Never `kthreadd`, a per-core thread, or a workqueue worker: the kernel sets their cores itself and refuses a move | `sched_setaffinity` | the unit's start |
 | The kernel's timer migration: off (a timer runs on the core that set it) | `/proc/sys/kernel/timer_migration` = `0` | the unit's start |
+
+At boot the unit starts once k1000 and the engine have started (`After=`); nothing waits for it.
+The interrupt threads k1000 makes again at each start (its knobs) follow their interrupt, set up
+on core 1, at the next knob turn: the check counts them in place.
 
 The unit (`/opt/k1000/tools/k1000-cpu.py usb-cpu0 apply`) logs what it moved, what it kept on core
 0 and what the kernel refused, and writes it to `/run/k1000-usb-cpu0/report` for the check. It

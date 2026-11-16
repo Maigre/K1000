@@ -662,16 +662,24 @@ def _cpus(spec: str) -> set[int]:
 def test_cpu_files_and_table_agree():
     table = _cpu_table()
     switches = {s: _cpu_table(t) for s, t in SWITCHES.items()}
-    every = [*table] + [f for t in switches.values() for f in t]
+    # usb-cpu0-system.conf is in no table: the switch's unit copies it to /run once K1000 has
+    # started (16 Nov: in /etc it put the whole boot on core 1), and removes it when it stops
+    runtime = {"usb-cpu0-system.conf": "/run/systemd/system.conf.d/51-k1000-usb-cpu0.conf"}
+    every = [*table] + [f for t in switches.values() for f in t] + [*runtime]
     assert sorted(every) == sorted(p.name for p in CPU_DIR.iterdir()), every
+    unit_text = (CPU_DIR / "k1000-usb-cpu0.service").read_text()
+    for src, dst in runtime.items():
+        assert f"ExecStartPre=+/usr/bin/install -D -m 0644 /opt/k1000/cpu/{src} {dst}" in unit_text
+        assert f"ExecStopPost=+/usr/bin/rm -f {dst}" in unit_text
+    m = re.search(r"^USB_CPU0_LEGACY=(\S+)", INSTALL.read_text(), re.M)   # an earlier install's copy: removed
+    assert m and m.group(1) == "/etc/systemd/system.conf.d/51-k1000-usb-cpu0.conf"
     for name, t in switches.items():
         for src, dst in t.items():
+            assert not dst.startswith("/etc/systemd/system.conf.d/"), dst   # never at boot again
             if dst.endswith(".service.d/51-k1000-usb-cpu0.conf"):     # after 50-k1000-cpu.conf
                 unit = dst.split("/")[-2][:-2]
                 assert (BOX / "systemd" / unit).exists() and src == f"{name}-{unit.removesuffix('.service')}.conf"
                 assert dst.replace("51-k1000-usb-cpu0", "50-k1000-cpu") in table.values(), dst
-            elif dst.startswith("/etc/systemd/system.conf.d/"):
-                assert dst == "/etc/systemd/system.conf.d/51-k1000-usb-cpu0.conf" and src == f"{name}-system.conf"
             else:                                                       # the switch's own unit
                 assert dst == f"/etc/systemd/system/k1000-{name}.service" and src == f"k1000-{name}.service"
     for src, dst in table.items():

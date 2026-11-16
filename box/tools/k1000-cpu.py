@@ -585,7 +585,14 @@ def check(box: Box, sample: float = 2.0, sleep=time.sleep) -> tuple[list[str], i
     other0 = [i for i in on0 if i.n not in excused | moved and not _usb_irq(i)]
     k1000_units = {u: c for u, c in units.items() if u != ENGINE_UNIT}
     threads0 = [t for t in user if USB_CPU in t.cpus]
-    kthreads0 = [t for t in ts if _movable_kthread(t)]
+    # an interrupt's thread follows its interrupt at its next firing (the kernel moves it then): one
+    # whose interrupt is off core 0 is in place (k1000's knob threads, made again at each k1000 start)
+    irq_cores = {i.n: i.cpus for i in irqs(box)}
+
+    def follows_irq(t: Task) -> bool:
+        m = re.match(r"irq/(\d+)-", t.comm)
+        return bool(m) and USB_CPU not in irq_cores.get(int(m.group(1)), frozenset({USB_CPU}))
+    kthreads0 = [t for t in ts if _movable_kthread(t) and not follows_irq(t)]
     conds = [
         (f"applied by k1000-usb-cpu0.service" + (f" at {report.get('applied')}" if report else
                                                  f" (no {REPORT})"), report is not None),

@@ -1,10 +1,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # K1000 bench switch "usb-cpu0": core 0 left to the USB handling (D-023 point 3). Installed and
-# enabled by box/install.sh --usb-cpu0-on, with the three usb-cpu0-*.conf; stopped, disabled and
-# removed by --usb-cpu0-off and by --cpu-off. Off by default. Its effect on the delay steps is NOT
-# measured yet.
+# enabled by box/install.sh --usb-cpu0-on, with the k1000 and camillagui usb-cpu0-*.conf drop-ins;
+# stopped, disabled and removed by --usb-cpu0-off and by --cpu-off. Off by default. A 15 h run at
+# 96 kHz held with no delay step in the state it builds (docs/17 §14).
 #
-# What it does when started, and so at every boot (/opt/k1000/tools/k1000-cpu.py usb-cpu0 apply):
+# At boot it runs once k1000 and the engine have started (After=), so the boot itself runs on the
+# processor settings' cores 0-1 (with systemd's default on core 1 from the start, the boot took 4 to
+# 5 s longer to full level, 16 Nov), and the kernel threads that drivers start late (the HDMI and
+# CEC ones) exist by then. Nothing waits for it.
+#
+# What it does when started (/opt/k1000/tools/k1000-cpu.py usb-cpu0 apply):
 # - Every interrupt the kernel lets move goes to core 1 (/proc/irq/<n>/smp_affinity_list), and
 #   interrupts set up later too (/proc/irq/default_smp_affinity). The SD card's and the Wi-Fi's
 #   (one shared interrupt, "mmc0" and "mmc1", whose threads run at FIFO 50) matter most. Never the
@@ -15,8 +20,10 @@
 #   open to them, as without the switch (the mask is every core by default): the engine's
 #   real-time threads come before them, and core 1 alone would carry them with everything else.
 # - Every user-space thread allowed on core 0 goes to core 1, except the engine's (its unit keeps
-#   it on 2-3). systemd itself has core 1 from 51-k1000-usb-cpu0.conf at install.sh's
-#   daemon-reload; this moves what was already running.
+#   it on 2-3), systemd itself (PID 1) included, so what it starts from then on inherits core 1.
+#   ExecStartPre puts /opt/k1000/cpu/usb-cpu0-system.conf in /run/systemd/system.conf.d/ so that a
+#   later daemon-reload keeps core 1 (PID 1 reads that folder too); ExecStopPost removes it, and a
+#   boot starts without it (/run is emptied at every boot).
 # - Every kernel thread the kernel lets move goes to core 1 too (rcu_preempt, jbd2, kswapd0, the
 #   interrupt threads); never kthreadd nor a per-core thread (docs/17 §14: both stalls traced on
 #   the box began with core 0 running rcu_preempt's sleep time-out).
@@ -40,13 +47,15 @@
 [Unit]
 Description=K1000 bench switch: core 0 left to the USB handling
 Documentation=file:///opt/k1000/README.md
-After=systemd-modules-load.service
+After=systemd-modules-load.service k1000.service camilladsp.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+ExecStartPre=+/usr/bin/install -D -m 0644 /opt/k1000/cpu/usb-cpu0-system.conf /run/systemd/system.conf.d/51-k1000-usb-cpu0.conf
 ExecStart=/usr/bin/python3 /opt/k1000/tools/k1000-cpu.py usb-cpu0 apply
 ExecStopPost=/usr/bin/python3 /opt/k1000/tools/k1000-cpu.py usb-cpu0 undo
+ExecStopPost=+/usr/bin/rm -f /run/systemd/system.conf.d/51-k1000-usb-cpu0.conf
 Environment=PYTHONDONTWRITEBYTECODE=1
 SyslogIdentifier=k1000-usb-cpu0
 RuntimeDirectory=k1000-usb-cpu0

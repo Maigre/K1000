@@ -401,6 +401,12 @@ def test_check_wants_the_movable_kernel_threads_off_core_0(pi, tmp_path):
     shutil.copy(run / "report", pi.w("run/k1000-usb-cpu0/report", ""))
     text, rc = _check(pi)
     assert rc == 0 and "[x] no movable kernel thread allowed on core 0" in text, text
+    # k1000 restarted: its knob interrupt's thread is made again on every core, and follows its
+    # interrupt (set up on core 1) at the next knob turn: in place, not a failure
+    pi.irq(62, ["k1000-knobs"], cpus="1")
+    pi.task(160, comm="irq/62-k1000-knobs", kernel=True, cpus="0-3", policy=1, prio=50)
+    text, rc = _check(pi)
+    assert rc == 0 and "[x] no movable kernel thread allowed on core 0" in text, text
     pi.task(150, comm="new_kthread", kernel=True, cpus="0-3")      # started after the unit ran
     text, rc = _check(pi)
     assert rc == 1 and "[ ] no movable kernel thread allowed on core 0 (1: new_kthread(150))" in text, text
@@ -626,7 +632,16 @@ def test_the_units_run_the_tool_and_undo_on_any_stop(switch):
     assert u["Service.Type"] == ["oneshot"] and u["Service.RemainAfterExit"] == ["yes"]
     assert u["Service.ExecStart"] == [f"{tool} {switch} apply"]
     # ExecStopPost, not ExecStop: it also runs after a failed start, so a half-applied switch is undone
-    assert u["Service.ExecStopPost"] == [f"{tool} {switch} undo"] and "Service.ExecStop" not in u
+    assert u["Service.ExecStopPost"][0] == f"{tool} {switch} undo" and "Service.ExecStop" not in u
+    if switch == "usb-cpu0":
+        # once k1000 and the engine have started: the boot keeps cores 0-1 (16 Nov: 4 to 5 s faster
+        # to full level), and the kernel threads drivers start late exist by then
+        assert {"k1000.service", "camilladsp.service"} <= set(" ".join(u["Unit.After"]).split())
+        run = "/run/systemd/system.conf.d/51-k1000-usb-cpu0.conf"
+        assert u["Service.ExecStartPre"] == [f"+/usr/bin/install -D -m 0644 /opt/k1000/cpu/usb-cpu0-system.conf {run}"]
+        assert u["Service.ExecStopPost"][1:] == [f"+/usr/bin/rm -f {run}"]
+    else:
+        assert u["Service.ExecStopPost"] == [f"{tool} {switch} undo"]
     assert u["Install.WantedBy"] == ["multi-user.target"]          # at every boot, once enabled
     assert u["Service.CapabilityBoundingSet"] == ["CAP_SYS_NICE"]
     # these would forbid what the unit does: /proc/irq read-only, or the FIFO refused

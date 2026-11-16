@@ -88,8 +88,10 @@ cpu_choice() { grep -v '^[[:space:]]*#' "$CPU_CHOICE" 2>/dev/null | tr -d '[:spa
 # same way: "<file in cpu/> <where it goes>", one table each, each with its unit (k1000-<name>
 # .service, which applies the runtime part) and its choice file. OFF unless the file says on, and
 # only with the processor settings on (step 6b).
+# usb-cpu0-system.conf is not in the table: k1000-usb-cpu0.service copies it to /run/systemd/
+# system.conf.d/ once K1000 has started, so the boot keeps cores 0-1 (16 Nov: 4 to 5 s faster).
+USB_CPU0_LEGACY=/etc/systemd/system.conf.d/51-k1000-usb-cpu0.conf   # where it went until 16 Nov
 USB_CPU0_FILES=(
-  "usb-cpu0-system.conf /etc/systemd/system.conf.d/51-k1000-usb-cpu0.conf"
   "usb-cpu0-k1000.conf /etc/systemd/system/k1000.service.d/51-k1000-usb-cpu0.conf"
   "usb-cpu0-camillagui.conf /etc/systemd/system/camillagui.service.d/51-k1000-usb-cpu0.conf"
   "k1000-usb-cpu0.service /etc/systemd/system/k1000-usb-cpu0.service"
@@ -523,6 +525,11 @@ switch_files() {   # NAME 0|1 ENTRY...: remove (0) or install (1) a switch's fil
   if [ $SWITCH_CHANGED = 1 ]; then RELOAD=1; fi
 }
 USB_CPU0_NEW=0 USB_RT_NEW=0
+if [ -e "$USB_CPU0_LEGACY" ]; then   # an earlier install's boot-time copy: the unit puts it in /run now
+  rm -f "$USB_CPU0_LEGACY"
+  changed "removed $USB_CPU0_LEGACY (usb-cpu0 now gives systemd core 1 once K1000 has started)"
+  RELOAD=1
+fi
 if [ $usb_cpu0_on = 0 ]; then switch_files usb-cpu0 0 "${USB_CPU0_FILES[@]}"; fi
 if [ $usb_rt_on = 0 ]; then switch_files usb-rt 0 "${USB_RT_FILES[@]}"; fi
 CPU_CHANGED=0
