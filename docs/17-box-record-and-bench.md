@@ -630,3 +630,41 @@ loaded table at once. The sweep should be about 250 times shorter: to measure on
 The usb-cpu0 switch now also turns the kernel's timer migration off, so that the switch alone
 reproduces the state this run held.
 
+
+## 15. The gig build: a day's run and five power-ons, 16 Nov
+
+On main `11c268d` (the usb-cpu0 switch applied once k1000 and the engine have started, timer
+migration off, the connection tracker at 1024 buckets), 96 kHz / chunk 128 / target 256.
+
+**The run, 08:49 to 19:55** (11 h 06, after a resync at the start): 126 loop measurements, every one
+at 6.361 ms (measured); engine buffer 267 to 268 frames; no dropout line after the first row, no
+engine or k1000 restart, no USB drop of the M4, never muted, no clip, no throttling; the soak
+summary clean; the flight recorder armed all day and never fired (read). With the night before on
+the gig build (01:52 to 08:27, 75 measurements, 6.338 to 6.340 ms), no step in about 18 hours.
+Stopped at 20:00 for the power cycles. Series: mgr-ran `~/Bakery/K1000-bench-2026-11/`
+(`run-2026-11-16-switch-after.jsonl`, `soak-2026-11-16-switch-after.log`).
+
+**Five real power cycles with the switch** (Thomas at the desk, the loop cable in, nothing playing;
+probe `bootprobe.py`, series `boots-2026-11-16.jsonl` in the same folder):
+
+| Power-on | Loop (measured) | Box shows | Buffer | USB on the box | After a resync on command |
+|---|---|---|---|---|---|
+| 1 | 6.361 ms | 6.3 ms | 267 | 110 | 6.382 ms (box 6.4 → 6.4) |
+| 2 | 6.361 ms | 6.3 ms | 267 | 109 | — |
+| 3 | 6.361 ms | 6.3 ms | 267 | 107 | — |
+| 4 | **6.86 ms** | 6.6 ms | 291 | 133 | 6.361 ms (box 6.6 → 6.4) |
+| 5 | **6.86 ms** | 6.6 ms | 291 | 134 | 6.361 ms (box 6.6 → 6.4) |
+
+Read with the two cold boots of the morning (6.611 ms: buffer 266, USB 134; 6.849 ms: buffer 291,
+USB 134): a start lands at 6.36 ms, or with the USB transit 24 frames higher (+0.25 ms), or with
+the USB transit and the engine buffer both 24 frames higher (+0.5 ms). Four of seven power-ons
+landed high. On the box, the start restart runs while the boot is still busy: on power-on 5 it ran
+at 21:00:43, the switch applied at 21:00:47 (read). Each resync brought the stream back within
+136 to 139 ms with no dropout line, and the delay to 6.36 ms (3 of 3). Every landing is under the
+10 ms of D-018. The box's figure reads 0.06 ms under the loop at 6.36 ms and 0.26 ms under at
+6.86 ms.
+
+Open for Thomas at the 27/11 prep: the start by ear with a program playing (a gap, the ramp),
+beatmatching at this setting; keep or change 96 kHz / 128 / 256, the ramp, and the high landing
+(keep it with the resync on command, or have k1000 hold its start restart until the boot has
+settled: a code change, D-020).
