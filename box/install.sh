@@ -79,7 +79,9 @@ CPU_FILES=(
   "camilladsp.conf /etc/systemd/system/camilladsp.service.d/50-k1000-cpu.conf"
   "k1000.conf /etc/systemd/system/k1000.service.d/50-k1000-cpu.conf"
   "camillagui.conf /etc/systemd/system/camillagui.service.d/50-k1000-cpu.conf"
+  "conntrack.conf /etc/modprobe.d/k1000-conntrack.conf"
 )
+CONNTRACK_BUCKETS=1024   # cpu/conntrack.conf's hashsize: resized at once when the module is loaded
 CPU_CHOICE=/etc/k1000/cpu-tuning
 cpu_choice() { grep -v '^[[:space:]]*#' "$CPU_CHOICE" 2>/dev/null | tr -d '[:space:]'; }   # off = off
 # The two bench switches against the USB stall (D-023 point 3; tools/k1000-cpu.py says why), the
@@ -536,6 +538,20 @@ for e in "${CPU_FILES[@]}"; do
     case $dst in */*.service.d/*) rmdir "${dst%/*}" 2>/dev/null || true ;; esac   # if now empty
   fi
 done
+# The connection tracker's table (cpu/conntrack.conf): the file applies when the module loads (at
+# boot); a table already loaded is resized here, at once (the kernel rehashes it, the fence's
+# connections are kept). Off: the default size comes back at the next boot.
+CT_BUCKETS=/proc/sys/net/netfilter/nf_conntrack_buckets
+if [ $cpu_on = 1 ] && [ -w "$CT_BUCKETS" ]; then
+  ct_now=$(cat "$CT_BUCKETS" 2>/dev/null || echo 0)
+  if [ "$ct_now" != "$CONNTRACK_BUCKETS" ]; then
+    if echo "$CONNTRACK_BUCKETS" > "$CT_BUCKETS" 2>/dev/null; then
+      changed "connection tracker resized: $ct_now -> $CONNTRACK_BUCKETS buckets"
+    else
+      note "WARNING: could not resize the connection tracker ($CT_BUCKETS); the next boot applies it"
+    fi
+  fi
+fi
 if [ $CPU_CHANGED = 1 ]; then
   RELOAD=1
   if [ $cpu_on = 1 ]; then

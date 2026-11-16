@@ -681,9 +681,20 @@ def test_cpu_files_and_table_agree():
             assert src == unit.removesuffix(".service") + ".conf"
         else:
             assert dst in ("/etc/udev/rules.d/61-k1000-cpu-governor.rules",
-                           "/etc/systemd/system.conf.d/50-k1000-cpu.conf"), dst
+                           "/etc/systemd/system.conf.d/50-k1000-cpu.conf",
+                           "/etc/modprobe.d/k1000-conntrack.conf"), dst
     for p in CPU_DIR.iterdir():
         assert p.read_text().startswith("# SPDX-License-Identifier: GPL-3.0-or-later\n"), p
+
+
+def test_conntrack_table_is_small_and_matches_the_installer():
+    """The connection tracker's sweep held a core for 7.3 ms with a 262,144-bucket table (docs/17
+    §14): cpu/conntrack.conf sets 1024, and install.sh resizes a loaded table to the same size."""
+    lines = [l for l in (CPU_DIR / "conntrack.conf").read_text().splitlines() if l and not l.startswith("#")]
+    assert lines == ["options nf_conntrack hashsize=1024"]
+    m = re.search(r"^CONNTRACK_BUCKETS=(\d+)", INSTALL.read_text(), re.M)
+    assert m and m.group(1) == "1024"
+    assert _cpu_table()["conntrack.conf"] == "/etc/modprobe.d/k1000-conntrack.conf"
 
 
 def test_cpu_governor_rule_comes_after_the_os_one():
