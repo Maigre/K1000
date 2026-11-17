@@ -3,7 +3,7 @@
 Small scripts used to bring the MOTU M4 up and measure the box (results: `docs/05-m4-day.md` §13).
 They run **on the box**, next to the live engine, and talk to it over its own websockets: the
 CamillaDSP one (`ws://127.0.0.1:1234`) and the phone protocol (`wss://10.42.0.1/v2/ws`). Nothing
-here edits K1000's code or settings files; `monosubs.py`, `v2nudge.py` and `v2mute.py` change the
+here edits K1000's code or settings files; `monosubs.py`, `v2nudge.py`, `v2mute.py` and `repairmute.py` change the
 sound the way a phone or CamillaGUI would (speakers off, or know what you are doing).
 
 Copies also sit in `/home/k1000/m4-day/` on the box. After the next deploy they are in
@@ -22,6 +22,7 @@ Copies also sit in `/home/k1000/m4-day/` on the box. After the next deploy they 
 | `monosubs.py on\|off` | Mono L+R on or off through the engine config; k1000 adopts it like a CamillaGUI edit |
 | `v2nudge.py FIELD DETENTS` | Nudges a field like a phone (e.g. `balance_db 12` = +6 dB) |
 | `v2mute.py on\|off` | Mute or unmute like a phone (the unmute carries the current mute sequence) |
+| `repairmute.py repair\|mute` | `repair`: CamillaGUI's Apply repeated (one filter step bypassed): 3 restores by K1000, then the 4th stays with the alert only. `mute`: as a phone, Mono L+R OFF (a setup action clears it), then ON with a mute during the upload: answered at once, still muted after. Results: `docs/17-box-record-and-bench.md` §16 |
 | `pgmprobe.py [s]` | Subscribes to the RESPONSE program windows like a phone and summarises them. Read-only |
 
 Loop wiring rule: the return always goes into the **other** side's line input (source on LINE IN 3 →

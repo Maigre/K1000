@@ -4,7 +4,8 @@
 M4 OUT 1 into LINE IN 4), nothing else plugged. This follows `docs/16-post-gig-audit.md`, which
 was written before the box was powered, and corrects it. Each figure says whether it was
 **measured** on the box, **read** in a log or in source code, or **calculated**. Sections 9 to 13
-were added on 13 Nov, the 96 kHz night of section 10 on 14 Nov, section 14 on 15 Nov.
+were added on 13 Nov, the 96 kHz night of section 10 on 14 Nov, section 14 on 15 Nov, section 15 on
+16 Nov, section 16 on 17 Nov.
 
 ## 1. Summary
 
@@ -668,3 +669,36 @@ Open for Thomas at the 27/11 prep: the start by ear with a program playing (a ga
 beatmatching at this setting; keep or change 96 kHz / 128 / 256, the ramp, and the high landing
 (keep it with the resync on command, or have k1000 hold its start restart until the boot has
 settled: a code change, D-020).
+
+## 16. The repair limit and a mute during a setup upload, 17 Nov
+
+Findings 5 and 6 of `docs/16-post-gig-audit.md` §5.1, coded on 12 Nov, checked on the box: main
+`f9cab98`, 96 kHz / 128 / 256, cold power-on at 21:02, the loop cable in, nothing playing. Tool:
+`box/tools/bench/repairmute.py`, run twice (21:09 to 21:13 and 21:15 to 21:18) with the same result.
+
+**The repair limit** (`repairmute.py repair`): K1000's running config with its first Filter step
+(input trim and PEQ) bypassed, sent with SetConfigJson the way CamillaGUI's Apply sends it, and
+sent again each time K1000 put its own back. K1000 restored it three times: 1.5 s after the first
+Apply (its two 1 s looks), then twice 31.0 s after the restore before (the 30 s interval and one
+look). The 4th Apply stayed: one journal line 2 s after it, « engine pipeline: still not K1000's after 3 automatic repairs
+(pipeline differs); no more uploads for this until the engine has been K1000's for 10 min or the
+operator applies a setup action (alert only) », and no restore in the 75 s that followed
+(measured). The alert `PIPELINE CHANGED (GUI)` stayed up, at warning level, until the setup action
+below (read on the phone protocol's `alerts`, which the screen draws from).
+
+**The mute during a setup upload** (`repairmute.py mute`, as a phone): SUBS › Mono L+R OFF, a setup
+action, put K1000's pipeline back and cleared the alert within 3 s. Mono L+R ON again, a mute sent
+150 ms later: `APPLYING SETUP…` was up from 21:18:09.282 to 21:18:09.595; the mute was journaled
+(« mute ON (operator, phone 1) ») 137 ms after « setup action: mono_subs False -> True -> pipeline
+rebuild » and answered 7 ms after it was sent, while the upload ran (first run: 7 ms too). Once
+`APPLYING SETUP…` was gone, the box stayed muted (`mute_src` phone 1, the band READY), with no ramp
+back in. No « mute link: » line other than the one at start (read). The box was unmuted after.
+
+The mute went through the phone protocol rather than B4: both end in the same call,
+`Controller.set_mute` (B4's `Mute` action passes `source="B4"`), which sends on Main's own engine
+link and never takes the engine lock the rebuild holds (read in `control.py`). B4 by hand adds only
+the knob reading, not the path under test.
+
+Open for Thomas (none blocks the 28/11 gig): the 10-minute window after which the repair count is
+forgotten; red as the level of `ENGINE ON WRONG DEVICES (SEE LOG)`; with Main's link down, a mute
+then an unmute leave the box muted, showing STILL MUTED.
